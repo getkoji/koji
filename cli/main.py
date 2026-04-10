@@ -41,6 +41,7 @@ def status():
 @app.command()
 def process(
     path: str = typer.Argument(help="Path to a document or directory of documents"),
+    schema: Optional[str] = typer.Option(None, "--schema", "-s", help="Path to extraction schema YAML"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
 ):
     """Process documents through the pipeline."""
@@ -52,18 +53,25 @@ def process(
     server_url = f"http://127.0.0.1:{state['server_port']}"
     output_dir = output or "./output"
     file_path = Path(path)
+    schema_path = Path(schema) if schema else None
+
+    if schema_path and not schema_path.exists():
+        console.print(f"[red]Schema not found: {schema}[/red]")
+        raise SystemExit(1)
+
+    mode = "parse + extract" if schema_path else "parse"
 
     if file_path.is_dir():
         files = [f for f in file_path.iterdir() if f.is_file() and not f.name.startswith(".")]
         if not files:
             console.print(f"[yellow]No files found in {path}[/yellow]")
             raise SystemExit(1)
-        console.print(f"\n[bold]Processing {len(files)} files...[/bold]\n")
+        console.print(f"\n[bold]Processing {len(files)} files ({mode})...[/bold]\n")
         for f in sorted(files):
-            process_file(f, server_url, output_dir, console)
+            process_file(f, server_url, output_dir, console, schema_path)
     elif file_path.is_file():
-        console.print(f"\n[bold]Processing {file_path.name}...[/bold]\n")
-        process_file(file_path, server_url, output_dir, console)
+        console.print(f"\n[bold]Processing {file_path.name} ({mode})...[/bold]\n")
+        process_file(file_path, server_url, output_dir, console, schema_path)
     else:
         console.print(f"[red]Path not found: {path}[/red]")
         raise SystemExit(1)

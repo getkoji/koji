@@ -70,6 +70,28 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                 "restart": "unless-stopped",
                 "networks": [f"koji-{project}"],
             },
+            "koji-extract": {
+                "build": {
+                    "context": project_dir,
+                    "dockerfile": "docker/extract.Dockerfile",
+                },
+                "container_name": f"koji-{project}-extract",
+                "ports": [f"127.0.0.1:{cluster.extract_port}:9420"],
+                "environment": {
+                    "KOJI_OLLAMA_URL": f"http://koji-{project}-ollama:11434",
+                },
+                "healthcheck": {
+                    "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')"],
+                    "interval": "10s",
+                    "timeout": "5s",
+                    "retries": 3,
+                },
+                "depends_on": {
+                    "ollama": {"condition": "service_healthy"},
+                },
+                "restart": "unless-stopped",
+                "networks": [f"koji-{project}"],
+            },
             "ollama": {
                 "image": "ollama/ollama:latest",
                 "container_name": f"koji-{project}-ollama",

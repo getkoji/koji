@@ -1,0 +1,46 @@
+name: insurance_policy
+description: Commercial insurance policy extraction
+fields:
+  policy_number:
+    type: string
+    required: true
+    description: Policy number or ID
+  insured_name:
+    type: string
+    required: true
+    description: Named insured (policyholder)
+  effective_date:
+    type: date
+    required: true
+    description: Policy effective date
+  expiration_date:
+    type: date
+    required: true
+    description: Policy expiration date
+  carrier:
+    type: string
+    description: Insurance carrier / company name
+  policy_type:
+    type: string
+    description: Type of policy (BOP, GL, WC, Property, Auto, Umbrella, etc.)
+  premium:
+    type: number
+    description: Total premium amount
+  agent_name:
+    type: string
+    description: Agent or broker name
+  agency_name:
+    type: string
+    description: Agency name
+  coverages:
+    type: array
+    description: List of coverages with limits
+    items:
+      type: object
+      properties:
+        coverage_name:
+          type: string
+        limit:
+          type: string
+        deductible:
+          type: string

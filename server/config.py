@@ -29,6 +29,10 @@ class ClusterConfig(BaseModel):
     def parse_port(self) -> int:
         return self.base_port + 11
 
+    @property
+    def extract_port(self) -> int:
+        return self.base_port + 12
+
 
 class PipelineStep(BaseModel):
     step: str
