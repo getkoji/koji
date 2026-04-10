@@ -28,7 +28,10 @@ def process_file(
             )
 
         if resp.status_code != 200:
-            error = resp.json().get("error", "Unknown error")
+            try:
+                error = resp.json().get("error", "Unknown error")
+            except Exception:
+                error = resp.text[:200] or f"HTTP {resp.status_code}"
             console.print(f"  [red]x[/red] {file_path.name} — {error}")
             return False
 

@@ -18,4 +18,4 @@ COPY services/parse/ /app/services/parse/
 
 EXPOSE 9410
 
-CMD ["uvicorn", "services.parse.main:app", "--host", "0.0.0.0", "--port", "9410"]
+CMD ["uvicorn", "services.parse.main:app", "--host", "0.0.0.0", "--port", "9410", "--timeout-keep-alive", "300"]
