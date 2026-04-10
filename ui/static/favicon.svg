@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="32" height="32">
+  <style>
+    .branch { fill: none; stroke: #E8E0D8; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    .node { fill: #E8E0D8; }
+    .node-accent { fill: #C4A882; }
+  </style>
+  <line class="branch" x1="64" y1="112" x2="64" y2="62" />
+  <line class="branch" x1="64" y1="62" x2="64" y2="28" />
+  <path class="branch" d="M64,62 Q64,50 44,36" />
+  <path class="branch" d="M64,62 Q64,50 84,36" />
+  <path class="branch" d="M44,36 Q38,30 30,24" />
+  <path class="branch" d="M44,36 Q44,28 48,20" />
+  <path class="branch" d="M84,36 Q80,28 80,20" />
+  <path class="branch" d="M84,36 Q90,30 98,24" />
+  <circle class="node-accent" cx="64" cy="112" r="5" />
+  <circle class="node" cx="64" cy="28" r="4" />
+  <circle class="node" cx="30" cy="24" r="4" />
+  <circle class="node" cx="48" cy="20" r="4" />
+  <circle class="node" cx="80" cy="20" r="4" />
+  <circle class="node" cx="98" cy="24" r="4" />
+</svg>

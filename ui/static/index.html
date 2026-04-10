@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koji</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --surface-hover: #1a1a1a;
+    --border: #262626;
+    --text: #e5e5e5;
+    --text-muted: #737373;
+    --accent: #C4A882;
+    --accent-dim: #8B7355;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --font: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 48px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  .logo h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .cluster-badge {
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 9999px;
+  }
+
+  .section {
+    margin-bottom: 40px;
+  }
+
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .services {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .service-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    transition: border-color 0.15s;
+  }
+
+  .service-card:hover {
+    border-color: #333;
+  }
+
+  .service-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .service-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .status-dot.healthy { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.3); }
+  .status-dot.unhealthy { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.3); }
+  .status-dot.starting { background: var(--yellow); box-shadow: 0 0 8px rgba(234,179,8,0.3); }
+
+  .service-detail {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .service-detail a {
+    color: var(--text-muted);
+    text-decoration: none;
+    border-bottom: 1px dashed var(--border);
+  }
+
+  .service-detail a:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
+
+  .pipeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-wrap: wrap;
+    padding: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .pipeline-step {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .pipeline-step .step-detail {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .pipeline-arrow {
+    color: var(--text-muted);
+    padding: 0 12px;
+    font-size: 16px;
+  }
+
+  .config-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-x: auto;
+  }
+
+  .config-block pre {
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-muted);
+    white-space: pre;
+  }
+
+  .meta {
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .loading {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 128 128" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+        <style>.b{fill:none;stroke:#E8E0D8;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}.n{fill:#E8E0D8}.na{fill:#C4A882}</style>
+        <line class="b" x1="64" y1="112" x2="64" y2="62"/>
+        <line class="b" x1="64" y1="62" x2="64" y2="28"/>
+        <path class="b" d="M64,62 Q64,50 44,36"/>
+        <path class="b" d="M64,62 Q64,50 84,36"/>
+        <path class="b" d="M44,36 Q38,30 30,24"/><path class="b" d="M44,36 Q44,28 48,20"/>
+        <path class="b" d="M84,36 Q80,28 80,20"/><path class="b" d="M84,36 Q90,30 98,24"/>
+        <circle class="na" cx="64" cy="112" r="5"/>
+        <circle class="n" cx="64" cy="28" r="4"/><circle class="n" cx="30" cy="24" r="4"/>
+        <circle class="n" cx="48" cy="20" r="4"/><circle class="n" cx="80" cy="20" r="4"/>
+        <circle class="n" cx="98" cy="24" r="4"/>
+      </svg>
+      <h1>Koji</h1>
+    </div>
+    <div class="cluster-badge" id="cluster-name">loading...</div>
+  </header>
+
+  <div class="section">
+    <div class="meta" id="meta">
+      <span class="loading">connecting...</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Services</div>
+    <div class="services" id="services">
+      <div class="service-card"><span class="loading">loading...</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Pipeline</div>
+    <div class="pipeline" id="pipeline">
+      <span class="loading">loading...</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Configuration</div>
+    <div class="config-block">
+      <pre id="config">loading...</pre>
+    </div>
+  </div>
+
+  <footer>
+    <span>koji v0.1.0</span>
+    <span>getkoji.dev</span>
+  </footer>
+</div>
+
+<script>
+  function formatUptime(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function statusClass(status) {
+    if (status === 'healthy') return 'healthy';
+    if (status === 'starting') return 'starting';
+    return 'unhealthy';
+  }
+
+  function renderServices(services) {
+    const el = document.getElementById('services');
+    el.innerHTML = services.map(svc => `
+      <div class="service-card">
+        <div class="service-header">
+          <span class="service-name">${svc.name}</span>
+          <span class="status-dot ${statusClass(svc.status)}"></span>
+        </div>
+        <div class="service-detail">
+          <a href="${svc.endpoint}" target="_blank">${svc.endpoint}</a>
+        </div>
+        <div class="service-detail">port ${svc.port} &middot; ${svc.status}</div>
+      </div>
+    `).join('');
+  }
+
+  function renderPipeline(steps) {
+    const el = document.getElementById('pipeline');
+    if (!steps || steps.length === 0) {
+      el.innerHTML = '<span class="loading">no pipeline configured</span>';
+      return;
+    }
+    el.innerHTML = steps.map((step, i) => {
+      const detail = step.engine || step.model || step.strategy || '';
+      const arrow = i < steps.length - 1 ? '<span class="pipeline-arrow">&rarr;</span>' : '';
+      return `
+        <div class="pipeline-step">
+          ${step.step}
+          ${detail ? `<div class="step-detail">${detail}</div>` : ''}
+        </div>
+        ${arrow}
+      `;
+    }).join('');
+  }
+
+  async function fetchStatus() {
+    try {
+      const resp = await fetch('/api/status');
+      const data = await resp.json();
+
+      document.getElementById('cluster-name').textContent = data.cluster;
+      document.getElementById('meta').innerHTML = `
+        <span class="meta-item">project: ${data.project}</span>
+        <span class="meta-item">cluster: ${data.cluster}</span>
+        <span class="meta-item">uptime: ${formatUptime(data.uptime_seconds)}</span>
+      `;
+
+      renderServices(data.services);
+      renderPipeline(data.pipeline);
+    } catch (e) {
+      document.getElementById('meta').innerHTML =
+        '<span class="loading">disconnected — retrying...</span>';
+    }
+  }
+
+  async function fetchConfig() {
+    try {
+      const resp = await fetch('/api/config');
+      const data = await resp.json();
+      document.getElementById('config').textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById('config').textContent = '# unable to load config';
+    }
+  }
+
+  fetchStatus();
+  fetchConfig();
+
+  setInterval(fetchStatus, 5000);
+  setInterval(fetchConfig, 30000);
+</script>
+</body>
+</html>
