@@ -40,6 +40,9 @@ dev = [
 [project.scripts]
 koji = "cli.main:app"
 
+[tool.hatch.build.targets.wheel]
+packages = ["cli", "server"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

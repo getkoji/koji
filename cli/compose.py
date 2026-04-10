@@ -62,7 +62,7 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                     f"koji-{project}-ollama-data:/root/.ollama",
                 ],
                 "healthcheck": {
-                    "test": ["CMD", "curl", "-f", "http://localhost:11434/"],
+                    "test": ["CMD", "ollama", "list"],
                     "interval": "10s",
                     "timeout": "5s",
                     "retries": 3,

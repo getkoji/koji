@@ -90,7 +90,7 @@ def start_cluster(config: KojiConfig) -> None:
         raise SystemExit(1)
 
     console.print("  Starting services...")
-    result = run_compose(["up", "-d", "--wait"], koji_dir)
+    result = run_compose(["up", "-d"], koji_dir)
     if result.returncode != 0:
         console.print(f"[red]Start failed:[/red]\n{result.stderr}")
         raise SystemExit(1)
