@@ -6,8 +6,10 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from server.config import KojiConfig, load_config
 
@@ -66,6 +68,12 @@ def status():
             "endpoint": f"http://127.0.0.1:{config.cluster.ui_port}",
         },
         {
+            "name": "koji-parse",
+            "status": "healthy",
+            "port": config.cluster.parse_port,
+            "endpoint": f"http://127.0.0.1:{config.cluster.parse_port}",
+        },
+        {
             "name": "ollama",
             "status": "healthy",
             "port": config.cluster.ollama_port,
@@ -85,3 +93,30 @@ def status():
 @app.get("/api/config")
 def config():
     return get_config().model_dump(exclude_none=True)
+
+
+def get_parse_url() -> str:
+    """Get the parse service URL (internal docker network)."""
+    config = get_config()
+    project = config.project
+    return f"http://koji-{project}-parse:9410"
+
+
+@app.post("/api/parse")
+async def parse(file: UploadFile = File(...)):
+    """Forward a document to the parse service and return markdown."""
+    parse_url = get_parse_url()
+    content = await file.read()
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        try:
+            resp = await client.post(
+                f"{parse_url}/parse",
+                files={"file": (file.filename, content, file.content_type or "application/octet-stream")},
+            )
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+        except httpx.ConnectError:
+            return JSONResponse(
+                {"error": "Parse service unavailable"},
+                status_code=502,
+            )

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Optional
+
 import typer
 from rich.console import Console
 
-from .cluster import cluster_status, load_project_config, start_cluster, stop_cluster
+from .cluster import cluster_status, load_cluster_state, load_project_config, start_cluster, stop_cluster
+from .process import process_file
 
 app = typer.Typer(
     name="koji",
@@ -32,6 +36,37 @@ def stop():
 def status():
     """Show cluster status."""
     cluster_status()
+
+
+@app.command()
+def process(
+    path: str = typer.Argument(help="Path to a document or directory of documents"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+):
+    """Process documents through the pipeline."""
+    state = load_cluster_state()
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        raise SystemExit(1)
+
+    server_url = f"http://127.0.0.1:{state['server_port']}"
+    output_dir = output or "./output"
+    file_path = Path(path)
+
+    if file_path.is_dir():
+        files = [f for f in file_path.iterdir() if f.is_file() and not f.name.startswith(".")]
+        if not files:
+            console.print(f"[yellow]No files found in {path}[/yellow]")
+            raise SystemExit(1)
+        console.print(f"\n[bold]Processing {len(files)} files...[/bold]\n")
+        for f in sorted(files):
+            process_file(f, server_url, output_dir, console)
+    elif file_path.is_file():
+        console.print(f"\n[bold]Processing {file_path.name}...[/bold]\n")
+        process_file(file_path, server_url, output_dir, console)
+    else:
+        console.print(f"[red]Path not found: {path}[/red]")
+        raise SystemExit(1)
 
 
 @app.command()

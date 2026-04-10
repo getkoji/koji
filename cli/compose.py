@@ -54,6 +54,22 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                 "restart": "unless-stopped",
                 "networks": [f"koji-{project}"],
             },
+            "koji-parse": {
+                "build": {
+                    "context": project_dir,
+                    "dockerfile": "docker/parse.Dockerfile",
+                },
+                "container_name": f"koji-{project}-parse",
+                "ports": [f"127.0.0.1:{cluster.parse_port}:9410"],
+                "healthcheck": {
+                    "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9410/health')"],
+                    "interval": "10s",
+                    "timeout": "5s",
+                    "retries": 3,
+                },
+                "restart": "unless-stopped",
+                "networks": [f"koji-{project}"],
+            },
             "ollama": {
                 "image": "ollama/ollama:latest",
                 "container_name": f"koji-{project}-ollama",

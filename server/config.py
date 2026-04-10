@@ -25,6 +25,10 @@ class ClusterConfig(BaseModel):
     def ollama_port(self) -> int:
         return self.base_port + 10
 
+    @property
+    def parse_port(self) -> int:
+        return self.base_port + 11
+
 
 class PipelineStep(BaseModel):
     step: str
