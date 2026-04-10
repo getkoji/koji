@@ -1,0 +1,34 @@
+name: invoice
+description: Standard invoice extraction
+fields:
+  invoice_number:
+    type: string
+    required: true
+    description: The invoice or reference number
+  date:
+    type: date
+    required: true
+    description: Invoice date
+  vendor:
+    type: string
+    description: Vendor or supplier name
+  line_items:
+    type: array
+    items:
+      type: object
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unit_price:
+          type: number
+        total:
+          type: number
+  total_amount:
+    type: number
+    required: true
+    description: Total invoice amount
+  currency:
+    type: string
+    default: USD

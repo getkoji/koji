@@ -1,0 +1,25 @@
+# Koji cluster configuration
+# See docs/configuration.md for full reference
+
+project: koji-dev
+
+cluster:
+  name: default
+  base_port: 9400  # dashboard at :9400, server at :9401, services auto-assign from :9410+
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: local/llama3-8b
+    schemas:
+      - ./schemas/examples/invoice.yaml
+
+models:
+  providers:
+    local:
+      backend: ollama
+
+output:
+  structured: ./output/
