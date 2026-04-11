@@ -209,6 +209,89 @@
     white-space: pre;
   }
 
+  .jobs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .jobs-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .jobs-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .jobs-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .jobs-table tr:hover td {
+    background: var(--surface-hover);
+  }
+
+  .job-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .job-status.completed { color: #22c55e; background: rgba(34,197,94,0.1); }
+  .job-status.failed { color: var(--red); background: rgba(239,68,68,0.1); }
+  .job-status.processing { color: var(--yellow); background: rgba(234,179,8,0.1); }
+  .job-status.pending { color: var(--text-muted); background: var(--surface); }
+
+  .jobs-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .jobs-pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+  }
+
+  .jobs-pagination button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-family: var(--font);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .jobs-pagination button:hover:not(:disabled) {
+    color: var(--text);
+    border-color: #333;
+  }
+
+  .jobs-pagination button:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
   .meta {
     display: flex;
     gap: 24px;
@@ -279,6 +362,15 @@
     <div class="section-title">Pipeline</div>
     <div class="pipeline" id="pipeline">
       <span class="loading">loading...</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Recent Jobs</div>
+    <div class="config-block" style="padding: 0; overflow: hidden;">
+      <div id="jobs-history">
+        <div class="jobs-empty">loading...</div>
+      </div>
     </div>
   </div>
 
@@ -408,11 +500,95 @@
     }
   }
 
+  let jobsOffset = 0;
+  const jobsLimit = 20;
+
+  function formatTime(iso) {
+    if (!iso) return '--';
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+  }
+
+  function formatElapsed(ms) {
+    if (ms === null || ms === undefined) return '--';
+    if (ms < 1000) return ms + 'ms';
+    return (ms / 1000).toFixed(1) + 's';
+  }
+
+  function renderJobHistory(data) {
+    const el = document.getElementById('jobs-history');
+    const jobs = data.jobs || [];
+    const total = data.total || 0;
+
+    if (jobs.length === 0) {
+      el.innerHTML = '<div class="jobs-empty">no jobs yet</div>';
+      return;
+    }
+
+    let html = `<table class="jobs-table">
+      <thead><tr>
+        <th>Time</th><th>Filename</th><th>Schema</th><th>Status</th><th>Elapsed</th>
+      </tr></thead><tbody>`;
+
+    for (const job of jobs) {
+      const fname = job.filename || '--';
+      const schema = job.schema_name || '--';
+      const status = job.status || 'unknown';
+      html += `<tr>
+        <td>${formatTime(job.created_at)}</td>
+        <td>${fname}</td>
+        <td>${schema}</td>
+        <td><span class="job-status ${status}">${status}</span></td>
+        <td>${formatElapsed(job.elapsed_ms)}</td>
+      </tr>`;
+    }
+
+    html += '</tbody></table>';
+
+    const hasPrev = jobsOffset > 0;
+    const hasNext = jobsOffset + jobsLimit < total;
+    html += `<div class="jobs-pagination">
+      <span>${total} total</span>
+      <span>
+        <button onclick="prevJobs()" ${hasPrev ? '' : 'disabled'}>Prev</button>
+        <button onclick="nextJobs()" ${hasNext ? '' : 'disabled'}>Next</button>
+      </span>
+    </div>`;
+
+    el.innerHTML = html;
+  }
+
+  async function fetchJobHistory() {
+    try {
+      const resp = await fetch(`/api/jobs/history?limit=${jobsLimit}&offset=${jobsOffset}`);
+      const data = await resp.json();
+      renderJobHistory(data);
+    } catch (e) {
+      document.getElementById('jobs-history').innerHTML =
+        '<div class="jobs-empty">unable to load job history</div>';
+    }
+  }
+
+  function prevJobs() {
+    jobsOffset = Math.max(0, jobsOffset - jobsLimit);
+    fetchJobHistory();
+  }
+
+  function nextJobs() {
+    jobsOffset += jobsLimit;
+    fetchJobHistory();
+  }
+
   fetchStatus();
   fetchConfig();
+  fetchJobHistory();
 
   setInterval(fetchStatus, 5000);
   setInterval(fetchConfig, 30000);
+  setInterval(fetchJobHistory, 10000);
 </script>
 </body>
 </html>

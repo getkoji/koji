@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import time
+import uuid
+from datetime import UTC, datetime
 
 import httpx
 import yaml
@@ -15,6 +17,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from server.config import KojiConfig, load_config
+from server.db import count_jobs as db_count_jobs
+from server.db import get_job as db_get_job
+from server.db import init_db, save_job
+from server.db import list_jobs as db_list_jobs
 from server.jobs import job_store
 from server.schemas import router as schemas_router
 from server.webhooks import fire_webhooks
@@ -36,6 +42,8 @@ app.add_middleware(
 )
 
 app.include_router(schemas_router)
+
+init_db()
 
 _config: KojiConfig | None = None
 
@@ -113,24 +121,71 @@ def config():
     return get_config().model_dump(exclude_none=True)
 
 
+def _persist_job(
+    job_id: str,
+    status: str,
+    schema_name: str | None,
+    created_at: str,
+    completed_at: str | None = None,
+    elapsed_ms: int | None = None,
+    result: dict | None = None,
+    error: str | None = None,
+    filename: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Save a job to SQLite for history."""
+    try:
+        save_job(
+            id=job_id,
+            status=status,
+            schema_name=schema_name,
+            filename=filename,
+            model=model,
+            created_at=created_at,
+            completed_at=completed_at,
+            elapsed_ms=elapsed_ms,
+            result=result,
+            error=error,
+        )
+    except Exception:
+        pass  # don't let DB errors break the job flow
+
+
+@app.get("/api/jobs/history")
+def job_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Return paginated job history from SQLite."""
+    jobs = db_list_jobs(limit=limit, offset=offset)
+    total = db_count_jobs()
+    return JSONResponse({"jobs": jobs, "total": total, "limit": limit, "offset": offset})
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
-    """Get status and result of a job."""
+    """Get status and result of a job. Falls back to SQLite if not in memory."""
     job = job_store.get(job_id)
-    if job is None:
+    if job is not None:
+        payload: dict = {
+            "job_id": job.id,
+            "status": job.status.value,
+            "created_at": job.created_at.isoformat(),
+            "schema_name": job.schema_name,
+        }
+        if job.completed_at:
+            payload["completed_at"] = job.completed_at.isoformat()
+        if job.result is not None:
+            payload["result"] = job.result
+        if job.error is not None:
+            payload["error"] = job.error
+        return JSONResponse(payload)
+
+    # Fall back to SQLite
+    row = db_get_job(job_id)
+    if row is None:
         return JSONResponse({"error": "Job not found"}, status_code=404)
-    payload: dict = {
-        "job_id": job.id,
-        "status": job.status.value,
-        "created_at": job.created_at.isoformat(),
-        "schema_name": job.schema_name,
-    }
-    if job.completed_at:
-        payload["completed_at"] = job.completed_at.isoformat()
-    if job.result is not None:
-        payload["result"] = job.result
-    if job.error is not None:
-        payload["error"] = job.error
+    payload = {"job_id": row["id"], **{k: v for k, v in row.items() if k != "id"}}
     return JSONResponse(payload)
 
 
@@ -250,11 +305,38 @@ async def _process_job_bg(
 ) -> None:
     """Background task that runs process pipeline for a job."""
     job_store.mark_processing(job_id)
+    job = job_store.get(job_id)
+    t0 = time.monotonic()
     try:
         result = await _run_process(content, filename, content_type, schema)
         job_store.mark_completed(job_id, result)
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        if job:
+            _persist_job(
+                job_id=job_id,
+                status="completed",
+                schema_name=job.schema_name,
+                filename=filename,
+                model=result.get("model") if isinstance(result, dict) else None,
+                created_at=job.created_at.isoformat(),
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                elapsed_ms=elapsed_ms,
+                result=result,
+            )
     except Exception as e:
         job_store.mark_failed(job_id, str(e))
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        if job:
+            _persist_job(
+                job_id=job_id,
+                status="failed",
+                schema_name=job.schema_name,
+                filename=filename,
+                created_at=job.created_at.isoformat(),
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                elapsed_ms=elapsed_ms,
+                error=str(e),
+            )
 
 
 @app.post("/api/process")
@@ -290,6 +372,18 @@ async def process(
                     "elapsed_ms": elapsed_ms,
                 },
             )
+        )
+        now = datetime.now(UTC)
+        _persist_job(
+            job_id=str(uuid.uuid4()),
+            status="completed",
+            schema_name=schema[:50] if schema else None,
+            filename=filename,
+            model=result.get("model") if isinstance(result, dict) else None,
+            created_at=now.isoformat(),
+            completed_at=now.isoformat(),
+            elapsed_ms=elapsed_ms,
+            result=result,
         )
         return JSONResponse(result)
     except httpx.ConnectError as e:
@@ -340,11 +434,36 @@ async def _run_extract(req: ExtractRequest) -> dict:
 async def _extract_job_bg(job_id: str, req: ExtractRequest) -> None:
     """Background task that runs extraction for a job."""
     job_store.mark_processing(job_id)
+    job = job_store.get(job_id)
+    t0 = time.monotonic()
     try:
         result = await _run_extract(req)
         job_store.mark_completed(job_id, result)
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        if job:
+            _persist_job(
+                job_id=job_id,
+                status="completed",
+                schema_name=job.schema_name,
+                model=result.get("model") if isinstance(result, dict) else None,
+                created_at=job.created_at.isoformat(),
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                elapsed_ms=elapsed_ms,
+                result=result,
+            )
     except Exception as e:
         job_store.mark_failed(job_id, str(e))
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        if job:
+            _persist_job(
+                job_id=job_id,
+                status="failed",
+                schema_name=job.schema_name,
+                created_at=job.created_at.isoformat(),
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                elapsed_ms=elapsed_ms,
+                error=str(e),
+            )
 
 
 @app.post("/api/extract")
@@ -375,6 +494,17 @@ async def extract_endpoint(
                     "elapsed_ms": elapsed_ms,
                 },
             )
+        )
+        now = datetime.now(UTC)
+        _persist_job(
+            job_id=str(uuid.uuid4()),
+            status="completed",
+            schema_name=req.schema[:50] if req.schema else None,
+            model=result.get("model") if isinstance(result, dict) else None,
+            created_at=now.isoformat(),
+            completed_at=now.isoformat(),
+            elapsed_ms=elapsed_ms,
+            result=result,
         )
         return JSONResponse(result)
     except httpx.ConnectError as e:

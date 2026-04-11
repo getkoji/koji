@@ -1,16 +1,32 @@
 ---
 title: Configuration Reference
-description: Complete reference for koji.yaml — pipelines, models, clusters, and output settings.
+description: Complete reference for every koji.yaml option.
 ---
 
 # Configuration Reference
 
-All Koji behavior is driven by `koji.yaml` in your project root.
+Koji is configured through a single `koji.yaml` file in your project root. Every option has a sensible default -- a minimal config can be just a project name.
 
-## Minimal Example
+For a walkthrough of setting up your first config, see [Getting Started](getting-started.md).
+
+## Minimal config
 
 ```yaml
-project: my-pipeline
+project: myproject
+```
+
+## Full example
+
+```yaml
+project: myproject
+
+cluster:
+  name: default
+  base_port: 9400
+
+services:
+  parse: true
+  ollama: true
 
 pipeline:
   - step: parse
@@ -21,93 +37,207 @@ pipeline:
     schemas:
       - ./schemas/invoice.yaml
 
+models:
+  providers:
+    openai:
+      backend: openai
+      api_key: ${OPENAI_API_KEY}
+    local:
+      backend: ollama
+      endpoint: http://localhost:11434
+
 output:
   structured: ./output/
+  vectors: ./vectors/
+  raw_markdown: ./markdown/
+
+webhooks:
+  - url: https://my-app.com/api/koji-callback
+    events: [job.completed, job.failed]
+    secret: my-hmac-secret
 ```
 
-## Full Reference
+---
 
-### `project`
+## `project`
 
-A name for your pipeline. Used in logs and the dashboard.
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"koji"` |
+| **Required** | No |
+
+The project name. Used as a namespace for Docker containers, logs, and the dashboard.
 
 ```yaml
 project: invoice-processing
 ```
 
-### `cluster`
+---
 
-Controls how the local cluster is configured.
+## `cluster`
+
+Cluster-level settings that control networking and service identity.
+
+### `cluster.name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"default"` |
+| **Required** | No |
+
+Name of the cluster. Useful when running multiple Koji clusters on the same machine.
+
+### `cluster.base_port`
+
+| | |
+|---|---|
+| **Type** | `integer` |
+| **Default** | `9400` |
+| **Required** | No |
+
+Base port for the cluster. All service ports are derived from this value using fixed offsets:
+
+| Service | Offset | Default port |
+|---------|--------|--------------|
+| UI (dashboard) | +0 | 9400 |
+| API server | +1 | 9401 |
+| Ollama | +10 | 9410 |
+| Parse | +11 | 9411 |
+| Extract | +12 | 9412 |
+
+To run a second cluster on the same machine, set a different `base_port`:
 
 ```yaml
 cluster:
-  name: default
-  base_port: 9400  # dashboard at :9400, server at :9401, services from :9410+
+  name: production
+  base_port: 9500
+# dashboard at :9500, server at :9501, parse at :9511, etc.
 ```
 
-When running multiple clusters simultaneously, each project gets its own port range:
+---
 
-```bash
-cd ~/project-a && koji start  # dashboard at :9400
-cd ~/project-b && koji start  # dashboard at :9500
+## `services`
+
+Toggle optional services on or off. Disabling a service prevents Koji from starting its container.
+
+### `services.parse`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable the parse service. Set to `false` if you only need extraction from pre-parsed markdown (via `koji extract`).
+
+### `services.ollama`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable the bundled ollama service for local model inference. Set to `false` if you are using only API-based providers (e.g., OpenAI) and don't need local models.
+
+```yaml
+services:
+  parse: true
+  ollama: false  # using OpenAI only, no local models needed
 ```
 
-### `pipeline`
+---
 
-An ordered list of processing steps. Each step runs as an independent service.
+## `pipeline`
+
+| | |
+|---|---|
+| **Type** | `list[PipelineStep]` |
+| **Default** | `[]` |
+| **Required** | No (but nothing processes without it) |
+
+An ordered list of processing steps. Each step defines one stage of the document processing pipeline. Steps are independent services -- use the full pipeline or any subset.
+
+### Pipeline step fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `step` | `string` | -- | **Required.** Step type: `parse`, `extract`, etc. |
+| `engine` | `string` | `null` | Processing engine (e.g., `docling` for parsing). |
+| `model` | `string` | `null` | Model in `provider/model-name` format (e.g., `openai/gpt-4o-mini`). |
+| `schemas` | `list[string]` | `null` | Paths to schema YAML files for extraction. |
+| `ocr` | `string` | `null` | OCR engine to use during parsing (engine-specific). |
+| `strategy` | `string` | `null` | Extraction strategy: `parallel` (default) or `agent`. |
+| `categories` | `list[string]` | `null` | Document categories for classification. |
+| `max_tokens` | `integer` | `null` | Maximum token limit for model calls in this step. |
+
+### Parse step
+
+Converts documents (PDF, Word, images) into clean markdown.
 
 ```yaml
 pipeline:
   - step: parse
     engine: docling
+```
 
-  - step: split
-    strategy: heading
+### Extract step
 
-  - step: classify
-    model: local/llama3.2
-    labels:
-      - invoice
-      - receipt
-      - contract
+Extracts structured data from markdown using schemas and an LLM.
 
+```yaml
+pipeline:
   - step: extract
     model: openai/gpt-4o-mini
+    strategy: parallel
     schemas:
       - ./schemas/invoice.yaml
       - ./schemas/receipt.yaml
-
-  - step: embed
-    model: local/nomic-embed-text
+    max_tokens: 4096
 ```
 
-#### Pipeline Steps
+Reference models as `provider/model-name`. The provider name must match a key under `models.providers`, or use a well-known provider prefix like `openai/` or `ollama/`.
 
-| Step | Purpose | Key Options |
-|------|---------|-------------|
-| `parse` | Document → clean markdown | `engine` |
-| `split` | Markdown → chunks | `strategy` |
-| `classify` | Document/chunk → labels | `model`, `labels` |
-| `extract` | Document/chunk → structured JSON | `model`, `schemas` |
-| `embed` | Text → vector embeddings | `model` |
+---
 
-Use the full pipeline or any subset. Steps are independent.
+## `models`
 
-### `models`
+Configuration for model providers. Mix local and API providers freely.
 
-Configure model providers. Mix local and API providers freely.
+### `models.providers`
+
+| | |
+|---|---|
+| **Type** | `dict[string, ModelProviderConfig]` |
+| **Default** | `{}` |
+| **Required** | No |
+
+A map of provider names to their configuration. The key is a label you choose (e.g., `openai`, `local`, `anthropic`).
+
+### Provider config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `string` | `null` | Provider backend: `openai`, `ollama`, `anthropic`, etc. |
+| `api_key` | `string` | `null` | API key. Supports `${VAR}` environment variable syntax. |
+| `endpoint` | `string` | `null` | Custom API endpoint URL. Required for self-hosted providers. |
+| `format` | `string` | `null` | Response format hint (provider-specific). |
 
 ```yaml
 models:
   providers:
+    openai:
+      backend: openai
+      api_key: ${OPENAI_API_KEY}
     local:
       backend: ollama
-    openai:
-      api_key: ${OPENAI_API_KEY}
-    anthropic:
-      api_key: ${ANTHROPIC_API_KEY}
+      endpoint: http://localhost:11434
     custom:
-      endpoint: https://your-inference.internal/v1
+      backend: openai
+      api_key: ${CUSTOM_API_KEY}
+      endpoint: https://my-inference-server.com/v1
 ```
 
 Reference models in pipeline steps as `provider/model-name`:
@@ -115,21 +245,122 @@ Reference models in pipeline steps as `provider/model-name`:
 ```yaml
 pipeline:
   - step: extract
-    model: openai/gpt-4o-mini  # uses the openai provider
+    model: openai/gpt-4o-mini   # uses the openai provider
   - step: classify
-    model: local/llama3.2      # uses the local (ollama) provider
+    model: local/llama3.2       # uses the local (ollama) provider
 ```
 
-### `output`
+---
 
-Where extracted data goes.
+## `output`
+
+Controls where processed results are written.
+
+### `output.structured`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"./output/"` |
+| **Required** | No |
+
+Directory for structured extraction output (JSON files).
+
+### `output.vectors`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `null` (disabled) |
+| **Required** | No |
+
+Directory for vector embeddings output. When set, Koji writes vector representations alongside structured output.
+
+### `output.raw_markdown`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `null` (disabled) |
+| **Required** | No |
+
+Directory for raw markdown from the parse step. Useful for debugging or re-running extraction without re-parsing.
 
 ```yaml
 output:
   structured: ./output/
+  vectors: ./vectors/
+  raw_markdown: ./markdown/
 ```
 
-## Environment Variables
+---
+
+## `webhooks`
+
+| | |
+|---|---|
+| **Type** | `list[WebhookConfig]` |
+| **Default** | `[]` |
+| **Required** | No |
+
+Webhooks receive HTTP POST notifications when processing events occur. Each webhook is delivered asynchronously and does not block the pipeline.
+
+### Webhook config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | `string` | -- | **Required.** Endpoint URL to receive webhook deliveries. |
+| `events` | `list[string]` | `["job.completed", "job.failed"]` | Events that trigger this webhook. |
+| `secret` | `string` | `null` | HMAC-SHA256 secret for signing payloads. When set, deliveries include an `X-Koji-Signature` header. |
+
+### Supported events
+
+| Event | Fired when |
+|-------|------------|
+| `job.completed` | A processing job finishes successfully. |
+| `job.failed` | A processing job fails. |
+
+### Webhook payload format
+
+```json
+{
+  "event": "job.completed",
+  "timestamp": "2026-04-11T12:00:00+00:00",
+  "data": {
+    "filename": "invoice.pdf",
+    "schema": "invoice",
+    "extracted": { "...": "..." },
+    "elapsed_ms": 2340
+  }
+}
+```
+
+### Webhook delivery headers
+
+| Header | Description |
+|--------|-------------|
+| `Content-Type` | `application/json` |
+| `X-Koji-Event` | Event name (e.g., `job.completed`) |
+| `X-Koji-Signature` | HMAC-SHA256 hex digest of the raw JSON body (only when `secret` is set) |
+
+```yaml
+webhooks:
+  - url: https://my-app.com/api/koji-callback
+    events: [job.completed, job.failed]
+    secret: my-hmac-secret
+```
+
+---
+
+## Environment variables
+
+These environment variables affect Koji at runtime:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `KOJI_CONFIG_PATH` | Path to `koji.yaml` inside the server container. | `/etc/koji/koji.yaml` |
+| `KOJI_SCHEMAS_DIR` | Directory where schema YAML files are stored. | `./schemas/` |
+| `OPENAI_API_KEY` | OpenAI API key. Must be set before `koji start` to pass through to containers. | -- |
 
 Use `${VAR_NAME}` syntax anywhere in `koji.yaml` to reference environment variables:
 
@@ -139,5 +370,3 @@ models:
     openai:
       api_key: ${OPENAI_API_KEY}
 ```
-
-Koji will error at startup if a referenced variable is not set.

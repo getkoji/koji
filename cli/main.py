@@ -176,6 +176,164 @@ def doctor():
 
 
 @app.command()
+def test(
+    schema: str = typer.Option(..., "--schema", "-s", help="Path to extraction schema YAML"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model to use for extraction"),
+    update: bool = typer.Option(False, "--update", help="Snapshot mode: save extraction output as new expected files"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON results"),
+    strategy: str | None = typer.Option(None, "--strategy", help="Extraction strategy: parallel (default) or agent"),
+):
+    """Run extraction regression tests against fixture files."""
+    import json as json_mod
+
+    import httpx
+    import yaml
+
+    from .test_runner import (
+        FixtureResult,
+        TestSuiteResult,
+        compare_results,
+        discover_fixtures,
+    )
+
+    schema_path = Path(schema)
+    if not schema_path.exists():
+        console.print(f"[red]Schema not found: {schema}[/red]")
+        raise SystemExit(1)
+
+    fixtures = discover_fixtures(schema_path)
+    if not fixtures and not update:
+        fixtures_dir = schema_path.parent / (schema_path.stem + ".fixtures")
+        console.print(f"[red]No fixtures found. Expected directory: {fixtures_dir}/[/red]")
+        console.print("[dim]Create .md fixture files and run with --update to generate expected outputs.[/dim]")
+        raise SystemExit(1)
+    if not fixtures:
+        fixtures_dir = schema_path.parent / (schema_path.stem + ".fixtures")
+        console.print(f"[red]No .md fixture files found in {fixtures_dir}/[/red]")
+        raise SystemExit(1)
+
+    # Load schema name
+    schema_def = yaml.safe_load(schema_path.read_text())
+    schema_name = schema_def.get("name", schema_path.stem)
+
+    # Check cluster is running
+    state = load_cluster_state()
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        console.print("[dim]The test command needs a running cluster to call the extract API.[/dim]")
+        raise SystemExit(1)
+
+    server_url = f"http://127.0.0.1:{state['server_port']}"
+
+    # Verify connectivity
+    try:
+        httpx.get(f"{server_url}/api/health", timeout=5)
+    except (httpx.ConnectError, httpx.ReadTimeout):
+        console.print("[red]Cluster is not reachable. Run [bold]koji start[/bold] and wait for services.[/red]")
+        raise SystemExit(1)
+
+    schema_content = schema_path.read_text()
+    suite = TestSuiteResult(schema_name=schema_name)
+
+    if not json_output:
+        console.print(f"\n[bold]koji test[/bold] — {schema_name} ({len(fixtures)} fixtures)\n")
+
+    for md_path, expected_path in fixtures:
+        fixture_result = FixtureResult(fixture_name=md_path.name)
+
+        # Run extraction
+        markdown = md_path.read_text()
+        payload: dict = {"markdown": markdown, "schema": schema_content}
+        if model:
+            payload["model"] = model
+        if strategy:
+            payload["strategy"] = strategy
+
+        try:
+            if not json_output:
+                status_msg = f"  Extracting {md_path.name}..."
+                with console.status(status_msg, spinner="dots"):
+                    resp = httpx.post(f"{server_url}/api/extract", json=payload, timeout=1800)
+            else:
+                resp = httpx.post(f"{server_url}/api/extract", json=payload, timeout=1800)
+        except httpx.ConnectError:
+            fixture_result.error = "server unreachable"
+            suite.fixture_results.append(fixture_result)
+            if not json_output:
+                console.print(f"  [red]x[/red] {md_path.name} — server unreachable")
+            continue
+        except httpx.ReadTimeout:
+            fixture_result.error = "timeout"
+            suite.fixture_results.append(fixture_result)
+            if not json_output:
+                console.print(f"  [red]x[/red] {md_path.name} — timeout")
+            continue
+
+        if resp.status_code != 200:
+            try:
+                error = resp.json().get("error", "Unknown error")
+            except Exception:
+                error = resp.text[:200] or f"HTTP {resp.status_code}"
+            fixture_result.error = str(error)
+            suite.fixture_results.append(fixture_result)
+            if not json_output:
+                console.print(f"  [red]x[/red] {md_path.name} — {error}")
+            continue
+
+        result = resp.json()
+        actual = result.get("extracted", result)
+
+        # --update mode: save and move on
+        if update:
+            save_path = md_path.parent / (md_path.stem + ".expected.json")
+            save_path.write_text(json_mod.dumps(actual, indent=2) + "\n")
+            if not json_output:
+                console.print(f"  [green]>[/green] {md_path.name} → {save_path.name}")
+            suite.fixture_results.append(fixture_result)
+            continue
+
+        # Compare mode
+        if expected_path is None:
+            fixture_result.error = "no .expected.json file (run with --update to create)"
+            suite.fixture_results.append(fixture_result)
+            if not json_output:
+                console.print(f"  [yellow]?[/yellow] {md_path.name} — no .expected.json (run with --update)")
+            continue
+
+        expected = json_mod.loads(expected_path.read_text())
+        field_results = compare_results(expected, actual)
+        fixture_result.field_results = field_results
+        suite.fixture_results.append(fixture_result)
+
+        if not json_output:
+            console.print(f"  {md_path.name}")
+            for r in field_results:
+                if r.passed:
+                    console.print(f"    [green]✓[/green] {r.field_name}: {r.expected}")
+                else:
+                    console.print(f"    [red]✗[/red] {r.field_name}: {r.detail}")
+
+    # Summary
+    if update:
+        if not json_output:
+            console.print(f"\n{len(fixtures)} fixtures updated\n")
+        else:
+            console.print(json_mod.dumps({"updated": len(fixtures)}))
+        return
+
+    if json_output:
+        console.print(json_mod.dumps(suite.to_dict(), indent=2))
+    else:
+        console.print(
+            f"\n{suite.total_fixtures} fixtures, {suite.total_fields} fields checked, "
+            f"{suite.total_passed} passed, {suite.total_failed} regressions\n"
+        )
+
+    if not suite.all_passed:
+        raise SystemExit(1)
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print("koji 0.1.0")

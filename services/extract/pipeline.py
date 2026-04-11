@@ -7,7 +7,7 @@ import json
 import re
 import time
 
-from .document_map import build_document_map, summarize_map
+from .document_map import Chunk, build_document_map, summarize_map
 from .providers import ModelProvider, create_provider
 from .router import group_routes, route_fields, summarize_routing
 
@@ -26,7 +26,18 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
         desc_label = f" — {description}" if description else ""
 
         options = spec.get("options", spec.get("enum", []))
-        if options:
+        mappings = spec.get("mappings", {})
+        if mappings:
+            # mapping type: show canonical values with their aliases
+            parts = []
+            for canonical, aliases in mappings.items():
+                alias_list = ", ".join(str(a) for a in aliases if str(a) != str(canonical))
+                if alias_list:
+                    parts.append(f"{canonical} ({alias_list})")
+                else:
+                    parts.append(str(canonical))
+            desc_label += f" [pick from: {', '.join(parts)}]"
+        elif options:
             opts = ", ".join(str(o) for o in options)
             desc_label += f" [pick from: {opts}]"
 
@@ -87,6 +98,83 @@ async def extract_group(
             return {}
 
 
+def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk], schema_name: str) -> str:
+    """Build a targeted prompt to find a single missing field across broadened chunks."""
+    field_type = field_spec.get("type", "string")
+    required = field_spec.get("required", False)
+    description = field_spec.get("description", "")
+    req_label = " (REQUIRED)" if required else ""
+    desc_label = f" — {description}" if description else ""
+
+    options = field_spec.get("options", field_spec.get("enum", []))
+    mappings = field_spec.get("mappings", {})
+    if mappings:
+        parts = []
+        for canonical, aliases in mappings.items():
+            alias_list = ", ".join(str(a) for a in aliases if str(a) != str(canonical))
+            if alias_list:
+                parts.append(f"{canonical} ({alias_list})")
+            else:
+                parts.append(str(canonical))
+        desc_label += f" [pick from: {', '.join(parts)}]"
+    elif options:
+        opts = ", ".join(str(o) for o in options)
+        desc_label += f" [pick from: {opts}]"
+
+    field_line = f"  - {field_name}: {field_type}{req_label}{desc_label}"
+
+    content_blocks = []
+    for chunk in chunks:
+        content_blocks.append(f"### {chunk.title}\n\n{chunk.content}")
+    content = "\n\n---\n\n".join(content_blocks)
+
+    return f"""The field below was not found in an earlier extraction pass. Search thoroughly in ALL sections below and extract it if present. Return ONLY valid JSON. If the field is truly not present, return {{"{field_name}": null}}.
+
+## Missing field to find ({schema_name})
+
+{field_line}
+
+## Document sections (broadened search)
+
+{content}
+
+## Instructions
+
+Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a JSON object with ONLY the single field. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
+
+JSON:"""
+
+
+async def fill_gap(
+    field_name: str,
+    field_spec: dict,
+    chunks: list[Chunk],
+    schema_name: str,
+    provider: ModelProvider,
+    semaphore: asyncio.Semaphore,
+) -> dict:
+    """Attempt to extract a single missing field from broadened chunks."""
+    prompt = build_gap_fill_prompt(field_name, field_spec, chunks, schema_name)
+
+    async with semaphore:
+        try:
+            raw = await provider.generate(prompt, json_mode=True)
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                match = re.search(r"\{[\s\S]*\}", raw)
+                if match:
+                    try:
+                        return json.loads(match.group())
+                    except json.JSONDecodeError:
+                        pass
+                print(f"[koji-extract] Gap fill for {field_name} returned invalid JSON")
+                return {}
+        except Exception as e:
+            print(f"[koji-extract] Gap fill for {field_name} error: {e}")
+            return {}
+
+
 def validate_field(name: str, value, spec: dict) -> tuple:
     """Validate and normalize a field value. Returns (value, is_valid, issues)."""
     if value is None:
@@ -127,6 +215,46 @@ def validate_field(name: str, value, spec: dict) -> tuple:
                     break
             else:
                 issues = f"value '{value}' not in allowed options"
+
+    elif field_type == "mapping":
+        mappings = spec.get("mappings", {})
+        if mappings:
+            value_str = str(value)
+            value_lower = value_str.lower()
+
+            # Check if value is already a canonical key (exact)
+            if value_str in mappings:
+                value = value_str
+            else:
+                # Check aliases: exact case-insensitive match first
+                matched = False
+                for canonical, aliases in mappings.items():
+                    if value_lower == canonical.lower():
+                        value = canonical
+                        matched = True
+                        break
+                    for alias in aliases:
+                        if value_lower == str(alias).lower():
+                            value = canonical
+                            matched = True
+                            break
+                    if matched:
+                        break
+
+                if not matched:
+                    # Fuzzy substring match against all aliases
+                    for canonical, aliases in mappings.items():
+                        for alias in aliases:
+                            alias_lower = str(alias).lower()
+                            if alias_lower in value_lower or value_lower in alias_lower:
+                                value = canonical
+                                matched = True
+                                break
+                        if matched:
+                            break
+
+                if not matched:
+                    issues = f"value '{value}' not in allowed mappings"
 
     return value, issues is None, issues
 
@@ -222,9 +350,41 @@ async def intelligent_extract(
         for f, conf in result["confidence"].items()
         if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
     ]
+    gap_filled: list[str] = []
     if missing_required:
         print(f"[koji-extract] Missing required fields: {missing_required}")
-        # TODO: Phase 5 gap filling — broaden search for missing required fields
+        print(f"[koji-extract] Gap filling: broadened retry for {len(missing_required)} fields")
+
+        gap_tasks = []
+        for field_name in missing_required:
+            field_spec = schema_def["fields"][field_name]
+            # Re-route with broadened search: double chunks, no category filtering
+            broadened_routes = route_fields(
+                {"fields": {field_name: field_spec}},
+                chunks,
+                max_chunks_per_field=6,
+            )
+            broadened_chunks = broadened_routes[0].chunks if broadened_routes else chunks[:6]
+            gap_tasks.append(
+                (
+                    field_name,
+                    fill_gap(field_name, field_spec, broadened_chunks, schema_name, provider, semaphore),
+                )
+            )
+
+        gap_results = await asyncio.gather(*[t[1] for t in gap_tasks])
+
+        for (field_name, _), gap_result in zip(gap_tasks, gap_results):
+            value = gap_result.get(field_name)
+            if value is not None:
+                field_spec = schema_def["fields"][field_name]
+                value, is_valid, issue = validate_field(field_name, value, field_spec)
+                result["extracted"][field_name] = value
+                result["confidence"][field_name] = "low" if not is_valid else "medium"
+                gap_filled.append(field_name)
+                print(f"[koji-extract] Gap filled: {field_name} = {value}")
+            else:
+                print(f"[koji-extract] Gap fill failed: {field_name} still missing")
 
     elapsed_ms = int((time.time() - start) * 1000)
 
@@ -234,4 +394,5 @@ async def intelligent_extract(
         "chunks_total": doc_summary["total_chunks"],
         "extraction_groups": len(groups),
         "elapsed_ms": elapsed_ms,
+        "gap_filled": gap_filled,
     }
