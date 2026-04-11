@@ -7,6 +7,10 @@ cluster:
   name: default
   base_port: 9400  # dashboard at :9400, server at :9401, services auto-assign from :9410+
 
+# services:
+#   parse: true     # Set to false to skip the parse service (e.g., extracting from pre-parsed markdown)
+#   ollama: true    # Set to false to skip ollama (e.g., using OpenAI only)
+
 pipeline:
   - step: parse
     engine: docling

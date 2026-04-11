@@ -30,12 +30,14 @@ def process_file(
 
     try:
         endpoint = "/api/process" if schema_path else "/api/parse"
-        resp = httpx.post(
-            f"{server_url}{endpoint}",
-            files=files,
-            data=data,
-            timeout=1800,
-        )
+        status_msg = f"Parsing {file_path.name}..." if not schema_path else f"Processing {file_path.name}..."
+        with console.status(status_msg, spinner="dots"):
+            resp = httpx.post(
+                f"{server_url}{endpoint}",
+                files=files,
+                data=data,
+                timeout=1800,
+            )
 
         if resp.status_code != 200:
             try:

@@ -13,6 +13,7 @@ from rich.console import Console
 from server.config import KojiConfig, load_config
 
 from .compose import write_compose
+from .doctor import _port_available
 
 console = Console()
 
@@ -73,10 +74,70 @@ def run_compose(args: list[str], koji_dir: Path) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _get_port_map(config: KojiConfig) -> dict[str, int]:
+    """Return a mapping of service name to port for all cluster services."""
+    cluster = config.cluster
+    return {
+        "UI": cluster.ui_port,
+        "Server": cluster.server_port,
+        "Ollama": cluster.ollama_port,
+        "Parse": cluster.parse_port,
+        "Extract": cluster.extract_port,
+    }
+
+
+def find_available_base_port(current_base: int) -> int | None:
+    """Scan upward from current base_port in increments of 100 to find a free range.
+
+    Returns the first base_port where all 5 derived ports are available,
+    or None if nothing found within a reasonable range.
+    """
+    from server.config import ClusterConfig
+
+    # Start at the next multiple of 100 above current
+    candidate = ((current_base // 100) + 1) * 100
+    for _ in range(50):  # don't scan forever
+        test_config = KojiConfig(cluster=ClusterConfig(base_port=candidate))
+        ports = _get_port_map(test_config)
+        if all(_port_available(p) for p in ports.values()):
+            return candidate
+        candidate += 100
+    return None
+
+
+def check_port_conflicts(config: KojiConfig) -> None:
+    """Check all required ports and exit with a helpful message if any are in use."""
+    ports = _get_port_map(config)
+    results = {name: _port_available(port) for name, port in ports.items()}
+
+    if all(results.values()):
+        return  # all clear
+
+    console.print("\n[bold red]Port conflict detected:[/bold red]")
+    for name, port in ports.items():
+        available = results[name]
+        if available:
+            console.print(f"  [green]✓[/green] {port} ({name}) — available")
+        else:
+            console.print(f"  [red]✗[/red] {port} ({name}) — already in use")
+
+    suggestion = find_available_base_port(config.cluster.base_port)
+    if suggestion is not None:
+        console.print(f"\nSuggestion: set [bold]base_port: {suggestion}[/bold] in koji.yaml")
+    else:
+        console.print("\nCould not find a free port range. Free up ports and try again.")
+
+    console.print()
+    raise SystemExit(1)
+
+
 def start_cluster(config: KojiConfig) -> None:
     """Start the Koji cluster."""
     project_dir = get_project_dir()
     koji_dir = get_koji_dir()
+
+    # Check for port conflicts before doing anything with Docker
+    check_port_conflicts(config)
 
     console.print(f"\n[bold]Starting Koji cluster [cyan]{config.project}[/cyan]...[/bold]\n")
 

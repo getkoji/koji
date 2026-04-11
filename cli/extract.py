@@ -35,11 +35,14 @@ def extract_from_markdown(
         payload["model"] = model
 
     try:
-        resp = httpx.post(
-            f"{server_url}/api/extract",
-            json=payload,
-            timeout=1800,
-        )
+        model_label = model or "default model"
+        status_msg = f"Extracting from {md_path.name} via {model_label}..."
+        with console.status(status_msg, spinner="dots"):
+            resp = httpx.post(
+                f"{server_url}/api/extract",
+                json=payload,
+                timeout=1800,
+            )
 
         if resp.status_code != 200:
             try:

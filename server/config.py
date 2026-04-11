@@ -62,9 +62,15 @@ class OutputConfig(BaseModel):
     raw_markdown: str | None = None
 
 
+class ServicesConfig(BaseModel):
+    parse: bool = True
+    ollama: bool = True
+
+
 class KojiConfig(BaseModel):
     project: str = "koji"
     cluster: ClusterConfig = Field(default_factory=ClusterConfig)
+    services: ServicesConfig = Field(default_factory=ServicesConfig)
     pipeline: list[PipelineStep] = Field(default_factory=list)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
