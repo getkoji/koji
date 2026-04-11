@@ -30,10 +30,10 @@ console = Console()
 @app.command()
 def init(
     project_dir: str | None = typer.Argument(None, help="Directory name to create (default: current directory)"),
-    minimal: bool = typer.Option(False, "--minimal", help="Only create koji.yaml, skip example schema"),
+    quickstart: bool = typer.Option(False, "--quickstart", "-q", help="Include example schema and sample config"),
 ):
     """Scaffold a new Koji project."""
-    run_init(project_dir, minimal, console)
+    run_init(project_dir, quickstart, console)
 
 
 @app.command()

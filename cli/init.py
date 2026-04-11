@@ -63,7 +63,7 @@ fields:
 
 def run_init(
     project_dir: str | None,
-    minimal: bool,
+    quickstart: bool,
     console: Console,
 ) -> None:
     """Scaffold a new Koji project directory."""
@@ -87,8 +87,8 @@ def run_init(
     config_path.write_text(KOJI_YAML_TEMPLATE.format(project=project_name))
     console.print(f"  [green]created[/green] {config_path}")
 
-    # Write example schema unless --minimal
-    if not minimal:
+    # Write example schema with --quickstart
+    if quickstart:
         schemas_dir = target / "schemas"
         schemas_dir.mkdir(parents=True, exist_ok=True)
         schema_path = schemas_dir / "invoice.yaml"
@@ -99,4 +99,8 @@ def run_init(
     console.print()
     console.print("[bold]What's next?[/bold]")
     console.print("  1. [cyan]koji start[/cyan]    — start the processing cluster")
-    console.print("  2. [cyan]koji process[/cyan]  — process your first document")
+    if quickstart:
+        console.print("  2. [cyan]koji process ./doc.pdf --schema schemas/invoice.yaml[/cyan]")
+    else:
+        console.print("  2. Create a schema: [cyan]schemas/my_schema.yaml[/cyan]")
+        console.print("  3. [cyan]koji process ./doc.pdf --schema schemas/my_schema.yaml[/cyan]")

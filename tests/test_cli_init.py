@@ -17,7 +17,7 @@ def _console() -> Console:
 def test_init_creates_koji_yaml(tmp_path):
     """koji init in an empty directory creates koji.yaml with expected content."""
     os.chdir(tmp_path)
-    run_init(project_dir=None, minimal=False, console=_console())
+    run_init(project_dir=None, quickstart=False, console=_console())
 
     config_path = tmp_path / "koji.yaml"
     assert config_path.exists()
@@ -30,10 +30,10 @@ def test_init_creates_koji_yaml(tmp_path):
     assert "structured: ./output/" in content
 
 
-def test_init_creates_example_schema(tmp_path):
-    """koji init creates schemas/invoice.yaml with expected fields."""
+def test_init_quickstart_creates_example_schema(tmp_path):
+    """koji init --quickstart creates schemas/invoice.yaml with expected fields."""
     os.chdir(tmp_path)
-    run_init(project_dir=None, minimal=False, console=_console())
+    run_init(project_dir=None, quickstart=True, console=_console())
 
     schema_path = tmp_path / "schemas" / "invoice.yaml"
     assert schema_path.exists()
@@ -50,7 +50,7 @@ def test_init_creates_example_schema(tmp_path):
 def test_init_with_project_dir(tmp_path):
     """koji init myproject creates myproject/ with koji.yaml inside."""
     os.chdir(tmp_path)
-    run_init(project_dir=str(tmp_path / "myproject"), minimal=False, console=_console())
+    run_init(project_dir=str(tmp_path / "myproject"), quickstart=True, console=_console())
 
     config_path = tmp_path / "myproject" / "koji.yaml"
     assert config_path.exists()
@@ -68,7 +68,7 @@ def test_init_wont_overwrite(tmp_path):
     (tmp_path / "koji.yaml").write_text("existing config")
 
     try:
-        run_init(project_dir=None, minimal=False, console=_console())
+        run_init(project_dir=None, quickstart=True, console=_console())
         assert False, "Expected SystemExit"
     except SystemExit as e:
         assert e.code == 1
@@ -77,10 +77,10 @@ def test_init_wont_overwrite(tmp_path):
     assert (tmp_path / "koji.yaml").read_text() == "existing config"
 
 
-def test_init_minimal_skips_schema(tmp_path):
-    """koji init --minimal creates koji.yaml but no schemas directory."""
+def test_init_default_skips_schema(tmp_path):
+    """koji init creates koji.yaml but no schemas directory by default."""
     os.chdir(tmp_path)
-    run_init(project_dir=None, minimal=True, console=_console())
+    run_init(project_dir=None, quickstart=False, console=_console())
 
     assert (tmp_path / "koji.yaml").exists()
     assert not (tmp_path / "schemas").exists()
@@ -89,7 +89,7 @@ def test_init_minimal_skips_schema(tmp_path):
 def test_init_generated_yaml_is_valid(tmp_path):
     """The generated koji.yaml is valid YAML that can be parsed."""
     os.chdir(tmp_path)
-    run_init(project_dir=None, minimal=True, console=_console())
+    run_init(project_dir=None, quickstart=False, console=_console())
 
     config = yaml.safe_load((tmp_path / "koji.yaml").read_text())
     assert config["project"] == tmp_path.name
