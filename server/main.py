@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, UploadFile
+import yaml
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from server.config import KojiConfig, load_config
 
@@ -131,12 +134,12 @@ async def parse(file: UploadFile = File(...)):
 
 
 @app.post("/api/process")
-async def process(file: UploadFile = File(...), schema: str | None = None):
+async def process(file: UploadFile = File(...), schema: str | None = Form(None)):
     """Full pipeline: parse a document, then extract if a schema is provided."""
     parse_url = get_service_url("parse")
     content = await file.read()
 
-    async with httpx.AsyncClient(timeout=600) as client:
+    async with httpx.AsyncClient(timeout=1800) as client:
         # Step 1: Parse
         try:
             parse_resp = await client.post(
@@ -154,8 +157,6 @@ async def process(file: UploadFile = File(...), schema: str | None = None):
             return JSONResponse(parse_result)
 
         # Step 2: Extract
-        import json
-        import yaml
         try:
             schema_def = yaml.safe_load(schema)
         except Exception:
@@ -188,3 +189,35 @@ async def process(file: UploadFile = File(...), schema: str | None = None):
             "schema": extract_result.get("schema"),
             "extract_ms": extract_result.get("eval_duration_ms"),
         })
+
+
+class ExtractRequest(BaseModel):
+    markdown: str
+    schema: str
+
+
+@app.post("/api/extract")
+async def extract_endpoint(req: ExtractRequest):
+    """Extract structured data from markdown using a schema. No file upload needed."""
+    try:
+        schema_def = yaml.safe_load(req.schema)
+    except Exception:
+        try:
+            schema_def = json.loads(req.schema)
+        except Exception:
+            return JSONResponse({"error": "Invalid schema format"}, status_code=400)
+
+    extract_url = get_service_url("extract")
+
+    async with httpx.AsyncClient(timeout=1800) as client:
+        try:
+            resp = await client.post(
+                f"{extract_url}/extract",
+                json={
+                    "markdown": req.markdown,
+                    "schema_def": schema_def,
+                },
+            )
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+        except httpx.ConnectError:
+            return JSONResponse({"error": "Extract service unavailable"}, status_code=502)

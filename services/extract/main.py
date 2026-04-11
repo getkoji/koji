@@ -69,7 +69,7 @@ async def extract(req: ExtractionRequest):
     prompt = build_prompt(req.markdown, req.schema_def)
 
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=1800) as client:
             resp = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={

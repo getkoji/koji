@@ -34,7 +34,7 @@ def process_file(
             f"{server_url}{endpoint}",
             files=files,
             data=data,
-            timeout=600,
+            timeout=1800,
         )
 
         if resp.status_code != 200:

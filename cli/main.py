@@ -78,6 +78,35 @@ def process(
 
 
 @app.command()
+def extract(
+    path: str = typer.Argument(help="Path to a markdown file (from a previous parse)"),
+    schema: str = typer.Option(..., "--schema", "-s", help="Path to extraction schema YAML"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+):
+    """Extract structured data from an already-parsed markdown file."""
+    state = load_cluster_state()
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        raise SystemExit(1)
+
+    server_url = f"http://127.0.0.1:{state['server_port']}"
+    output_dir = output or "./output"
+    md_path = Path(path)
+    schema_path = Path(schema)
+
+    if not md_path.exists():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise SystemExit(1)
+    if not schema_path.exists():
+        console.print(f"[red]Schema not found: {schema}[/red]")
+        raise SystemExit(1)
+
+    from .extract import extract_from_markdown
+    console.print(f"\n[bold]Extracting from {md_path.name}...[/bold]\n")
+    extract_from_markdown(md_path, schema_path, server_url, output_dir, console)
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print("koji 0.1.0")
