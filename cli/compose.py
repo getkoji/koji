@@ -79,6 +79,8 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                 "ports": [f"127.0.0.1:{cluster.extract_port}:9420"],
                 "environment": {
                     "KOJI_OLLAMA_URL": f"http://koji-{project}-ollama:11434",
+                    "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
+                    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
                 },
                 "healthcheck": {
                     "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')"],

@@ -187,13 +187,17 @@ async def process(file: UploadFile = File(...), schema: str | None = Form(None))
             "extracted": extract_result.get("extracted"),
             "model": extract_result.get("model"),
             "schema": extract_result.get("schema"),
-            "extract_ms": extract_result.get("eval_duration_ms"),
+            "elapsed_ms": extract_result.get("elapsed_ms"),
+            "tool_calls": extract_result.get("tool_calls"),
+            "rounds": extract_result.get("rounds"),
         })
 
 
 class ExtractRequest(BaseModel):
     markdown: str
     schema: str
+    strategy: str | None = None
+    model: str | None = None
 
 
 @app.post("/api/extract")
@@ -208,15 +212,20 @@ async def extract_endpoint(req: ExtractRequest):
             return JSONResponse({"error": "Invalid schema format"}, status_code=400)
 
     extract_url = get_service_url("extract")
+    payload: dict = {
+        "markdown": req.markdown,
+        "schema_def": schema_def,
+    }
+    if req.strategy:
+        payload["strategy"] = req.strategy
+    if req.model:
+        payload["model"] = req.model
 
     async with httpx.AsyncClient(timeout=1800) as client:
         try:
             resp = await client.post(
                 f"{extract_url}/extract",
-                json={
-                    "markdown": req.markdown,
-                    "schema_def": schema_def,
-                },
+                json=payload,
             )
             return JSONResponse(resp.json(), status_code=resp.status_code)
         except httpx.ConnectError:

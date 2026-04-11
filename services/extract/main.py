@@ -1,9 +1,10 @@
-"""Koji Extract Service — markdown + schema in, structured JSON out."""
+"""Koji Extract Service — agent or parallel extraction."""
 
 from __future__ import annotations
 
 import json
 import os
+import time
 import traceback
 
 import httpx
@@ -15,46 +16,16 @@ app = FastAPI(title="Koji Extract Service", version="0.1.0")
 
 OLLAMA_URL = os.environ.get("KOJI_OLLAMA_URL", "http://ollama:11434")
 DEFAULT_MODEL = os.environ.get("KOJI_EXTRACT_MODEL", "llama3.2")
+DEFAULT_STRATEGY = os.environ.get("KOJI_EXTRACT_STRATEGY", "parallel")
 
 
 class ExtractionRequest(BaseModel):
     markdown: str
     schema_def: dict
     model: str | None = None
-
-
-def build_prompt(markdown: str, schema_def: dict) -> str:
-    """Build an extraction prompt from markdown content and a schema."""
-    fields = schema_def.get("fields", {})
-
-    field_descriptions = []
-    for name, spec in fields.items():
-        field_type = spec.get("type", "string")
-        required = spec.get("required", False)
-        description = spec.get("description", "")
-        req_label = " (REQUIRED)" if required else " (optional)"
-        desc_label = f" — {description}" if description else ""
-        field_descriptions.append(f"  - {name}: {field_type}{req_label}{desc_label}")
-
-    fields_block = "\n".join(field_descriptions)
-    schema_name = schema_def.get("name", "document")
-
-    return f"""Extract structured data from the following document. Return ONLY valid JSON matching the schema below. Do not include any explanation or markdown formatting.
-
-## Schema: {schema_name}
-
-Fields to extract:
-{fields_block}
-
-## Document
-
-{markdown}
-
-## Instructions
-
-Return a single JSON object with the extracted fields. Use null for fields you cannot find. For array fields, return an array of objects. Dates should be in ISO 8601 format (YYYY-MM-DD). Numbers should be numeric, not strings.
-
-JSON output:"""
+    strategy: str | None = None  # "parallel" or "agent"
+    classify_mode: str | None = None  # "keywords" (default), "llm", "all"
+    relevant_categories: list[str] | None = None  # which chunk categories to extract from
 
 
 @app.get("/health")
@@ -64,53 +35,36 @@ def health():
 
 @app.post("/extract")
 async def extract(req: ExtractionRequest):
-    """Extract structured data from markdown using an LLM."""
+    """Extract structured data from markdown."""
     model = req.model or DEFAULT_MODEL
-    prompt = build_prompt(req.markdown, req.schema_def)
+    strategy = req.strategy or DEFAULT_STRATEGY
+    start = time.time()
+
+    classify_mode = req.classify_mode or "keywords"
+    relevant = set(req.relevant_categories) if req.relevant_categories else None
 
     try:
-        async with httpx.AsyncClient(timeout=1800) as client:
-            resp = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0,
-                        "num_predict": 4096,
-                    },
-                },
+        if strategy == "agent":
+            from .tools import DocumentTools
+            result = await _run_agent(req.markdown, req.schema_def, model)
+        else:
+            from .parallel import parallel_extract
+            result = await parallel_extract(
+                req.markdown, req.schema_def, model, OLLAMA_URL,
+                relevant_categories=relevant,
+                classify_mode=classify_mode,
             )
 
-            if resp.status_code != 200:
-                return JSONResponse(
-                    {"error": f"Ollama returned {resp.status_code}", "detail": resp.text},
-                    status_code=502,
-                )
+        elapsed_ms = int((time.time() - start) * 1000)
 
-            result = resp.json()
-            raw_response = result.get("response", "")
-
-            # Parse the JSON from the LLM response
-            try:
-                extracted = json.loads(raw_response)
-            except json.JSONDecodeError:
-                return JSONResponse(
-                    {
-                        "error": "LLM returned invalid JSON",
-                        "raw_response": raw_response,
-                    },
-                    status_code=422,
-                )
-
-            return JSONResponse({
-                "extracted": extracted,
-                "model": model,
-                "schema": req.schema_def.get("name", "unknown"),
-                "eval_duration_ms": result.get("eval_duration", 0) // 1_000_000,
-            })
+        return JSONResponse({
+            "extracted": result["extracted"],
+            "model": model,
+            "strategy": strategy,
+            "schema": req.schema_def.get("name", "unknown"),
+            "elapsed_ms": elapsed_ms,
+            **{k: v for k, v in result.items() if k != "extracted"},
+        })
 
     except httpx.ConnectError:
         return JSONResponse(
@@ -124,3 +78,107 @@ async def extract(req: ExtractionRequest):
             {"error": str(e)},
             status_code=500,
         )
+
+
+async def _run_agent(markdown: str, schema_def: dict, model: str) -> dict:
+    """Run the agent-based extraction loop."""
+    from .tools import DocumentTools
+
+    MAX_TOOL_ROUNDS = 15
+    tools = DocumentTools(markdown)
+    tool_defs = DocumentTools.tool_definitions()
+
+    fields = schema_def.get("fields", {})
+    schema_name = schema_def.get("name", "document")
+
+    field_descriptions = []
+    for name, spec in fields.items():
+        field_type = spec.get("type", "string")
+        required = spec.get("required", False)
+        description = spec.get("description", "")
+        req_label = " (REQUIRED)" if required else ""
+        desc_label = f" — {description}" if description else ""
+        options = spec.get("options", spec.get("enum", []))
+        if options:
+            opts = ", ".join(str(o) for o in options)
+            desc_label += f" [allowed values: {opts}]"
+        field_descriptions.append(f"  - {name}: {field_type}{req_label}{desc_label}")
+
+    fields_block = "\n".join(field_descriptions)
+
+    system_prompt = f"""You are a document extraction agent. Extract structured data from a document using the provided tools.
+
+## Schema: {schema_name}
+
+Fields to extract:
+{fields_block}
+
+## Strategy
+1. Call list_sections to see the document structure.
+2. Use grep to search for specific values.
+3. Use read_section to read relevant sections.
+4. When done, respond with ONLY a JSON object. Use null for unfound fields. Dates as YYYY-MM-DD. Numbers as numbers."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Extract the fields. Start by listing sections."},
+    ]
+
+    tool_calls_made = 0
+    import re
+
+    async with httpx.AsyncClient(timeout=1800) as client:
+        for round_num in range(MAX_TOOL_ROUNDS):
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "tools": tool_defs,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 4096},
+                },
+            )
+
+            if resp.status_code != 200:
+                raise Exception(f"Ollama returned {resp.status_code}: {resp.text}")
+
+            result = resp.json()
+            message = result.get("message", {})
+            tool_calls = message.get("tool_calls", [])
+
+            if not tool_calls:
+                content = message.get("content", "")
+                try:
+                    extracted = json.loads(content)
+                except json.JSONDecodeError:
+                    match = re.search(r'\{[\s\S]*\}', content)
+                    if match:
+                        try:
+                            extracted = json.loads(match.group())
+                        except json.JSONDecodeError:
+                            messages.append(message)
+                            messages.append({"role": "user", "content": "Return ONLY valid JSON."})
+                            continue
+                    else:
+                        messages.append(message)
+                        messages.append({"role": "user", "content": "Return ONLY valid JSON."})
+                        continue
+
+                return {
+                    "extracted": extracted,
+                    "tool_calls": tool_calls_made,
+                    "rounds": round_num + 1,
+                }
+
+            messages.append(message)
+            for tool_call in tool_calls:
+                fn = tool_call.get("function", {})
+                tool_name = fn.get("name", "")
+                tool_args = fn.get("arguments", {})
+                print(f"[koji-extract] Agent tool: {tool_name}({json.dumps(tool_args)})")
+                tool_result = tools.call_tool(tool_name, tool_args)
+                tool_calls_made += 1
+                messages.append({"role": "tool", "content": tool_result})
+
+    raise Exception(f"Agent did not produce a result after {MAX_TOOL_ROUNDS} rounds")

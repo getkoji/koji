@@ -15,6 +15,8 @@ def extract_from_markdown(
     server_url: str,
     output_dir: str,
     console: Console,
+    strategy: str | None = None,
+    model: str | None = None,
 ) -> bool:
     """Send markdown + schema to the extract service."""
     out = Path(output_dir)
@@ -23,13 +25,19 @@ def extract_from_markdown(
     markdown = md_path.read_text()
     schema_content = schema_path.read_text()
 
+    payload: dict = {
+        "markdown": markdown,
+        "schema": schema_content,
+    }
+    if strategy:
+        payload["strategy"] = strategy
+    if model:
+        payload["model"] = model
+
     try:
         resp = httpx.post(
             f"{server_url}/api/extract",
-            json={
-                "markdown": markdown,
-                "schema": schema_content,
-            },
+            json=payload,
             timeout=1800,
         )
 
@@ -48,8 +56,13 @@ def extract_from_markdown(
         json_path.write_text(json.dumps(extracted, indent=2))
 
         model = result.get("model", "?")
-        extract_ms = result.get("extract_ms", "?")
-        console.print(f"  [green]✓[/green] {md_path.name} — extracted via {model} ({extract_ms}ms) → {json_path}")
+        elapsed_ms = result.get("elapsed_ms", "?")
+        tool_calls = result.get("tool_calls", "?")
+        rounds = result.get("rounds", "?")
+        console.print(
+            f"  [green]✓[/green] {md_path.name} — {model}, "
+            f"{tool_calls} tool calls, {rounds} rounds, {elapsed_ms}ms → {json_path}"
+        )
         return True
 
     except httpx.ConnectError:

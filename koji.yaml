@@ -12,14 +12,11 @@ pipeline:
     engine: docling
 
   - step: extract
-    model: local/llama3-8b
+    # Use openai/gpt-4o-mini for quick start (set OPENAI_API_KEY env var)
+    # Use ollama models (e.g., llama3.2) for fully local processing
+    model: openai/gpt-4o-mini
     schemas:
       - ./schemas/examples/invoice.yaml
-
-models:
-  providers:
-    local:
-      backend: ollama
 
 output:
   structured: ./output/

@@ -82,6 +82,8 @@ def extract(
     path: str = typer.Argument(help="Path to a markdown file (from a previous parse)"),
     schema: str = typer.Option(..., "--schema", "-s", help="Path to extraction schema YAML"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use (e.g., openai/gpt-4o-mini, llama3.2)"),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="Extraction strategy: parallel (default) or agent"),
 ):
     """Extract structured data from an already-parsed markdown file."""
     state = load_cluster_state()
@@ -102,8 +104,14 @@ def extract(
         raise SystemExit(1)
 
     from .extract import extract_from_markdown
-    console.print(f"\n[bold]Extracting from {md_path.name}...[/bold]\n")
-    extract_from_markdown(md_path, schema_path, server_url, output_dir, console)
+    labels = []
+    if model:
+        labels.append(f"model: {model}")
+    if strategy:
+        labels.append(f"strategy: {strategy}")
+    label = f" ({', '.join(labels)})" if labels else ""
+    console.print(f"\n[bold]Extracting from {md_path.name}{label}...[/bold]\n")
+    extract_from_markdown(md_path, schema_path, server_url, output_dir, console, strategy, model)
 
 
 @app.command()

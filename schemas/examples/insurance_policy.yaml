@@ -21,8 +21,21 @@ fields:
     type: string
     description: Insurance carrier / company name
   policy_type:
-    type: string
-    description: Type of policy (BOP, GL, WC, Property, Auto, Umbrella, etc.)
+    type: enum
+    description: Type of policy
+    options:
+      - BOP
+      - General Liability
+      - Workers Compensation
+      - Commercial Property
+      - Commercial Auto
+      - Umbrella
+      - Excess Liability
+      - Professional Liability
+      - Directors & Officers
+      - Employment Practices Liability
+      - Cyber Liability
+      - Other
   premium:
     type: number
     description: Total premium amount
