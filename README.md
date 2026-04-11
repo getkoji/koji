@@ -2,7 +2,7 @@
 
 Documents in. Structured data out.
 
-Koji is a self-hosted document processing platform. Parse, split, classify, and extract structured data from any document — PDFs, Word, images, scans — using local models or any API provider.
+Koji is a self-hosted document processing platform. Parse, classify, and extract structured data from any document — PDFs, Word, images, scans — using local models or any API provider.
 
 ## Quick Start
 
@@ -10,14 +10,21 @@ Koji is a self-hosted document processing platform. Parse, split, classify, and 
 # Install the CLI
 pip install koji-cli
 
-# Start a cluster
-koji start
+# Check your environment
+koji doctor
 
-# Open the dashboard
-open http://127.0.0.1:9400
+# Initialize a project
+koji init myproject
+cd myproject
+
+# Set your OpenAI API key (or use ollama for fully local)
+export OPENAI_API_KEY=sk-...
+
+# Start the cluster
+koji start
 ```
 
-That's it. Your cluster is running. The dashboard shows service health, and you're ready to process documents.
+Dashboard is now running at [http://127.0.0.1:9400](http://127.0.0.1:9400).
 
 ## Process Your First Document
 
@@ -56,6 +63,33 @@ Output:
 }
 ```
 
+## Intelligent Extraction
+
+Koji doesn't dump your entire document into an LLM. It uses a phased pipeline:
+
+1. **Map** — classify every section, detect content signals (tables, dates, dollar amounts)
+2. **Route** — schema `hints` direct each field to specific chunks
+3. **Extract** — fields sharing chunks are extracted together, minimizing LLM calls
+4. **Validate** — type checking, format normalization, enum matching
+5. **Reconcile** — merge results, deduplicate, confidence scoring
+
+Result: a 232-page insurance policy → 2 LLM calls, 2.7 seconds via gpt-4o-mini.
+
+## Schema Hints
+
+Hints tell the router where to look — no hardcoded domain knowledge:
+
+```yaml
+fields:
+  policy_number:
+    type: string
+    required: true
+    hints:
+      look_in: [declarations]
+      patterns: ["policy.*number"]
+      signals: [has_policy_numbers]
+```
+
 ## Configuration
 
 All behavior is driven by `koji.yaml`:
@@ -63,19 +97,12 @@ All behavior is driven by `koji.yaml`:
 ```yaml
 project: my-pipeline
 
-pipeline:
-  - step: parse
-    engine: docling
+cluster:
+  base_port: 9400
 
-  - step: extract
-    model: local/llama3-8b
-    schemas:
-      - ./schemas/invoice.yaml
-
-models:
-  providers:
-    local:
-      backend: ollama
+# Optional: disable services you don't need
+services:
+  ollama: false  # Using OpenAI only
 
 output:
   structured: ./output/
@@ -85,77 +112,48 @@ output:
 
 Run multiple clusters simultaneously — each gets its own port range:
 
-```yaml
-# koji.yaml
-cluster:
-  name: my-project
-  port: 9400  # dashboard
-  # Services auto-assign ports from this base
-```
-
 ```bash
-# Terminal 1
-cd ~/project-a && koji start  # dashboard at :9400
+# Terminal 1 — base_port: 9400
+cd ~/project-a && koji start
 
-# Terminal 2
-cd ~/project-b && koji start  # dashboard at :9500
+# Terminal 2 — base_port: 9500
+cd ~/project-b && koji start
 ```
 
 No port conflicts. Each cluster is fully isolated.
-
-## Pipeline Steps
-
-| Step | What it does |
-|------|-------------|
-| **parse** | Any document format → clean markdown |
-| **split** | Markdown → intelligent chunks |
-| **classify** | Document/chunk → category labels |
-| **extract** | Document/chunk → structured JSON via schema |
-| **embed** | Text → vector embeddings |
-
-Use the full pipeline or any step independently.
 
 ## Model Providers
 
 Koji is model-agnostic. BYO model — local or API:
 
-```yaml
-models:
-  providers:
-    local:
-      backend: ollama
-    openai:
-      api_key: ${OPENAI_API_KEY}
-    anthropic:
-      api_key: ${ANTHROPIC_API_KEY}
-    custom:
-      endpoint: https://your-inference.internal/v1
-```
-
-Mix and match per pipeline step. Use local for cheap operations, API for complex extraction. One config change, zero code changes.
-
-## Deploy Anywhere
+| Provider | Model string | Notes |
+|----------|-------------|-------|
+| OpenAI | `openai/gpt-4o-mini` | Set `OPENAI_API_KEY` env var |
+| Ollama | `llama3.2` | Local, runs in the cluster |
+| Any OpenAI-compatible | `custom/model-name` | Set `KOJI_OPENAI_URL` env var |
 
 ```bash
-koji start              # Local development (docker-compose)
-koji start --k8s        # Generate Kubernetes manifests
+koji extract ./output/doc.md --schema ./schema.yaml --model openai/gpt-4o-mini
 ```
 
-What runs locally is what runs in production. Same containers, same versions, same behavior.
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `koji init [dir]` | Scaffold a new project (`--quickstart` for example schema) |
+| `koji start` | Start the processing cluster |
+| `koji stop` | Stop the cluster |
+| `koji status` | Show service health |
+| `koji process <path>` | Parse a document (add `--schema` for full pipeline) |
+| `koji extract <md>` | Extract from already-parsed markdown |
+| `koji logs [service]` | Stream service logs (`-f` to follow) |
+| `koji doctor` | Check environment health |
+| `koji version` | Show version |
 
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
-- [Configuration Reference](docs/configuration.md)
-- [Schema Reference](docs/schemas.md)
-- [Architecture](docs/architecture.md)
-- [Contributing](CONTRIBUTING.md)
-
-## Community
-
-- [GitHub Issues](https://github.com/getkoji/koji/issues) — bugs and feature requests
-- [GitHub Discussions](https://github.com/getkoji/koji/discussions) — questions and ideas
-- [Discord](https://discord.gg/koji) — chat with the community
+- [Schema Examples](schemas/examples/)
 
 ## License
 
