@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import re
 
 import httpx
-
 
 # Common insurance document section types
 DEFAULT_CATEGORIES = [
@@ -63,8 +60,8 @@ async def classify_chunk_llm(
 
 Categories: {cats}
 
-Section title: {chunk['title']}
-Section content (first 500 chars): {chunk['content'][:500]}
+Section title: {chunk["title"]}
+Section content (first 500 chars): {chunk["content"][:500]}
 
 Return ONLY the category name, nothing else."""
 
@@ -126,10 +123,7 @@ async def classify_chunks(
     if use_llm and llm_needed:
         # LLM classification for uncertain chunks (requires decent compute)
         print(f"[koji-extract] Running LLM classification on {len(llm_needed)} chunks")
-        tasks = [
-            classify_chunk_llm(chunk, cats, model, ollama_url, semaphore)
-            for chunk in llm_needed
-        ]
+        tasks = [classify_chunk_llm(chunk, cats, model, ollama_url, semaphore) for chunk in llm_needed]
         labels = await asyncio.gather(*tasks)
         for chunk, label in zip(llm_needed, labels):
             classified.append({**chunk, "category": label})

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 
 import httpx
 import yaml
@@ -123,7 +122,13 @@ async def parse(file: UploadFile = File(...)):
         try:
             resp = await client.post(
                 f"{parse_url}/parse",
-                files={"file": (file.filename, content, file.content_type or "application/octet-stream")},
+                files={
+                    "file": (
+                        file.filename,
+                        content,
+                        file.content_type or "application/octet-stream",
+                    )
+                },
             )
             return JSONResponse(resp.json(), status_code=resp.status_code)
         except httpx.ConnectError:
@@ -144,7 +149,13 @@ async def process(file: UploadFile = File(...), schema: str | None = Form(None))
         try:
             parse_resp = await client.post(
                 f"{parse_url}/parse",
-                files={"file": (file.filename, content, file.content_type or "application/octet-stream")},
+                files={
+                    "file": (
+                        file.filename,
+                        content,
+                        file.content_type or "application/octet-stream",
+                    )
+                },
             )
             if parse_resp.status_code != 200:
                 return JSONResponse(parse_resp.json(), status_code=parse_resp.status_code)
@@ -180,17 +191,19 @@ async def process(file: UploadFile = File(...), schema: str | None = Form(None))
         except httpx.ConnectError:
             return JSONResponse({"error": "Extract service unavailable"}, status_code=502)
 
-        return JSONResponse({
-            "filename": parse_result.get("filename"),
-            "pages": parse_result.get("pages"),
-            "parse_seconds": parse_result.get("elapsed_seconds"),
-            "extracted": extract_result.get("extracted"),
-            "model": extract_result.get("model"),
-            "schema": extract_result.get("schema"),
-            "elapsed_ms": extract_result.get("elapsed_ms"),
-            "tool_calls": extract_result.get("tool_calls"),
-            "rounds": extract_result.get("rounds"),
-        })
+        return JSONResponse(
+            {
+                "filename": parse_result.get("filename"),
+                "pages": parse_result.get("pages"),
+                "parse_seconds": parse_result.get("elapsed_seconds"),
+                "extracted": extract_result.get("extracted"),
+                "model": extract_result.get("model"),
+                "schema": extract_result.get("schema"),
+                "elapsed_ms": extract_result.get("elapsed_ms"),
+                "tool_calls": extract_result.get("tool_calls"),
+                "rounds": extract_result.get("rounds"),
+            }
+        )
 
 
 class ExtractRequest(BaseModel):

@@ -6,8 +6,6 @@ import asyncio
 import json
 import re
 
-import httpx
-
 
 def split_into_chunks(markdown: str, max_tokens: int = 2000) -> list[dict]:
     """Split markdown into chunks by sections, falling back to line-based splitting."""
@@ -40,17 +38,21 @@ def split_into_chunks(markdown: str, max_tokens: int = 2000) -> list[dict]:
             chunk_lines.append(line)
             char_count += len(line)
             if char_count > max_tokens * 4:
-                sections.append({
-                    "title": f"Chunk {len(sections) + 1}",
-                    "content": "\n".join(chunk_lines).strip(),
-                })
+                sections.append(
+                    {
+                        "title": f"Chunk {len(sections) + 1}",
+                        "content": "\n".join(chunk_lines).strip(),
+                    }
+                )
                 chunk_lines = []
                 char_count = 0
         if chunk_lines:
-            sections.append({
-                "title": f"Chunk {len(sections) + 1}",
-                "content": "\n".join(chunk_lines).strip(),
-            })
+            sections.append(
+                {
+                    "title": f"Chunk {len(sections) + 1}",
+                    "content": "\n".join(chunk_lines).strip(),
+                }
+            )
 
     return sections
 
@@ -84,9 +86,9 @@ def build_chunk_prompt(chunk: dict, schema_def: dict) -> str:
 Fields:
 {fields_block}
 
-## Section: {chunk['title']}
+## Section: {chunk["title"]}
 
-{chunk['content']}
+{chunk["content"]}
 
 ## Instructions
 
@@ -111,7 +113,7 @@ async def extract_chunk(
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
-                match = re.search(r'\{[\s\S]*\}', raw)
+                match = re.search(r"\{[\s\S]*\}", raw)
                 if match:
                     try:
                         return json.loads(match.group())
@@ -187,7 +189,11 @@ async def parallel_extract(
     else:
         use_llm = classify_mode == "llm"
         classified = await classify_chunks(
-            all_chunks, None, model, ollama_url, use_llm=use_llm,
+            all_chunks,
+            None,
+            model,
+            ollama_url,
+            use_llm=use_llm,
         )
         chunks = filter_relevant(classified, relevant_categories)
 
@@ -199,10 +205,7 @@ async def parallel_extract(
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    tasks = [
-        extract_chunk(chunk, schema_def, provider, semaphore)
-        for chunk in chunks
-    ]
+    tasks = [extract_chunk(chunk, schema_def, provider, semaphore) for chunk in chunks]
 
     chunk_results = await asyncio.gather(*tasks)
 

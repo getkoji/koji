@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 
-from .cluster import cluster_status, load_cluster_state, load_project_config, start_cluster, stop_cluster
+from .cluster import (
+    cluster_status,
+    load_cluster_state,
+    load_project_config,
+    start_cluster,
+    stop_cluster,
+)
 from .process import process_file
 
 app = typer.Typer(
@@ -41,8 +46,8 @@ def status():
 @app.command()
 def process(
     path: str = typer.Argument(help="Path to a document or directory of documents"),
-    schema: Optional[str] = typer.Option(None, "--schema", "-s", help="Path to extraction schema YAML"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+    schema: str | None = typer.Option(None, "--schema", "-s", help="Path to extraction schema YAML"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
 ):
     """Process documents through the pipeline."""
     state = load_cluster_state()
@@ -81,9 +86,9 @@ def process(
 def extract(
     path: str = typer.Argument(help="Path to a markdown file (from a previous parse)"),
     schema: str = typer.Option(..., "--schema", "-s", help="Path to extraction schema YAML"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use (e.g., openai/gpt-4o-mini, llama3.2)"),
-    strategy: Optional[str] = typer.Option(None, "--strategy", help="Extraction strategy: parallel (default) or agent"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model to use (e.g., openai/gpt-4o-mini, llama3.2)"),
+    strategy: str | None = typer.Option(None, "--strategy", help="Extraction strategy: parallel (default) or agent"),
 ):
     """Extract structured data from an already-parsed markdown file."""
     state = load_cluster_state()
@@ -104,6 +109,7 @@ def extract(
         raise SystemExit(1)
 
     from .extract import extract_from_markdown
+
     labels = []
     if model:
         labels.append(f"model: {model}")

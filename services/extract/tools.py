@@ -21,20 +21,24 @@ class DocumentTools:
         for line in self.markdown.split("\n"):
             if line.startswith("#"):
                 if current_lines:
-                    sections.append({
-                        "title": current_title,
-                        "content": "\n".join(current_lines).strip(),
-                    })
+                    sections.append(
+                        {
+                            "title": current_title,
+                            "content": "\n".join(current_lines).strip(),
+                        }
+                    )
                 current_title = line.lstrip("#").strip()
                 current_lines = []
             else:
                 current_lines.append(line)
 
         if current_lines:
-            sections.append({
-                "title": current_title,
-                "content": "\n".join(current_lines).strip(),
-            })
+            sections.append(
+                {
+                    "title": current_title,
+                    "content": "\n".join(current_lines).strip(),
+                }
+            )
 
         return sections
 
@@ -78,7 +82,7 @@ class DocumentTools:
         # Limit results to avoid overwhelming context
         if len(results) > 10:
             results = results[:10]
-            results.append(f"... and more matches (showing first 10)")
+            results.append("... and more matches (showing first 10)")
         return "\n\n---\n\n".join(results)
 
     def read_range(self, start_line: int, end_line: int) -> str:

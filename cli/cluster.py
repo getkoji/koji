@@ -150,7 +150,11 @@ def cluster_status() -> None:
         ("Dashboard", state["ui_port"], f"http://127.0.0.1:{state['ui_port']}"),
         ("API Server", state["server_port"], f"http://127.0.0.1:{state['server_port']}"),
         ("Parse", state.get("parse_port", "?"), f"http://127.0.0.1:{state.get('parse_port', '?')}"),
-        ("Extract", state.get("extract_port", "?"), f"http://127.0.0.1:{state.get('extract_port', '?')}"),
+        (
+            "Extract",
+            state.get("extract_port", "?"),
+            f"http://127.0.0.1:{state.get('extract_port', '?')}",
+        ),
         ("Ollama", state["ollama_port"], f"http://127.0.0.1:{state['ollama_port']}"),
     ]
 

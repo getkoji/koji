@@ -46,28 +46,34 @@ async def extract(req: ExtractionRequest):
     try:
         if strategy == "intelligent":
             from .pipeline import intelligent_extract
+
             result = await intelligent_extract(req.markdown, req.schema_def, model)
         elif strategy == "agent":
-            from .tools import DocumentTools
             result = await _run_agent(req.markdown, req.schema_def, model)
         else:
             from .parallel import parallel_extract
+
             result = await parallel_extract(
-                req.markdown, req.schema_def, model, OLLAMA_URL,
+                req.markdown,
+                req.schema_def,
+                model,
+                OLLAMA_URL,
                 relevant_categories=relevant,
                 classify_mode=classify_mode,
             )
 
         elapsed_ms = int((time.time() - start) * 1000)
 
-        return JSONResponse({
-            "extracted": result["extracted"],
-            "model": model,
-            "strategy": strategy,
-            "schema": req.schema_def.get("name", "unknown"),
-            "elapsed_ms": elapsed_ms,
-            **{k: v for k, v in result.items() if k != "extracted"},
-        })
+        return JSONResponse(
+            {
+                "extracted": result["extracted"],
+                "model": model,
+                "strategy": strategy,
+                "schema": req.schema_def.get("name", "unknown"),
+                "elapsed_ms": elapsed_ms,
+                **{k: v for k, v in result.items() if k != "extracted"},
+            }
+        )
 
     except httpx.ConnectError:
         return JSONResponse(
@@ -155,7 +161,7 @@ Fields to extract:
                 try:
                     extracted = json.loads(content)
                 except json.JSONDecodeError:
-                    match = re.search(r'\{[\s\S]*\}', content)
+                    match = re.search(r"\{[\s\S]*\}", content)
                     if match:
                         try:
                             extracted = json.loads(match.group())

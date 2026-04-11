@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Chunk:
     """A classified, annotated section of the document."""
+
     index: int
     title: str
     content: str
@@ -28,7 +29,10 @@ class Chunk:
 
 CATEGORY_KEYWORDS: list[tuple[list[str], str]] = [
     (["declaration", "dec page", "named insured", "policy period"], "declarations"),
-    (["schedule of", "coverage schedule", "limits of", "schedule of coverage"], "schedule_of_coverages"),
+    (
+        ["schedule of", "coverage schedule", "limits of", "schedule of coverage"],
+        "schedule_of_coverages",
+    ),
     (["endorsement", "amendment", "rider", "this endorsement modifies"], "endorsement"),
     (["conditions", "general conditions", "policy conditions"], "conditions"),
     (["definitions", "defined terms", "as used in this"], "definitions"),
@@ -57,12 +61,12 @@ def classify_chunk(title: str, content: str) -> str:
 
 # ── Content Signal Detection ────────────────────────────────────────
 
-DOLLAR_PATTERN = re.compile(r'\$[\d,]+\.?\d*')
-DATE_PATTERN = re.compile(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}')
-KEY_VALUE_PATTERN = re.compile(r'^[\w\s]+:\s+\S+', re.MULTILINE)
-TABLE_ROW_PATTERN = re.compile(r'\|.*\|.*\|')
-POLICY_NUM_PATTERN = re.compile(r'[A-Z]{2,5}\d{5,}')
-NAME_SIGNAL_PATTERN = re.compile(r'(?:named insured|insured|policyholder|name)\s*:?\s*(.+)', re.IGNORECASE)
+DOLLAR_PATTERN = re.compile(r"\$[\d,]+\.?\d*")
+DATE_PATTERN = re.compile(r"\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}")
+KEY_VALUE_PATTERN = re.compile(r"^[\w\s]+:\s+\S+", re.MULTILINE)
+TABLE_ROW_PATTERN = re.compile(r"\|.*\|.*\|")
+POLICY_NUM_PATTERN = re.compile(r"[A-Z]{2,5}\d{5,}")
+NAME_SIGNAL_PATTERN = re.compile(r"(?:named insured|insured|policyholder|name)\s*:?\s*(.+)", re.IGNORECASE)
 
 
 def detect_signals(content: str) -> dict:
@@ -101,6 +105,7 @@ def detect_signals(content: str) -> dict:
 
 # ── Document Mapper ─────────────────────────────────────────────────
 
+
 def build_document_map(markdown: str) -> list[Chunk]:
     """Parse markdown into classified, annotated chunks."""
     chunks: list[Chunk] = []
@@ -115,13 +120,15 @@ def build_document_map(markdown: str) -> list[Chunk]:
                 if content:
                     category = classify_chunk(current_title, content)
                     signals = detect_signals(content)
-                    chunks.append(Chunk(
-                        index=index,
-                        title=current_title,
-                        content=content,
-                        category=category,
-                        signals=signals,
-                    ))
+                    chunks.append(
+                        Chunk(
+                            index=index,
+                            title=current_title,
+                            content=content,
+                            category=category,
+                            signals=signals,
+                        )
+                    )
                     index += 1
             current_title = line.lstrip("#").strip()
             current_lines = []
@@ -134,13 +141,15 @@ def build_document_map(markdown: str) -> list[Chunk]:
         if content:
             category = classify_chunk(current_title, content)
             signals = detect_signals(content)
-            chunks.append(Chunk(
-                index=index,
-                title=current_title,
-                content=content,
-                category=category,
-                signals=signals,
-            ))
+            chunks.append(
+                Chunk(
+                    index=index,
+                    title=current_title,
+                    content=content,
+                    category=category,
+                    signals=signals,
+                )
+            )
 
     return chunks
 

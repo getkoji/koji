@@ -29,7 +29,12 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                     "KOJI_CONFIG_PATH": "/etc/koji/koji.yaml",
                 },
                 "healthcheck": {
-                    "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9401/health')"],
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        "import urllib.request; urllib.request.urlopen('http://localhost:9401/health')",
+                    ],
                     "interval": "5s",
                     "timeout": "3s",
                     "retries": 3,
@@ -62,7 +67,12 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                 "container_name": f"koji-{project}-parse",
                 "ports": [f"127.0.0.1:{cluster.parse_port}:9410"],
                 "healthcheck": {
-                    "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9410/health')"],
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        "import urllib.request; urllib.request.urlopen('http://localhost:9410/health')",
+                    ],
                     "interval": "10s",
                     "timeout": "5s",
                     "retries": 3,
@@ -83,7 +93,12 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
                     "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
                 },
                 "healthcheck": {
-                    "test": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')"],
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')",
+                    ],
                     "interval": "10s",
                     "timeout": "5s",
                     "retries": 3,

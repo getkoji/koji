@@ -63,12 +63,14 @@ async def parse(file: UploadFile = File(...)):
         )
         elapsed = round(time.time() - start, 2)
 
-        return JSONResponse({
-            "filename": file.filename,
-            "markdown": result["markdown"],
-            "pages": result["pages"],
-            "elapsed_seconds": elapsed,
-        })
+        return JSONResponse(
+            {
+                "filename": file.filename,
+                "markdown": result["markdown"],
+                "pages": result["pages"],
+                "elapsed_seconds": elapsed,
+            }
+        )
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[koji-parse] Error processing {file.filename}:\n{tb}")

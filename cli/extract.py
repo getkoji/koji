@@ -69,10 +69,7 @@ def extract_from_markdown(
             details.append(f"{result['tool_calls']} tool calls")
 
         detail_str = f" ({', '.join(details)})" if details else ""
-        console.print(
-            f"  [green]✓[/green] {md_path.name} — {model}, "
-            f"{elapsed_ms}ms{detail_str} → {json_path}"
-        )
+        console.print(f"  [green]✓[/green] {md_path.name} — {model}, {elapsed_ms}ms{detail_str} → {json_path}")
         return True
 
     except httpx.ConnectError:

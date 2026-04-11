@@ -7,9 +7,9 @@ import json
 import re
 import time
 
-from .document_map import Chunk, build_document_map, summarize_map
+from .document_map import build_document_map, summarize_map
 from .providers import ModelProvider, create_provider
-from .router import FieldRoute, group_routes, route_fields, summarize_routing
+from .router import group_routes, route_fields, summarize_routing
 
 
 def build_group_prompt(group: dict, schema_name: str) -> str:
@@ -73,7 +73,7 @@ async def extract_group(
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:
-                match = re.search(r'\{[\s\S]*\}', raw)
+                match = re.search(r"\{[\s\S]*\}", raw)
                 if match:
                     try:
                         return json.loads(match.group())
@@ -100,7 +100,7 @@ def validate_field(name: str, value, spec: dict) -> tuple:
     # Type validation + normalization
     if field_type == "date" and isinstance(value, str):
         # Try to normalize common date formats to ISO 8601
-        date_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', value)
+        date_match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", value)
         if date_match:
             value = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
         else:
@@ -198,7 +198,7 @@ async def intelligent_extract(
     # Phase 2: Field routing
     routes = route_fields(schema_def, chunks)
     routing_plan = summarize_routing(routes)
-    print(f"[koji-extract] Routing plan:")
+    print("[koji-extract] Routing plan:")
     for field, info in routing_plan.items():
         print(f"  {field}: {info['source']} → {info['chunks']}")
 
@@ -207,10 +207,7 @@ async def intelligent_extract(
     print(f"[koji-extract] Grouped into {len(groups)} extraction calls")
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = [
-        extract_group(group, schema_name, provider, semaphore)
-        for group in groups
-    ]
+    tasks = [extract_group(group, schema_name, provider, semaphore) for group in groups]
     group_results = await asyncio.gather(*tasks)
 
     non_empty = [r for r in group_results if r]
@@ -221,7 +218,8 @@ async def intelligent_extract(
 
     # Check for missing required fields
     missing_required = [
-        f for f, conf in result["confidence"].items()
+        f
+        for f, conf in result["confidence"].items()
         if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
     ]
     if missing_required:

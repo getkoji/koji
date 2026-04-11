@@ -11,6 +11,7 @@ from .document_map import Chunk
 @dataclass
 class FieldRoute:
     """A field mapped to specific chunks for extraction."""
+
     field_name: str
     field_spec: dict
     chunks: list[Chunk]
@@ -109,30 +110,36 @@ def route_fields(
 
         if top_chunks:
             source = "hint" if has_hints else "signal_inferred"
-            routes.append(FieldRoute(
-                field_name=field_name,
-                field_spec=field_spec,
-                chunks=top_chunks,
-                source=source,
-            ))
+            routes.append(
+                FieldRoute(
+                    field_name=field_name,
+                    field_spec=field_spec,
+                    chunks=top_chunks,
+                    source=source,
+                )
+            )
         else:
             # Nothing matched — broaden to any chunk with generic signals
             broadened = [c for c in chunks if c.signals]
             if broadened:
-                routes.append(FieldRoute(
-                    field_name=field_name,
-                    field_spec=field_spec,
-                    chunks=broadened[:max_chunks_per_field],
-                    source="broadened",
-                ))
+                routes.append(
+                    FieldRoute(
+                        field_name=field_name,
+                        field_spec=field_spec,
+                        chunks=broadened[:max_chunks_per_field],
+                        source="broadened",
+                    )
+                )
             else:
                 # Last resort — first chunks
-                routes.append(FieldRoute(
-                    field_name=field_name,
-                    field_spec=field_spec,
-                    chunks=chunks[:max_chunks_per_field],
-                    source="fallback",
-                ))
+                routes.append(
+                    FieldRoute(
+                        field_name=field_name,
+                        field_spec=field_spec,
+                        chunks=chunks[:max_chunks_per_field],
+                        source="fallback",
+                    )
+                )
 
     return routes
 
@@ -171,11 +178,13 @@ def group_routes(routes: list[FieldRoute]) -> list[dict]:
         for name in field_names:
             used_fields.add(name)
 
-        groups.append({
-            "fields": field_names,
-            "field_specs": field_specs,
-            "chunks": list(all_chunks.values()),
-        })
+        groups.append(
+            {
+                "fields": field_names,
+                "field_specs": field_specs,
+                "chunks": list(all_chunks.values()),
+            }
+        )
 
     return groups
 
