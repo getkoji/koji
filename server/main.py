@@ -51,49 +51,53 @@ def health():
     }
 
 
+def _ping_service(name: str, url: str, path: str = "/health") -> dict:
+    """Ping a service and return status with response time."""
+    try:
+        start = time.monotonic()
+        if name == "ollama":
+            resp = httpx.get(url, timeout=3)
+        else:
+            resp = httpx.get(f"{url}{path}", timeout=3)
+        elapsed_ms = round((time.monotonic() - start) * 1000)
+        if resp.status_code == 200:
+            return {"status": "healthy", "url": url, "response_ms": elapsed_ms}
+        return {"status": "unhealthy", "url": url, "response_ms": elapsed_ms}
+    except (httpx.ConnectError, httpx.TimeoutException):
+        return {"status": "unreachable", "url": url, "response_ms": None}
+
+
 @app.get("/api/status")
 def status():
     config = get_config()
     uptime = int(time.time() - START_TIME)
 
-    services = [
-        {
-            "name": "koji-server",
-            "status": "healthy",
-            "port": config.cluster.server_port,
-            "endpoint": f"http://127.0.0.1:{config.cluster.server_port}",
-        },
-        {
-            "name": "koji-ui",
-            "status": "healthy",
-            "port": config.cluster.ui_port,
-            "endpoint": f"http://127.0.0.1:{config.cluster.ui_port}",
-        },
-        {
-            "name": "koji-parse",
-            "status": "healthy",
-            "port": config.cluster.parse_port,
-            "endpoint": f"http://127.0.0.1:{config.cluster.parse_port}",
-        },
-        {
-            "name": "koji-extract",
-            "status": "healthy",
-            "port": config.cluster.extract_port,
-            "endpoint": f"http://127.0.0.1:{config.cluster.extract_port}",
-        },
-        {
-            "name": "ollama",
-            "status": "healthy",
-            "port": config.cluster.ollama_port,
-            "endpoint": f"http://127.0.0.1:{config.cluster.ollama_port}",
-        },
+    # Server is healthy if we're responding to this request
+    server_url = f"http://127.0.0.1:{config.cluster.server_port}"
+    services = {
+        "server": {"status": "healthy", "url": server_url, "response_ms": 0},
+    }
+
+    # Ping each downstream service concurrently would be ideal,
+    # but for simplicity we do sequential pings (total < 10s worst case)
+    # Internal Docker network: services are reachable by compose service name
+    # with their internal (non-mapped) ports.
+    service_defs = [
+        ("parse", "http://koji-parse:9410"),
+        ("extract", "http://koji-extract:9420"),
+        ("ollama", "http://ollama:11434"),
     ]
 
+    for name, url in service_defs:
+        services[name] = _ping_service(name, url)
+
     return {
-        "project": config.project,
-        "cluster": config.cluster.name,
-        "uptime_seconds": uptime,
         "services": services,
+        "cluster": {
+            "project": config.project,
+            "name": config.cluster.name,
+            "uptime_seconds": uptime,
+        },
         "pipeline": [step.model_dump(exclude_none=True) for step in config.pipeline],
     }
 

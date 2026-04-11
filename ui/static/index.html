@@ -143,6 +143,24 @@
     border-color: var(--text-muted);
   }
 
+  .response-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .response-time.fast { color: #22c55e; }
+  .response-time.moderate { color: var(--yellow); }
+  .response-time.slow { color: var(--red); }
+
+  .status-dot.unreachable { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.3); }
+  .status-dot.connecting { background: #525252; animation: pulse 1.5s ease-in-out infinite; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
   .pipeline {
     display: flex;
     align-items: center;
@@ -248,7 +266,12 @@
   <div class="section">
     <div class="section-title">Services</div>
     <div class="services" id="services">
-      <div class="service-card"><span class="loading">loading...</span></div>
+      <div class="service-card">
+        <div class="service-header">
+          <span class="service-name">connecting...</span>
+          <span class="status-dot connecting"></span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -285,23 +308,54 @@
   function statusClass(status) {
     if (status === 'healthy') return 'healthy';
     if (status === 'starting') return 'starting';
+    if (status === 'unreachable') return 'unreachable';
     return 'unhealthy';
   }
 
+  function responseTimeClass(ms) {
+    if (ms === null || ms === undefined) return '';
+    if (ms < 100) return 'fast';
+    if (ms < 500) return 'moderate';
+    return 'slow';
+  }
+
+  function formatResponseTime(ms) {
+    if (ms === null || ms === undefined) return '--';
+    return ms + 'ms';
+  }
+
+  const SERVICE_LABELS = {
+    server: 'API Server',
+    parse: 'Parse',
+    extract: 'Extract',
+    ollama: 'Ollama',
+  };
+
   function renderServices(services) {
     const el = document.getElementById('services');
-    el.innerHTML = services.map(svc => `
-      <div class="service-card">
-        <div class="service-header">
-          <span class="service-name">${svc.name}</span>
-          <span class="status-dot ${statusClass(svc.status)}"></span>
+    if (!services || typeof services !== 'object') {
+      el.innerHTML = '<div class="service-card"><span class="loading">no services</span></div>';
+      return;
+    }
+    el.innerHTML = Object.entries(services).map(([key, svc]) => {
+      const label = SERVICE_LABELS[key] || key;
+      const rtClass = responseTimeClass(svc.response_ms);
+      return `
+        <div class="service-card">
+          <div class="service-header">
+            <span class="service-name">${label}</span>
+            <span class="status-dot ${statusClass(svc.status)}"></span>
+          </div>
+          <div class="service-detail">
+            <a href="${svc.url}" target="_blank">${svc.url}</a>
+          </div>
+          <div class="service-detail">
+            ${svc.status} &middot;
+            <span class="response-time ${rtClass}">${formatResponseTime(svc.response_ms)}</span>
+          </div>
         </div>
-        <div class="service-detail">
-          <a href="${svc.endpoint}" target="_blank">${svc.endpoint}</a>
-        </div>
-        <div class="service-detail">port ${svc.port} &middot; ${svc.status}</div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   }
 
   function renderPipeline(steps) {
@@ -327,12 +381,13 @@
     try {
       const resp = await fetch('/api/status');
       const data = await resp.json();
+      const cluster = data.cluster || {};
 
-      document.getElementById('cluster-name').textContent = data.cluster;
+      document.getElementById('cluster-name').textContent = cluster.name || '--';
       document.getElementById('meta').innerHTML = `
-        <span class="meta-item">project: ${data.project}</span>
-        <span class="meta-item">cluster: ${data.cluster}</span>
-        <span class="meta-item">uptime: ${formatUptime(data.uptime_seconds)}</span>
+        <span class="meta-item">project: ${cluster.project || '--'}</span>
+        <span class="meta-item">cluster: ${cluster.name || '--'}</span>
+        <span class="meta-item">uptime: ${formatUptime(cluster.uptime_seconds || 0)}</span>
       `;
 
       renderServices(data.services);

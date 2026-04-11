@@ -14,6 +14,9 @@ from .cluster import (
     start_cluster,
     stop_cluster,
 )
+from .doctor import run_all_checks
+from .init import run_init
+from .logs import tail_logs
 from .process import process_file
 
 app = typer.Typer(
@@ -22,6 +25,15 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+@app.command()
+def init(
+    project_dir: str | None = typer.Argument(None, help="Directory name to create (default: current directory)"),
+    minimal: bool = typer.Option(False, "--minimal", help="Only create koji.yaml, skip example schema"),
+):
+    """Scaffold a new Koji project."""
+    run_init(project_dir, minimal, console)
 
 
 @app.command()
@@ -118,6 +130,49 @@ def extract(
     label = f" ({', '.join(labels)})" if labels else ""
     console.print(f"\n[bold]Extracting from {md_path.name}{label}...[/bold]\n")
     extract_from_markdown(md_path, schema_path, server_url, output_dir, console, strategy, model)
+
+
+@app.command()
+def logs(
+    service: str | None = typer.Argument(None, help="Service name: server, parse, extract, ui, ollama"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+    tail: int = typer.Option(100, "--tail", "-t", help="Number of lines to show"),
+):
+    """Show logs from Koji services."""
+    state = load_cluster_state()
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        raise SystemExit(1)
+
+    tail_logs(state, service=service, follow=follow, tail=tail, console=console)
+
+
+@app.command()
+def doctor():
+    """Check environment health and report issues."""
+    console.print("\n[bold]Koji Doctor[/bold]\n")
+
+    results = run_all_checks()
+
+    status_icons = {
+        "pass": "[green]✓[/green]",
+        "warn": "[yellow]⚠[/yellow]",
+        "fail": "[red]✗[/red]",
+    }
+
+    for r in results:
+        icon = status_icons[r.status]
+        detail = f" {r.detail}" if r.detail else ""
+        console.print(f"  {icon} {r.label}{detail}")
+
+    passed = sum(1 for r in results if r.status == "pass")
+    warnings = sum(1 for r in results if r.status == "warn")
+    failures = sum(1 for r in results if r.status == "fail")
+
+    console.print(f"\n{passed} passed, {warnings} warning, {failures} failed\n")
+
+    if failures > 0:
+        raise SystemExit(1)
 
 
 @app.command()
