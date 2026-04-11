@@ -310,6 +310,104 @@
     font-style: italic;
   }
 
+  /* Log viewer */
+  .log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .log-toolbar select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .log-toolbar select:hover { border-color: #333; }
+  .log-toolbar select:focus { border-color: var(--accent-dim); }
+
+  .log-toolbar button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .log-toolbar button:hover { color: var(--text); border-color: #333; }
+  .log-toolbar button.active { color: var(--accent); border-color: var(--accent-dim); }
+
+  .log-toolbar .log-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .log-toolbar .log-status .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  .log-toolbar .log-status .dot.connected { background: #22c55e; }
+  .log-toolbar .log-status .dot.disconnected { background: var(--red); }
+
+  .log-output {
+    background: #0c0c0c;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    height: 380px;
+    overflow-y: auto;
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .log-output::-webkit-scrollbar { width: 6px; }
+  .log-output::-webkit-scrollbar-track { background: transparent; }
+  .log-output::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  .log-line { display: block; }
+
+  .log-line .log-svc {
+    display: inline-block;
+    min-width: 72px;
+    font-weight: 600;
+    margin-right: 8px;
+  }
+
+  .log-line .log-ts {
+    color: var(--text-muted);
+    margin-right: 8px;
+    font-size: 11px;
+  }
+
+  .log-line .log-msg { color: #d4d4d4; }
+
+  /* Service colors — muted tones */
+  .log-svc-server  { color: #7dd3fc; }
+  .log-svc-parse   { color: #a78bfa; }
+  .log-svc-extract { color: #6ee7b7; }
+  .log-svc-ollama  { color: #fbbf24; }
+  .log-svc-ui      { color: #f472b6; }
+  .log-svc-unknown { color: var(--text-muted); }
+
   footer {
     margin-top: 48px;
     padding-top: 24px;
@@ -319,6 +417,420 @@
     display: flex;
     justify-content: space-between;
   }
+
+  /* --- Schema Manager --- */
+
+  .schemas-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .schema-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .schema-card:hover { border-color: var(--accent-dim); }
+
+  .schema-card-name {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  .schema-card-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .schema-card-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .schema-new-card {
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    min-height: 92px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .schema-new-card:hover {
+    border-color: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .schema-editor-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .schema-editor {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 92%;
+    max-width: 720px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .schema-editor-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .schema-editor-title { font-weight: 600; font-size: 15px; }
+
+  .schema-editor-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    font-family: var(--font);
+  }
+
+  .schema-editor-close:hover { color: var(--text); }
+
+  .schema-editor-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+  }
+
+  .schema-editor-body label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  .schema-name-input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    margin-bottom: 16px;
+    outline: none;
+  }
+
+  .schema-name-input:focus { border-color: var(--accent-dim); }
+  .schema-name-input:disabled { opacity: 0.5; cursor: default; }
+
+  .schema-yaml-editor {
+    width: 100%;
+    min-height: 380px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+    tab-size: 2;
+  }
+
+  .schema-yaml-editor:focus { border-color: var(--accent-dim); }
+
+  .schema-editor-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .schema-editor-error {
+    font-size: 12px;
+    color: var(--red);
+    padding: 8px 0 0;
+    white-space: pre-wrap;
+  }
+
+  .btn {
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .btn-primary {
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+    color: #fff;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-danger {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--red);
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(239,68,68,0.1);
+    border-color: var(--red);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    color: var(--text);
+    border-color: #333;
+  }
+
+  .btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* --- Pipeline Visualizer --- */
+
+  .pv-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .pv-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pv-header-title { font-weight: 600; font-size: 14px; }
+
+  .pv-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    font-family: var(--font);
+    padding: 2px 6px;
+  }
+
+  .pv-close:hover { color: var(--text); }
+
+  .pv-body { padding: 20px; }
+
+  .pv-section {
+    margin-bottom: 24px;
+  }
+
+  .pv-section:last-child { margin-bottom: 0; }
+
+  .pv-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+
+  /* Document Map: horizontal stacked bar */
+  .pv-map-bar {
+    display: flex;
+    height: 28px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+
+  .pv-map-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    min-width: 24px;
+    transition: opacity 0.15s;
+    cursor: default;
+  }
+
+  .pv-map-segment:hover { opacity: 0.85; }
+
+  .pv-map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .pv-map-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .pv-map-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Routing Plan */
+  .pv-route-list {
+    display: grid;
+    gap: 6px;
+  }
+
+  .pv-route-row {
+    display: grid;
+    grid-template-columns: 140px 80px 1fr;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pv-route-row:last-child { border-bottom: none; }
+
+  .pv-route-field { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .pv-route-source {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .pv-route-source.hint { background: rgba(34,197,94,0.15); color: #22c55e; }
+  .pv-route-source.signal_inferred { background: rgba(96,165,250,0.15); color: #60a5fa; }
+  .pv-route-source.broadened { background: rgba(234,179,8,0.15); color: #eab308; }
+  .pv-route-source.fallback { background: rgba(239,68,68,0.15); color: #ef4444; }
+
+  .pv-route-chunks { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Extraction Groups */
+  .pv-groups-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+  }
+
+  .pv-group-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .pv-group-header {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .pv-group-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .pv-group-field {
+    font-size: 11px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 3px;
+    color: var(--text);
+  }
+
+  /* Confidence */
+  .pv-conf-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .pv-conf-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .pv-conf-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .pv-conf-dot.high { background: #22c55e; }
+  .pv-conf-dot.medium { background: #eab308; }
+  .pv-conf-dot.low { background: #f97316; }
+  .pv-conf-dot.not_found { background: #ef4444; }
+
+  .jobs-table tr.clickable { cursor: pointer; }
+  .jobs-table tr.clickable:hover td { background: var(--surface-hover); }
+  .jobs-table tr.selected td { background: rgba(196,168,130,0.08); }
 </style>
 </head>
 <body>
@@ -374,11 +886,44 @@
     </div>
   </div>
 
+  <div class="section" id="pipeline-viz-section" style="display:none;">
+    <div class="section-title">Pipeline Trace</div>
+    <div id="pipeline-viz"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Schemas</div>
+    <div class="schemas-grid" id="schemas-grid">
+      <div class="schema-card"><span class="loading">loading...</span></div>
+    </div>
+  </div>
+
+  <div id="schema-editor-root"></div>
+
   <div class="section">
     <div class="section-title">Configuration</div>
     <div class="config-block">
       <pre id="config">loading...</pre>
     </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Logs</div>
+    <div class="log-toolbar">
+      <select id="log-service-filter">
+        <option value="">All Services</option>
+        <option value="server">Server</option>
+        <option value="parse">Parse</option>
+        <option value="extract">Extract</option>
+        <option value="ollama">Ollama</option>
+      </select>
+      <button id="log-pause-btn" title="Pause auto-scroll">Pause</button>
+      <button id="log-clear-btn" title="Clear log output">Clear</button>
+      <span class="log-status" id="log-status">
+        <span class="dot disconnected"></span>disconnected
+      </span>
+    </div>
+    <div class="log-output" id="log-output"></div>
   </div>
 
   <footer>
@@ -537,7 +1082,12 @@
       const fname = job.filename || '--';
       const schema = job.schema_name || '--';
       const status = job.status || 'unknown';
-      html += `<tr>
+      const jobId = job.id || job.job_id || '';
+      const isCompleted = status === 'completed';
+      const clickable = isCompleted && jobId;
+      const clickAttr = clickable ? `onclick="showPipelineViz('${jobId}')"` : '';
+      const classes = [clickable ? 'clickable' : '', selectedJobId === jobId ? 'selected' : ''].filter(Boolean).join(' ');
+      html += `<tr class="${classes}" data-job-id="${jobId}" ${clickAttr}>
         <td>${formatTime(job.created_at)}</td>
         <td>${fname}</td>
         <td>${schema}</td>
@@ -582,13 +1132,505 @@
     fetchJobHistory();
   }
 
+  // --- Pipeline Visualizer ---
+
+  const CATEGORY_COLORS = {
+    declarations: '#3b82f6',
+    schedule_of_coverages: '#22c55e',
+    endorsement: '#a78bfa',
+    conditions: '#f59e0b',
+    definitions: '#06b6d4',
+    exclusions: '#ef4444',
+    table_of_contents: '#64748b',
+    common_policy: '#8b5cf6',
+    other: '#525252',
+  };
+
+  let selectedJobId = null;
+
+  function closePipelineViz() {
+    document.getElementById('pipeline-viz-section').style.display = 'none';
+    document.getElementById('pipeline-viz').innerHTML = '';
+    selectedJobId = null;
+    // Remove selected class from job rows
+    document.querySelectorAll('.jobs-table tr.selected').forEach(r => r.classList.remove('selected'));
+  }
+
+  async function showPipelineViz(jobId) {
+    if (selectedJobId === jobId) {
+      closePipelineViz();
+      return;
+    }
+    selectedJobId = jobId;
+
+    // Highlight selected row
+    document.querySelectorAll('.jobs-table tr.selected').forEach(r => r.classList.remove('selected'));
+    const row = document.querySelector(`[data-job-id="${jobId}"]`);
+    if (row) row.classList.add('selected');
+
+    const section = document.getElementById('pipeline-viz-section');
+    const container = document.getElementById('pipeline-viz');
+    section.style.display = '';
+    container.innerHTML = '<div class="jobs-empty">loading pipeline trace...</div>';
+
+    try {
+      const resp = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+      if (!resp.ok) throw new Error('Job not found');
+      const job = await resp.json();
+
+      // The result may be in result.result_json (SQLite) or result.result (in-memory)
+      let result = job.result || null;
+      if (typeof result === 'string') {
+        try { result = JSON.parse(result); } catch(e) { result = null; }
+      }
+      if (job.result_json && !result) {
+        try { result = JSON.parse(job.result_json); } catch(e) { result = null; }
+      }
+
+      if (!result || !result.document_map_summary) {
+        container.innerHTML = '<div class="jobs-empty">No pipeline trace available for this job (not an intelligent extraction or older format).</div>';
+        return;
+      }
+
+      renderPipelineViz(container, result);
+    } catch (e) {
+      container.innerHTML = '<div class="jobs-empty">Unable to load job details.</div>';
+    }
+  }
+
+  function renderPipelineViz(container, result) {
+    const dms = result.document_map_summary;
+    const rp = result.routing_plan || {};
+    const groups = result.groups || [];
+    const confidence = result.confidence || {};
+
+    let html = '<div class="pv-panel">';
+    html += '<div class="pv-header"><span class="pv-header-title">Pipeline Trace</span>';
+    html += '<button class="pv-close" onclick="closePipelineViz()">&#x2715;</button></div>';
+    html += '<div class="pv-body">';
+
+    // Document Map section
+    html += '<div class="pv-section">';
+    html += '<div class="pv-section-title">Document Map</div>';
+
+    const byCategory = dms.by_category || {};
+    const total = dms.total_chunks || 0;
+    const cats = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
+
+    if (total > 0 && cats.length > 0) {
+      html += '<div class="pv-map-bar">';
+      for (const [cat, count] of cats) {
+        const pct = Math.max((count / total) * 100, 5);
+        const color = CATEGORY_COLORS[cat] || CATEGORY_COLORS.other;
+        html += `<div class="pv-map-segment" style="width:${pct}%;background:${color}" title="${cat}: ${count} chunk${count !== 1 ? 's' : ''}">${count}</div>`;
+      }
+      html += '</div>';
+
+      html += '<div class="pv-map-legend">';
+      for (const [cat, count] of cats) {
+        const color = CATEGORY_COLORS[cat] || CATEGORY_COLORS.other;
+        html += `<span class="pv-map-legend-item"><span class="pv-map-legend-dot" style="background:${color}"></span>${cat} (${count})</span>`;
+      }
+      html += `<span class="pv-map-legend-item" style="margin-left:auto;color:var(--text)">${total} total chunks</span>`;
+      html += '</div>';
+    } else {
+      html += '<div style="color:var(--text-muted);font-size:12px">No document map data.</div>';
+    }
+    html += '</div>';
+
+    // Routing Plan section
+    const routeEntries = Object.entries(rp);
+    if (routeEntries.length > 0) {
+      html += '<div class="pv-section">';
+      html += '<div class="pv-section-title">Routing Plan</div>';
+      html += '<div class="pv-route-list">';
+      for (const [field, info] of routeEntries) {
+        const source = info.source || 'unknown';
+        const chunks = (info.chunks || []).join(', ');
+        html += `<div class="pv-route-row">`;
+        html += `<span class="pv-route-field" title="${field}">${field}</span>`;
+        html += `<span class="pv-route-source ${source}">${source}</span>`;
+        html += `<span class="pv-route-chunks" title="${chunks}">${chunks || '--'}</span>`;
+        html += `</div>`;
+      }
+      html += '</div></div>';
+    }
+
+    // Extraction Groups section
+    if (groups.length > 0) {
+      html += '<div class="pv-section">';
+      html += `<div class="pv-section-title">Extraction Groups (${groups.length} LLM call${groups.length !== 1 ? 's' : ''})</div>`;
+      html += '<div class="pv-groups-grid">';
+      groups.forEach((g, i) => {
+        html += '<div class="pv-group-card">';
+        html += `<div class="pv-group-header"><span>Group ${i + 1}</span><span>${g.chunk_count} chunk${g.chunk_count !== 1 ? 's' : ''}</span></div>`;
+        html += '<div class="pv-group-fields">';
+        for (const f of (g.fields || [])) {
+          html += `<span class="pv-group-field">${f}</span>`;
+        }
+        html += '</div></div>';
+      });
+      html += '</div></div>';
+    }
+
+    // Confidence section
+    const confEntries = Object.entries(confidence);
+    if (confEntries.length > 0) {
+      html += '<div class="pv-section">';
+      html += '<div class="pv-section-title">Field Confidence</div>';
+      html += '<div class="pv-conf-grid">';
+      for (const [field, level] of confEntries) {
+        html += `<span class="pv-conf-chip"><span class="pv-conf-dot ${level}"></span>${field}: ${level}</span>`;
+      }
+      html += '</div></div>';
+    }
+
+    html += '</div></div>';
+    container.innerHTML = html;
+  }
+
+  // --- Schema Manager ---
+
+  const SCHEMA_TEMPLATE = `name: my_schema
+description: Describe what this schema extracts
+
+fields:
+  example_field:
+    type: string
+    required: true
+    description: An example field
+    hints:
+      patterns: ["example"]
+`;
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function fetchSchemas() {
+    const el = document.getElementById('schemas-grid');
+    try {
+      const resp = await fetch('/api/schemas');
+      const schemas = await resp.json();
+      let html = schemas.map(s => `
+        <div class="schema-card" onclick="openSchemaEditor('${escapeHtml(s.name)}')">
+          <div class="schema-card-name">${escapeHtml(s.name)}</div>
+          <div class="schema-card-desc">${s.description ? escapeHtml(s.description) : 'No description'}</div>
+          <div class="schema-card-meta">${s.field_count} field${s.field_count !== 1 ? 's' : ''}</div>
+        </div>
+      `).join('');
+      html += `<div class="schema-new-card" onclick="openNewSchemaEditor()">+ New Schema</div>`;
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = '<div class="schema-card"><span class="loading">unable to load schemas</span></div>';
+    }
+  }
+
+  function closeSchemaEditor() {
+    document.getElementById('schema-editor-root').innerHTML = '';
+  }
+
+  function renderSchemaEditorModal(opts) {
+    // opts: { title, name, nameDisabled, yaml, showDelete, isNew }
+    const root = document.getElementById('schema-editor-root');
+    root.innerHTML = `
+      <div class="schema-editor-overlay" onclick="if(event.target===this)closeSchemaEditor()">
+        <div class="schema-editor">
+          <div class="schema-editor-header">
+            <span class="schema-editor-title">${escapeHtml(opts.title)}</span>
+            <button class="schema-editor-close" onclick="closeSchemaEditor()">&#x2715;</button>
+          </div>
+          <div class="schema-editor-body">
+            <label for="schema-name-field">Name</label>
+            <input class="schema-name-input" type="text" id="schema-name-field"
+              value="${escapeHtml(opts.name)}" ${opts.nameDisabled ? 'disabled' : ''}
+              placeholder="my_schema" spellcheck="false" autocomplete="off">
+            <label for="schema-yaml-field">YAML</label>
+            <textarea class="schema-yaml-editor" id="schema-yaml-field" spellcheck="false">${escapeHtml(opts.yaml)}</textarea>
+            <div class="schema-editor-error" id="schema-editor-error"></div>
+          </div>
+          <div class="schema-editor-footer">
+            <div>
+              ${opts.showDelete ? '<button class="btn btn-danger" id="schema-delete-btn" onclick="deleteCurrentSchema()">Delete</button>' : '<span></span>'}
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-ghost" onclick="closeSchemaEditor()">Cancel</button>
+              <button class="btn btn-primary" id="schema-save-btn" onclick="${opts.isNew ? 'createNewSchema()' : 'saveCurrentSchema()'}">${opts.isNew ? 'Create' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    // Allow tab key in textarea
+    const ta = document.getElementById('schema-yaml-field');
+    ta.addEventListener('keydown', function(e) {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = this.selectionStart;
+        const end = this.selectionEnd;
+        this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
+        this.selectionStart = this.selectionEnd = start + 2;
+      }
+    });
+  }
+
+  let currentSchemaName = null;
+
+  async function openSchemaEditor(name) {
+    currentSchemaName = name;
+    renderSchemaEditorModal({
+      title: name,
+      name: name,
+      nameDisabled: true,
+      yaml: 'loading...',
+      showDelete: true,
+      isNew: false,
+    });
+    try {
+      const resp = await fetch('/api/schemas/' + encodeURIComponent(name) + '/raw');
+      if (!resp.ok) throw new Error(await resp.text());
+      const yaml = await resp.text();
+      document.getElementById('schema-yaml-field').value = yaml;
+    } catch (e) {
+      document.getElementById('schema-editor-error').textContent = 'Failed to load schema: ' + e.message;
+    }
+  }
+
+  function openNewSchemaEditor() {
+    currentSchemaName = null;
+    renderSchemaEditorModal({
+      title: 'New Schema',
+      name: '',
+      nameDisabled: false,
+      yaml: SCHEMA_TEMPLATE,
+      showDelete: false,
+      isNew: true,
+    });
+  }
+
+  function setEditorError(msg) {
+    document.getElementById('schema-editor-error').textContent = msg;
+  }
+
+  function setEditorBusy(busy) {
+    const saveBtn = document.getElementById('schema-save-btn');
+    const delBtn = document.getElementById('schema-delete-btn');
+    if (saveBtn) saveBtn.disabled = busy;
+    if (delBtn) delBtn.disabled = busy;
+  }
+
+  async function saveCurrentSchema() {
+    setEditorError('');
+    setEditorBusy(true);
+    const yaml = document.getElementById('schema-yaml-field').value;
+    try {
+      const resp = await fetch('/api/schemas/' + encodeURIComponent(currentSchemaName) + '/raw', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: yaml }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || JSON.stringify(err));
+      }
+      const updated = await resp.text();
+      document.getElementById('schema-yaml-field').value = updated;
+      closeSchemaEditor();
+      fetchSchemas();
+    } catch (e) {
+      setEditorError(e.message);
+    } finally {
+      setEditorBusy(false);
+    }
+  }
+
+  async function createNewSchema() {
+    setEditorError('');
+    const nameField = document.getElementById('schema-name-field');
+    const name = nameField.value.trim();
+    if (!name) {
+      setEditorError('Name is required');
+      return;
+    }
+    setEditorBusy(true);
+    let yaml = document.getElementById('schema-yaml-field').value;
+    // Ensure the YAML content has the correct name
+    yaml = yaml.replace(/^name:\s*.*/m, 'name: ' + name);
+    try {
+      const resp = await fetch('/api/schemas/raw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: yaml }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || JSON.stringify(err));
+      }
+      closeSchemaEditor();
+      fetchSchemas();
+    } catch (e) {
+      setEditorError(e.message);
+    } finally {
+      setEditorBusy(false);
+    }
+  }
+
+  async function deleteCurrentSchema() {
+    if (!currentSchemaName) return;
+    if (!confirm('Delete schema "' + currentSchemaName + '"? This cannot be undone.')) return;
+    setEditorError('');
+    setEditorBusy(true);
+    try {
+      const resp = await fetch('/api/schemas/' + encodeURIComponent(currentSchemaName), {
+        method: 'DELETE',
+      });
+      if (!resp.ok && resp.status !== 204) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || JSON.stringify(err));
+      }
+      closeSchemaEditor();
+      fetchSchemas();
+    } catch (e) {
+      setEditorError(e.message);
+    } finally {
+      setEditorBusy(false);
+    }
+  }
+
+  // --- Init ---
+
   fetchStatus();
   fetchConfig();
   fetchJobHistory();
+  fetchSchemas();
 
   setInterval(fetchStatus, 5000);
   setInterval(fetchConfig, 30000);
   setInterval(fetchJobHistory, 10000);
+  setInterval(fetchSchemas, 15000);
+
+  // ---- Log Viewer ----
+
+  const LOG_MAX_LINES = 500;
+  let logPaused = false;
+  let logEventSource = null;
+  const logOutput = document.getElementById('log-output');
+  const logServiceFilter = document.getElementById('log-service-filter');
+  const logPauseBtn = document.getElementById('log-pause-btn');
+  const logClearBtn = document.getElementById('log-clear-btn');
+  const logStatusEl = document.getElementById('log-status');
+
+  function svcColorClass(service) {
+    const map = { server: 'log-svc-server', parse: 'log-svc-parse', extract: 'log-svc-extract', ollama: 'log-svc-ollama', ui: 'log-svc-ui' };
+    return map[service] || 'log-svc-unknown';
+  }
+
+  function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function appendLogLine(entry) {
+    const span = document.createElement('span');
+    span.className = 'log-line';
+
+    const svc = entry.service || 'unknown';
+    const ts = entry.timestamp || '';
+    const msg = entry.line || '';
+
+    let tsHtml = '';
+    if (ts) {
+      // Show only HH:MM:SS from ISO timestamp
+      const short = ts.length > 19 ? ts.substring(11, 19) : ts;
+      tsHtml = `<span class="log-ts">${escapeHtml(short)}</span>`;
+    }
+
+    span.innerHTML = `<span class="log-svc ${svcColorClass(svc)}">${escapeHtml(svc.padEnd(8))}</span>${tsHtml}<span class="log-msg">${escapeHtml(msg)}</span>\n`;
+    logOutput.appendChild(span);
+
+    // Cap lines
+    while (logOutput.childElementCount > LOG_MAX_LINES) {
+      logOutput.removeChild(logOutput.firstElementChild);
+    }
+
+    if (!logPaused) {
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+  }
+
+  function setLogStatus(connected) {
+    if (connected) {
+      logStatusEl.innerHTML = '<span class="dot connected"></span>streaming';
+    } else {
+      logStatusEl.innerHTML = '<span class="dot disconnected"></span>disconnected';
+    }
+  }
+
+  function connectLogStream() {
+    if (logEventSource) {
+      logEventSource.close();
+      logEventSource = null;
+    }
+
+    const service = logServiceFilter.value;
+    const params = service ? `?service=${service}` : '';
+
+    // First fetch recent lines for initial load
+    fetch(`/api/logs/recent${params}`)
+      .then(r => r.json())
+      .then(data => {
+        logOutput.innerHTML = '';
+        const lines = data.lines || [];
+        for (const entry of lines) {
+          appendLogLine(entry);
+        }
+      })
+      .catch(() => {});
+
+    // Then connect SSE stream
+    const es = new EventSource(`/api/logs/stream${params}`);
+    logEventSource = es;
+
+    es.onopen = () => setLogStatus(true);
+
+    es.onmessage = (evt) => {
+      try {
+        const entry = JSON.parse(evt.data);
+        if (entry.error) {
+          setLogStatus(false);
+          return;
+        }
+        appendLogLine(entry);
+      } catch (e) {}
+    };
+
+    es.onerror = () => {
+      setLogStatus(false);
+      es.close();
+      // Reconnect after 3 seconds
+      setTimeout(connectLogStream, 3000);
+    };
+  }
+
+  logServiceFilter.addEventListener('change', () => {
+    connectLogStream();
+  });
+
+  logPauseBtn.addEventListener('click', () => {
+    logPaused = !logPaused;
+    logPauseBtn.textContent = logPaused ? 'Resume' : 'Pause';
+    logPauseBtn.classList.toggle('active', logPaused);
+    if (!logPaused) {
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+  });
+
+  logClearBtn.addEventListener('click', () => {
+    logOutput.innerHTML = '';
+  });
+
+  connectLogStream();
 </script>
 </body>
 </html>

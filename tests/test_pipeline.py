@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from services.extract.pipeline import (
+    _score_label,
     build_group_prompt,
+    compute_confidence_score,
     intelligent_extract,
     reconcile,
     validate_field,
@@ -16,6 +20,7 @@ from tests.conftest import (
     SAMPLE_SCHEMA,
     MockProvider,
     make_chunk,
+    make_field_route,
 )
 
 # ── build_group_prompt ────────────────────────────────────────────────
@@ -218,7 +223,8 @@ class TestReconcile:
             {"policy_number": "BOP123"},
         ]
         schema = {"fields": {"policy_number": {"type": "string"}}}
-        out = reconcile(results, schema)
+        routes = [make_field_route(field_name="policy_number", source="hint")]
+        out = reconcile(results, schema, routes=routes)
         assert out["extracted"]["policy_number"] == "BOP123"
         assert out["confidence"]["policy_number"] == "high"
 
@@ -239,14 +245,17 @@ class TestReconcile:
             {"items": [3]},
         ]
         schema = {"fields": {"items": {"type": "array"}}}
-        out = reconcile(results, schema)
+        routes = [make_field_route(field_name="items", source="hint")]
+        out = reconcile(results, schema, routes=routes)
         assert out["confidence"]["items"] == "high"
 
-    def test_single_array_source_medium_confidence(self):
+    def test_single_array_source_high_confidence_with_hint(self):
         results = [{"items": [1, 2]}]
         schema = {"fields": {"items": {"type": "array"}}}
-        out = reconcile(results, schema)
-        assert out["confidence"]["items"] == "medium"
+        routes = [make_field_route(field_name="items", source="hint")]
+        out = reconcile(results, schema, routes=routes)
+        # hint(0.4) + single(0.15) + validation(0.2) = 0.75 => high
+        assert out["confidence"]["items"] == "high"
 
     def test_validation_applied_during_reconcile(self):
         results = [{"premium": "$4,250.00"}]
@@ -288,6 +297,9 @@ class TestIntelligentExtract:
         assert "chunks_total" in result
         assert "extraction_groups" in result
         assert "elapsed_ms" in result
+        assert "document_map_summary" in result
+        assert "routing_plan" in result
+        assert "groups" in result
         assert result["extracted"]["title"] == "Test Doc"
         assert result["extracted"]["amount"] == 42
 
@@ -647,3 +659,430 @@ class TestGapFilling:
         assert result["gap_filled"] == []
         # Exactly 2 calls: initial + one gap fill attempt
         assert len(provider.calls) == 2
+
+
+# ── Pipeline metadata (document_map_summary, routing_plan, groups) ────
+
+
+class TestPipelineMetadata:
+    async def test_document_map_summary_structure(self, monkeypatch):
+        """document_map_summary contains total_chunks, by_category, signal_counts."""
+        provider = MockProvider(responses=[json.dumps({"title": "X", "amount": 1})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: X\nAmount: $1",
+            schema_def=MINIMAL_SCHEMA,
+            model="mock/test",
+        )
+
+        dms = result["document_map_summary"]
+        assert "total_chunks" in dms
+        assert "by_category" in dms
+        assert "signal_counts" in dms
+        assert isinstance(dms["total_chunks"], int)
+        assert isinstance(dms["by_category"], dict)
+
+    async def test_routing_plan_has_all_fields(self, monkeypatch):
+        """routing_plan has an entry for every schema field."""
+        provider = MockProvider(responses=[json.dumps({"title": "X", "amount": 1})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: X\nAmount: $1",
+            schema_def=MINIMAL_SCHEMA,
+            model="mock/test",
+        )
+
+        rp = result["routing_plan"]
+        for field_name in MINIMAL_SCHEMA["fields"]:
+            assert field_name in rp
+            assert "source" in rp[field_name]
+            assert "chunks" in rp[field_name]
+
+    async def test_groups_structure(self, monkeypatch):
+        """groups is a list of dicts with fields and chunk_count."""
+        provider = MockProvider(responses=[json.dumps({"title": "X", "amount": 1})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: X\nAmount: $1",
+            schema_def=MINIMAL_SCHEMA,
+            model="mock/test",
+        )
+
+        groups = result["groups"]
+        assert isinstance(groups, list)
+        assert len(groups) >= 1
+        for group in groups:
+            assert "fields" in group
+            assert "chunk_count" in group
+            assert isinstance(group["fields"], list)
+            assert isinstance(group["chunk_count"], int)
+            assert group["chunk_count"] >= 1
+
+    async def test_groups_cover_all_fields(self, monkeypatch):
+        """All schema fields appear across the groups."""
+        provider = MockProvider(responses=[json.dumps({"title": "X", "amount": 1})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: X\nAmount: $1",
+            schema_def=MINIMAL_SCHEMA,
+            model="mock/test",
+        )
+
+        all_fields = set()
+        for group in result["groups"]:
+            all_fields.update(group["fields"])
+        for field_name in MINIMAL_SCHEMA["fields"]:
+            assert field_name in all_fields
+
+    async def test_insurance_metadata_rich(self, monkeypatch):
+        """Insurance doc produces multiple categories and routing sources."""
+        canned_dec = json.dumps(
+            {
+                "policy_number": "BOP7284930",
+                "insured_name": "Acme Widget Corporation",
+                "effective_date": "2025-01-15",
+                "expiration_date": "2026-01-15",
+                "premium": 4250.00,
+                "policy_type": "BOP",
+            }
+        )
+        canned_cov = json.dumps(
+            {
+                "coverages": [
+                    {"coverage_name": "Building", "limit": "$500,000", "deductible": "$1,000"},
+                ]
+            }
+        )
+        provider = MockProvider(responses=[canned_dec, canned_cov, canned_dec, canned_cov])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown=SAMPLE_INSURANCE_MARKDOWN,
+            schema_def=SAMPLE_SCHEMA,
+            model="mock/test",
+        )
+
+        dms = result["document_map_summary"]
+        assert dms["total_chunks"] == 6
+        assert "declarations" in dms["by_category"]
+
+        rp = result["routing_plan"]
+        assert rp["policy_number"]["source"] == "hint"
+
+        assert len(result["groups"]) >= 1
+
+
+# ── Confidence scoring ─────────────────────────────────────────────────
+
+
+class TestComputeConfidenceScore:
+    """Unit tests for the compute_confidence_score function."""
+
+    def test_route_source_hint_contributes_0_4(self):
+        score = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.4
+
+    def test_route_source_signal_inferred_contributes_0_25(self):
+        score = compute_confidence_score(
+            route_source="signal_inferred",
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.25
+
+    def test_route_source_broadened_contributes_0_1(self):
+        score = compute_confidence_score(
+            route_source="broadened",
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.1
+
+    def test_route_source_fallback_contributes_0_05(self):
+        score = compute_confidence_score(
+            route_source="fallback",
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.05
+
+    def test_multi_source_agree_contributes_0_3(self):
+        score = compute_confidence_score(
+            route_source=None,
+            multi_source_agree=True,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.3
+
+    def test_single_source_contributes_0_15(self):
+        score = compute_confidence_score(
+            route_source=None,
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.15
+
+    def test_validation_passed_contributes_0_2(self):
+        score = compute_confidence_score(
+            route_source=None,
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=True,
+            has_relevant_signals=False,
+        )
+        assert score == 0.2
+
+    def test_signal_density_contributes_0_1(self):
+        score = compute_confidence_score(
+            route_source=None,
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=True,
+        )
+        assert score == 0.1
+
+    def test_all_factors_max_score_is_1_0(self):
+        score = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=True,
+            single_source=False,
+            validation_passed=True,
+            has_relevant_signals=True,
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_no_factors_score_is_0(self):
+        score = compute_confidence_score(
+            route_source=None,
+            multi_source_agree=False,
+            single_source=False,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert score == 0.0
+
+    def test_hint_routed_scores_higher_than_fallback(self):
+        hint_score = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=True,
+            has_relevant_signals=True,
+        )
+        fallback_score = compute_confidence_score(
+            route_source="fallback",
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=True,
+            has_relevant_signals=True,
+        )
+        assert hint_score > fallback_score
+
+    def test_multi_source_agreement_boosts_score(self):
+        with_agreement = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=True,
+            single_source=False,
+            validation_passed=True,
+            has_relevant_signals=False,
+        )
+        without_agreement = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=True,
+            has_relevant_signals=False,
+        )
+        assert with_agreement > without_agreement
+        assert with_agreement - without_agreement == pytest.approx(0.15)  # 0.3 - 0.15
+
+    def test_validation_failure_reduces_score(self):
+        valid = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=True,
+            has_relevant_signals=False,
+        )
+        invalid = compute_confidence_score(
+            route_source="hint",
+            multi_source_agree=False,
+            single_source=True,
+            validation_passed=False,
+            has_relevant_signals=False,
+        )
+        assert valid > invalid
+        assert valid - invalid == pytest.approx(0.2)
+
+
+class TestScoreLabel:
+    """Test the threshold-to-label mapping."""
+
+    def test_high_threshold(self):
+        assert _score_label(0.7) == "high"
+        assert _score_label(0.85) == "high"
+        assert _score_label(1.0) == "high"
+
+    def test_medium_threshold(self):
+        assert _score_label(0.4) == "medium"
+        assert _score_label(0.5) == "medium"
+        assert _score_label(0.69) == "medium"
+
+    def test_low_threshold(self):
+        assert _score_label(0.01) == "low"
+        assert _score_label(0.1) == "low"
+        assert _score_label(0.39) == "low"
+
+    def test_not_found_threshold(self):
+        assert _score_label(0.0) == "not_found"
+
+
+class TestReconcileConfidenceScores:
+    """Test that reconcile produces both string labels and numeric scores."""
+
+    def test_confidence_scores_key_present(self):
+        results = [{"f": "val"}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        out = reconcile(results, schema)
+        assert "confidence_scores" in out
+        assert isinstance(out["confidence_scores"]["f"], float)
+
+    def test_backwards_compatible_string_labels(self):
+        results = [{"f": "val"}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        out = reconcile(results, schema)
+        assert out["confidence"]["f"] in ("high", "medium", "low", "not_found")
+
+    def test_not_found_score_is_zero(self):
+        results = [{}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        out = reconcile(results, schema)
+        assert out["confidence_scores"]["f"] == 0.0
+        assert out["confidence"]["f"] == "not_found"
+
+    def test_hint_route_with_agreement_scores_high(self):
+        results = [{"f": "val"}, {"f": "val"}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        routes = [
+            make_field_route(
+                field_name="f",
+                source="hint",
+                chunks=[make_chunk(signals={"has_key_value_pairs": True})],
+            )
+        ]
+        out = reconcile(results, schema, routes=routes)
+        # hint(0.4) + multi(0.3) + valid(0.2) + signals(0.1) = 1.0
+        assert out["confidence_scores"]["f"] == pytest.approx(1.0)
+        assert out["confidence"]["f"] == "high"
+
+    def test_fallback_route_single_source_low(self):
+        results = [{"f": "val"}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        routes = [make_field_route(field_name="f", source="fallback")]
+        out = reconcile(results, schema, routes=routes)
+        # fallback(0.05) + single(0.15) + valid(0.2) + no_signals(0.0) = 0.4
+        assert out["confidence_scores"]["f"] == 0.4
+        assert out["confidence"]["f"] == "medium"
+
+    def test_validation_failure_lowers_score(self):
+        results = [{"f": "not-a-date"}]
+        schema = {"fields": {"f": {"type": "date"}}}
+        routes = [
+            make_field_route(
+                field_name="f",
+                source="hint",
+                chunks=[make_chunk(signals={"has_dates": True})],
+            )
+        ]
+        out = reconcile(results, schema, routes=routes)
+        # hint(0.4) + single(0.15) + failed_validation(0.0) + signals(0.1) = 0.65
+        assert out["confidence_scores"]["f"] == 0.65
+        assert out["confidence"]["f"] == "medium"
+
+    def test_no_routes_still_works(self):
+        """reconcile works without routes (backwards compatible signature)."""
+        results = [{"f": "val"}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        out = reconcile(results, schema)
+        # No route: source=None(0.0) + single(0.15) + valid(0.2) = 0.35
+        assert out["confidence_scores"]["f"] == 0.35
+        assert out["confidence"]["f"] == "low"
+
+    def test_signal_density_boost(self):
+        """Chunk with relevant signals for the field type adds 0.1."""
+        results = [{"amt": 100}]
+        schema = {"fields": {"amt": {"type": "number"}}}
+        chunk_with = make_chunk(signals={"has_dollar_amounts": True})
+        chunk_without = make_chunk(signals={})
+
+        routes_with = [make_field_route(field_name="amt", source="hint", chunks=[chunk_with])]
+        routes_without = [make_field_route(field_name="amt", source="hint", chunks=[chunk_without])]
+
+        out_with = reconcile(results, schema, routes=routes_with)
+        out_without = reconcile(results, schema, routes=routes_without)
+
+        assert out_with["confidence_scores"]["amt"] > out_without["confidence_scores"]["amt"]
+        assert out_with["confidence_scores"]["amt"] - out_without["confidence_scores"]["amt"] == pytest.approx(0.1)
+
+
+class TestIntelligentExtractConfidenceScores:
+    """End-to-end tests verifying confidence_scores in pipeline output."""
+
+    async def test_confidence_scores_in_output(self, monkeypatch):
+        canned = json.dumps({"title": "Test", "amount": 42})
+        provider = MockProvider(responses=[canned])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: Test\nAmount: $42",
+            schema_def=MINIMAL_SCHEMA,
+            model="mock/test",
+        )
+
+        assert "confidence_scores" in result
+        assert isinstance(result["confidence_scores"]["title"], float)
+        assert isinstance(result["confidence_scores"]["amount"], float)
+        # Both string labels and numeric scores present
+        assert "confidence" in result
+        for field in MINIMAL_SCHEMA["fields"]:
+            assert field in result["confidence"]
+            assert field in result["confidence_scores"]

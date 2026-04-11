@@ -259,11 +259,103 @@ def validate_field(name: str, value, spec: dict) -> tuple:
     return value, issues is None, issues
 
 
-def reconcile(group_results: list[dict], schema_def: dict) -> dict:
-    """Merge and reconcile results from multiple extraction groups."""
+def _score_label(score: float) -> str:
+    """Convert a numeric confidence score to a string label."""
+    if score >= 0.7:
+        return "high"
+    if score >= 0.4:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "not_found"
+
+
+# Weights for route source quality factor (0.0–0.4)
+ROUTE_SOURCE_WEIGHTS: dict[str, float] = {
+    "hint": 0.4,
+    "signal_inferred": 0.25,
+    "broadened": 0.1,
+    "fallback": 0.05,
+}
+
+
+def compute_confidence_score(
+    *,
+    route_source: str | None,
+    multi_source_agree: bool,
+    single_source: bool,
+    validation_passed: bool,
+    has_relevant_signals: bool,
+) -> float:
+    """Compute a numeric confidence score (0.0-1.0) from individual factors.
+
+    Factors:
+      - Route source quality (0.0-0.4): hint=0.4, signal_inferred=0.25,
+        broadened=0.1, fallback=0.05
+      - Source agreement  (0.0-0.3): multi-source agree=0.3, single=0.15
+      - Validation pass   (0.0-0.2): passed=0.2, failed=0.0
+      - Signal density    (0.0-0.1): relevant signals present=0.1
+    """
+    score = 0.0
+
+    # Route source quality (0.0-0.4)
+    if route_source is not None:
+        score += ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0)
+
+    # Source agreement (0.0-0.3)
+    if multi_source_agree:
+        score += 0.3
+    elif single_source:
+        score += 0.15
+
+    # Validation pass (0.0-0.2)
+    if validation_passed:
+        score += 0.2
+
+    # Signal density (0.0-0.1)
+    if has_relevant_signals:
+        score += 0.1
+
+    return min(score, 1.0)
+
+
+def _field_has_relevant_signals(field_spec: dict, chunks: list) -> bool:
+    """Check whether any routed chunks have signals relevant to the field type."""
+    field_type = field_spec.get("type", "string")
+    from .router import TYPE_SIGNAL_MAP
+
+    relevant = TYPE_SIGNAL_MAP.get(field_type, [])
+    if not relevant:
+        return False
+    for chunk in chunks:
+        for signal in relevant:
+            if signal in chunk.signals:
+                return True
+    return False
+
+
+def reconcile(
+    group_results: list[dict],
+    schema_def: dict,
+    routes: list | None = None,
+) -> dict:
+    """Merge and reconcile results from multiple extraction groups.
+
+    Args:
+        group_results: Raw extraction dicts from each LLM call.
+        schema_def: The schema definition with field specs.
+        routes: Optional list of FieldRoute objects for per-field scoring.
+    """
     fields = schema_def.get("fields", {})
     merged: dict = {}
     confidence: dict = {}
+    confidence_scores: dict = {}
+
+    # Build a lookup from field name to route metadata
+    route_map: dict = {}
+    if routes:
+        for route in routes:
+            route_map[route.field_name] = route
 
     for field_name, field_spec in fields.items():
         field_type = field_spec.get("type", "string")
@@ -276,7 +368,12 @@ def reconcile(group_results: list[dict], schema_def: dict) -> dict:
         if not candidates:
             merged[field_name] = None
             confidence[field_name] = "not_found"
+            confidence_scores[field_name] = 0.0
             continue
+
+        route = route_map.get(field_name)
+        route_source = route.source if route else None
+        has_signals = _field_has_relevant_signals(field_spec, route.chunks if route else [])
 
         if field_type == "array":
             # Concatenate and deduplicate arrays
@@ -290,21 +387,40 @@ def reconcile(group_results: list[dict], schema_def: dict) -> dict:
                             seen.add(item_key)
                             all_items.append(item)
             merged[field_name] = all_items
-            confidence[field_name] = "high" if len(candidates) > 1 else "medium"
+
+            multi = len(candidates) > 1
+            score = compute_confidence_score(
+                route_source=route_source,
+                multi_source_agree=multi,
+                single_source=not multi,
+                validation_passed=True,  # arrays skip type validation
+                has_relevant_signals=has_signals,
+            )
+            confidence_scores[field_name] = score
+            confidence[field_name] = _score_label(score)
         else:
             # For scalars, use the first value but note agreement
             value = candidates[0]
             value, is_valid, issue = validate_field(field_name, value, field_spec)
             merged[field_name] = value
 
-            if len(candidates) > 1 and all(str(c) == str(candidates[0]) for c in candidates):
-                confidence[field_name] = "high"  # Multiple sources agree
-            elif is_valid:
-                confidence[field_name] = "medium"
-            else:
-                confidence[field_name] = "low"
+            multi = len(candidates) > 1 and all(str(c) == str(candidates[0]) for c in candidates)
+            single = not multi
+            score = compute_confidence_score(
+                route_source=route_source,
+                multi_source_agree=multi,
+                single_source=single,
+                validation_passed=is_valid,
+                has_relevant_signals=has_signals,
+            )
+            confidence_scores[field_name] = score
+            confidence[field_name] = _score_label(score)
 
-    return {"extracted": merged, "confidence": confidence}
+    return {
+        "extracted": merged,
+        "confidence": confidence,
+        "confidence_scores": confidence_scores,
+    }
 
 
 async def intelligent_extract(
@@ -342,7 +458,7 @@ async def intelligent_extract(
     print(f"[koji-extract] {len(non_empty)}/{len(groups)} groups returned results")
 
     # Phase 4 + 5: Validate and reconcile
-    result = reconcile(list(group_results), schema_def)
+    result = reconcile(list(group_results), schema_def, routes=routes)
 
     # Check for missing required fields
     missing_required = [
@@ -380,7 +496,16 @@ async def intelligent_extract(
                 field_spec = schema_def["fields"][field_name]
                 value, is_valid, issue = validate_field(field_name, value, field_spec)
                 result["extracted"][field_name] = value
-                result["confidence"][field_name] = "low" if not is_valid else "medium"
+                # Gap-filled fields use broadened source, single source
+                gap_score = compute_confidence_score(
+                    route_source="broadened",
+                    multi_source_agree=False,
+                    single_source=True,
+                    validation_passed=is_valid,
+                    has_relevant_signals=False,
+                )
+                result["confidence_scores"][field_name] = gap_score
+                result["confidence"][field_name] = _score_label(gap_score)
                 gap_filled.append(field_name)
                 print(f"[koji-extract] Gap filled: {field_name} = {value}")
             else:
@@ -391,8 +516,18 @@ async def intelligent_extract(
     return {
         "extracted": result["extracted"],
         "confidence": result["confidence"],
+        "confidence_scores": result["confidence_scores"],
         "chunks_total": doc_summary["total_chunks"],
         "extraction_groups": len(groups),
         "elapsed_ms": elapsed_ms,
         "gap_filled": gap_filled,
+        "document_map_summary": doc_summary,
+        "routing_plan": routing_plan,
+        "groups": [
+            {
+                "fields": group["fields"],
+                "chunk_count": len(group["chunks"]),
+            }
+            for group in groups
+        ],
     }

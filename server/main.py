@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import yaml
 from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from server.config import KojiConfig, load_config
@@ -54,6 +56,143 @@ def get_config() -> KojiConfig:
         config_path = os.environ.get("KOJI_CONFIG_PATH", "/etc/koji/koji.yaml")
         _config = load_config(config_path)
     return _config
+
+
+# ---------------------------------------------------------------------------
+# Log streaming helpers
+# ---------------------------------------------------------------------------
+
+VALID_LOG_SERVICES = {"server", "parse", "extract", "ui", "ollama"}
+
+SERVICE_TO_COMPOSE = {
+    "server": "koji-server",
+    "parse": "koji-parse",
+    "extract": "koji-extract",
+    "ui": "koji-ui",
+    "ollama": "ollama",
+}
+
+# Regex to parse docker compose log lines.
+# Format: "service-name  | 2024-01-01T00:00:00.000Z  some message"
+_LOG_LINE_RE = re.compile(r"^(?P<compose_svc>\S+)\s+\|\s+(?P<ts>\S+)\s+(?P<msg>.*)$")
+
+# Reverse lookup: compose service name -> user-facing name
+_COMPOSE_TO_SERVICE = {v: k for k, v in SERVICE_TO_COMPOSE.items()}
+
+
+def _compose_file_path() -> Path:
+    """Return the path to the docker-compose file used by Koji."""
+    return Path(".koji") / "docker-compose.yaml"
+
+
+def _parse_log_line(raw: str) -> dict | None:
+    """Parse a raw docker compose log line into a structured dict."""
+    m = _LOG_LINE_RE.match(raw.strip())
+    if not m:
+        # Fallback: treat the entire line as the message
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        return {"service": "unknown", "timestamp": "", "line": stripped}
+    compose_svc = m.group("compose_svc")
+    service = _COMPOSE_TO_SERVICE.get(compose_svc, compose_svc)
+    return {
+        "service": service,
+        "timestamp": m.group("ts"),
+        "line": m.group("msg"),
+    }
+
+
+@app.get("/api/logs/recent")
+async def logs_recent(service: str | None = Query(None)):
+    """Return the last 100 log lines as JSON."""
+    if service and service not in VALID_LOG_SERVICES:
+        return JSONResponse(
+            {"error": f"Unknown service: {service}. Valid: {', '.join(sorted(VALID_LOG_SERVICES))}"},
+            status_code=400,
+        )
+
+    compose_file = _compose_file_path()
+    if not compose_file.exists():
+        return JSONResponse({"lines": [], "error": "No compose file found"})
+
+    cmd = ["docker", "compose", "-f", str(compose_file), "logs", "--tail=100", "--no-color"]
+    if service:
+        cmd.append(SERVICE_TO_COMPOSE[service])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except (TimeoutError, FileNotFoundError):
+        return JSONResponse({"lines": [], "error": "Failed to read logs"})
+
+    lines: list[dict] = []
+    for raw_line in stdout.decode(errors="replace").splitlines():
+        parsed = _parse_log_line(raw_line)
+        if parsed:
+            lines.append(parsed)
+
+    return JSONResponse({"lines": lines[-100:]})
+
+
+async def _log_event_generator(service: str | None):
+    """Async generator that yields SSE events from docker compose logs."""
+    compose_file = _compose_file_path()
+    if not compose_file.exists():
+        yield f"data: {json.dumps({'error': 'No compose file found'})}\n\n"
+        return
+
+    cmd = ["docker", "compose", "-f", str(compose_file), "logs", "-f", "--tail=50", "--no-color"]
+    if service:
+        cmd.append(SERVICE_TO_COMPOSE[service])
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        assert proc.stdout is not None  # noqa: S101
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            parsed = _parse_log_line(line.decode(errors="replace"))
+            if parsed:
+                yield f"data: {json.dumps(parsed)}\n\n"
+    except asyncio.CancelledError:
+        pass
+    finally:
+        try:
+            proc.terminate()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+
+
+@app.get("/api/logs/stream")
+async def logs_stream(service: str | None = Query(None)):
+    """Stream docker compose logs via Server-Sent Events."""
+    if service and service not in VALID_LOG_SERVICES:
+        return JSONResponse(
+            {"error": f"Unknown service: {service}. Valid: {', '.join(sorted(VALID_LOG_SERVICES))}"},
+            status_code=400,
+        )
+
+    return StreamingResponse(
+        _log_event_generator(service),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/health")
@@ -293,6 +432,11 @@ async def _run_process(
             "elapsed_ms": extract_result.get("elapsed_ms"),
             "tool_calls": extract_result.get("tool_calls"),
             "rounds": extract_result.get("rounds"),
+            "confidence": extract_result.get("confidence"),
+            "confidence_scores": extract_result.get("confidence_scores"),
+            "document_map_summary": extract_result.get("document_map_summary"),
+            "routing_plan": extract_result.get("routing_plan"),
+            "groups": extract_result.get("groups"),
         }
 
 

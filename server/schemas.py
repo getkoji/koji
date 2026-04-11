@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(prefix="/api/schemas", tags=["schemas"])
@@ -63,6 +64,10 @@ class SchemaUpdate(BaseModel):
         if v is not None and len(v) == 0:
             raise ValueError("fields must not be empty")
         return v
+
+
+class RawYAMLBody(BaseModel):
+    content: str
 
 
 class SchemaSummary(BaseModel):
@@ -189,3 +194,67 @@ def delete_schema(name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
     path.unlink()
+
+
+# --- Raw YAML endpoints (used by the dashboard schema editor) ---
+
+
+@router.get("/{name}/raw", response_class=PlainTextResponse)
+def get_schema_raw(name: str):
+    """Get a schema as raw YAML text."""
+    path = _schema_path(name)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
+    return path.read_text()
+
+
+@router.put("/{name}/raw", response_class=PlainTextResponse)
+def update_schema_raw(name: str, body: RawYAMLBody):
+    """Update a schema from raw YAML text."""
+    path = _schema_path(name)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
+    try:
+        data = yaml.safe_load(body.content)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {e}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="YAML must be a mapping")
+    if "name" not in data or "fields" not in data:
+        raise HTTPException(status_code=422, detail="Schema must have 'name' and 'fields' keys")
+    if not isinstance(data["fields"], dict) or len(data["fields"]) == 0:
+        raise HTTPException(status_code=422, detail="'fields' must be a non-empty mapping")
+    # Ensure the name in the YAML matches the URL
+    data["name"] = name
+    _save_schema(path, data)
+    return path.read_text()
+
+
+@router.post("/raw", response_class=PlainTextResponse, status_code=201)
+def create_schema_raw(body: RawYAMLBody):
+    """Create a schema from raw YAML text."""
+    try:
+        data = yaml.safe_load(body.content)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {e}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="YAML must be a mapping")
+    if "name" not in data or "fields" not in data:
+        raise HTTPException(status_code=422, detail="Schema must have 'name' and 'fields' keys")
+    if not isinstance(data["fields"], dict) or len(data["fields"]) == 0:
+        raise HTTPException(status_code=422, detail="'fields' must be a non-empty mapping")
+
+    # Sanitize name
+    raw_name = data["name"].strip().lower().replace(" ", "_")
+    if not all(c.isalnum() or c in "-_" for c in raw_name):
+        raise HTTPException(
+            status_code=422,
+            detail="name must contain only alphanumeric characters, hyphens, or underscores",
+        )
+    data["name"] = raw_name
+
+    path = _schema_path(raw_name)
+    if path.exists():
+        raise HTTPException(status_code=409, detail=f"Schema '{raw_name}' already exists")
+    _save_schema(path, data)
+    return path.read_text()
