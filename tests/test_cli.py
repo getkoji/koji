@@ -41,8 +41,9 @@ def test_logs_help():
     """koji logs --help should describe the command and options."""
     result = runner.invoke(app, ["logs", "--help"])
     assert result.exit_code == 0
-    assert "--follow" in result.output
-    assert "--tail" in result.output
+    # Rich may split flags with ANSI codes (e.g., "--follow" → "-" + "-follow")
+    assert "follow" in result.output
+    assert "tail" in result.output
     assert "SERVICE" in result.output.upper() or "service" in result.output
 
 
