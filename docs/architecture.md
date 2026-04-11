@@ -366,9 +366,125 @@ cluster:
 
 Each cluster gets its own Docker network, containers, and volumes. They do not interfere with each other.
 
-### Production
+### Container registry (no local builds)
 
-Kubernetes support is planned. The architecture -- independent services with HTTP APIs and health checks -- maps directly to k8s Deployments and Services with no structural changes.
+`koji start` pulls pre-built images from a container registry (GitHub Container Registry). Users never run `docker build` — that's slow, memory-intensive, and error-prone. Dockerfiles stay in the repo for development and CI, but production users always pull.
+
+```
+koji start  →  docker pull ghcr.io/getkoji/parse:latest
+               docker pull ghcr.io/getkoji/extract:latest
+               docker pull ghcr.io/getkoji/server:latest
+               docker compose up
+```
+
+### Production (Koji Cloud)
+
+The hosted version runs the same services with managed infrastructure. The architecture is identical — the only additions are auth, billing, and persistent multi-tenant storage.
+
+## Hosted architecture (Koji Cloud)
+
+All-Cloudflare stack. One vendor, one bill, zero egress fees, containers auto-sleep when idle.
+
+```
+                    ┌──────────────────┐
+                    │  Cloudflare Pages │
+                    │     (Next.js)     │
+                    │    Dashboard      │
+                    └────────┬─────────┘
+                             │
+                    ┌────────┴─────────┐
+                    │      Clerk       │
+                    │     (Auth)       │
+                    └────────┬─────────┘
+                             │ JWT
+                    ┌────────┴─────────┐
+                    │  CF Workers      │
+                    │  API (light)     │──── D1 (SQLite)
+                    │  auth, routing   │──── R2 (documents)
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────┴──────┐ ┌────┴────┐ ┌──────┴──────┐
+        │    Parse   │ │ Extract │ │ CF Queues   │
+        │ CF Container│ │CF Cont. │ │ (job queue) │
+        │ 4cpu/12GB  │ │1cpu/4GB │ │             │
+        │ auto-sleep │ │auto-sleep│ │             │
+        └────────────┘ └─────────┘ └─────────────┘
+```
+
+### Stack choices
+
+| Layer | Cloudflare Product | Spec | Cost |
+|-------|-------------------|------|------|
+| **Frontend** | Pages | Next.js, unlimited bandwidth | Free |
+| **API (light)** | Workers | Auth validation, schema CRUD, job status, routing | $5/mo (Workers Paid) |
+| **Parse** | Containers (standard-4) | 4 vCPU, 12GB RAM, 20GB disk. Auto-sleeps after idle. | Per-second billing |
+| **Extract** | Containers (standard-1) | 1 vCPU, 4GB RAM. Auto-sleeps after idle. | Per-second billing |
+| **Database** | D1 | SQLite at the edge. Same engine as self-hosted. | Free tier generous |
+| **Documents** | R2 | S3-compatible. Zero egress fees. | $0.015/GB stored |
+| **Job queue** | Queues | Job orchestration, async processing | $0.40/M messages |
+| **Auth** | Clerk (external) | SSO, MFA, team management. Only non-CF piece. | Free to 10k MAU |
+
+**Container limits (no runtime duration limit):**
+- Max instance: 4 vCPU, 12 GiB RAM, 20 GB disk
+- Containers run as long as needed, billed per 10ms active
+- Auto-sleep after configurable `sleepAfter` period (e.g., 10 minutes)
+- Account limits (beta): 6 TiB memory, 1500 vCPU across all containers
+
+**Estimated cost at launch:** ~$10-20/mo before first paying customer (mostly idle containers + $5 Workers Paid plan).
+
+**Why all-Cloudflare:**
+- One vendor, one bill, one dashboard
+- D1 is literally SQLite — same local-to-prod parity as self-hosted
+- R2 has zero egress fees (critical for document processing where users download results)
+- Pages is free with no pricing cliffs
+- Containers auto-sleep when idle — you don't pay for downtime
+- No multi-vendor networking complexity
+
+### Auth architecture
+
+The API server has a single auth middleware with two modes:
+
+```python
+# server/auth.py
+KOJI_AUTH_MODE = os.environ.get("KOJI_AUTH_MODE", "none")
+
+# If "none" (self-hosted): all requests pass through, synthetic admin user
+# If "clerk" (hosted): validate JWT from Authorization header, extract user/team/role
+```
+
+**Self-hosted:** No auth. No users. No tokens. Every request is implicitly admin. The dashboard shows no login screen.
+
+**Hosted:** Clerk handles authentication in the Next.js middleware layer. The frontend gets a session, passes a JWT to the API. The API validates the JWT against Clerk's public keys and extracts:
+- `user_id` — who is making the request
+- `team_id` — which team context (a user can belong to multiple teams)
+- `role` — admin, member, or viewer
+
+RBAC is simple: 3 roles.
+- **Admin** — manage team members, billing, delete schemas, configure webhooks
+- **Member** — process documents, create/edit schemas, view results
+- **Viewer** — read-only access to results and schemas
+
+The core extraction endpoints work identically in both modes. The auth layer is a thin wrapper, not a different system.
+
+### One UI everywhere
+
+The dashboard is a single Next.js app that runs in both environments:
+
+- **Self-hosted:** built into a Docker container, served alongside the API. `NEXT_PUBLIC_AUTH_MODE=none` hides login/billing UI.
+- **Hosted:** deployed on Vercel. `NEXT_PUBLIC_AUTH_MODE=clerk` enables Clerk provider, shows team switcher, billing page.
+
+The pages are identical: jobs, schemas, pipeline viz, logs, settings. Only the auth wrapper and billing page differ.
+
+### SQLite everywhere
+
+The database story is the key to the Supabase-like local/prod parity:
+
+- **Self-hosted:** plain SQLite file at `.koji/jobs.db`
+- **Hosted:** Cloudflare D1 (SQLite at the edge)
+
+Same engine, same schema, same queries. D1 is SQLite — not a Postgres-compatible layer, not an emulation, actual SQLite. A schema developed locally works identically in production. Users `koji test` locally, then deploy to cloud with confidence.
 
 ## Next steps
 
