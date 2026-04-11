@@ -29,6 +29,9 @@ output/
 # Docker
 docker-compose.override.yml
 
+# Docs
+site/
+
 # Environment
 .env
 .env.local

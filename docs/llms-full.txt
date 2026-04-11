@@ -1,0 +1,615 @@
+# Koji — Full Documentation
+
+
+---
+
+# Koji
+
+**Documents in. Structured data out.**
+
+Koji is a self-hosted document processing platform. Parse, split, classify, and extract structured data from any document — PDFs, Word, images, scans — using local models or any API provider.
+
+## Why Koji?
+
+- **Config-driven** — one YAML file defines your entire pipeline
+- **Self-hosted** — runs on your infra (docker-compose for dev, k8s for prod)
+- **Modular** — each processing step is an independent service
+- **Model-agnostic** — BYO models (local via ollama/vllm, or any API provider)
+
+## Quick Start
+
+```bash
+# Install the CLI
+pip install koji-cli
+
+# Start a cluster
+koji start
+
+# Open the dashboard
+open http://127.0.0.1:9400
+```
+
+That's it. Your cluster is running. The dashboard shows service health, and you're ready to process documents.
+
+## Process Your First Document
+
+Create a schema that describes what you want to extract:
+
+```yaml
+# schemas/invoice.yaml
+name: invoice
+fields:
+  invoice_number:
+    type: string
+    required: true
+  date:
+    type: date
+  vendor:
+    type: string
+  total_amount:
+    type: number
+    required: true
+```
+
+Process a document:
+
+```bash
+koji process ./invoice.pdf --schema ./schemas/invoice.yaml
+```
+
+Output:
+
+```json
+{
+  "invoice_number": "INV-2026-0042",
+  "date": "2026-03-15",
+  "vendor": "Acme Corp",
+  "total_amount": 4250.00
+}
+```
+
+## Next Steps
+
+- [Getting Started](getting-started.md) — full setup walkthrough
+- [Configuration](configuration.md) — `koji.yaml` reference
+- [Schemas](schemas.md) — define what you want to extract
+- [Architecture](architecture.md) — how the pieces fit together
+- [CLI Reference](cli.md) — all commands and flags
+
+---
+
+# Getting Started
+
+## Prerequisites
+
+- Python 3.11+
+- Docker (Docker Desktop or Docker Engine with Compose)
+
+## Install
+
+```bash
+pip install koji-cli
+```
+
+Verify the installation:
+
+```bash
+koji --version
+```
+
+## Start a Cluster
+
+Navigate to your project directory and start Koji:
+
+```bash
+koji start
+```
+
+This pulls the required Docker images and starts all services. On first run, this may take a minute. Subsequent starts are fast.
+
+The dashboard is available at [http://127.0.0.1:9400](http://127.0.0.1:9400). You can check service health with:
+
+```bash
+koji status
+```
+
+## Create a Configuration
+
+If you don't already have one, create a `koji.yaml` in your project root:
+
+```yaml
+project: my-first-pipeline
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+output:
+  structured: ./output/
+```
+
+!!! tip
+    Set your `OPENAI_API_KEY` environment variable, or switch to a local model like `ollama/llama3.2` for fully offline processing.
+
+## Create a Schema
+
+Schemas tell Koji what data to extract. Create `schemas/invoice.yaml`:
+
+```yaml
+name: invoice
+fields:
+  invoice_number:
+    type: string
+    required: true
+    description: The invoice or reference number
+  date:
+    type: date
+    required: true
+    description: Invoice date
+  vendor:
+    type: string
+    description: Vendor or supplier name
+  total_amount:
+    type: number
+    required: true
+    description: Total invoice amount
+```
+
+## Process a Document
+
+```bash
+koji process ./invoice.pdf --schema ./schemas/invoice.yaml
+```
+
+The extracted data is written to `./output/` as JSON.
+
+## Process a Directory
+
+```bash
+koji process ./documents/ --schema ./schemas/invoice.yaml
+```
+
+All supported files in the directory are processed. Results are written to the output directory with matching filenames.
+
+## Stop the Cluster
+
+```bash
+koji stop
+```
+
+## Next Steps
+
+- [Configuration Reference](configuration.md) — full `koji.yaml` options
+- [Schema Reference](schemas.md) — field types, arrays, nested objects
+- [Architecture](architecture.md) — understand the processing pipeline
+
+---
+
+# Configuration Reference
+
+All Koji behavior is driven by `koji.yaml` in your project root.
+
+## Minimal Example
+
+```yaml
+project: my-pipeline
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+output:
+  structured: ./output/
+```
+
+## Full Reference
+
+### `project`
+
+A name for your pipeline. Used in logs and the dashboard.
+
+```yaml
+project: invoice-processing
+```
+
+### `cluster`
+
+Controls how the local cluster is configured.
+
+```yaml
+cluster:
+  name: default
+  base_port: 9400  # dashboard at :9400, server at :9401, services from :9410+
+```
+
+When running multiple clusters simultaneously, each project gets its own port range:
+
+```bash
+cd ~/project-a && koji start  # dashboard at :9400
+cd ~/project-b && koji start  # dashboard at :9500
+```
+
+### `pipeline`
+
+An ordered list of processing steps. Each step runs as an independent service.
+
+```yaml
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: split
+    strategy: heading
+
+  - step: classify
+    model: local/llama3.2
+    labels:
+      - invoice
+      - receipt
+      - contract
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+      - ./schemas/receipt.yaml
+
+  - step: embed
+    model: local/nomic-embed-text
+```
+
+#### Pipeline Steps
+
+| Step | Purpose | Key Options |
+|------|---------|-------------|
+| `parse` | Document → clean markdown | `engine` |
+| `split` | Markdown → chunks | `strategy` |
+| `classify` | Document/chunk → labels | `model`, `labels` |
+| `extract` | Document/chunk → structured JSON | `model`, `schemas` |
+| `embed` | Text → vector embeddings | `model` |
+
+Use the full pipeline or any subset. Steps are independent.
+
+### `models`
+
+Configure model providers. Mix local and API providers freely.
+
+```yaml
+models:
+  providers:
+    local:
+      backend: ollama
+    openai:
+      api_key: ${OPENAI_API_KEY}
+    anthropic:
+      api_key: ${ANTHROPIC_API_KEY}
+    custom:
+      endpoint: https://your-inference.internal/v1
+```
+
+Reference models in pipeline steps as `provider/model-name`:
+
+```yaml
+pipeline:
+  - step: extract
+    model: openai/gpt-4o-mini  # uses the openai provider
+  - step: classify
+    model: local/llama3.2      # uses the local (ollama) provider
+```
+
+### `output`
+
+Where extracted data goes.
+
+```yaml
+output:
+  structured: ./output/
+```
+
+## Environment Variables
+
+Use `${VAR_NAME}` syntax anywhere in `koji.yaml` to reference environment variables:
+
+```yaml
+models:
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
+```
+
+Koji will error at startup if a referenced variable is not set.
+
+---
+
+# Schema Reference
+
+Schemas define what structured data Koji extracts from your documents. Each schema is a YAML file.
+
+## Basic Schema
+
+```yaml
+name: invoice
+description: Standard invoice extraction
+fields:
+  invoice_number:
+    type: string
+    required: true
+    description: The invoice or reference number
+  date:
+    type: date
+    required: true
+  vendor:
+    type: string
+  total_amount:
+    type: number
+    required: true
+```
+
+## Field Types
+
+| Type | Description | Example Value |
+|------|-------------|---------------|
+| `string` | Text value | `"INV-2026-0042"` |
+| `number` | Integer or decimal | `4250.00` |
+| `date` | Date value (ISO 8601) | `"2026-03-15"` |
+| `boolean` | True or false | `true` |
+| `array` | List of values | `[...]` |
+| `object` | Nested structure | `{...}` |
+
+## Field Options
+
+```yaml
+fields:
+  vendor:
+    type: string
+    required: true        # fail extraction if missing (default: false)
+    description: Vendor name  # hints for the extraction model
+    default: "Unknown"    # fallback value
+```
+
+The `description` field is important — it guides the extraction model. Be specific about what the field represents and where it might appear in the document.
+
+## Arrays
+
+Extract repeating items like line items on an invoice:
+
+```yaml
+fields:
+  line_items:
+    type: array
+    items:
+      type: object
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unit_price:
+          type: number
+        total:
+          type: number
+```
+
+Output:
+
+```json
+{
+  "line_items": [
+    {
+      "description": "Widget A",
+      "quantity": 10,
+      "unit_price": 25.00,
+      "total": 250.00
+    },
+    {
+      "description": "Widget B",
+      "quantity": 5,
+      "unit_price": 50.00,
+      "total": 250.00
+    }
+  ]
+}
+```
+
+## Nested Objects
+
+For structured sub-fields:
+
+```yaml
+fields:
+  address:
+    type: object
+    properties:
+      street:
+        type: string
+      city:
+        type: string
+      state:
+        type: string
+      zip:
+        type: string
+```
+
+## Multiple Schemas
+
+Point your pipeline at multiple schemas to handle different document types:
+
+```yaml
+pipeline:
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+      - ./schemas/receipt.yaml
+      - ./schemas/contract.yaml
+```
+
+Pair with a `classify` step to route documents to the right schema automatically.
+
+## Schema Location
+
+Schemas are referenced by path in `koji.yaml`. You can organize them however you like:
+
+```
+schemas/
+  invoice.yaml
+  receipt.yaml
+  contracts/
+    nda.yaml
+    sow.yaml
+```
+
+---
+
+# Architecture
+
+Koji runs as a set of independent services coordinated by a central server. Each pipeline step is its own service with a clean API boundary.
+
+## Overview
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  koji CLI    │────▶│  koji server│────▶│  services   │
+│              │     │  (:9401)    │     │  (:9410+)   │
+└─────────────┘     └──────┬──────┘     └─────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │  dashboard  │
+                    │  (:9400)    │
+                    └─────────────┘
+```
+
+- **CLI** — the `koji` command. Sends requests to the server.
+- **Server** — orchestrates pipeline execution, manages service lifecycle.
+- **Services** — one per pipeline step (parse, split, classify, extract, embed). Each runs in its own container.
+- **Dashboard** — web UI for monitoring cluster health and job progress.
+
+## Processing Flow
+
+1. CLI sends a process request to the server
+2. Server reads `koji.yaml` to determine the pipeline
+3. For each step, the server sends the document to the appropriate service
+4. Each service processes the document and returns results
+5. Results flow through the pipeline in order
+6. Final output is written to the configured output directory
+
+## Services
+
+Each service is:
+
+- **Independent** — services don't know about each other
+- **Stateless** — all state lives in the server
+- **Containerized** — runs in Docker, same image locally and in production
+- **Replaceable** — swap implementations by changing config
+
+### Service Ports
+
+The server assigns ports automatically from the `base_port` in your cluster config:
+
+| Service | Default Port |
+|---------|-------------|
+| Dashboard | 9400 |
+| Server | 9401 |
+| Parse | 9410 |
+| Split | 9411 |
+| Classify | 9412 |
+| Extract | 9413 |
+| Embed | 9414 |
+
+## Deployment
+
+### Local Development
+
+```bash
+koji start
+```
+
+Uses docker-compose under the hood. All services run as containers on your machine.
+
+### Kubernetes
+
+```bash
+koji start --k8s
+```
+
+Generates Kubernetes manifests for your pipeline. Same containers, same config, production-ready.
+
+## Design Principles
+
+- **Config over code** — change behavior by editing YAML, not writing code
+- **No lock-in** — swap models, providers, or deployment targets without code changes
+- **Same local and prod** — what runs on your laptop runs in production
+- **Clean boundaries** — services communicate through defined APIs, never directly
+
+---
+
+# CLI Reference
+
+The `koji` CLI manages clusters and processes documents.
+
+## Commands
+
+### `koji start`
+
+Start the cluster defined in `koji.yaml`.
+
+```bash
+koji start              # local development (docker-compose)
+koji start --k8s        # generate Kubernetes manifests
+```
+
+| Flag | Description |
+|------|-------------|
+| `--k8s` | Generate Kubernetes manifests instead of running docker-compose |
+| `--config` | Path to `koji.yaml` (default: `./koji.yaml`) |
+
+### `koji stop`
+
+Stop the running cluster.
+
+```bash
+koji stop
+```
+
+### `koji process`
+
+Process documents through the pipeline.
+
+```bash
+koji process ./invoice.pdf --schema ./schemas/invoice.yaml
+koji process ./documents/                                    # process a directory
+koji process ./doc.pdf --schema ./schemas/invoice.yaml --output ./results/
+```
+
+| Flag | Description |
+|------|-------------|
+| `--schema` | Path to extraction schema (overrides `koji.yaml`) |
+| `--output` | Output directory (overrides `koji.yaml`) |
+| `--config` | Path to `koji.yaml` (default: `./koji.yaml`) |
+
+### `koji status`
+
+Show cluster health and service status.
+
+```bash
+koji status
+```
+
+Output shows each running service, its port, and health status.
+
+## Global Options
+
+| Flag | Description |
+|------|-------------|
+| `--version` | Show version and exit |
+| `--help` | Show help and exit |
