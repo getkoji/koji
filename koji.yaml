@@ -24,3 +24,8 @@ pipeline:
 
 output:
   structured: ./output/
+
+# webhooks:
+#   - url: https://my-app.com/api/koji-callback
+#     events: [job.completed]
+#     secret: my-secret-key

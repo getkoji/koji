@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 
 import httpx
 import yaml
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from server.config import KojiConfig, load_config
+from server.jobs import job_store
+from server.schemas import router as schemas_router
+from server.webhooks import fire_webhooks
 
 START_TIME = time.time()
 
@@ -30,6 +34,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(schemas_router)
 
 _config: KojiConfig | None = None
 
@@ -107,6 +113,45 @@ def config():
     return get_config().model_dump(exclude_none=True)
 
 
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    """Get status and result of a job."""
+    job = job_store.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    payload: dict = {
+        "job_id": job.id,
+        "status": job.status.value,
+        "created_at": job.created_at.isoformat(),
+        "schema_name": job.schema_name,
+    }
+    if job.completed_at:
+        payload["completed_at"] = job.completed_at.isoformat()
+    if job.result is not None:
+        payload["result"] = job.result
+    if job.error is not None:
+        payload["error"] = job.error
+    return JSONResponse(payload)
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    """List recent jobs."""
+    jobs = job_store.list_recent()
+    return JSONResponse(
+        [
+            {
+                "job_id": j.id,
+                "status": j.status.value,
+                "created_at": j.created_at.isoformat(),
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                "schema_name": j.schema_name,
+            }
+            for j in jobs
+        ]
+    )
+
+
 def get_service_url(service: str) -> str:
     """Get a service URL on the internal docker network."""
     config = get_config()
@@ -142,34 +187,28 @@ async def parse(file: UploadFile = File(...)):
             )
 
 
-@app.post("/api/process")
-async def process(file: UploadFile = File(...), schema: str | None = Form(None)):
-    """Full pipeline: parse a document, then extract if a schema is provided."""
+async def _run_process(
+    content: bytes,
+    filename: str | None,
+    content_type: str,
+    schema: str | None,
+) -> dict:
+    """Core process logic shared by sync and async paths."""
     parse_url = get_service_url("parse")
-    content = await file.read()
 
     async with httpx.AsyncClient(timeout=1800) as client:
         # Step 1: Parse
-        try:
-            parse_resp = await client.post(
-                f"{parse_url}/parse",
-                files={
-                    "file": (
-                        file.filename,
-                        content,
-                        file.content_type or "application/octet-stream",
-                    )
-                },
-            )
-            if parse_resp.status_code != 200:
-                return JSONResponse(parse_resp.json(), status_code=parse_resp.status_code)
-            parse_result = parse_resp.json()
-        except httpx.ConnectError:
-            return JSONResponse({"error": "Parse service unavailable"}, status_code=502)
+        parse_resp = await client.post(
+            f"{parse_url}/parse",
+            files={"file": (filename, content, content_type)},
+        )
+        if parse_resp.status_code != 200:
+            raise RuntimeError(f"Parse failed: {parse_resp.text}")
+        parse_result = parse_resp.json()
 
         # If no schema, return parse result only
         if not schema:
-            return JSONResponse(parse_result)
+            return parse_result
 
         # Step 2: Extract
         try:
@@ -178,36 +217,90 @@ async def process(file: UploadFile = File(...), schema: str | None = Form(None))
             try:
                 schema_def = json.loads(schema)
             except Exception:
-                return JSONResponse({"error": "Invalid schema format"}, status_code=400)
+                raise ValueError("Invalid schema format")
 
         extract_url = get_service_url("extract")
-        try:
-            extract_resp = await client.post(
-                f"{extract_url}/extract",
-                json={
-                    "markdown": parse_result["markdown"],
-                    "schema_def": schema_def,
+        extract_resp = await client.post(
+            f"{extract_url}/extract",
+            json={"markdown": parse_result["markdown"], "schema_def": schema_def},
+        )
+        if extract_resp.status_code != 200:
+            raise RuntimeError(f"Extract failed: {extract_resp.text}")
+        extract_result = extract_resp.json()
+
+        return {
+            "filename": parse_result.get("filename"),
+            "pages": parse_result.get("pages"),
+            "parse_seconds": parse_result.get("elapsed_seconds"),
+            "extracted": extract_result.get("extracted"),
+            "model": extract_result.get("model"),
+            "schema": extract_result.get("schema"),
+            "elapsed_ms": extract_result.get("elapsed_ms"),
+            "tool_calls": extract_result.get("tool_calls"),
+            "rounds": extract_result.get("rounds"),
+        }
+
+
+async def _process_job_bg(
+    job_id: str,
+    content: bytes,
+    filename: str | None,
+    content_type: str,
+    schema: str | None,
+) -> None:
+    """Background task that runs process pipeline for a job."""
+    job_store.mark_processing(job_id)
+    try:
+        result = await _run_process(content, filename, content_type, schema)
+        job_store.mark_completed(job_id, result)
+    except Exception as e:
+        job_store.mark_failed(job_id, str(e))
+
+
+@app.post("/api/process")
+async def process(
+    file: UploadFile = File(...),
+    schema: str | None = Form(None),
+    async_mode: bool = Query(False, alias="async"),
+):
+    """Full pipeline: parse a document, then extract if a schema is provided."""
+    content = await file.read()
+    filename = file.filename
+    content_type = file.content_type or "application/octet-stream"
+
+    if async_mode:
+        job = job_store.create(schema_name=schema[:50] if schema else None)
+        asyncio.create_task(_process_job_bg(job.id, content, filename, content_type, schema))
+        return JSONResponse({"job_id": job.id, "status": "pending"}, status_code=202)
+
+    # Synchronous (original behavior)
+    config = get_config()
+    t0 = time.monotonic()
+    try:
+        result = await _run_process(content, filename, content_type, schema)
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        asyncio.create_task(
+            fire_webhooks(
+                config,
+                "job.completed",
+                {
+                    "filename": filename,
+                    "schema": schema,
+                    "extracted": result.get("extracted"),
+                    "elapsed_ms": elapsed_ms,
                 },
             )
-            if extract_resp.status_code != 200:
-                return JSONResponse(extract_resp.json(), status_code=extract_resp.status_code)
-            extract_result = extract_resp.json()
-        except httpx.ConnectError:
-            return JSONResponse({"error": "Extract service unavailable"}, status_code=502)
-
-        return JSONResponse(
-            {
-                "filename": parse_result.get("filename"),
-                "pages": parse_result.get("pages"),
-                "parse_seconds": parse_result.get("elapsed_seconds"),
-                "extracted": extract_result.get("extracted"),
-                "model": extract_result.get("model"),
-                "schema": extract_result.get("schema"),
-                "elapsed_ms": extract_result.get("elapsed_ms"),
-                "tool_calls": extract_result.get("tool_calls"),
-                "rounds": extract_result.get("rounds"),
-            }
         )
+        return JSONResponse(result)
+    except httpx.ConnectError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"filename": filename, "error": str(e)}))
+        return JSONResponse({"error": "Service unavailable"}, status_code=502)
+    except ValueError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"filename": filename, "error": str(e)}))
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except RuntimeError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"filename": filename, "error": str(e)}))
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 class ExtractRequest(BaseModel):
@@ -217,16 +310,15 @@ class ExtractRequest(BaseModel):
     model: str | None = None
 
 
-@app.post("/api/extract")
-async def extract_endpoint(req: ExtractRequest):
-    """Extract structured data from markdown using a schema. No file upload needed."""
+async def _run_extract(req: ExtractRequest) -> dict:
+    """Core extract logic shared by sync and async paths."""
     try:
         schema_def = yaml.safe_load(req.schema)
     except Exception:
         try:
             schema_def = json.loads(req.schema)
         except Exception:
-            return JSONResponse({"error": "Invalid schema format"}, status_code=400)
+            raise ValueError("Invalid schema format")
 
     extract_url = get_service_url("extract")
     payload: dict = {
@@ -239,11 +331,58 @@ async def extract_endpoint(req: ExtractRequest):
         payload["model"] = req.model
 
     async with httpx.AsyncClient(timeout=1800) as client:
-        try:
-            resp = await client.post(
-                f"{extract_url}/extract",
-                json=payload,
+        resp = await client.post(f"{extract_url}/extract", json=payload)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Extract failed: {resp.text}")
+        return resp.json()
+
+
+async def _extract_job_bg(job_id: str, req: ExtractRequest) -> None:
+    """Background task that runs extraction for a job."""
+    job_store.mark_processing(job_id)
+    try:
+        result = await _run_extract(req)
+        job_store.mark_completed(job_id, result)
+    except Exception as e:
+        job_store.mark_failed(job_id, str(e))
+
+
+@app.post("/api/extract")
+async def extract_endpoint(
+    req: ExtractRequest,
+    async_mode: bool = Query(False, alias="async"),
+):
+    """Extract structured data from markdown using a schema. No file upload needed."""
+    if async_mode:
+        job = job_store.create(schema_name=req.schema[:50] if req.schema else None)
+        asyncio.create_task(_extract_job_bg(job.id, req))
+        return JSONResponse({"job_id": job.id, "status": "pending"}, status_code=202)
+
+    # Synchronous (original behavior)
+    config = get_config()
+    t0 = time.monotonic()
+    try:
+        result = await _run_extract(req)
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        asyncio.create_task(
+            fire_webhooks(
+                config,
+                "job.completed",
+                {
+                    "filename": None,
+                    "schema": req.schema,
+                    "extracted": result.get("extracted"),
+                    "elapsed_ms": elapsed_ms,
+                },
             )
-            return JSONResponse(resp.json(), status_code=resp.status_code)
-        except httpx.ConnectError:
-            return JSONResponse({"error": "Extract service unavailable"}, status_code=502)
+        )
+        return JSONResponse(result)
+    except httpx.ConnectError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"error": str(e)}))
+        return JSONResponse({"error": "Extract service unavailable"}, status_code=502)
+    except ValueError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"error": str(e)}))
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except RuntimeError as e:
+        asyncio.create_task(fire_webhooks(config, "job.failed", {"error": str(e)}))
+        return JSONResponse({"error": str(e)}, status_code=502)

@@ -235,7 +235,7 @@ fields:
 - `patterns` -- regex patterns that indicate where the value lives
 - `signals` -- structural cues like tables, key-value pairs, or dollar amounts
 
-See the full example at `schemas/examples/insurance_policy.yaml`. Schema authoring guide coming soon.
+See the full example at `schemas/examples/insurance_policy.yaml`, and the [Schema Authoring Guide](schema-guide.md) for the complete reference.
 
 ## What's next
 

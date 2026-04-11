@@ -67,6 +67,12 @@ class ServicesConfig(BaseModel):
     ollama: bool = True
 
 
+class WebhookConfig(BaseModel):
+    url: str
+    events: list[str] = ["job.completed", "job.failed"]
+    secret: str | None = None  # for HMAC signing
+
+
 class KojiConfig(BaseModel):
     project: str = "koji"
     cluster: ClusterConfig = Field(default_factory=ClusterConfig)
@@ -74,6 +80,7 @@ class KojiConfig(BaseModel):
     pipeline: list[PipelineStep] = Field(default_factory=list)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    webhooks: list[WebhookConfig] = Field(default_factory=list)
 
 
 def load_config(path: str | Path = "koji.yaml") -> KojiConfig:

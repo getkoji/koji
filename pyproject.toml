@@ -46,7 +46,7 @@ docs = [
 koji = "cli.main:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["cli", "server"]
+packages = ["cli", "server", "sdk"]
 
 [tool.ruff]
 target-version = "py311"
