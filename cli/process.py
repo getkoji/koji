@@ -55,12 +55,12 @@ def process_file(
             pages = result.get("pages", "?")
             parse_time = result.get("parse_seconds", "?")
             model = result.get("model", "?")
-            elapsed_ms = result.get("elapsed_ms", result.get("extract_ms", "?"))
-            tool_calls = result.get("tool_calls", "")
-            tool_info = f", {tool_calls} tool calls" if tool_calls else ""
+            elapsed_ms = result.get("elapsed_ms", "?")
+            groups = result.get("extraction_groups", "")
+            group_info = f", {groups} calls" if groups else ""
             console.print(
                 f"  [green]✓[/green] {file_path.name} — {pages} pages, "
-                f"parsed {parse_time}s, extracted via {model} ({elapsed_ms}ms{tool_info}) → {json_path}"
+                f"parsed {parse_time}s, extracted {elapsed_ms}ms via {model}{group_info} → {json_path}"
             )
 
             # Also save markdown as a bonus

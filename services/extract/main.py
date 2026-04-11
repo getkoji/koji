@@ -16,7 +16,7 @@ app = FastAPI(title="Koji Extract Service", version="0.1.0")
 
 OLLAMA_URL = os.environ.get("KOJI_OLLAMA_URL", "http://ollama:11434")
 DEFAULT_MODEL = os.environ.get("KOJI_EXTRACT_MODEL", "llama3.2")
-DEFAULT_STRATEGY = os.environ.get("KOJI_EXTRACT_STRATEGY", "parallel")
+DEFAULT_STRATEGY = os.environ.get("KOJI_EXTRACT_STRATEGY", "intelligent")
 
 
 class ExtractionRequest(BaseModel):
@@ -44,7 +44,10 @@ async def extract(req: ExtractionRequest):
     relevant = set(req.relevant_categories) if req.relevant_categories else None
 
     try:
-        if strategy == "agent":
+        if strategy == "intelligent":
+            from .pipeline import intelligent_extract
+            result = await intelligent_extract(req.markdown, req.schema_def, model)
+        elif strategy == "agent":
             from .tools import DocumentTools
             result = await _run_agent(req.markdown, req.schema_def, model)
         else:

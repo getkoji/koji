@@ -57,11 +57,21 @@ def extract_from_markdown(
 
         model = result.get("model", "?")
         elapsed_ms = result.get("elapsed_ms", "?")
-        tool_calls = result.get("tool_calls", "?")
-        rounds = result.get("rounds", "?")
+        strategy = result.get("strategy", "")
+
+        # Build a clean summary based on strategy
+        details = []
+        if result.get("extraction_groups"):
+            details.append(f"{result['extraction_groups']} calls")
+        if result.get("chunks_total"):
+            details.append(f"{result['chunks_total']} chunks")
+        if result.get("tool_calls"):
+            details.append(f"{result['tool_calls']} tool calls")
+
+        detail_str = f" ({', '.join(details)})" if details else ""
         console.print(
             f"  [green]✓[/green] {md_path.name} — {model}, "
-            f"{tool_calls} tool calls, {rounds} rounds, {elapsed_ms}ms → {json_path}"
+            f"{elapsed_ms}ms{detail_str} → {json_path}"
         )
         return True
 
