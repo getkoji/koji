@@ -219,7 +219,7 @@ fields:
           type: number
 ```
 
-Field types: `string`, `number`, `date`, `boolean`, `array`, `object`, `enum`.
+Field types: `string`, `number`, `date`, `enum`, `mapping`, `array`. Arrays can hold nested objects with their own properties — see the [Schema Authoring Guide](schema-guide.md) for the full reference.
 
 The `description` on each field matters -- it guides the extraction model. Be specific about what the field represents and where it typically appears in the document.
 
@@ -229,21 +229,21 @@ For complex documents, add hints to improve extraction accuracy. Hints tell the 
 
 ```yaml
 fields:
-  policy_number:
+  invoice_number:
     type: string
     required: true
-    description: Policy number or ID
+    description: The invoice number
     hints:
-      look_in: [declarations]
-      patterns: ["policy.*(?:number|no|#)", "[A-Z]{2,5}\\d{5,}"]
-      signals: [has_policy_numbers, has_key_value_pairs]
+      look_in: [header]
+      patterns: ["invoice\\s*(?:number|no|#)"]
+      signals: [has_key_value_pairs]
 ```
 
-- `look_in` -- which document sections to search (tied to your category definitions)
-- `patterns` -- regex patterns that indicate where the value lives
-- `signals` -- structural cues like tables, key-value pairs, or dollar amounts
+- `look_in` — which document sections to search (sections you define yourself in `categories.keywords`)
+- `patterns` — regex patterns that indicate where the value lives
+- `signals` — structural cues like `has_dollar_amounts`, `has_dates`, `has_tables`, `has_key_value_pairs`. You can also define your own custom signals via regex.
 
-See the full example at `schemas/examples/insurance_policy.yaml`, and the [Schema Authoring Guide](schema-guide.md) for the complete reference.
+See `schemas/examples/insurance_policy.yaml` for a complete working example with custom categories, hints, and patterns. The [Schema Authoring Guide](schema-guide.md) has the complete reference.
 
 ## What's next
 
@@ -256,9 +256,16 @@ koji logs extract -f # follow extraction service logs
 koji stop            # shut down the cluster
 ```
 
+Once you have a schema you trust, you can lock it in with regression tests and benchmarks:
+
+```bash
+koji test --schema schemas/invoice.yaml      # run schema regression tests
+koji bench --corpus ./corpus --model openai/gpt-4o-mini   # benchmark across a corpus
+```
+
 Further reading:
 
-- [Configuration Reference](configuration.md) -- full `koji.yaml` options
-- [Schema Reference](schemas.md) -- field types, arrays, nested objects, validation
-- [CLI Reference](cli.md) -- all commands and flags
-- [Architecture](architecture.md) -- how the pipeline works
+- [Schemas](schema-guide.md) — full schema authoring guide: field types, hints, arrays, enums, custom signals
+- [Configuration Reference](configuration.md) — every `koji.yaml` option
+- [CLI Reference](cli.md) — every command and flag
+- [Architecture](architecture.md) — how the pipeline works

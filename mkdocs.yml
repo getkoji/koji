@@ -35,10 +35,11 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Schemas: schema-guide.md
   - Configuration: configuration.md
-  - Schemas: schemas.md
   - Architecture: architecture.md
   - CLI Reference: cli.md
+  - API Reference: api-reference.md
 
 hooks:
   - scripts/mkdocs-hooks.py

@@ -153,10 +153,10 @@ The extraction pipeline is the core of Koji. Instead of sending an entire docume
 
 The mapper splits markdown into **chunks** by heading structure. Each chunk gets:
 
-- A **category** (declarations, endorsement, conditions, definitions, schedule of coverages, etc.) inferred from title keywords and content patterns
-- **Signals** detected by regex: dollar amounts, dates, key-value pairs, tables, policy numbers, name references
+- A **category** (e.g., `header`, `line_items`, `totals` — or anything you define) inferred from your schema's `categories.keywords` block. Without a schema, every chunk is `other`.
+- **Signals** — built-in structural detectors: `has_dollar_amounts`, `has_dates`, `has_key_value_pairs`, `has_tables`. Schemas can define **custom signals** via regex patterns (e.g., `has_policy_numbers` for insurance, `has_invoice_numbers` for invoices).
 
-The result is a structural map of the document -- what kind of data is in it and where.
+The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
 
 ### Phase 2: Route
 
@@ -166,9 +166,9 @@ The router matches each schema field to the chunks most likely to contain its va
 2. **Generic inference** -- field type maps to expected signals (date fields look for chunks with `has_dates`, number fields look for `has_dollar_amounts`), plus field name matching against chunk titles and content
 3. **Broadened fallback** -- if nothing scored, route to any chunk with signals, or as a last resort, the first chunks of the document
 
-Each field is routed to the top 3 scoring chunks (configurable).
+Each field is routed to the top 3 scoring chunks by default. Fields that legitimately aggregate data from many chunks — like a `policies` array on an insurance certificate, where each policy's detail lives in its own section — can override this with `hints.max_chunks: N` in the schema.
 
-The key design decision: **no hardcoded domain knowledge in the pipeline**. The router is entirely generic. Domain knowledge lives in the schema via hints. This means the same pipeline works for invoices, insurance policies, medical records, or any document type -- change the schema, not the code.
+The key design decision: **no hardcoded domain knowledge in the pipeline**. The router is entirely generic. Domain knowledge lives in the schema via hints. This means the same pipeline works for invoices, insurance policies, medical records, or any document type — change the schema, not the code.
 
 ### Phase 3: Extract (grouped)
 
