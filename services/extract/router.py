@@ -86,17 +86,38 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict) -> float:
     return score
 
 
+def _field_max_chunks(field_spec: dict, default: int) -> int:
+    """Get the max chunks to route for this field.
+
+    Per-field override via `hints.max_chunks` lets schema authors tell
+    the router that a field legitimately needs to aggregate data from
+    many chunks. Array-of-objects fields (like a list of policies
+    spread across detail sections) often need this.
+    """
+    hints = field_spec.get("hints") or {}
+    override = hints.get("max_chunks")
+    if isinstance(override, int) and override > 0:
+        return override
+    return default
+
+
 def route_fields(
     schema_def: dict,
     chunks: list[Chunk],
     max_chunks_per_field: int = 3,
 ) -> list[FieldRoute]:
-    """Route each schema field to the most relevant chunks."""
+    """Route each schema field to the most relevant chunks.
+
+    `max_chunks_per_field` is the default cap. Individual fields can
+    override via `hints.max_chunks` in the schema — useful for array
+    fields that aggregate data across many detail sections.
+    """
     fields = schema_def.get("fields", {})
     routes: list[FieldRoute] = []
 
     for field_name, field_spec in fields.items():
         has_hints = bool(field_spec.get("hints"))
+        field_cap = _field_max_chunks(field_spec, max_chunks_per_field)
 
         # Score every chunk for this field
         scored = []
@@ -106,7 +127,7 @@ def route_fields(
                 scored.append((score, chunk))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        top_chunks = [chunk for _, chunk in scored[:max_chunks_per_field]]
+        top_chunks = [chunk for _, chunk in scored[:field_cap]]
 
         if top_chunks:
             source = "hint" if has_hints else "signal_inferred"
@@ -126,7 +147,7 @@ def route_fields(
                     FieldRoute(
                         field_name=field_name,
                         field_spec=field_spec,
-                        chunks=broadened[:max_chunks_per_field],
+                        chunks=broadened[:field_cap],
                         source="broadened",
                     )
                 )
@@ -136,7 +157,7 @@ def route_fields(
                     FieldRoute(
                         field_name=field_name,
                         field_spec=field_spec,
-                        chunks=chunks[:max_chunks_per_field],
+                        chunks=chunks[:field_cap],
                         source="fallback",
                     )
                 )

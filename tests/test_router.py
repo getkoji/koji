@@ -144,6 +144,45 @@ class TestRouteFields:
         for route in routes:
             assert len(route.chunks) <= 2
 
+    def test_per_field_max_chunks_hint_overrides_default(self):
+        """A field can set hints.max_chunks to aggregate data from more chunks."""
+        chunks = [
+            make_chunk(index=i, title=f"Section {i}", content="content", signals={"has_tables": True}) for i in range(8)
+        ]
+        schema = {
+            "fields": {
+                "big_field": {
+                    "type": "array",
+                    "hints": {"signals": ["has_tables"], "max_chunks": 8},
+                }
+            }
+        }
+        # Default cap is 3, but the field's hint overrides it
+        routes = route_fields(schema, chunks, max_chunks_per_field=3)
+        assert len(routes) == 1
+        assert len(routes[0].chunks) == 8
+
+    def test_per_field_max_chunks_hint_does_not_affect_other_fields(self):
+        chunks = [
+            make_chunk(index=i, title=f"Section {i}", content="content", signals={"has_tables": True}) for i in range(8)
+        ]
+        schema = {
+            "fields": {
+                "big_field": {
+                    "type": "array",
+                    "hints": {"signals": ["has_tables"], "max_chunks": 8},
+                },
+                "normal_field": {
+                    "type": "string",
+                    "hints": {"signals": ["has_tables"]},
+                },
+            }
+        }
+        routes = route_fields(schema, chunks, max_chunks_per_field=3)
+        by_name = {r.field_name: r for r in routes}
+        assert len(by_name["big_field"].chunks) == 8
+        assert len(by_name["normal_field"].chunks) == 3
+
     def test_fallback_when_no_match(self):
         """Field with no hints and no matching signals falls back."""
         chunks = [make_chunk(index=0, title="Random", content="nothing", signals={})]
