@@ -133,14 +133,51 @@ def _to_number(value: Any) -> float | None:
     return None
 
 
+def _normalize_value_for_compare(value: Any) -> Any:
+    """Canonicalize a value for equality comparison.
+
+    - Numbers: cast to float so 200 and 200.0 compare equal
+    - Strings: strip whitespace and lowercase (matching compare_field behavior)
+    - Dates: normalize to YYYY-MM-DD if parseable
+    - Dicts: recurse into values
+    - Lists: recurse into elements
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Try date normalization first
+        normalized_date = _normalize_date(value)
+        if normalized_date is not None:
+            return normalized_date
+        # Try number coercion (e.g., "200.00" → 200.0)
+        num = _to_number(value)
+        if num is not None:
+            return num
+        return value.strip().lower()
+    if isinstance(value, dict):
+        return {k: _normalize_value_for_compare(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_value_for_compare(v) for v in value]
+    return value
+
+
 def _normalize_for_set_compare(items: list) -> list[str]:
-    """Produce canonical string keys for order-insensitive comparison."""
+    """Produce canonical string keys for order-insensitive comparison.
+
+    Normalizes numbers, strings, and dates so semantically-equal values
+    compare as equal even if they differ in type or formatting.
+    """
     keys = []
     for item in items:
-        if isinstance(item, dict):
-            keys.append(json.dumps(item, sort_keys=True))
+        normalized = _normalize_value_for_compare(item)
+        if isinstance(normalized, dict):
+            keys.append(json.dumps(normalized, sort_keys=True))
         else:
-            keys.append(json.dumps(item))
+            keys.append(json.dumps(normalized))
     return keys
 
 
@@ -206,7 +243,22 @@ def compare_field(field_name: str, expected: Any, actual: Any) -> FieldResult:
             detail="" if ok else "array items differ",
         )
 
-    # String / fallback: exact match
+    # String comparison: case-insensitive after trimming whitespace.
+    # Extraction from real documents often preserves the source's casing
+    # ("AMAZONA PARTS SUPPLY CO." vs "Amazona Parts Supply Co."), which is
+    # the same data by any reasonable definition. If you need strict case
+    # matching, use an enum field with explicit options instead.
+    if isinstance(expected, str) and isinstance(actual, str):
+        ok = expected.strip().lower() == actual.strip().lower()
+        return FieldResult(
+            field_name=field_name,
+            passed=ok,
+            expected=expected,
+            actual=actual,
+            detail="" if ok else f"expected {expected!r}, got {actual!r}",
+        )
+
+    # Other types: exact equality via string conversion
     ok = str(expected) == str(actual)
     return FieldResult(
         field_name=field_name,

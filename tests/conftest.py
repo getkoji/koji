@@ -179,6 +179,23 @@ def sample_markdown():
 SAMPLE_SCHEMA = {
     "name": "insurance_policy",
     "description": "Commercial insurance policy extraction",
+    "categories": {
+        "keywords": {
+            "declarations": ["declaration", "dec page", "named insured", "policy period"],
+            "schedule_of_coverages": ["schedule of", "coverage schedule", "limits of"],
+            "endorsement": ["endorsement", "amendment", "rider"],
+            "conditions": ["conditions", "general conditions"],
+            "definitions": ["definitions", "defined terms"],
+            "exclusions": ["exclusion", "does not apply"],
+        },
+    },
+    "signals": {
+        "has_policy_numbers": {"pattern": r"[A-Z]{2,5}\d{5,}"},
+        "has_name_references": {
+            "pattern": r"(?:named insured|insured|policyholder|name)\s*:?\s*(.+)",
+            "flags": "i",
+        },
+    },
     "fields": {
         "policy_number": {
             "type": "string",

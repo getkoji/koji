@@ -101,8 +101,23 @@ class TestStringComparison:
         r = compare_field("name", "Acme Corp", "Acme Corporation")
         assert not r.passed
 
-    def test_case_sensitive(self):
+    def test_case_insensitive(self):
+        """Strings are compared case-insensitively — extracted text often
+        preserves the source's casing, which is the same data."""
         r = compare_field("name", "Acme", "acme")
+        assert r.passed
+
+    def test_all_caps_matches_title_case(self):
+        """Real-world scenario from invoice extraction."""
+        r = compare_field("name", "Amazona Parts Supply Co.", "AMAZONA PARTS SUPPLY CO.")
+        assert r.passed
+
+    def test_leading_trailing_whitespace_ignored(self):
+        r = compare_field("name", "Acme Corp", "  Acme Corp  ")
+        assert r.passed
+
+    def test_different_words_still_fail(self):
+        r = compare_field("name", "Acme Inc", "Widget Inc")
         assert not r.passed
 
     def test_empty_string(self):
@@ -167,6 +182,34 @@ class TestArrayComparison:
     def test_mixed_primitives(self):
         r = compare_field("tags", ["a", "b"], ["a", "c"])
         assert not r.passed
+
+    def test_int_vs_float_in_objects(self):
+        """Real bug from invoice corpus: expected 200.0, actual 200 (same value)."""
+        expected = [{"name": "Workshop", "quantity": 8, "unit_price": 200.0, "amount": 1600.0}]
+        actual = [{"name": "Workshop", "quantity": 8, "unit_price": 200, "amount": 1600}]
+        r = compare_field("items", expected, actual)
+        assert r.passed
+
+    def test_string_case_in_object_values(self):
+        """Case differences in string fields of array objects should pass."""
+        expected = [{"name": "Acme Corp", "tier": "gold"}]
+        actual = [{"name": "ACME CORP", "tier": "GOLD"}]
+        r = compare_field("items", expected, actual)
+        assert r.passed
+
+    def test_date_format_in_object_values(self):
+        """Different date formats in array object fields should still match."""
+        expected = [{"item": "A", "date": "2025-01-15"}]
+        actual = [{"item": "A", "date": "01/15/2025"}]
+        r = compare_field("items", expected, actual)
+        assert r.passed
+
+    def test_number_string_vs_numeric_in_objects(self):
+        """'$200.00' and 200 are the same value."""
+        expected = [{"price": 200.0}]
+        actual = [{"price": "$200.00"}]
+        r = compare_field("items", expected, actual)
+        assert r.passed
 
 
 # ── Partial expectations ──────────────────────────────────────────────
