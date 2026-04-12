@@ -133,16 +133,34 @@ def _to_number(value: Any) -> float | None:
     return None
 
 
+def _is_empty(value: Any) -> bool:
+    """Treat None, empty string, empty list, and empty dict as 'no value'.
+
+    This makes comparison forgiving about how 'no data' is represented.
+    Extraction tools often return `[]` for empty collections while expected
+    JSON often just omits the field. Both mean 'no data' and should compare
+    as equivalent.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    if isinstance(value, (list, dict)) and len(value) == 0:
+        return True
+    return False
+
+
 def _normalize_value_for_compare(value: Any) -> Any:
     """Canonicalize a value for equality comparison.
 
+    - None, empty string, empty list, empty dict: all → None (semantically 'no value')
     - Numbers: cast to float so 200 and 200.0 compare equal
-    - Strings: strip whitespace and lowercase (matching compare_field behavior)
+    - Strings: strip whitespace and lowercase
     - Dates: normalize to YYYY-MM-DD if parseable
-    - Dicts: recurse into values
-    - Lists: recurse into elements
+    - Dicts: recurse into values, drop keys whose values normalize to None
+    - Lists: recurse into elements, drop elements that normalize to None
     """
-    if value is None:
+    if _is_empty(value):
         return None
     if isinstance(value, bool):
         return value
@@ -159,9 +177,19 @@ def _normalize_value_for_compare(value: Any) -> Any:
             return num
         return value.strip().lower()
     if isinstance(value, dict):
-        return {k: _normalize_value_for_compare(v) for k, v in value.items()}
+        # Drop keys whose values are empty — {"a": 1} and {"a": 1, "b": []}
+        # are semantically equivalent for comparison purposes.
+        normalized = {}
+        for k, v in value.items():
+            nv = _normalize_value_for_compare(v)
+            if nv is not None:
+                normalized[k] = nv
+        return normalized if normalized else None
     if isinstance(value, list):
-        return [_normalize_value_for_compare(v) for v in value]
+        normalized = [_normalize_value_for_compare(v) for v in value]
+        # Drop elements that normalized to None
+        normalized = [v for v in normalized if v is not None]
+        return normalized if normalized else None
     return value
 
 
