@@ -1,36 +1,53 @@
 site_name: Koji
 site_url: https://docs.getkoji.dev
-site_description: Documents in. Structured data out.
+site_description: Documents in. Structured data out. Self-hosted document processing with schema-driven extraction.
+site_author: Koji Contributors
+
 repo_url: https://github.com/getkoji/koji
 repo_name: getkoji/koji
+edit_uri: edit/main/docs/
+
+copyright: Copyright &copy; 2026 Koji contributors · Apache 2.0
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Instrument Sans
+    code: JetBrains Mono
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: deep purple
-      accent: amber
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: deep purple
-      accent: amber
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+    scheme: default
+    primary: custom
+    accent: custom
   features:
     - content.code.copy
     - content.code.annotate
     - navigation.instant
+    - navigation.instant.prefetch
     - navigation.sections
-    - navigation.expand
     - navigation.top
+    - navigation.tracking
+    - navigation.indexes
     - search.suggest
     - search.highlight
+    - search.share
     - toc.follow
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+
+extra_css:
+  - assets/stylesheets/brand.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/getkoji/koji
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/koji
+  generator: false
 
 nav:
   - Home: index.md
@@ -45,15 +62,31 @@ hooks:
   - scripts/mkdocs-hooks.py
 
 markdown_extensions:
+  - abbr
   - admonition
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.tabbed:
-      alternate_style: true
   - attr_list
   - def_list
+  - footnotes
+  - md_in_html
+  - tables
   - toc:
       permalink: true
+      permalink_title: Link to this section
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
