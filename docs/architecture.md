@@ -481,8 +481,8 @@ The core extraction endpoints work identically in both modes. The auth layer is 
 
 The dashboard is a single Next.js app that runs in both environments:
 
-- **Self-hosted:** built into a Docker container, served alongside the API. `NEXT_PUBLIC_AUTH_MODE=none` hides login/billing UI.
-- **Hosted:** deployed on Vercel. `NEXT_PUBLIC_AUTH_MODE=clerk` enables Clerk provider, shows team switcher, billing page.
+- **Self-hosted:** built into a Docker container, served alongside the API. `NEXT_PUBLIC_KOJI_MODE=selfhosted` hides login/billing UI.
+- **Hosted:** deployed on Cloudflare Pages. `NEXT_PUBLIC_KOJI_MODE=cloud` enables the Clerk provider, team switcher, and billing page.
 
 The pages are identical: jobs, schemas, pipeline viz, logs, settings. Only the auth wrapper and billing page differ.
 
