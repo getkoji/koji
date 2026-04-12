@@ -1,0 +1,47 @@
+name: invoice
+description: Simple invoice extraction schema
+
+fields:
+  invoice_number:
+    type: string
+    required: true
+    description: The invoice or reference number
+
+  vendor_name:
+    type: string
+    required: true
+    description: Vendor or supplier name
+
+  date:
+    type: date
+    required: true
+    description: Invoice date
+
+  due_date:
+    type: date
+    description: Payment due date
+
+  total_amount:
+    type: number
+    required: true
+    description: Total invoice amount
+
+  currency:
+    type: string
+    default: USD
+    description: Currency code (ISO 4217)
+
+  line_items:
+    type: array
+    description: Individual line items on the invoice
+    items:
+      type: object
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unit_price:
+          type: number
+        amount:
+          type: number

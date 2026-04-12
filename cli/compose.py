@@ -6,19 +6,45 @@ import yaml
 
 from server.config import KojiConfig
 
+# Registry for pre-built Koji images. Override the tag via cluster.version.
+GHCR_NAMESPACE = "ghcr.io/getkoji"
 
-def generate_compose(config: KojiConfig, project_dir: str) -> dict:
-    """Generate a docker-compose dict from a KojiConfig."""
+
+def _image_or_build(
+    service_name: str,
+    dockerfile: str,
+    version: str,
+    project_dir: str,
+    dev: bool,
+) -> dict:
+    """Return either an `image:` ref (pull mode) or a `build:` block (dev mode)."""
+    if dev:
+        return {
+            "build": {
+                "context": project_dir,
+                "dockerfile": dockerfile,
+            },
+        }
+    return {"image": f"{GHCR_NAMESPACE}/{service_name}:{version}"}
+
+
+def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = None) -> dict:
+    """Generate a docker-compose dict from a KojiConfig.
+
+    By default, services reference pre-built images on ghcr.io/getkoji. Pass
+    ``dev=True`` (or set ``cluster.dev: true`` in koji.yaml) to build images
+    from local source instead — the contributor workflow.
+    """
     cluster = config.cluster
     project = config.project
     svc_cfg = config.services
+    version = cluster.version
+    # Explicit `dev` arg wins; otherwise fall back to the cluster config flag.
+    dev_mode = cluster.dev if dev is None else dev
 
     services: dict = {
         "koji-server": {
-            "build": {
-                "context": project_dir,
-                "dockerfile": "docker/server.Dockerfile",
-            },
+            **_image_or_build("server", "docker/server.Dockerfile", version, project_dir, dev_mode),
             "container_name": f"koji-{project}-server",
             "ports": [f"127.0.0.1:{cluster.server_port}:9401"],
             "volumes": [
@@ -42,10 +68,7 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
             "networks": [f"koji-{project}"],
         },
         "koji-ui": {
-            "build": {
-                "context": project_dir,
-                "dockerfile": "docker/ui.Dockerfile",
-            },
+            **_image_or_build("ui", "docker/ui.Dockerfile", version, project_dir, dev_mode),
             "container_name": f"koji-{project}-ui",
             "ports": [f"127.0.0.1:{cluster.ui_port}:9400"],
             "environment": {
@@ -62,10 +85,7 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
 
     if svc_cfg.parse:
         services["koji-parse"] = {
-            "build": {
-                "context": project_dir,
-                "dockerfile": "docker/parse.Dockerfile",
-            },
+            **_image_or_build("parse", "docker/parse.Dockerfile", version, project_dir, dev_mode),
             "container_name": f"koji-{project}-parse",
             "ports": [f"127.0.0.1:{cluster.parse_port}:9410"],
             "volumes": [
@@ -93,10 +113,7 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
         "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
     }
     extract_svc: dict = {
-        "build": {
-            "context": project_dir,
-            "dockerfile": "docker/extract.Dockerfile",
-        },
+        **_image_or_build("extract", "docker/extract.Dockerfile", version, project_dir, dev_mode),
         "container_name": f"koji-{project}-extract",
         "ports": [f"127.0.0.1:{cluster.extract_port}:9420"],
         "environment": extract_env,
@@ -161,9 +178,14 @@ def generate_compose(config: KojiConfig, project_dir: str) -> dict:
     }
 
 
-def write_compose(config: KojiConfig, project_dir: str, output_dir: str) -> str:
+def write_compose(
+    config: KojiConfig,
+    project_dir: str,
+    output_dir: str,
+    dev: bool | None = None,
+) -> str:
     """Generate and write docker-compose.yaml. Returns the file path."""
-    compose = generate_compose(config, project_dir)
+    compose = generate_compose(config, project_dir, dev=dev)
     output_path = f"{output_dir}/docker-compose.yaml"
 
     with open(output_path, "w") as f:

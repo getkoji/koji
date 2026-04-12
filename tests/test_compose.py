@@ -148,3 +148,105 @@ class TestBothDisabled:
     def test_no_optional_volumes(self):
         compose = generate_compose(_make_config(parse=False, ollama=False), PROJECT_DIR)
         assert compose["volumes"] == {}
+
+
+# ── Pull vs build mode tests ─────────────────────────────────────────
+#
+# Default (pull) mode references pre-built images on ghcr.io/getkoji.
+# Dev mode preserves the old build-from-source behavior for contributors.
+
+from server.config import ClusterConfig  # noqa: E402
+
+
+class TestPullModeDefault:
+    """Default mode: services reference ghcr.io/getkoji images, no build blocks."""
+
+    def _koji_services(self, compose: dict) -> list[str]:
+        return [name for name in compose["services"] if name.startswith("koji-")]
+
+    def test_all_koji_services_use_image_ref(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        for name in self._koji_services(compose):
+            svc = compose["services"][name]
+            assert "image" in svc, f"{name} should have an image ref in pull mode"
+            assert "build" not in svc, f"{name} should not have a build block in pull mode"
+
+    def test_server_image_ref(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        assert compose["services"]["koji-server"]["image"] == "ghcr.io/getkoji/server:latest"
+
+    def test_ui_image_ref(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        assert compose["services"]["koji-ui"]["image"] == "ghcr.io/getkoji/ui:latest"
+
+    def test_parse_image_ref(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        assert compose["services"]["koji-parse"]["image"] == "ghcr.io/getkoji/parse:latest"
+
+    def test_extract_image_ref(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:latest"
+
+    def test_ollama_still_uses_upstream_image(self):
+        """The ollama service is unrelated to Koji builds and must keep its upstream image."""
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
+        assert compose["services"]["ollama"]["image"] == "ollama/ollama:latest"
+
+
+class TestVersionTag:
+    """The cluster.version field controls the image tag for all Koji services."""
+
+    def test_custom_version_tag_applied_to_all_services(self):
+        config = KojiConfig(project="test", cluster=ClusterConfig(version="v0.2.0"))
+        compose = generate_compose(config, PROJECT_DIR)
+        assert compose["services"]["koji-server"]["image"] == "ghcr.io/getkoji/server:v0.2.0"
+        assert compose["services"]["koji-ui"]["image"] == "ghcr.io/getkoji/ui:v0.2.0"
+        assert compose["services"]["koji-parse"]["image"] == "ghcr.io/getkoji/parse:v0.2.0"
+        assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:v0.2.0"
+
+    def test_default_version_is_latest(self):
+        config = KojiConfig(project="test")
+        assert config.cluster.version == "latest"
+
+
+class TestDevMode:
+    """Dev mode preserves the old build-from-source behavior for contributors."""
+
+    def _koji_services(self, compose: dict) -> list[str]:
+        return [name for name in compose["services"] if name.startswith("koji-")]
+
+    def test_dev_arg_produces_build_blocks(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
+        for name in self._koji_services(compose):
+            svc = compose["services"][name]
+            assert "build" in svc, f"{name} should have a build block in dev mode"
+            assert "image" not in svc, f"{name} should not have an image ref in dev mode"
+
+    def test_dev_build_context_and_dockerfile(self):
+        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
+        server_build = compose["services"]["koji-server"]["build"]
+        assert server_build["context"] == PROJECT_DIR
+        assert server_build["dockerfile"] == "docker/server.Dockerfile"
+
+        parse_build = compose["services"]["koji-parse"]["build"]
+        assert parse_build["dockerfile"] == "docker/parse.Dockerfile"
+
+        extract_build = compose["services"]["koji-extract"]["build"]
+        assert extract_build["dockerfile"] == "docker/extract.Dockerfile"
+
+        ui_build = compose["services"]["koji-ui"]["build"]
+        assert ui_build["dockerfile"] == "docker/ui.Dockerfile"
+
+    def test_cluster_dev_flag_also_triggers_build(self):
+        """Setting cluster.dev: true in koji.yaml should behave like --dev."""
+        config = KojiConfig(project="test", cluster=ClusterConfig(dev=True))
+        compose = generate_compose(config, PROJECT_DIR)
+        assert "build" in compose["services"]["koji-server"]
+        assert "image" not in compose["services"]["koji-server"]
+
+    def test_explicit_dev_false_overrides_cluster_flag(self):
+        """Passing dev=False explicitly should win over cluster.dev = True."""
+        config = KojiConfig(project="test", cluster=ClusterConfig(dev=True))
+        compose = generate_compose(config, PROJECT_DIR, dev=False)
+        assert "image" in compose["services"]["koji-server"]
+        assert "build" not in compose["services"]["koji-server"]

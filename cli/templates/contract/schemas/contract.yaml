@@ -1,0 +1,107 @@
+name: contract
+description: Basic contract extraction — parties, dates, term, and key clauses
+
+categories:
+  keywords:
+    preamble: ["this agreement", "entered into", "by and between"]
+    definitions: ["defined terms", "definitions", "capitalized terms"]
+    term: ["term of this agreement", "effective date", "expiration", "renewal"]
+    payment: ["payment", "fees", "compensation", "consideration"]
+    termination: ["termination", "notice of termination", "for cause"]
+    governing_law: ["governing law", "jurisdiction", "venue"]
+
+fields:
+  title:
+    type: string
+    required: true
+    description: Title of the agreement as it appears in the header
+
+  contract_type:
+    type: enum
+    description: Category of the agreement
+    options:
+      - NDA
+      - MSA
+      - SOW
+      - Employment
+      - Service
+      - License
+      - Lease
+      - Purchase
+      - Other
+
+  parties:
+    type: array
+    required: true
+    description: All named parties to the agreement
+    items:
+      type: object
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          description: e.g. "Client", "Contractor", "Licensor"
+        entity_type:
+          type: string
+          description: e.g. "Delaware corporation", "individual", "LLC"
+    hints:
+      look_in: [preamble]
+      patterns: ["by and between", "party of the (?:first|second) part"]
+      signals: [has_name_references]
+
+  effective_date:
+    type: date
+    required: true
+    description: Date the agreement takes effect
+    hints:
+      look_in: [preamble, term]
+      patterns: ["effective\\s+date", "commencement\\s+date"]
+      signals: [has_dates]
+
+  expiration_date:
+    type: date
+    description: Date the agreement ends, if a fixed term
+    hints:
+      look_in: [term]
+      patterns: ["expir", "end\\s+date", "termination\\s+date"]
+      signals: [has_dates]
+
+  term_length:
+    type: string
+    description: Human-readable term length (e.g. "1 year", "24 months", "perpetual")
+    hints:
+      look_in: [term]
+      patterns: ["term.*(?:year|month|day)", "initial\\s+term"]
+
+  auto_renewal:
+    type: boolean
+    description: Whether the contract auto-renews
+    hints:
+      look_in: [term]
+      patterns: ["auto.*renew", "automatically\\s+renew"]
+
+  total_value:
+    type: number
+    description: Total contract value, if stated
+    hints:
+      look_in: [payment]
+      signals: [has_dollar_amounts]
+
+  currency:
+    type: string
+    default: USD
+
+  governing_law:
+    type: string
+    description: Governing law / jurisdiction (e.g. "State of Delaware")
+    hints:
+      look_in: [governing_law]
+      patterns: ["governed by", "laws of"]
+
+  termination_notice_days:
+    type: number
+    description: Notice period required for termination, in days
+    hints:
+      look_in: [termination]
+      patterns: ["\\d+\\s+days.*notice", "notice.*\\d+\\s+days"]

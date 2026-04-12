@@ -50,6 +50,11 @@ koji = "cli.main:app"
 [tool.hatch.build.targets.wheel]
 packages = ["cli", "server", "sdk"]
 
+# Ship the bundled project templates (koji.yaml, schemas/*.yaml, READMEs) so
+# they are accessible via importlib.resources when koji is installed via pip.
+[tool.hatch.build.targets.wheel.force-include]
+"cli/templates" = "cli/templates"
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

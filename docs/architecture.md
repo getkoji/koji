@@ -81,6 +81,15 @@ The Parse Service converts any document into clean markdown. It handles PDFs, Wo
 
 This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.
 
+#### Base image split
+
+The parse service image is split into two layers to keep rebuilds fast:
+
+- `docker/parse.base.Dockerfile` — a heavyweight base image (`ghcr.io/getkoji/parse-base`) that pins Python, docling, torch (CPU), transformers, and the OCR system stack (tesseract, poppler). It is ~5GB and rebuilds rarely — only when `parse.base.Dockerfile` changes or on a manual workflow dispatch.
+- `docker/parse.Dockerfile` — a thin application image that `FROM`s the base and only copies `services/parse/`. It is ~50MB on top of the base and rebuilds in seconds on every push.
+
+This means editing the parse service's Python code triggers a tiny rebuild instead of reinstalling docling, torch, and the OCR toolchain every time. Dependency bumps still require a base image rebuild; bump the pinned versions in `parse.base.Dockerfile` and run the `Publish Images` workflow with `build_parse_base=true` (or push a tag). All pinned versions are explicit — no `latest` — so both images are reproducible.
+
 ### Extract Service
 
 **Port:** 9420 (internal) | **Technology:** Custom pipeline + FastAPI

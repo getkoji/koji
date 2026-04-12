@@ -1,0 +1,21 @@
+# Koji configuration
+# Docs: https://getkoji.dev/docs/configuration
+#
+# description: Commercial insurance policy extraction with category routing and hints.
+
+project: {project}
+
+cluster:
+  base_port: 9400
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/insurance_policy.yaml
+
+output:
+  structured: ./output/

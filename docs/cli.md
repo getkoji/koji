@@ -9,6 +9,23 @@ The `koji` CLI manages clusters and processes documents.
 
 ## Commands
 
+### `koji init`
+
+Scaffold a new Koji project.
+
+```bash
+koji init                              # bare koji.yaml in the current directory
+koji init myproject                    # new project directory with koji.yaml
+koji init myproject --template invoice # scaffold from a bundled template
+koji init --list-templates             # show all available templates
+```
+
+| Flag | Description |
+|------|-------------|
+| `--template`, `-t` | Scaffold from a bundled template (`invoice`, `receipt`, `contract`, `insurance`, `form`) |
+| `--quickstart`, `-q` | Alias for `--template invoice` |
+| `--list-templates` | List available templates and exit |
+
 ### `koji start`
 
 Start the cluster defined in `koji.yaml`.

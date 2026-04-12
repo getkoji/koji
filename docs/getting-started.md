@@ -30,8 +30,10 @@ koji version
 
 ## Initialize a project
 
+Koji ships with a set of domain templates so you can scaffold a project with a working schema in one command:
+
 ```bash
-koji init myproject --quickstart
+koji init myproject --template invoice
 cd myproject
 ```
 
@@ -41,10 +43,26 @@ This creates:
 myproject/
   koji.yaml              # pipeline configuration
   schemas/
-    invoice.yaml         # example extraction schema
+    invoice.yaml         # extraction schema
 ```
 
-The `--quickstart` flag scaffolds an example schema so you have something to work with immediately.
+### Available templates
+
+| Template | What you get |
+|----------|--------------|
+| `invoice` | Invoice number, vendor, dates, totals, line items |
+| `receipt` | POS receipt: merchant, items, tax, tip, payment method |
+| `contract` | Contract: parties, term, effective/expiration dates, governing law |
+| `insurance` | Commercial insurance policy with category routing and hints |
+| `form` | Government form: name, DOB, address, checkboxes |
+
+List them at any time:
+
+```bash
+koji init --list-templates
+```
+
+Plain `koji init myproject` (no template) creates just a `koji.yaml` so you can define your own schema from scratch. `--quickstart` still works and is an alias for `--template invoice`.
 
 ## Configure
 
@@ -54,19 +72,7 @@ Set your OpenAI API key so Koji can pass it through to containers:
 export OPENAI_API_KEY="sk-..."
 ```
 
-The generated `koji.yaml` looks like this:
-
-```yaml
-project: myproject
-
-cluster:
-  base_port: 9400
-
-output:
-  structured: ./output/
-```
-
-That's a minimal config. For extraction, you'll also want a pipeline section. Edit `koji.yaml`:
+Templates ship with a working pipeline already wired up. The generated `koji.yaml` from `--template invoice` looks like this:
 
 ```yaml
 project: myproject
@@ -88,6 +94,8 @@ output:
 ```
 
 Using ollama instead? Set `model: llama3.2` and make sure ollama is running locally. No API key needed.
+
+> Running plain `koji init` with no template? You'll get just the `project`, `cluster`, and `output` sections — add a `pipeline:` block yourself when you're ready to wire up extraction.
 
 ## Start the cluster
 

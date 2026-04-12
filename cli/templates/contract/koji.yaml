@@ -1,0 +1,21 @@
+# Koji configuration
+# Docs: https://getkoji.dev/docs/configuration
+#
+# description: Contract extraction — parties, effective dates, term, and key clauses.
+
+project: {project}
+
+cluster:
+  base_port: 9400
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/contract.yaml
+
+output:
+  structured: ./output/

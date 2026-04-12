@@ -140,7 +140,7 @@ koji extract ./output/doc.md --schema ./schema.yaml --model openai/gpt-4o-mini
 
 | Command | Description |
 |---------|-------------|
-| `koji init [dir]` | Scaffold a new project (`--quickstart` for example schema) |
+| `koji init [dir]` | Scaffold a new project (`--template invoice` and friends; `--list-templates`) |
 | `koji start` | Start the processing cluster |
 | `koji stop` | Stop the cluster |
 | `koji status` | Show service health |

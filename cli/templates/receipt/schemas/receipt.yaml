@@ -1,0 +1,74 @@
+name: receipt
+description: Point-of-sale receipt extraction
+
+fields:
+  merchant_name:
+    type: string
+    required: true
+    description: Merchant or store name as printed on the receipt
+
+  merchant_address:
+    type: string
+    description: Merchant street address
+
+  transaction_date:
+    type: date
+    required: true
+    description: Date the transaction occurred
+
+  transaction_time:
+    type: string
+    description: Time of the transaction (HH:MM, 24-hour if known)
+
+  receipt_number:
+    type: string
+    description: Receipt, order, or transaction identifier
+
+  payment_method:
+    type: enum
+    description: How the customer paid
+    options:
+      - cash
+      - credit
+      - debit
+      - gift_card
+      - check
+      - mobile
+      - other
+
+  subtotal:
+    type: number
+    description: Pre-tax subtotal
+
+  tax:
+    type: number
+    description: Total tax charged
+
+  tip:
+    type: number
+    description: Gratuity or tip amount
+
+  total:
+    type: number
+    required: true
+    description: Final amount charged to the customer
+
+  currency:
+    type: string
+    default: USD
+    description: Currency code (ISO 4217)
+
+  items:
+    type: array
+    description: Individual line items purchased
+    items:
+      type: object
+      properties:
+        name:
+          type: string
+        quantity:
+          type: number
+        unit_price:
+          type: number
+        total:
+          type: number

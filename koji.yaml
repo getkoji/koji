@@ -6,6 +6,12 @@ project: koji-dev
 cluster:
   name: default
   base_port: 9400  # dashboard at :9400, server at :9401, services auto-assign from :9410+
+  # By default, koji start pulls pre-built images from ghcr.io/getkoji (fast: ~30s).
+  # Pin a specific release by setting version: v0.2.0 (default: "latest").
+  # version: latest
+  # Contributors working on Koji itself can build from local source instead,
+  # either by passing `koji start --dev` or by setting dev: true below.
+  # dev: false
 
 # services:
 #   parse: true     # Set to false to skip the parse service (e.g., extracting from pre-parsed markdown)

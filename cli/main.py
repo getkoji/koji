@@ -15,7 +15,7 @@ from .cluster import (
     stop_cluster,
 )
 from .doctor import run_all_checks
-from .init import run_init
+from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
@@ -30,17 +30,42 @@ console = Console()
 @app.command()
 def init(
     project_dir: str | None = typer.Argument(None, help="Directory name to create (default: current directory)"),
-    quickstart: bool = typer.Option(False, "--quickstart", "-q", help="Include example schema and sample config"),
+    quickstart: bool = typer.Option(
+        False,
+        "--quickstart",
+        "-q",
+        help="Include example schema and sample config (alias for --template invoice)",
+    ),
+    template: str | None = typer.Option(
+        None,
+        "--template",
+        "-t",
+        help="Scaffold from a bundled template (e.g. invoice, insurance, receipt, contract, form)",
+    ),
+    list_templates: bool = typer.Option(
+        False,
+        "--list-templates",
+        help="List available templates and exit",
+    ),
 ):
     """Scaffold a new Koji project."""
-    run_init(project_dir, quickstart, console)
+    if list_templates:
+        run_list_templates(console)
+        return
+    run_init(project_dir, quickstart, console, template=template)
 
 
 @app.command()
-def start():
+def start(
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Build images from local source instead of pulling from ghcr.io/getkoji. For Koji contributors.",
+    ),
+):
     """Start the Koji cluster."""
     config = load_project_config()
-    start_cluster(config)
+    start_cluster(config, dev=dev)
 
 
 @app.command()

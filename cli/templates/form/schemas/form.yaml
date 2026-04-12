@@ -1,0 +1,94 @@
+name: form
+description: Government form extraction — names, dates, addresses, checkboxes
+
+fields:
+  form_number:
+    type: string
+    description: Form number or identifier (e.g. "W-9", "I-9", "DS-11")
+    hints:
+      patterns: ["form\\s+[A-Z0-9\\-]+", "^[A-Z]{1,3}\\-?\\d{1,4}"]
+      signals: [has_key_value_pairs]
+
+  form_title:
+    type: string
+    description: Full title of the form
+
+  filing_date:
+    type: date
+    description: Date the form was signed or filed
+    hints:
+      patterns: ["date", "signed\\s+on", "filed"]
+      signals: [has_dates]
+
+  full_name:
+    type: string
+    required: true
+    description: Full legal name of the primary filer
+    hints:
+      patterns: ["(?:full|legal)?\\s*name", "last\\s+name.*first\\s+name"]
+      signals: [has_name_references]
+
+  first_name:
+    type: string
+    description: First / given name
+
+  middle_name:
+    type: string
+    description: Middle name or initial
+
+  last_name:
+    type: string
+    description: Last / family / surname
+
+  date_of_birth:
+    type: date
+    description: Date of birth
+    hints:
+      patterns: ["date\\s+of\\s+birth", "dob", "born"]
+      signals: [has_dates]
+
+  ssn:
+    type: string
+    description: Social Security Number (or national ID) if present, as printed
+    hints:
+      patterns: ["social\\s+security", "ssn", "\\d{3}-\\d{2}-\\d{4}"]
+
+  phone:
+    type: string
+    description: Primary phone number
+
+  email:
+    type: string
+    description: Email address
+
+  mailing_address:
+    type: object
+    description: Mailing address of the filer
+    properties:
+      street:
+        type: string
+      city:
+        type: string
+      state:
+        type: string
+      postal_code:
+        type: string
+      country:
+        type: string
+
+  checkboxes:
+    type: array
+    description: Checkbox / selection fields and whether they are marked
+    items:
+      type: object
+      properties:
+        label:
+          type: string
+          description: Label or question next to the checkbox
+        checked:
+          type: boolean
+          description: True if the box appears marked / checked
+
+  signature_present:
+    type: boolean
+    description: Whether a handwritten signature is visible on the form

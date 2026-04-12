@@ -12,6 +12,14 @@ from pydantic import BaseModel, Field
 class ClusterConfig(BaseModel):
     name: str = "default"
     base_port: int = Field(default=9400, description="Base port for the cluster")
+    version: str = Field(
+        default="latest",
+        description="Image tag to pull from ghcr.io/getkoji (e.g. 'latest', 'v0.2.0')",
+    )
+    dev: bool = Field(
+        default=False,
+        description="Build images from local source instead of pulling from ghcr.io/getkoji",
+    )
 
     @property
     def ui_port(self) -> int:

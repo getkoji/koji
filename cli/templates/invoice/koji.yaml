@@ -1,0 +1,21 @@
+# Koji configuration
+# Docs: https://getkoji.dev/docs/configuration
+#
+# description: Simple invoice extraction — vendor, dates, totals, line items.
+
+project: {project}
+
+cluster:
+  base_port: 9400
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+output:
+  structured: ./output/

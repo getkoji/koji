@@ -131,10 +131,18 @@ def check_port_conflicts(config: KojiConfig) -> None:
     raise SystemExit(1)
 
 
-def start_cluster(config: KojiConfig) -> None:
-    """Start the Koji cluster."""
+def start_cluster(config: KojiConfig, dev: bool = False) -> None:
+    """Start the Koji cluster.
+
+    By default, pre-built images are pulled from ghcr.io/getkoji. Pass
+    ``dev=True`` (or set ``cluster.dev: true`` in koji.yaml) to build images
+    from local source — the contributor workflow.
+    """
     project_dir = get_project_dir()
     koji_dir = get_koji_dir()
+
+    # CLI flag wins; otherwise fall back to the cluster config flag.
+    dev_mode = dev or config.cluster.dev
 
     # Check for port conflicts before doing anything with Docker
     check_port_conflicts(config)
@@ -142,15 +150,25 @@ def start_cluster(config: KojiConfig) -> None:
     console.print(f"\n[bold]Starting Koji cluster [cyan]{config.project}[/cyan]...[/bold]\n")
 
     # Generate docker-compose
-    compose_path = write_compose(config, project_dir, str(koji_dir))
+    compose_path = write_compose(config, project_dir, str(koji_dir), dev=dev_mode)
     console.print(f"  Generated {compose_path}")
 
-    # Build and start
-    console.print("  Building containers...")
-    result = run_compose(["build", "--quiet"], koji_dir)
-    if result.returncode != 0:
-        console.print(f"[red]Build failed:[/red]\n{result.stderr}")
-        raise SystemExit(1)
+    if dev_mode:
+        console.print("  Building containers from source (dev mode)...")
+        result = run_compose(["build", "--quiet"], koji_dir)
+        if result.returncode != 0:
+            console.print(f"[red]Build failed:[/red]\n{result.stderr}")
+            raise SystemExit(1)
+    else:
+        console.print(f"  Pulling images (ghcr.io/getkoji, tag: {config.cluster.version})...")
+        # Stream pull output so users see progress on large downloads.
+        compose_file = str(koji_dir / "docker-compose.yaml")
+        pull_result = subprocess.run(
+            ["docker", "compose", "-f", compose_file, "pull"],
+        )
+        if pull_result.returncode != 0:
+            console.print("[red]Pull failed.[/red] Run [bold]koji start --dev[/bold] to build from source instead.")
+            raise SystemExit(1)
 
     console.print("  Starting services...")
     result = run_compose(["up", "-d"], koji_dir)

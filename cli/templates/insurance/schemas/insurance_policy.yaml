@@ -1,0 +1,116 @@
+name: insurance_policy
+description: Commercial insurance policy extraction
+
+# Document categories — used by the classifier to label sections.
+# Define categories relevant to your document type.
+categories:
+  keywords:
+    declarations: ["declaration", "dec page", "named insured", "policy period"]
+    schedule_of_coverages: ["schedule of", "coverage schedule", "limits of"]
+    endorsement: ["endorsement", "amendment", "rider", "this endorsement modifies"]
+    conditions: ["conditions", "general conditions", "policy conditions"]
+    exclusions: ["exclusion", "does not apply", "we will not"]
+
+fields:
+  policy_number:
+    type: string
+    required: true
+    description: Policy number or ID
+    hints:
+      look_in: [declarations]
+      patterns: ["policy.*(?:number|no|#)", "[A-Z]{2,5}\\d{5,}"]
+      signals: [has_policy_numbers, has_key_value_pairs]
+
+  insured_name:
+    type: string
+    required: true
+    description: Named insured (policyholder)
+    hints:
+      look_in: [declarations]
+      patterns: ["(?:named\\s+)?insured", "policyholder"]
+      signals: [has_name_references]
+
+  effective_date:
+    type: date
+    required: true
+    description: Policy effective date
+    hints:
+      look_in: [declarations]
+      patterns: ["effective.*date", "policy\\s+period"]
+      signals: [has_dates]
+
+  expiration_date:
+    type: date
+    required: true
+    description: Policy expiration date
+    hints:
+      look_in: [declarations]
+      patterns: ["expir", "policy\\s+period"]
+      signals: [has_dates]
+
+  carrier:
+    type: string
+    description: Insurance carrier / company name
+    hints:
+      look_in: [declarations, common_policy]
+      patterns: ["(?:insurance|carrier|company|underwr)", "(?:issued\\s+by|insurer)"]
+
+  policy_type:
+    type: enum
+    description: Type of policy
+    options:
+      - BOP
+      - General Liability
+      - Workers Compensation
+      - Commercial Property
+      - Commercial Auto
+      - Umbrella
+      - Excess Liability
+      - Professional Liability
+      - Directors & Officers
+      - Employment Practices Liability
+      - Cyber Liability
+      - Other
+    hints:
+      look_in: [declarations]
+      patterns: ["(?:type|kind|form).*(?:policy|coverage)", "businessowners", "general\\s+liability"]
+
+  premium:
+    type: number
+    description: Total premium amount
+    hints:
+      look_in: [declarations]
+      patterns: ["(?:total\\s+)?premium", "(?:annual|policy)\\s+premium"]
+      signals: [has_dollar_amounts]
+      prefer: declarations
+
+  agent_name:
+    type: string
+    description: Agent or broker name
+    hints:
+      look_in: [declarations]
+      patterns: ["agent", "broker", "producer"]
+
+  agency_name:
+    type: string
+    description: Agency name
+    hints:
+      look_in: [declarations]
+      patterns: ["agency", "brokerage"]
+
+  coverages:
+    type: array
+    description: List of coverages with limits
+    items:
+      type: object
+      properties:
+        coverage_name:
+          type: string
+        limit:
+          type: string
+        deductible:
+          type: string
+    hints:
+      look_in: [schedule_of_coverages, declarations]
+      signals: [has_tables, has_dollar_amounts]
+      patterns: ["coverage", "limit", "deductible"]
