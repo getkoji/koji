@@ -116,6 +116,38 @@ cluster:
 # dashboard at :9500, server at :9501, parse at :9511, etc.
 ```
 
+### `cluster.version`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"latest"` |
+| **Required** | No |
+
+The image tag to pull from `ghcr.io/getkoji`. Defaults to `latest`. Pin a specific release for reproducible deployments:
+
+```yaml
+cluster:
+  version: v0.2.0
+```
+
+### `cluster.dev`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `false` |
+| **Required** | No |
+
+Build images from local source instead of pulling from `ghcr.io/getkoji`. Required when developing on Koji itself. The `koji start --dev` CLI flag sets this for one invocation.
+
+```yaml
+cluster:
+  dev: true
+```
+
+Most users should leave this `false` and let Koji pull pre-built images.
+
 ---
 
 ## `services`
@@ -164,13 +196,13 @@ An ordered list of processing steps. Each step defines one stage of the document
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `step` | `string` | -- | **Required.** Step type: `parse`, `extract`, etc. |
-| `engine` | `string` | `null` | Processing engine (e.g., `docling` for parsing). |
-| `model` | `string` | `null` | Model in `provider/model-name` format (e.g., `openai/gpt-4o-mini`). |
+| `step` | `string` | — | **Required.** Step type: `parse` or `extract`. |
+| `engine` | `string` | `null` | Processing engine for parsing (e.g., `docling`). |
+| `model` | `string` | `null` | Model in `provider/model-name` format (e.g., `openai/gpt-4o-mini`, `ollama/llama3.2`). |
 | `schemas` | `list[string]` | `null` | Paths to schema YAML files for extraction. |
-| `ocr` | `string` | `null` | OCR engine to use during parsing (engine-specific). |
-| `strategy` | `string` | `null` | Extraction strategy: `parallel` (default) or `agent`. |
-| `categories` | `list[string]` | `null` | Document categories for classification. |
+| `ocr` | `string` | `null` | OCR engine for the parse step (engine-specific). |
+| `strategy` | `string` | `"intelligent"` | Extraction strategy: `intelligent` (default), `parallel`, or `agent`. |
+| `categories` | `list[string]` | `null` | (`parallel` strategy only) Restrict extraction to these chunk categories. Ignored by the default `intelligent` strategy, which routes via schema hints. |
 | `max_tokens` | `integer` | `null` | Maximum token limit for model calls in this step. |
 
 ### Parse step

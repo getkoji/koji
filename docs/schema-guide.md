@@ -103,7 +103,29 @@ policy_type:
 
 Output: `"policy_type": "General Liability"`
 
-Enum matching is fuzzy -- if the document says "Gen. Liability" or "GL", Koji matches it to "General Liability". See [Enum matching](#enum-matching) for details.
+Enum matching is fuzzy — if the document says "Gen. Liability" or "GL", Koji matches it to "General Liability". See [Enum matching](#enum-matching) for details.
+
+### mapping
+
+Like `enum`, but with **explicit aliases** for normalization. Use this when real-world documents have many different ways of writing the same canonical value.
+
+```yaml
+policy_type:
+  type: mapping
+  description: Type of insurance policy
+  mappings:
+    BOP: ["Business Owners Policy", "Businessowners", "Bus. Owners", "BOP"]
+    GL: ["General Liability", "CGL", "Commercial General Liability"]
+    WC: ["Workers Compensation", "Workers Comp", "Work Comp", "WC"]
+```
+
+Each canonical key has a list of aliases. The extracted value is normalized to the canonical key:
+
+- "Business Owners Policy" → `"BOP"`
+- "CGL" → `"GL"`
+- "Workers Comp" → `"WC"`
+
+Matching is case-insensitive, with fuzzy substring fallback. Use `mapping` when downstream systems expect a fixed set of identifiers (e.g., insurance product codes, country codes, currency codes) rather than the raw text the document uses.
 
 ### array
 
@@ -189,49 +211,46 @@ policy_number:
   hints:
     look_in: [declarations]
     patterns: ["policy.*(?:number|no|#)", "[A-Z]{2,5}\\d{5,}"]
-    signals: [has_policy_numbers, has_key_value_pairs]
+    signals: [has_key_value_pairs]
 ```
+
+> Want a domain-specific signal like `has_policy_numbers`? Define it as a custom signal in your schema. See the [signals](#signals) section below.
 
 ### look_in
 
-Routes the field to specific document categories. This is the highest-priority hint -- if a chunk matches the category, it gets a large score boost.
+Routes the field to specific document categories. This is the highest-priority hint — if a chunk matches the category, it gets a large score boost.
 
 ```yaml
 hints:
-  look_in: [declarations, schedule_of_coverages]
+  look_in: [header, totals]
 ```
 
-**Available categories** (built-in):
+Categories are **defined entirely by your schema**. Koji ships with no built-in categories — instead, the schema's `categories.keywords` block tells the mapper which keywords identify which sections of your documents. Without category definitions, every chunk is `other` and `look_in` has nothing to match against.
 
-| Category | Detected by keywords |
-|----------|---------------------|
-| `declarations` | "declaration", "dec page", "named insured", "policy period" |
-| `schedule_of_coverages` | "schedule of", "coverage schedule", "limits of" |
-| `endorsement` | "endorsement", "amendment", "rider", "this endorsement modifies" |
-| `conditions` | "conditions", "general conditions", "policy conditions" |
-| `definitions` | "definitions", "defined terms", "as used in this" |
-| `exclusions` | "exclusion", "does not apply", "we will not pay" |
-| `table_of_contents` | "table of contents", "index of forms" |
-| `common_policy` | "common policy", "interline" |
-
-Categories are detected from section titles (strong signal) and content keywords (requires 2+ keyword matches). Sections that don't match any category are labeled `other`.
-
-You can also define **custom categories** in your schema using the `categories` block:
+Define categories at the top of your schema:
 
 ```yaml
-name: insurance_policy
-description: Commercial insurance policy extraction
+name: invoice
+description: Commercial invoice extraction
 
 categories:
   keywords:
-    declarations: ["declaration", "dec page", "named insured", "policy period"]
-    schedule_of_coverages: ["schedule of", "coverage schedule", "limits of"]
-    endorsement: ["endorsement", "amendment", "rider", "this endorsement modifies"]
-    conditions: ["conditions", "general conditions", "policy conditions"]
-    exclusions: ["exclusion", "does not apply", "we will not"]
+    header: ["invoice", "bill to", "ship to", "invoice number"]
+    line_items: ["description", "quantity", "unit price"]
+    totals: ["subtotal", "tax", "total due", "balance"]
+
+fields:
+  invoice_number:
+    type: string
+    required: true
+    hints:
+      look_in: [header]
+  ...
 ```
 
-Custom categories extend the built-in ones. Define them when your document type has domain-specific sections.
+Categories are detected from section titles (strong signal — one keyword in the title matches) and content keywords (weaker signal — requires 2+ keyword matches in the body). Sections that don't match any defined category are labeled `other`.
+
+For an insurance schema, you might define categories like `declarations`, `endorsement`, `conditions`, `exclusions`, etc. For a contract, `parties`, `term`, `compensation`, `termination`. The right categories are the ones that match your document type.
 
 ### patterns
 
@@ -256,37 +275,80 @@ Tips:
 
 ### signals
 
-Content signals detected automatically by the document mapper. Lowest priority among hints, but useful for disambiguation.
+Content signals detected automatically by the document mapper. Lowest priority among hints, but useful for disambiguation when multiple chunks could match a field.
 
 ```yaml
 hints:
   signals: [has_dollar_amounts, has_tables]
 ```
 
-**Available signals:**
+**Built-in signals:**
 
 | Signal | Detects |
 |--------|---------|
-| `has_dollar_amounts` | Dollar signs followed by numbers (`$1,234.56`) |
-| `has_dates` | Date patterns (`MM/DD/YYYY`, `YYYY-MM-DD`, etc.) |
-| `has_tables` | Pipe-delimited table rows (`\| ... \| ... \|`) |
+| `has_dollar_amounts` | Currency amounts: `$1,234.56`, `€500`, `£200`, `¥1000`, `1234.56 USD`, etc. |
+| `has_dates` | Date patterns (`MM/DD/YYYY`, `YYYY-MM-DD`, `DD.MM.YYYY`, etc.) |
 | `has_key_value_pairs` | Lines formatted as `Key: Value` |
-| `has_policy_numbers` | Alphanumeric IDs matching `[A-Z]{2,5}\d{5,}` |
-| `has_name_references` | Lines with "named insured", "policyholder", "name:" patterns |
+| `has_tables` | Pipe-delimited table rows (`\| ... \| ... \|`) |
 
-Signals are boolean -- either the chunk has the signal or it doesn't. Each matching signal adds a small score boost.
+Signals are boolean — either the chunk has the signal or it doesn't. Each matching signal adds a small score boost.
+
+**Custom signals**
+
+Built-in signals are purely structural. For domain-specific patterns (policy numbers, invoice numbers, named insured references, etc.), define **custom signals** in your schema:
+
+```yaml
+signals:
+  has_policy_numbers:
+    pattern: "[A-Z]{2,5}\\d{5,}"
+
+  has_named_insured:
+    pattern: "(?:named\\s+insured|policyholder)\\s*[:.]"
+    flags: "i"
+
+  has_invoice_id:
+    pattern: "INV[\\s-]?\\d{4,}"
+    flags: "i"
+```
+
+Each custom signal needs a `pattern` (a regex). Optional `flags` accept `i` (case-insensitive), `m` (multiline), and `s` (dotall). If the regex matches anywhere in a chunk's content, the signal is set to `true` and a `<name>_count` is set to the number of matches.
+
+Once defined, custom signals can be referenced in field hints just like built-in ones:
+
+```yaml
+fields:
+  policy_number:
+    type: string
+    hints:
+      signals: [has_policy_numbers, has_key_value_pairs]
+```
+
+This is how Koji stays domain-agnostic: structural signals are built in, anything insurance-specific (or invoice-specific, or contract-specific) lives in your schema.
+
+### max_chunks
+
+By default, each field is routed to the top 3 scoring chunks. Override this for fields that legitimately need to aggregate data from many chunks:
+
+```yaml
+hints:
+  max_chunks: 12
+```
+
+Use this for arrays of objects that span the document. Example: an insurance certificate's `policies` array, where each policy's detail lives in its own H3 section. The default cap of 3 misses most of the policies; setting `max_chunks: 12` lets the router pull from every detail section.
+
+Don't set this for simple scalar fields — it just wastes tokens.
 
 ### How hints interact
 
 The router scores every chunk against every field. The scoring priority:
 
-1. **look_in** -- +15 points if the chunk's category matches
-2. **patterns** -- +8 points if any regex pattern matches (only the first match counts)
-3. **signals** -- +4 points per matching signal
+1. **look_in** — +15 points if the chunk's category matches
+2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
+3. **signals** — +4 points per matching signal
 
-If a field has hints and any of them score > 0, the router uses only the hint-based score. Generic inference (field name matching, type-based signals) is skipped entirely. This means hints are authoritative -- once you add them, you're in control.
+If a field has hints and any of them score > 0, the router uses only the hint-based score. Generic inference (field name matching, type-based signals) is skipped entirely. This means hints are authoritative — once you add them, you're in control.
 
-The top 3 scoring chunks are selected for each field. Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
+The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
 
 ### When to use hints vs. letting the router infer
 
@@ -524,7 +586,7 @@ fields:
     description: Applicant full name
     hints:
       patterns: ["(?:applicant|insured).*name"]
-      signals: [has_key_value_pairs, has_name_references]
+      signals: [has_key_value_pairs]
 
   business_type:
     type: enum
@@ -674,7 +736,7 @@ fields:
     description: Patient full name
     hints:
       patterns: ["patient.*name", "member.*name"]
-      signals: [has_name_references]
+      signals: [has_key_value_pairs]
 
   provider_name:
     type: string

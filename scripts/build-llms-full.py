@@ -14,10 +14,11 @@ DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 NAV_ORDER = [
     "index.md",
     "getting-started.md",
+    "schema-guide.md",
     "configuration.md",
-    "schemas.md",
     "architecture.md",
     "cli.md",
+    "api-reference.md",
 ]
 
 

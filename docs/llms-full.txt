@@ -3,87 +3,48 @@
 
 ---
 
-# Koji
+# Koji Documentation
 
-**Documents in. Structured data out.**
+Koji is a self-hosted, config-driven document processing platform. Parse and extract structured data from any document — PDFs, Word, images, scans — using local models or any OpenAI-compatible API provider.
 
-Koji is a self-hosted document processing platform. Parse, split, classify, and extract structured data from any document — PDFs, Word, images, scans — using local models or any API provider.
+## Get started
 
-## Why Koji?
+New to Koji? Start here:
 
-- **Config-driven** — one YAML file defines your entire pipeline
-- **Self-hosted** — runs on your infra (docker-compose for dev, k8s for prod)
-- **Modular** — each processing step is an independent service
-- **Model-agnostic** — BYO models (local via ollama/vllm, or any API provider)
+- **[Getting Started](getting-started.md)** — install, configure, and extract data from your first document in five minutes
 
-## Quick Start
+## Core concepts
 
-```bash
-# Install the CLI
-pip install koji-cli
+- **[Schemas](schema-guide.md)** — define what to extract: field types, hints, arrays, enums, custom signals
+- **[Configuration](configuration.md)** — full `koji.yaml` reference
+- **[Architecture](architecture.md)** — how the pipeline works (map → route → extract → validate → reconcile)
 
-# Start a cluster
-koji start
+## Reference
 
-# Open the dashboard
-open http://127.0.0.1:9400
-```
+- **[CLI Reference](cli.md)** — all commands, flags, and usage examples
+- **[API Reference](api-reference.md)** — every HTTP endpoint, request/response shape, and example
 
-That's it. Your cluster is running. The dashboard shows service health, and you're ready to process documents.
+## Key ideas
 
-## Process Your First Document
+**Config-driven.** One YAML schema defines what to extract. The pipeline is generic — domain knowledge lives in your schema, not in the engine.
 
-Create a schema that describes what you want to extract:
+**Self-hosted.** Runs on your infrastructure. `docker compose` for development, the same containers for production. Documents never leave the network you control unless you want them to.
 
-```yaml
-# schemas/invoice.yaml
-name: invoice
-fields:
-  invoice_number:
-    type: string
-    required: true
-  date:
-    type: date
-  vendor:
-    type: string
-  total_amount:
-    type: number
-    required: true
-```
+**Model-agnostic.** Use any OpenAI-compatible API provider, local models via ollama, or your own inference endpoint. Mix and match per pipeline step.
 
-Process a document:
-
-```bash
-koji process ./invoice.pdf --schema ./schemas/invoice.yaml
-```
-
-Output:
-
-```json
-{
-  "invoice_number": "INV-2026-0042",
-  "date": "2026-03-15",
-  "vendor": "Acme Corp",
-  "total_amount": 4250.00
-}
-```
-
-## Next Steps
-
-- [Getting Started](getting-started.md) — full setup walkthrough
-- [Configuration](configuration.md) — `koji.yaml` reference
-- [Schemas](schemas.md) — define what you want to extract
-- [Architecture](architecture.md) — how the pieces fit together
-- [CLI Reference](cli.md) — all commands and flags
+**Open source.** Apache 2.0. Read the code, fork it, run it anywhere.
 
 ---
 
 # Getting Started
 
+Zero to structured data in five minutes. This guide walks you through installing Koji, starting a processing cluster, and extracting data from a document.
+
 ## Prerequisites
 
-- Python 3.11+
-- Docker (Docker Desktop or Docker Engine with Compose)
+- **Docker Desktop** (or Docker Engine with Compose v2) — running, with 8GB+ RAM allocated
+- **Python 3.11+**
+- **An OpenAI API key** (or [ollama](https://ollama.com) installed for fully local processing)
 
 ## Install
 
@@ -91,300 +52,732 @@ Output:
 pip install koji-cli
 ```
 
-Verify the installation:
+Verify it worked:
 
 ```bash
-koji --version
+koji version
+# koji 0.1.0
 ```
 
-## Start a Cluster
+> Installing from source? Clone the repo and `pip install -e .` from the project root.
 
-Navigate to your project directory and start Koji:
+## Initialize a project
+
+Koji ships with a set of domain templates so you can scaffold a project with a working schema in one command:
+
+```bash
+koji init myproject --template invoice
+cd myproject
+```
+
+This creates:
+
+```
+myproject/
+  koji.yaml              # pipeline configuration
+  schemas/
+    invoice.yaml         # extraction schema
+```
+
+### Available templates
+
+| Template | What you get |
+|----------|--------------|
+| `invoice` | Invoice number, vendor, dates, totals, line items |
+| `receipt` | POS receipt: merchant, items, tax, tip, payment method |
+| `contract` | Contract: parties, term, effective/expiration dates, governing law |
+| `insurance` | Commercial insurance policy with category routing and hints |
+| `form` | Government form: name, DOB, address, checkboxes |
+
+List them at any time:
+
+```bash
+koji init --list-templates
+```
+
+Plain `koji init myproject` (no template) creates just a `koji.yaml` so you can define your own schema from scratch. `--quickstart` still works and is an alias for `--template invoice`.
+
+## Configure
+
+Set your OpenAI API key so Koji can pass it through to containers:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+Templates ship with a working pipeline already wired up. The generated `koji.yaml` from `--template invoice` looks like this:
+
+```yaml
+project: myproject
+
+cluster:
+  base_port: 9400
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+output:
+  structured: ./output/
+```
+
+Using ollama instead? Set `model: llama3.2` and make sure ollama is running locally. No API key needed.
+
+> Running plain `koji init` with no template? You'll get just the `project`, `cluster`, and `output` sections — add a `pipeline:` block yourself when you're ready to wire up extraction.
+
+## Start the cluster
 
 ```bash
 koji start
 ```
 
-This pulls the required Docker images and starts all services. On first run, this may take a minute. Subsequent starts are fast.
+This pulls Docker images and starts the processing services: a parse engine (docling), extraction service, API server, and dashboard. First run takes a minute or two for image pulls. Subsequent starts are fast.
 
-The dashboard is available at [http://127.0.0.1:9400](http://127.0.0.1:9400). You can check service health with:
+The dashboard is at [http://127.0.0.1:9400](http://127.0.0.1:9400).
+
+Check that everything came up:
 
 ```bash
 koji status
 ```
 
-## Create a Configuration
+If something looks wrong, run the diagnostic tool:
 
-If you don't already have one, create a `koji.yaml` in your project root:
-
-```yaml
-project: my-first-pipeline
-
-pipeline:
-  - step: parse
-    engine: docling
-
-  - step: extract
-    model: openai/gpt-4o-mini
-    schemas:
-      - ./schemas/invoice.yaml
-
-output:
-  structured: ./output/
+```bash
+koji doctor
 ```
 
-!!! tip
-    Set your `OPENAI_API_KEY` environment variable, or switch to a local model like `ollama/llama3.2` for fully offline processing.
+```
+Koji Doctor
 
-## Create a Schema
+  ✓ Docker installed (Docker version 27.x.x)
+  ✓ Docker Compose available
+  ✓ Docker daemon running
+  ✓ koji.yaml found
+  ✓ koji.yaml valid (project: myproject)
+  ✓ Ports available (base: 9400)
+  ✓ OPENAI_API_KEY set
 
-Schemas tell Koji what data to extract. Create `schemas/invoice.yaml`:
+7 passed, 0 warning, 0 failed
+```
+
+`koji doctor` checks Docker, your config file, port availability, and API keys. Fix anything marked with a failure before proceeding.
+
+## Process your first document
+
+Run the full pipeline (parse + extract) on a document:
+
+```bash
+koji process ./invoice.pdf --schema schemas/invoice.yaml
+```
+
+This sends the document through the parse step (PDF to markdown), then extracts structured data using your schema. Results are written to `./output/`:
+
+```json
+{
+  "invoice_number": "INV-2026-0042",
+  "date": "2026-03-15",
+  "vendor": "Acme Corp",
+  "line_items": [
+    {
+      "description": "Consulting services",
+      "quantity": 40,
+      "unit_price": 150.00,
+      "total": 6000.00
+    }
+  ],
+  "total_amount": 6000.00,
+  "currency": "USD"
+}
+```
+
+You can also process an entire directory:
+
+```bash
+koji process ./documents/ --schema schemas/invoice.yaml
+```
+
+## Extract from existing markdown
+
+Already have parsed markdown from a previous run? Skip the slow parse step and go straight to extraction:
+
+```bash
+koji extract ./output/invoice.md --schema schemas/invoice.yaml --model openai/gpt-4o-mini
+```
+
+This is much faster and useful for iterating on your schema. The `--model` flag lets you override the model from your config on the fly.
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--schema`, `-s` | Path to extraction schema (required) |
+| `--model`, `-m` | Model override (e.g., `openai/gpt-4o-mini`, `llama3.2`) |
+| `--output`, `-o` | Output directory (default: `./output/`) |
+| `--strategy` | Extraction strategy: `parallel` (default) or `agent` |
+
+## Write your own schema
+
+A schema is a YAML file that tells Koji what to extract. Here's the structure:
 
 ```yaml
-name: invoice
+name: purchase_order
+description: Purchase order extraction
+
+fields:
+  po_number:
+    type: string
+    required: true
+    description: The purchase order number
+
+  vendor:
+    type: string
+    description: Vendor or supplier name
+
+  items:
+    type: array
+    items:
+      type: object
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+        unit_price:
+          type: number
+```
+
+Field types: `string`, `number`, `date`, `enum`, `mapping`, `array`. Arrays can hold nested objects with their own properties — see the [Schema Authoring Guide](schema-guide.md) for the full reference.
+
+The `description` on each field matters -- it guides the extraction model. Be specific about what the field represents and where it typically appears in the document.
+
+### Schema hints
+
+For complex documents, add hints to improve extraction accuracy. Hints tell the extraction pipeline where to look and what patterns to expect:
+
+```yaml
 fields:
   invoice_number:
     type: string
     required: true
-    description: The invoice or reference number
-  date:
-    type: date
+    description: The invoice number
+    hints:
+      look_in: [header]
+      patterns: ["invoice\\s*(?:number|no|#)"]
+      signals: [has_key_value_pairs]
+```
+
+- `look_in` — which document sections to search (sections you define yourself in `categories.keywords`)
+- `patterns` — regex patterns that indicate where the value lives
+- `signals` — structural cues like `has_dollar_amounts`, `has_dates`, `has_tables`, `has_key_value_pairs`. You can also define your own custom signals via regex.
+
+See `schemas/examples/insurance_policy.yaml` for a complete working example with custom categories, hints, and patterns. The [Schema Authoring Guide](schema-guide.md) has the complete reference.
+
+## What's next
+
+Useful commands while you work:
+
+```bash
+koji status          # cluster health
+koji logs            # all service logs
+koji logs extract -f # follow extraction service logs
+koji stop            # shut down the cluster
+```
+
+Once you have a schema you trust, you can lock it in with regression tests and benchmarks:
+
+```bash
+koji test --schema schemas/invoice.yaml      # run schema regression tests
+koji bench --corpus ./corpus --model openai/gpt-4o-mini   # benchmark across a corpus
+```
+
+Further reading:
+
+- [Schemas](schema-guide.md) — full schema authoring guide: field types, hints, arrays, enums, custom signals
+- [Configuration Reference](configuration.md) — every `koji.yaml` option
+- [CLI Reference](cli.md) — every command and flag
+- [Architecture](architecture.md) — how the pipeline works
+
+---
+
+# Schema Authoring Guide
+
+Schemas are the core of Koji. A schema tells the extraction pipeline exactly what data to pull from your documents and where to find it. This guide covers everything from basic field definitions to advanced hint-driven routing.
+
+## Schema basics
+
+A schema is a YAML file with a name, description, and a set of fields:
+
+```yaml
+name: purchase_order
+description: Standard purchase order extraction
+
+fields:
+  po_number:
+    type: string
     required: true
-    description: Invoice date
+    description: The purchase order number
+
   vendor:
     type: string
     description: Vendor or supplier name
-  total_amount:
+
+  total:
     type: number
+    description: Total order amount
+```
+
+- `name` -- identifies the schema in logs and output
+- `description` -- helps you remember what this schema targets (not used by extraction)
+- `fields` -- the data you want extracted, keyed by field name
+
+Field names become the keys in your output JSON. Use `snake_case` -- these show up in your downstream systems.
+
+The `description` on each field is sent to the extraction model. Be specific. "The invoice number, usually in the top-right header" is better than "invoice number".
+
+## Field types
+
+### string
+
+The default. Use for names, IDs, addresses, free-text values.
+
+```yaml
+company_name:
+  type: string
+  description: The company or organization name
+```
+
+Output: `"company_name": "Acme Corp"`
+
+### number
+
+Numeric values. Koji strips currency symbols and commas automatically -- `$1,234.56` becomes `1234.56`.
+
+```yaml
+total_amount:
+  type: number
+  required: true
+  description: Total invoice amount including tax
+```
+
+Output: `"total_amount": 1234.56`
+
+Integer values stay as integers (no `.0` suffix).
+
+### date
+
+Dates are normalized to ISO 8601 (`YYYY-MM-DD`) regardless of the source format.
+
+```yaml
+invoice_date:
+  type: date
+  required: true
+  description: The date the invoice was issued
+```
+
+Input document might say "March 15, 2026" or "03/15/2026" or "2026-03-15" -- all produce:
+
+Output: `"invoice_date": "2026-03-15"`
+
+### enum
+
+A constrained set of allowed values. The extraction model picks the closest match.
+
+```yaml
+policy_type:
+  type: enum
+  description: Type of insurance policy
+  options:
+    - General Liability
+    - Workers Compensation
+    - Commercial Property
+    - Commercial Auto
+    - Umbrella
+    - Professional Liability
+    - Cyber Liability
+    - Other
+```
+
+Output: `"policy_type": "General Liability"`
+
+Enum matching is fuzzy — if the document says "Gen. Liability" or "GL", Koji matches it to "General Liability". See [Enum matching](#enum-matching) for details.
+
+### mapping
+
+Like `enum`, but with **explicit aliases** for normalization. Use this when real-world documents have many different ways of writing the same canonical value.
+
+```yaml
+policy_type:
+  type: mapping
+  description: Type of insurance policy
+  mappings:
+    BOP: ["Business Owners Policy", "Businessowners", "Bus. Owners", "BOP"]
+    GL: ["General Liability", "CGL", "Commercial General Liability"]
+    WC: ["Workers Compensation", "Workers Comp", "Work Comp", "WC"]
+```
+
+Each canonical key has a list of aliases. The extracted value is normalized to the canonical key:
+
+- "Business Owners Policy" → `"BOP"`
+- "CGL" → `"GL"`
+- "Workers Comp" → `"WC"`
+
+Matching is case-insensitive, with fuzzy substring fallback. Use `mapping` when downstream systems expect a fixed set of identifiers (e.g., insurance product codes, country codes, currency codes) rather than the raw text the document uses.
+
+### array
+
+Lists of items. Define the shape of each item with `items`:
+
+```yaml
+line_items:
+  type: array
+  items:
+    type: object
+    properties:
+      description:
+        type: string
+      quantity:
+        type: number
+      unit_price:
+        type: number
+      total:
+        type: number
+```
+
+Output:
+
+```json
+"line_items": [
+  {
+    "description": "Consulting services",
+    "quantity": 40,
+    "unit_price": 150.00,
+    "total": 6000.00
+  },
+  {
+    "description": "Travel expenses",
+    "quantity": 1,
+    "unit_price": 450.00,
+    "total": 450.00
+  }
+]
+```
+
+Arrays can also hold simple values:
+
+```yaml
+tags:
+  type: array
+  items:
+    type: string
+```
+
+Output: `"tags": ["urgent", "reviewed", "approved"]`
+
+## Required fields
+
+Mark fields as `required: true` when the extraction is incomplete without them:
+
+```yaml
+invoice_number:
+  type: string
+  required: true
+  description: The invoice or reference number
+```
+
+When a required field is not found:
+
+1. The field appears as `null` in the output
+2. Its confidence is marked as `not_found`
+3. Koji logs a warning: `Missing required fields: [invoice_number]`
+4. Future: gap-filling will broaden the search automatically
+
+Use `required` sparingly. Not every field needs it -- only fields where a missing value means the extraction failed.
+
+## Schema hints
+
+Hints are the key differentiator in Koji's extraction pipeline. Instead of sending the entire document to the model and hoping it finds your fields, hints tell the router exactly where to look.
+
+Without hints, Koji uses generic inference -- matching field names and types against document content. This works for simple documents. For complex multi-section documents (insurance policies, contracts, regulatory filings), hints dramatically improve accuracy and reduce token usage.
+
+```yaml
+policy_number:
+  type: string
+  required: true
+  description: Policy number or ID
+  hints:
+    look_in: [declarations]
+    patterns: ["policy.*(?:number|no|#)", "[A-Z]{2,5}\\d{5,}"]
+    signals: [has_key_value_pairs]
+```
+
+> Want a domain-specific signal like `has_policy_numbers`? Define it as a custom signal in your schema. See the [signals](#signals) section below.
+
+### look_in
+
+Routes the field to specific document categories. This is the highest-priority hint — if a chunk matches the category, it gets a large score boost.
+
+```yaml
+hints:
+  look_in: [header, totals]
+```
+
+Categories are **defined entirely by your schema**. Koji ships with no built-in categories — instead, the schema's `categories.keywords` block tells the mapper which keywords identify which sections of your documents. Without category definitions, every chunk is `other` and `look_in` has nothing to match against.
+
+Define categories at the top of your schema:
+
+```yaml
+name: invoice
+description: Commercial invoice extraction
+
+categories:
+  keywords:
+    header: ["invoice", "bill to", "ship to", "invoice number"]
+    line_items: ["description", "quantity", "unit price"]
+    totals: ["subtotal", "tax", "total due", "balance"]
+
+fields:
+  invoice_number:
+    type: string
     required: true
-    description: Total invoice amount
+    hints:
+      look_in: [header]
+  ...
 ```
 
-## Process a Document
+Categories are detected from section titles (strong signal — one keyword in the title matches) and content keywords (weaker signal — requires 2+ keyword matches in the body). Sections that don't match any defined category are labeled `other`.
 
-```bash
-koji process ./invoice.pdf --schema ./schemas/invoice.yaml
-```
+For an insurance schema, you might define categories like `declarations`, `endorsement`, `conditions`, `exclusions`, etc. For a contract, `parties`, `term`, `compensation`, `termination`. The right categories are the ones that match your document type.
 
-The extracted data is written to `./output/` as JSON.
+### patterns
 
-## Process a Directory
-
-```bash
-koji process ./documents/ --schema ./schemas/invoice.yaml
-```
-
-All supported files in the directory are processed. Results are written to the output directory with matching filenames.
-
-## Stop the Cluster
-
-```bash
-koji stop
-```
-
-## Next Steps
-
-- [Configuration Reference](configuration.md) — full `koji.yaml` options
-- [Schema Reference](schemas.md) — field types, arrays, nested objects
-- [Architecture](architecture.md) — understand the processing pipeline
-
----
-
-# Configuration Reference
-
-All Koji behavior is driven by `koji.yaml` in your project root.
-
-## Minimal Example
+Regex patterns matched against chunk titles and content. Medium priority -- patterns score below `look_in` but above signals.
 
 ```yaml
-project: my-pipeline
-
-pipeline:
-  - step: parse
-    engine: docling
-
-  - step: extract
-    model: openai/gpt-4o-mini
-    schemas:
-      - ./schemas/invoice.yaml
-
-output:
-  structured: ./output/
+hints:
+  patterns: ["policy.*(?:number|no|#)", "[A-Z]{2,5}\\d{5,}"]
 ```
 
-## Full Reference
+Patterns are matched case-insensitively against the first 1500 characters of each chunk (title + content). Use them to:
 
-### `project`
+- Match labels near your target value: `"effective.*date"`, `"total.*premium"`
+- Match the value format itself: `"[A-Z]{2,5}\\d{5,}"` for policy numbers
+- Match section indicators: `"schedule of.*coverage"`
 
-A name for your pipeline. Used in logs and the dashboard.
+Tips:
+- Use `.*` for flexible spacing between words
+- Use `(?:...)` for non-capturing groups
+- Keep patterns broad enough to match variations (abbreviations, different formatting)
+- One matching pattern is enough -- you don't need all patterns to match
+
+### signals
+
+Content signals detected automatically by the document mapper. Lowest priority among hints, but useful for disambiguation when multiple chunks could match a field.
 
 ```yaml
-project: invoice-processing
+hints:
+  signals: [has_dollar_amounts, has_tables]
 ```
 
-### `cluster`
+**Built-in signals:**
 
-Controls how the local cluster is configured.
+| Signal | Detects |
+|--------|---------|
+| `has_dollar_amounts` | Currency amounts: `$1,234.56`, `€500`, `£200`, `¥1000`, `1234.56 USD`, etc. |
+| `has_dates` | Date patterns (`MM/DD/YYYY`, `YYYY-MM-DD`, `DD.MM.YYYY`, etc.) |
+| `has_key_value_pairs` | Lines formatted as `Key: Value` |
+| `has_tables` | Pipe-delimited table rows (`\| ... \| ... \|`) |
+
+Signals are boolean — either the chunk has the signal or it doesn't. Each matching signal adds a small score boost.
+
+**Custom signals**
+
+Built-in signals are purely structural. For domain-specific patterns (policy numbers, invoice numbers, named insured references, etc.), define **custom signals** in your schema:
 
 ```yaml
-cluster:
-  name: default
-  base_port: 9400  # dashboard at :9400, server at :9401, services from :9410+
+signals:
+  has_policy_numbers:
+    pattern: "[A-Z]{2,5}\\d{5,}"
+
+  has_named_insured:
+    pattern: "(?:named\\s+insured|policyholder)\\s*[:.]"
+    flags: "i"
+
+  has_invoice_id:
+    pattern: "INV[\\s-]?\\d{4,}"
+    flags: "i"
 ```
 
-When running multiple clusters simultaneously, each project gets its own port range:
+Each custom signal needs a `pattern` (a regex). Optional `flags` accept `i` (case-insensitive), `m` (multiline), and `s` (dotall). If the regex matches anywhere in a chunk's content, the signal is set to `true` and a `<name>_count` is set to the number of matches.
 
-```bash
-cd ~/project-a && koji start  # dashboard at :9400
-cd ~/project-b && koji start  # dashboard at :9500
-```
-
-### `pipeline`
-
-An ordered list of processing steps. Each step runs as an independent service.
+Once defined, custom signals can be referenced in field hints just like built-in ones:
 
 ```yaml
-pipeline:
-  - step: parse
-    engine: docling
-
-  - step: split
-    strategy: heading
-
-  - step: classify
-    model: local/llama3.2
-    labels:
-      - invoice
-      - receipt
-      - contract
-
-  - step: extract
-    model: openai/gpt-4o-mini
-    schemas:
-      - ./schemas/invoice.yaml
-      - ./schemas/receipt.yaml
-
-  - step: embed
-    model: local/nomic-embed-text
+fields:
+  policy_number:
+    type: string
+    hints:
+      signals: [has_policy_numbers, has_key_value_pairs]
 ```
 
-#### Pipeline Steps
+This is how Koji stays domain-agnostic: structural signals are built in, anything insurance-specific (or invoice-specific, or contract-specific) lives in your schema.
 
-| Step | Purpose | Key Options |
-|------|---------|-------------|
-| `parse` | Document → clean markdown | `engine` |
-| `split` | Markdown → chunks | `strategy` |
-| `classify` | Document/chunk → labels | `model`, `labels` |
-| `extract` | Document/chunk → structured JSON | `model`, `schemas` |
-| `embed` | Text → vector embeddings | `model` |
+### max_chunks
 
-Use the full pipeline or any subset. Steps are independent.
-
-### `models`
-
-Configure model providers. Mix local and API providers freely.
+By default, each field is routed to the top 3 scoring chunks. Override this for fields that legitimately need to aggregate data from many chunks:
 
 ```yaml
-models:
-  providers:
-    local:
-      backend: ollama
-    openai:
-      api_key: ${OPENAI_API_KEY}
-    anthropic:
-      api_key: ${ANTHROPIC_API_KEY}
-    custom:
-      endpoint: https://your-inference.internal/v1
+hints:
+  max_chunks: 12
 ```
 
-Reference models in pipeline steps as `provider/model-name`:
+Use this for arrays of objects that span the document. Example: an insurance certificate's `policies` array, where each policy's detail lives in its own H3 section. The default cap of 3 misses most of the policies; setting `max_chunks: 12` lets the router pull from every detail section.
+
+Don't set this for simple scalar fields — it just wastes tokens.
+
+### How hints interact
+
+The router scores every chunk against every field. The scoring priority:
+
+1. **look_in** — +15 points if the chunk's category matches
+2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
+3. **signals** — +4 points per matching signal
+
+If a field has hints and any of them score > 0, the router uses only the hint-based score. Generic inference (field name matching, type-based signals) is skipped entirely. This means hints are authoritative — once you add them, you're in control.
+
+The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
+
+### When to use hints vs. letting the router infer
+
+**Skip hints when:**
+- Your document is short (1-3 pages)
+- Field names are descriptive and match how they appear in the document
+- There's only one place a value could be
+
+**Add hints when:**
+- Documents have multiple sections where a value *could* appear but only one is correct
+- The same term appears in different contexts (e.g., "date" appears in 10 places)
+- You need precision on complex documents (20+ pages)
+- Extraction is returning values from the wrong section
+
+Start without hints, test extraction, and add hints where accuracy is poor.
+
+## Arrays and nested objects
+
+Arrays extract repeated structures -- tables, line items, coverage lists, anything that appears multiple times.
+
+### Table extraction
+
+The most common array pattern extracts tabular data:
 
 ```yaml
-pipeline:
-  - step: extract
-    model: openai/gpt-4o-mini  # uses the openai provider
-  - step: classify
-    model: local/llama3.2      # uses the local (ollama) provider
+coverages:
+  type: array
+  description: List of coverages with limits
+  items:
+    type: object
+    properties:
+      coverage_name:
+        type: string
+      limit:
+        type: string
+      deductible:
+        type: string
+  hints:
+    look_in: [schedule_of_coverages, declarations]
+    signals: [has_tables, has_dollar_amounts]
+    patterns: ["coverage", "limit", "deductible"]
 ```
 
-### `output`
+The extraction model identifies rows in tables, bulleted lists, or repeated structures and returns them as an array of objects.
 
-Where extracted data goes.
+### Arrays with hints
+
+Hints on array fields route to chunks containing the tabular/repeated data. The `has_tables` signal is particularly useful -- it fires on any chunk with pipe-delimited markdown tables.
 
 ```yaml
-output:
-  structured: ./output/
+line_items:
+  type: array
+  items:
+    type: object
+    properties:
+      description:
+        type: string
+      amount:
+        type: number
+  hints:
+    signals: [has_tables, has_dollar_amounts]
+    patterns: ["item", "description", "amount"]
 ```
 
-## Environment Variables
+### Reconciliation for arrays
 
-Use `${VAR_NAME}` syntax anywhere in `koji.yaml` to reference environment variables:
+When multiple extraction groups return results for the same array field, Koji concatenates and deduplicates them. This means array fields spanning multiple pages or sections are merged automatically.
+
+## Enum matching
+
+Enum fields constrain extraction to a predefined set of values. Koji applies fuzzy matching in this order:
+
+1. **Exact match** -- value matches an option exactly
+2. **Case-insensitive match** -- `"general liability"` matches `"General Liability"`
+3. **Substring match** -- `"Gen. Liability"` matches `"General Liability"` (option contains value or value contains option)
+
+If no match is found, the raw extracted value is returned with a validation issue logged.
+
+Best practices for enum options:
+- Use the full, unabbreviated form as the option value
+- Include an "Other" option as a catch-all
+- Keep the list to 15 or fewer options (more options = more ambiguity for the model)
 
 ```yaml
-models:
-  providers:
-    openai:
-      api_key: ${OPENAI_API_KEY}
+status:
+  type: enum
+  options:
+    - Active
+    - Cancelled
+    - Expired
+    - Pending
+    - Other
 ```
 
-Koji will error at startup if a referenced variable is not set.
+## Tips and patterns
 
----
+### Invoices
 
-# Schema Reference
-
-Schemas define what structured data Koji extracts from your documents. Each schema is a YAML file.
-
-## Basic Schema
+Invoices are usually short, well-structured documents. Hints are often unnecessary.
 
 ```yaml
 name: invoice
 description: Standard invoice extraction
+
 fields:
   invoice_number:
     type: string
     required: true
     description: The invoice or reference number
+
   date:
     type: date
     required: true
+    description: Invoice issue date
+
+  due_date:
+    type: date
+    description: Payment due date
+
   vendor:
     type: string
-  total_amount:
-    type: number
-    required: true
-```
+    description: Vendor or supplier name
 
-## Field Types
-
-| Type | Description | Example Value |
-|------|-------------|---------------|
-| `string` | Text value | `"INV-2026-0042"` |
-| `number` | Integer or decimal | `4250.00` |
-| `date` | Date value (ISO 8601) | `"2026-03-15"` |
-| `boolean` | True or false | `true` |
-| `array` | List of values | `[...]` |
-| `object` | Nested structure | `{...}` |
-
-## Field Options
-
-```yaml
-fields:
-  vendor:
+  bill_to:
     type: string
-    required: true        # fail extraction if missing (default: false)
-    description: Vendor name  # hints for the extraction model
-    default: "Unknown"    # fallback value
-```
+    description: Customer or recipient name
 
-The `description` field is important — it guides the extraction model. Be specific about what the field represents and where it might appear in the document.
-
-## Arrays
-
-Extract repeating items like line items on an invoice:
-
-```yaml
-fields:
   line_items:
     type: array
     items:
@@ -398,180 +791,1311 @@ fields:
           type: number
         total:
           type: number
+
+  subtotal:
+    type: number
+    description: Subtotal before tax
+
+  tax:
+    type: number
+    description: Tax amount
+
+  total_amount:
+    type: number
+    required: true
+    description: Total amount due
 ```
 
-Output:
+### Contracts
 
-```json
-{
-  "line_items": [
-    {
-      "description": "Widget A",
-      "quantity": 10,
-      "unit_price": 25.00,
-      "total": 250.00
-    },
-    {
-      "description": "Widget B",
-      "quantity": 5,
-      "unit_price": 50.00,
-      "total": 250.00
-    }
-  ]
-}
-```
-
-## Nested Objects
-
-For structured sub-fields:
+Contracts are long and multi-section. Use `look_in` heavily.
 
 ```yaml
+name: contract
+description: Commercial contract extraction
+
+categories:
+  keywords:
+    parties: ["party", "parties", "between", "by and between"]
+    terms: ["term", "effective date", "commencement", "duration"]
+    payment: ["payment", "compensation", "fee", "invoice"]
+    termination: ["termination", "cancel", "expir"]
+
 fields:
-  address:
-    type: object
-    properties:
-      street:
-        type: string
-      city:
-        type: string
-      state:
-        type: string
-      zip:
-        type: string
+  party_a:
+    type: string
+    required: true
+    description: First party name
+    hints:
+      look_in: [parties]
+      patterns: ["(?:party|first party|between).*?(?:,|and)"]
+
+  party_b:
+    type: string
+    required: true
+    description: Second party name
+    hints:
+      look_in: [parties]
+      patterns: ["(?:and|second party)"]
+
+  effective_date:
+    type: date
+    hints:
+      look_in: [terms]
+      patterns: ["effective.*date", "commenc"]
+      signals: [has_dates]
+
+  termination_date:
+    type: date
+    hints:
+      look_in: [terms, termination]
+      patterns: ["terminat", "expir", "end.*date"]
+      signals: [has_dates]
+
+  contract_value:
+    type: number
+    description: Total contract value or annual fee
+    hints:
+      look_in: [payment]
+      patterns: ["(?:total|contract).*(?:value|amount|fee)"]
+      signals: [has_dollar_amounts]
 ```
 
-## Multiple Schemas
+### Insurance policies
 
-Point your pipeline at multiple schemas to handle different document types:
+Policies are the most complex -- many sections, many fields, overlapping terminology. Use the full hint system.
+
+See `schemas/examples/insurance_policy.yaml` for a complete working example with custom categories, pattern matching, and signal routing.
+
+Key patterns:
+- Define custom categories matching your document's section structure
+- Use `look_in: [declarations]` for most identifying fields (policy number, dates, insured name)
+- Use `look_in: [schedule_of_coverages]` for coverage arrays
+- Combine `has_dollar_amounts` with patterns to distinguish premium from limits
+
+### Forms and applications
+
+Forms have dense key-value pairs. The `has_key_value_pairs` signal is your friend.
+
+```yaml
+name: application
+description: Insurance application form
+
+fields:
+  applicant_name:
+    type: string
+    required: true
+    description: Applicant full name
+    hints:
+      patterns: ["(?:applicant|insured).*name"]
+      signals: [has_key_value_pairs]
+
+  business_type:
+    type: enum
+    options:
+      - Corporation
+      - LLC
+      - Partnership
+      - Sole Proprietor
+      - Non-Profit
+      - Other
+    hints:
+      patterns: ["(?:business|entity|organization).*(?:type|form)"]
+
+  annual_revenue:
+    type: number
+    description: Annual revenue or gross sales
+    hints:
+      patterns: ["(?:annual|gross).*(?:revenue|sales|receipts)"]
+      signals: [has_dollar_amounts]
+
+  employee_count:
+    type: number
+    description: Number of employees
+    hints:
+      patterns: ["(?:number|#|num).*(?:employee|staff|worker)"]
+```
+
+## Full example: building a schema from scratch
+
+Let's build a schema for medical bills. Walk through the process step by step.
+
+**Step 1: Identify the fields you need.**
+
+Look at a sample document. What data do you need in your system? Start with the obvious fields:
+
+```yaml
+name: medical_bill
+description: Medical bill / explanation of benefits
+
+fields:
+  patient_name:
+    type: string
+    required: true
+    description: Patient full name
+
+  provider_name:
+    type: string
+    required: true
+    description: Healthcare provider or facility name
+
+  date_of_service:
+    type: date
+    description: Date services were rendered
+
+  total_charges:
+    type: number
+    description: Total billed charges
+
+  amount_due:
+    type: number
+    required: true
+    description: Amount the patient owes
+```
+
+**Step 2: Test extraction without hints.**
+
+```bash
+koji extract ./parsed_bill.md --schema schemas/medical_bill.yaml --model openai/gpt-4o-mini
+```
+
+Check the output. Are fields correct? Missing? Pulled from the wrong section?
+
+**Step 3: Add arrays for line items.**
+
+Medical bills have procedure line items. Add them:
+
+```yaml
+  procedures:
+    type: array
+    description: List of procedures / services billed
+    items:
+      type: object
+      properties:
+        cpt_code:
+          type: string
+        description:
+          type: string
+        charges:
+          type: number
+        adjustments:
+          type: number
+        patient_responsibility:
+          type: number
+```
+
+**Step 4: Add hints where extraction was inaccurate.**
+
+Say `date_of_service` was pulling the statement date instead of the service date. Add hints:
+
+```yaml
+  date_of_service:
+    type: date
+    description: Date services were rendered
+    hints:
+      patterns: ["(?:date of|dos|service.*date)", "(?:from|through)"]
+      signals: [has_dates]
+```
+
+Say `amount_due` was pulling total charges instead of patient responsibility:
+
+```yaml
+  amount_due:
+    type: number
+    required: true
+    description: Amount the patient owes after insurance
+    hints:
+      patterns: ["(?:amount|balance).*(?:due|owe)", "patient.*(?:responsib|pay)"]
+      signals: [has_dollar_amounts]
+```
+
+**Step 5: Add an enum for categorization.**
+
+```yaml
+  bill_type:
+    type: enum
+    description: Type of medical bill
+    options:
+      - Hospital
+      - Physician
+      - Laboratory
+      - Pharmacy
+      - Dental
+      - Vision
+      - Other
+```
+
+**Step 6: Final schema.**
+
+```yaml
+name: medical_bill
+description: Medical bill / explanation of benefits
+
+fields:
+  patient_name:
+    type: string
+    required: true
+    description: Patient full name
+    hints:
+      patterns: ["patient.*name", "member.*name"]
+      signals: [has_key_value_pairs]
+
+  provider_name:
+    type: string
+    required: true
+    description: Healthcare provider or facility name
+    hints:
+      patterns: ["provider", "facility", "physician", "hospital"]
+
+  date_of_service:
+    type: date
+    description: Date services were rendered
+    hints:
+      patterns: ["(?:date of|dos|service.*date)", "(?:from|through)"]
+      signals: [has_dates]
+
+  statement_date:
+    type: date
+    description: Date the bill/statement was generated
+    hints:
+      patterns: ["statement.*date", "bill.*date", "printed"]
+      signals: [has_dates]
+
+  bill_type:
+    type: enum
+    options:
+      - Hospital
+      - Physician
+      - Laboratory
+      - Pharmacy
+      - Dental
+      - Vision
+      - Other
+
+  procedures:
+    type: array
+    description: List of procedures / services billed
+    items:
+      type: object
+      properties:
+        cpt_code:
+          type: string
+        description:
+          type: string
+        charges:
+          type: number
+        adjustments:
+          type: number
+        patient_responsibility:
+          type: number
+    hints:
+      signals: [has_tables, has_dollar_amounts]
+      patterns: ["procedure", "service", "cpt", "charge"]
+
+  total_charges:
+    type: number
+    description: Total billed charges before adjustments
+    hints:
+      patterns: ["total.*charge", "gross.*charge"]
+      signals: [has_dollar_amounts]
+
+  insurance_paid:
+    type: number
+    description: Amount paid by insurance
+    hints:
+      patterns: ["(?:insurance|plan).*paid", "(?:allowed|covered).*amount"]
+      signals: [has_dollar_amounts]
+
+  amount_due:
+    type: number
+    required: true
+    description: Amount the patient owes after insurance
+    hints:
+      patterns: ["(?:amount|balance).*(?:due|owe)", "patient.*(?:responsib|pay)"]
+      signals: [has_dollar_amounts]
+```
+
+Run extraction again. Iterate until accuracy is where you need it. Hints are surgical -- add them only where the router needs guidance.
+
+---
+
+# Configuration Reference
+
+Koji is configured through a single `koji.yaml` file in your project root. Every option has a sensible default -- a minimal config can be just a project name.
+
+For a walkthrough of setting up your first config, see [Getting Started](getting-started.md).
+
+## Minimal config
+
+```yaml
+project: myproject
+```
+
+## Full example
+
+```yaml
+project: myproject
+
+cluster:
+  name: default
+  base_port: 9400
+
+services:
+  parse: true
+  ollama: true
+
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+models:
+  providers:
+    openai:
+      backend: openai
+      api_key: ${OPENAI_API_KEY}
+    local:
+      backend: ollama
+      endpoint: http://localhost:11434
+
+output:
+  structured: ./output/
+  vectors: ./vectors/
+  raw_markdown: ./markdown/
+
+webhooks:
+  - url: https://my-app.com/api/koji-callback
+    events: [job.completed, job.failed]
+    secret: my-hmac-secret
+```
+
+---
+
+## `project`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"koji"` |
+| **Required** | No |
+
+The project name. Used as a namespace for Docker containers, logs, and the dashboard.
+
+```yaml
+project: invoice-processing
+```
+
+---
+
+## `cluster`
+
+Cluster-level settings that control networking and service identity.
+
+### `cluster.name`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"default"` |
+| **Required** | No |
+
+Name of the cluster. Useful when running multiple Koji clusters on the same machine.
+
+### `cluster.base_port`
+
+| | |
+|---|---|
+| **Type** | `integer` |
+| **Default** | `9400` |
+| **Required** | No |
+
+Base port for the cluster. All service ports are derived from this value using fixed offsets:
+
+| Service | Offset | Default port |
+|---------|--------|--------------|
+| UI (dashboard) | +0 | 9400 |
+| API server | +1 | 9401 |
+| Ollama | +10 | 9410 |
+| Parse | +11 | 9411 |
+| Extract | +12 | 9412 |
+
+To run a second cluster on the same machine, set a different `base_port`:
+
+```yaml
+cluster:
+  name: production
+  base_port: 9500
+# dashboard at :9500, server at :9501, parse at :9511, etc.
+```
+
+### `cluster.version`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"latest"` |
+| **Required** | No |
+
+The image tag to pull from `ghcr.io/getkoji`. Defaults to `latest`. Pin a specific release for reproducible deployments:
+
+```yaml
+cluster:
+  version: v0.2.0
+```
+
+### `cluster.dev`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `false` |
+| **Required** | No |
+
+Build images from local source instead of pulling from `ghcr.io/getkoji`. Required when developing on Koji itself. The `koji start --dev` CLI flag sets this for one invocation.
+
+```yaml
+cluster:
+  dev: true
+```
+
+Most users should leave this `false` and let Koji pull pre-built images.
+
+---
+
+## `services`
+
+Toggle optional services on or off. Disabling a service prevents Koji from starting its container.
+
+### `services.parse`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable the parse service. Set to `false` if you only need extraction from pre-parsed markdown (via `koji extract`).
+
+### `services.ollama`
+
+| | |
+|---|---|
+| **Type** | `boolean` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable the bundled ollama service for local model inference. Set to `false` if you are using only API-based providers (e.g., OpenAI) and don't need local models.
+
+```yaml
+services:
+  parse: true
+  ollama: false  # using OpenAI only, no local models needed
+```
+
+---
+
+## `pipeline`
+
+| | |
+|---|---|
+| **Type** | `list[PipelineStep]` |
+| **Default** | `[]` |
+| **Required** | No (but nothing processes without it) |
+
+An ordered list of processing steps. Each step defines one stage of the document processing pipeline. Steps are independent services -- use the full pipeline or any subset.
+
+### Pipeline step fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `step` | `string` | — | **Required.** Step type: `parse` or `extract`. |
+| `engine` | `string` | `null` | Processing engine for parsing (e.g., `docling`). |
+| `model` | `string` | `null` | Model in `provider/model-name` format (e.g., `openai/gpt-4o-mini`, `ollama/llama3.2`). |
+| `schemas` | `list[string]` | `null` | Paths to schema YAML files for extraction. |
+| `ocr` | `string` | `null` | OCR engine for the parse step (engine-specific). |
+| `strategy` | `string` | `"intelligent"` | Extraction strategy: `intelligent` (default), `parallel`, or `agent`. |
+| `categories` | `list[string]` | `null` | (`parallel` strategy only) Restrict extraction to these chunk categories. Ignored by the default `intelligent` strategy, which routes via schema hints. |
+| `max_tokens` | `integer` | `null` | Maximum token limit for model calls in this step. |
+
+### Parse step
+
+Converts documents (PDF, Word, images) into clean markdown.
+
+```yaml
+pipeline:
+  - step: parse
+    engine: docling
+```
+
+### Extract step
+
+Extracts structured data from markdown using schemas and an LLM.
 
 ```yaml
 pipeline:
   - step: extract
     model: openai/gpt-4o-mini
+    strategy: parallel
     schemas:
       - ./schemas/invoice.yaml
       - ./schemas/receipt.yaml
-      - ./schemas/contract.yaml
+    max_tokens: 4096
 ```
 
-Pair with a `classify` step to route documents to the right schema automatically.
+Reference models as `provider/model-name`. The provider name must match a key under `models.providers`, or use a well-known provider prefix like `openai/` or `ollama/`.
 
-## Schema Location
+---
 
-Schemas are referenced by path in `koji.yaml`. You can organize them however you like:
+## `models`
 
+Configuration for model providers. Mix local and API providers freely.
+
+### `models.providers`
+
+| | |
+|---|---|
+| **Type** | `dict[string, ModelProviderConfig]` |
+| **Default** | `{}` |
+| **Required** | No |
+
+A map of provider names to their configuration. The key is a label you choose (e.g., `openai`, `local`, `anthropic`).
+
+### Provider config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `string` | `null` | Provider backend: `openai`, `ollama`, `anthropic`, etc. |
+| `api_key` | `string` | `null` | API key. Supports `${VAR}` environment variable syntax. |
+| `endpoint` | `string` | `null` | Custom API endpoint URL. Required for self-hosted providers. |
+| `format` | `string` | `null` | Response format hint (provider-specific). |
+
+```yaml
+models:
+  providers:
+    openai:
+      backend: openai
+      api_key: ${OPENAI_API_KEY}
+    local:
+      backend: ollama
+      endpoint: http://localhost:11434
+    custom:
+      backend: openai
+      api_key: ${CUSTOM_API_KEY}
+      endpoint: https://my-inference-server.com/v1
 ```
-schemas/
-  invoice.yaml
-  receipt.yaml
-  contracts/
-    nda.yaml
-    sow.yaml
+
+Reference models in pipeline steps as `provider/model-name`:
+
+```yaml
+pipeline:
+  - step: extract
+    model: openai/gpt-4o-mini   # uses the openai provider
+  - step: classify
+    model: local/llama3.2       # uses the local (ollama) provider
+```
+
+---
+
+## `output`
+
+Controls where processed results are written.
+
+### `output.structured`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `"./output/"` |
+| **Required** | No |
+
+Directory for structured extraction output (JSON files).
+
+### `output.vectors`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `null` (disabled) |
+| **Required** | No |
+
+Directory for vector embeddings output. When set, Koji writes vector representations alongside structured output.
+
+### `output.raw_markdown`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `null` (disabled) |
+| **Required** | No |
+
+Directory for raw markdown from the parse step. Useful for debugging or re-running extraction without re-parsing.
+
+```yaml
+output:
+  structured: ./output/
+  vectors: ./vectors/
+  raw_markdown: ./markdown/
+```
+
+---
+
+## `webhooks`
+
+| | |
+|---|---|
+| **Type** | `list[WebhookConfig]` |
+| **Default** | `[]` |
+| **Required** | No |
+
+Webhooks receive HTTP POST notifications when processing events occur. Each webhook is delivered asynchronously and does not block the pipeline.
+
+### Webhook config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | `string` | -- | **Required.** Endpoint URL to receive webhook deliveries. |
+| `events` | `list[string]` | `["job.completed", "job.failed"]` | Events that trigger this webhook. |
+| `secret` | `string` | `null` | HMAC-SHA256 secret for signing payloads. When set, deliveries include an `X-Koji-Signature` header. |
+
+### Supported events
+
+| Event | Fired when |
+|-------|------------|
+| `job.completed` | A processing job finishes successfully. |
+| `job.failed` | A processing job fails. |
+
+### Webhook payload format
+
+```json
+{
+  "event": "job.completed",
+  "timestamp": "2026-04-11T12:00:00+00:00",
+  "data": {
+    "filename": "invoice.pdf",
+    "schema": "invoice",
+    "extracted": { "...": "..." },
+    "elapsed_ms": 2340
+  }
+}
+```
+
+### Webhook delivery headers
+
+| Header | Description |
+|--------|-------------|
+| `Content-Type` | `application/json` |
+| `X-Koji-Event` | Event name (e.g., `job.completed`) |
+| `X-Koji-Signature` | HMAC-SHA256 hex digest of the raw JSON body (only when `secret` is set) |
+
+```yaml
+webhooks:
+  - url: https://my-app.com/api/koji-callback
+    events: [job.completed, job.failed]
+    secret: my-hmac-secret
+```
+
+---
+
+## Environment variables
+
+These environment variables affect Koji at runtime:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `KOJI_CONFIG_PATH` | Path to `koji.yaml` inside the server container. | `/etc/koji/koji.yaml` |
+| `KOJI_SCHEMAS_DIR` | Directory where schema YAML files are stored. | `./schemas/` |
+| `OPENAI_API_KEY` | OpenAI API key. Must be set before `koji start` to pass through to containers. | -- |
+
+Use `${VAR_NAME}` syntax anywhere in `koji.yaml` to reference environment variables:
+
+```yaml
+models:
+  providers:
+    openai:
+      api_key: ${OPENAI_API_KEY}
 ```
 
 ---
 
 # Architecture
 
-Koji runs as a set of independent services coordinated by a central server. Each pipeline step is its own service with a clean API boundary.
+Koji is a set of independent services orchestrated by a central API server. Each service runs in its own container, communicates over HTTP, and can be scaled or replaced independently. A single YAML file drives the entire configuration.
 
-## Overview
+## System overview
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  koji CLI    │────▶│  koji server│────▶│  services   │
-│              │     │  (:9401)    │     │  (:9410+)   │
-└─────────────┘     └──────┬──────┘     └─────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  dashboard  │
-                    │  (:9400)    │
-                    └─────────────┘
+                          koji.yaml
+                             |
+                             v
+  +-----------+        +------------+        +---------------+
+  |           |  HTTP   |            |  HTTP   |               |
+  |  koji CLI +------->+  API Server +------->+  Parse Service |
+  |           |        |  (FastAPI)  |        |  (Docling)     |
+  +-----------+        +------+-----+        +---------------+
+                              |
+       +------------+         |        +------------------+
+       |            |  HTTP   |  HTTP   |                  |
+       |  Dashboard +-------->+------->+  Extract Service  |
+       |  (Web UI)  |        |        |  (Pipeline)       |
+       +------------+        |        +--------+---------+
+                              |                 |
+                              |                 v
+                              |        +------------------+
+                              |        |                  |
+                              +------->+  Ollama (local)  |
+                                       |  or OpenAI API   |
+                                       +------------------+
+                                                |
+                        Webhooks <---------------+
+                     (job.completed,
+                      job.failed)
 ```
 
-- **CLI** — the `koji` command. Sends requests to the server.
-- **Server** — orchestrates pipeline execution, manages service lifecycle.
-- **Services** — one per pipeline step (parse, split, classify, extract, embed). Each runs in its own container.
-- **Dashboard** — web UI for monitoring cluster health and job progress.
+All services live on an isolated Docker network (`koji-<project>`). The CLI and Dashboard talk to the API Server. The API Server orchestrates Parse and Extract. Extract talks to model providers (Ollama for local, OpenAI API for cloud).
 
-## Processing Flow
+## Service architecture
 
-1. CLI sends a process request to the server
-2. Server reads `koji.yaml` to determine the pipeline
-3. For each step, the server sends the document to the appropriate service
-4. Each service processes the document and returns results
-5. Results flow through the pipeline in order
-6. Final output is written to the configured output directory
+### API Server
 
-## Services
+**Port:** 9401 (internal) | **Technology:** FastAPI + Uvicorn
 
-Each service is:
+The API Server is the single entry point for all operations. It:
 
-- **Independent** — services don't know about each other
-- **Stateless** — all state lives in the server
-- **Containerized** — runs in Docker, same image locally and in production
-- **Replaceable** — swap implementations by changing config
+- Receives document uploads and schema definitions
+- Forwards documents to the Parse Service for conversion
+- Forwards parsed markdown and schemas to the Extract Service
+- Manages async jobs with an in-memory store backed by SQLite for history
+- Fires webhooks on job completion or failure
+- Exposes health, status, config, and log-streaming endpoints
+- Serves as the backend for the Dashboard
 
-### Service Ports
+Key endpoints:
 
-The server assigns ports automatically from the `base_port` in your cluster config:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/process` | POST | Full pipeline: parse + extract |
+| `/api/parse` | POST | Parse only: document to markdown |
+| `/api/extract` | POST | Extract only: markdown + schema to JSON |
+| `/api/jobs/{id}` | GET | Job status and results |
+| `/api/status` | GET | Health of all services |
+| `/api/logs/stream` | GET | SSE log stream from all services |
 
-| Service | Default Port |
-|---------|-------------|
-| Dashboard | 9400 |
-| Server | 9401 |
-| Parse | 9410 |
-| Split | 9411 |
-| Classify | 9412 |
-| Extract | 9413 |
-| Embed | 9414 |
+All mutation endpoints support both synchronous and asynchronous modes. Pass `?async=true` to get a job ID back immediately and poll for results.
+
+### Parse Service
+
+**Port:** 9410 (internal) | **Technology:** Docling + FastAPI
+
+The Parse Service converts any document into clean markdown. It handles PDFs, Word documents, images, and scanned documents. Under the hood it uses [Docling](https://github.com/DS4SD/docling), which provides OCR, table detection, and layout analysis.
+
+- Accepts file uploads at `/parse`
+- Runs Docling conversion in a thread pool to avoid blocking the event loop
+- Returns markdown text plus page count
+- Caches Hugging Face and Torch model weights in Docker volumes for fast restarts
+
+This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.
+
+#### Base image split
+
+The parse service image is split into two layers to keep rebuilds fast:
+
+- `docker/parse.base.Dockerfile` — a heavyweight base image (`ghcr.io/getkoji/parse-base`) that pins Python, docling, torch (CPU), transformers, and the OCR system stack (tesseract, poppler). It is ~5GB and rebuilds rarely — only when `parse.base.Dockerfile` changes or on a manual workflow dispatch.
+- `docker/parse.Dockerfile` — a thin application image that `FROM`s the base and only copies `services/parse/`. It is ~50MB on top of the base and rebuilds in seconds on every push.
+
+This means editing the parse service's Python code triggers a tiny rebuild instead of reinstalling docling, torch, and the OCR toolchain every time. Dependency bumps still require a base image rebuild; bump the pinned versions in `parse.base.Dockerfile` and run the `Publish Images` workflow with `build_parse_base=true` (or push a tag). All pinned versions are explicit — no `latest` — so both images are reproducible.
+
+### Extract Service
+
+**Port:** 9420 (internal) | **Technology:** Custom pipeline + FastAPI
+
+The Extract Service runs the intelligent extraction pipeline (detailed in the next section). It takes markdown and a schema definition, then returns structured JSON with per-field confidence scores. It communicates with model providers (Ollama or OpenAI-compatible APIs) to perform the actual LLM-based extraction.
+
+### Ollama
+
+**Port:** 11434 (internal) | **Technology:** Ollama
+
+Optional local model hosting. When enabled, the Extract Service routes requests to Ollama for fully local, air-gapped processing. Model weights are persisted in a Docker volume so they survive container restarts.
+
+Disable it in `koji.yaml` if you only use cloud providers:
+
+```yaml
+services:
+  ollama: false
+```
+
+### Dashboard
+
+**Port:** 9400 (internal) | **Technology:** Single-page HTML app
+
+A lightweight web UI for monitoring. It connects to the API Server to show service health, job history, logs, and pipeline configuration.
+
+## Intelligent extraction pipeline
+
+The extraction pipeline is the core of Koji. Instead of sending an entire document to an LLM in one prompt, it breaks the problem into five phases that minimize token usage and maximize accuracy.
+
+```
+  Document        Schema
+  (markdown)      (YAML)
+      |               |
+      v               |
+  +-------+           |
+  |  MAP  |           |
+  +---+---+           |
+      |               |
+      v               v
+  +--------+    +---------+
+  | chunks |--->|  ROUTE  |
+  +--------+    +----+----+
+                     |
+                     v
+              +-----------+
+              |  EXTRACT  |  (grouped LLM calls)
+              +-----+-----+
+                    |
+                    v
+              +-----------+
+              | VALIDATE  |
+              +-----+-----+
+                    |
+                    v
+              +-----------+
+              | RECONCILE | ---> structured JSON
+              +-----------+
+```
+
+### Phase 1: Map
+
+The mapper splits markdown into **chunks** by heading structure. Each chunk gets:
+
+- A **category** (e.g., `header`, `line_items`, `totals` — or anything you define) inferred from your schema's `categories.keywords` block. Without a schema, every chunk is `other`.
+- **Signals** — built-in structural detectors: `has_dollar_amounts`, `has_dates`, `has_key_value_pairs`, `has_tables`. Schemas can define **custom signals** via regex patterns (e.g., `has_policy_numbers` for insurance, `has_invoice_numbers` for invoices).
+
+The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
+
+### Phase 2: Route
+
+The router matches each schema field to the chunks most likely to contain its value. Routing uses a scoring system with three tiers:
+
+1. **Schema hints** (highest priority) -- if the schema author specified `hints.look_in`, `hints.patterns`, or `hints.signals`, those drive routing directly
+2. **Generic inference** -- field type maps to expected signals (date fields look for chunks with `has_dates`, number fields look for `has_dollar_amounts`), plus field name matching against chunk titles and content
+3. **Broadened fallback** -- if nothing scored, route to any chunk with signals, or as a last resort, the first chunks of the document
+
+Each field is routed to the top 3 scoring chunks by default. Fields that legitimately aggregate data from many chunks — like a `policies` array on an insurance certificate, where each policy's detail lives in its own section — can override this with `hints.max_chunks: N` in the schema.
+
+The key design decision: **no hardcoded domain knowledge in the pipeline**. The router is entirely generic. Domain knowledge lives in the schema via hints. This means the same pipeline works for invoices, insurance policies, medical records, or any document type — change the schema, not the code.
+
+### Phase 3: Extract (grouped)
+
+Fields that route to overlapping chunks are **grouped together** into a single LLM call. This is where the efficiency gain comes from: instead of one LLM call per field, or one massive call for the whole document, Koji makes the minimum number of calls needed.
+
+For example, if `policy_number`, `effective_date`, and `insured_name` all route to the declarations page, they become one extraction group with one focused prompt.
+
+Each group's prompt contains only the relevant document chunks and field specifications. Groups run concurrently (up to 5 in parallel by default).
+
+### Phase 4: Validate
+
+Each extracted value is validated and normalized against its field spec:
+
+- **Dates** are normalized to ISO 8601 (`YYYY-MM-DD`)
+- **Numbers** are cleaned of currency symbols and commas, converted to numeric types
+- **Enums** are fuzzy-matched against allowed options (case-insensitive, substring matching)
+- **Mappings** resolve aliases to canonical values (e.g., "NY" and "New York" both resolve to "New York")
+- **Required fields** are flagged if null
+
+### Phase 5: Reconcile
+
+Results from all extraction groups are merged into a single output. When multiple groups extract the same field (from overlapping chunks), the reconciler uses agreement as a confidence signal:
+
+- **High confidence** -- multiple independent sources agree on the same value
+- **Medium confidence** -- single source, passes validation
+- **Low confidence** -- validation issues or conflicting sources
+
+After reconciliation, any required fields still missing trigger **gap filling**: a broadened retry that searches up to 6 chunks with a targeted single-field prompt. This catches values that were missed because the initial routing was too narrow.
+
+The final output includes the extracted data, per-field confidence scores, and metadata about the extraction process (chunk count, group count, timing, gap-filled fields).
+
+## Configuration system
+
+Everything is driven by `koji.yaml`. The config layers from broad to specific:
+
+```yaml
+# Project identity
+project: myproject
+
+# Cluster settings (ports, networking)
+cluster:
+  name: default
+  base_port: 9400       # All service ports are derived from this
+
+# Which services to run
+services:
+  parse: true           # Docling-based document parsing
+  ollama: true          # Local model hosting
+
+# Processing pipeline steps
+pipeline:
+  - step: parse
+    engine: docling
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+
+# Model provider configuration
+models:
+  providers:
+    openai:
+      backend: openai
+    ollama:
+      backend: ollama
+      endpoint: http://ollama:11434
+
+# Where results go
+output:
+  structured: ./output/
+
+# Event notifications
+webhooks:
+  - url: https://your-app.com/webhook
+    events: [job.completed, job.failed]
+    secret: your-hmac-secret
+```
+
+### Port allocation
+
+Ports are deterministic, derived from `base_port`:
+
+| Service | Offset | Default |
+|---------|--------|---------|
+| Dashboard | +0 | 9400 |
+| API Server | +1 | 9401 |
+| Ollama | +10 | 9410 |
+| Parse | +11 | 9411 |
+| Extract | +12 | 9412 |
+
+This means you can run multiple Koji clusters side by side on the same machine by giving each project a different `base_port`.
+
+## Data flow
+
+Here is what happens when you run `koji process ./invoice.pdf --schema schemas/invoice.yaml`:
+
+```
+1. CLI reads koji.yaml and loads the schema file
+   |
+2. CLI sends POST /api/process with file + schema to the API Server
+   |
+3. API Server forwards the file to the Parse Service (POST /parse)
+   |
+4. Parse Service:
+   - Writes the upload to a temp file
+   - Runs Docling converter (OCR, layout analysis, table detection)
+   - Returns markdown text + page count
+   |
+5. API Server forwards markdown + schema to the Extract Service (POST /extract)
+   |
+6. Extract Service runs the 5-phase pipeline:
+   a. MAP       — split markdown into classified, annotated chunks
+   b. ROUTE     — score and match schema fields to relevant chunks
+   c. EXTRACT   — send grouped prompts to the model provider concurrently
+   d. VALIDATE  — normalize types, fuzzy-match enums, check required fields
+   e. RECONCILE — merge group results, gap-fill missing required fields
+   |
+7. Extract Service returns structured JSON + confidence scores + metadata
+   |
+8. API Server:
+   - Persists the job to SQLite history
+   - Fires webhooks (job.completed event)
+   - Returns JSON response to the CLI
+   |
+9. CLI writes the result to the output directory
+```
+
+For the `koji extract` command, steps 3-4 are skipped entirely -- you pass pre-parsed markdown directly, which makes iteration on schemas much faster.
+
+## Extension points
+
+Koji is designed to be customized without forking:
+
+### Model providers
+
+Use any LLM. The provider system supports:
+
+- **Ollama** -- any model Ollama can run (`llama3.2`, `mistral`, `mixtral`, etc.)
+- **OpenAI** -- GPT-4o, GPT-4o-mini, or any model on the OpenAI API
+- **OpenAI-compatible** -- any API that speaks the OpenAI chat completions format (vLLM, LiteLLM, Azure OpenAI, etc.). Set the `KOJI_OPENAI_URL` environment variable to point at your endpoint.
+
+Model selection is per-command (`--model openai/gpt-4o-mini`) or per-pipeline-step in `koji.yaml`.
+
+### Schema hints
+
+The schema hint system lets you encode domain knowledge without touching pipeline code:
+
+- `look_in` -- which document categories to search (e.g., `[declarations]`)
+- `patterns` -- regex patterns that indicate where a value lives
+- `signals` -- structural cues like `has_tables`, `has_dates`, `has_dollar_amounts`
+
+This is how you tune extraction accuracy for your specific document types. See the [Schema Guide](schema-guide.md) for the full reference.
+
+### Webhooks
+
+Subscribe to `job.completed` and `job.failed` events. Payloads include the extracted data, timing, and metadata. Optional HMAC-SHA256 signing for payload verification:
+
+```yaml
+webhooks:
+  - url: https://your-app.com/webhook
+    events: [job.completed, job.failed]
+    secret: your-hmac-secret   # X-Koji-Signature header
+```
+
+### Python SDK
+
+Integrate Koji into your applications programmatically:
+
+```python
+from koji import KojiClient
+
+client = KojiClient(base_url="http://127.0.0.1:9401")
+result = client.process("./invoice.pdf", schema="./schemas/invoice.yaml")
+print(result.extracted)
+```
+
+The SDK provides typed response objects (`ProcessResponse`, `ExtractResponse`, `ParseResponse`) and structured error handling.
 
 ## Deployment
 
-### Local Development
+### Local development
 
 ```bash
 koji start
 ```
 
-Uses docker-compose under the hood. All services run as containers on your machine.
+This generates a `docker-compose.yaml` in `.koji/` and runs it. All services build from local Dockerfiles. Persistent data (model weights, job history) lives in Docker volumes.
 
-### Kubernetes
+### Multiple clusters
 
-```bash
-koji start --k8s
+Run independent clusters on the same machine by giving each project a different `base_port`:
+
+```yaml
+# Project A
+project: invoices
+cluster:
+  base_port: 9400
+
+# Project B
+project: contracts
+cluster:
+  base_port: 9500
 ```
 
-Generates Kubernetes manifests for your pipeline. Same containers, same config, production-ready.
+Each cluster gets its own Docker network, containers, and volumes. They do not interfere with each other.
 
-## Design Principles
+### Container registry (no local builds)
 
-- **Config over code** — change behavior by editing YAML, not writing code
-- **No lock-in** — swap models, providers, or deployment targets without code changes
-- **Same local and prod** — what runs on your laptop runs in production
-- **Clean boundaries** — services communicate through defined APIs, never directly
+`koji start` pulls pre-built images from a container registry (GitHub Container Registry). Users never run `docker build` — that's slow, memory-intensive, and error-prone. Dockerfiles stay in the repo for development and CI, but production users always pull.
+
+```
+koji start  →  docker pull ghcr.io/getkoji/parse:latest
+               docker pull ghcr.io/getkoji/extract:latest
+               docker pull ghcr.io/getkoji/server:latest
+               docker compose up
+```
+
+### Production (Koji Cloud)
+
+The hosted version runs the same services with managed infrastructure. The architecture is identical — the only additions are auth, billing, and persistent multi-tenant storage.
+
+## Hosted architecture (Koji Cloud)
+
+All-Cloudflare stack. One vendor, one bill, zero egress fees, containers auto-sleep when idle.
+
+```
+                    ┌──────────────────┐
+                    │  Cloudflare Pages │
+                    │     (Next.js)     │
+                    │    Dashboard      │
+                    └────────┬─────────┘
+                             │
+                    ┌────────┴─────────┐
+                    │      Clerk       │
+                    │     (Auth)       │
+                    └────────┬─────────┘
+                             │ JWT
+                    ┌────────┴─────────┐
+                    │  CF Workers      │
+                    │  API (light)     │──── D1 (SQLite)
+                    │  auth, routing   │──── R2 (documents)
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────┴──────┐ ┌────┴────┐ ┌──────┴──────┐
+        │    Parse   │ │ Extract │ │ CF Queues   │
+        │ CF Container│ │CF Cont. │ │ (job queue) │
+        │ 4cpu/12GB  │ │1cpu/4GB │ │             │
+        │ auto-sleep │ │auto-sleep│ │             │
+        └────────────┘ └─────────┘ └─────────────┘
+```
+
+### Stack choices
+
+| Layer | Cloudflare Product | Spec | Cost |
+|-------|-------------------|------|------|
+| **Frontend** | Pages | Next.js, unlimited bandwidth | Free |
+| **API (light)** | Workers | Auth validation, schema CRUD, job status, routing | $5/mo (Workers Paid) |
+| **Parse** | Containers (standard-4) | 4 vCPU, 12GB RAM, 20GB disk. Auto-sleeps after idle. | Per-second billing |
+| **Extract** | Containers (standard-1) | 1 vCPU, 4GB RAM. Auto-sleeps after idle. | Per-second billing |
+| **Database** | D1 | SQLite at the edge. Same engine as self-hosted. | Free tier generous |
+| **Documents** | R2 | S3-compatible. Zero egress fees. | $0.015/GB stored |
+| **Job queue** | Queues | Job orchestration, async processing | $0.40/M messages |
+| **Auth** | Clerk (external) | SSO, MFA, team management. Only non-CF piece. | Free to 10k MAU |
+
+**Container limits (no runtime duration limit):**
+- Max instance: 4 vCPU, 12 GiB RAM, 20 GB disk
+- Containers run as long as needed, billed per 10ms active
+- Auto-sleep after configurable `sleepAfter` period (e.g., 10 minutes)
+- Account limits (beta): 6 TiB memory, 1500 vCPU across all containers
+
+**Estimated cost at launch:** ~$10-20/mo before first paying customer (mostly idle containers + $5 Workers Paid plan).
+
+**Why all-Cloudflare:**
+- One vendor, one bill, one dashboard
+- D1 is literally SQLite — same local-to-prod parity as self-hosted
+- R2 has zero egress fees (critical for document processing where users download results)
+- Pages is free with no pricing cliffs
+- Containers auto-sleep when idle — you don't pay for downtime
+- No multi-vendor networking complexity
+
+### Auth architecture
+
+The API server has a single auth middleware with two modes:
+
+```python
+# server/auth.py
+KOJI_AUTH_MODE = os.environ.get("KOJI_AUTH_MODE", "none")
+
+# If "none" (self-hosted): all requests pass through, synthetic admin user
+# If "clerk" (hosted): validate JWT from Authorization header, extract user/team/role
+```
+
+**Self-hosted:** No auth. No users. No tokens. Every request is implicitly admin. The dashboard shows no login screen.
+
+**Hosted:** Clerk handles authentication in the Next.js middleware layer. The frontend gets a session, passes a JWT to the API. The API validates the JWT against Clerk's public keys and extracts:
+- `user_id` — who is making the request
+- `team_id` — which team context (a user can belong to multiple teams)
+- `role` — admin, member, or viewer
+
+RBAC is simple: 3 roles.
+- **Admin** — manage team members, billing, delete schemas, configure webhooks
+- **Member** — process documents, create/edit schemas, view results
+- **Viewer** — read-only access to results and schemas
+
+The core extraction endpoints work identically in both modes. The auth layer is a thin wrapper, not a different system.
+
+### One UI everywhere
+
+The dashboard is a single Next.js app that runs in both environments:
+
+- **Self-hosted:** built into a Docker container, served alongside the API. `NEXT_PUBLIC_KOJI_MODE=selfhosted` hides login/billing UI.
+- **Hosted:** deployed on Cloudflare Pages. `NEXT_PUBLIC_KOJI_MODE=cloud` enables the Clerk provider, team switcher, and billing page.
+
+The pages are identical: jobs, schemas, pipeline viz, logs, settings. Only the auth wrapper and billing page differ.
+
+### SQLite everywhere
+
+The database story is the key to the Supabase-like local/prod parity:
+
+- **Self-hosted:** plain SQLite file at `.koji/jobs.db`
+- **Hosted:** Cloudflare D1 (SQLite at the edge)
+
+Same engine, same schema, same queries. D1 is SQLite — not a Postgres-compatible layer, not an emulation, actual SQLite. A schema developed locally works identically in production. Users `koji test` locally, then deploy to cloud with confidence.
+
+## Next steps
+
+- [Getting Started](getting-started.md) -- install and process your first document
+- [Configuration Reference](configuration.md) -- full `koji.yaml` options
+- [Schema Guide](schema-guide.md) -- field types, hints, and validation
 
 ---
 
 # CLI Reference
 
-The `koji` CLI manages clusters and processes documents.
+The `koji` CLI manages clusters, processes documents, and runs benchmarks. Install via `pip install koji-cli`.
 
-## Commands
+## Project lifecycle
 
-### `koji start`
+### `koji init`
 
-Start the cluster defined in `koji.yaml`.
+Scaffold a new Koji project. Creates `koji.yaml` and (optionally) a starter schema.
 
 ```bash
-koji start              # local development (docker-compose)
-koji start --k8s        # generate Kubernetes manifests
+koji init                                    # bare koji.yaml in the current directory
+koji init myproject                          # new project directory with koji.yaml
+koji init myproject --template invoice       # scaffold from a bundled template
+koji init myproject --quickstart             # alias for --template invoice
+koji init --list-templates                   # show all available templates
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--k8s` | Generate Kubernetes manifests instead of running docker-compose |
-| `--config` | Path to `koji.yaml` (default: `./koji.yaml`) |
+| `project_dir` (positional) | Optional. Directory name to create. Defaults to the current directory. |
+| `--template`, `-t` | Scaffold from a bundled template. Run `--list-templates` to see all options. |
+| `--quickstart`, `-q` | Alias for `--template invoice`. |
+| `--list-templates` | List available templates and exit. |
+
+Bundled templates: `invoice`, `receipt`, `contract`, `insurance`, `form`. Each ships with a working schema and a sample document so you can run extraction immediately.
+
+---
+
+### `koji doctor`
+
+Check that your environment is ready to run Koji. Verifies Docker, Docker Compose, the Koji configuration file, port availability, and required environment variables.
+
+```bash
+koji doctor
+```
+
+```
+Koji Doctor
+
+  ✓ Docker installed (Docker version 27.x.x)
+  ✓ Docker Compose available
+  ✓ Docker daemon running
+  ✓ koji.yaml found
+  ✓ koji.yaml valid (project: myproject)
+  ✓ Ports available (base: 9400)
+  ✓ OPENAI_API_KEY set
+
+7 passed, 0 warning, 0 failed
+```
+
+Run this any time something looks wrong. It's the fastest way to diagnose setup issues.
+
+---
+
+## Cluster lifecycle
+
+### `koji start`
+
+Start the cluster defined in `koji.yaml`. By default, pulls pre-built images from `ghcr.io/getkoji`.
+
+```bash
+koji start                # pull pre-built images and run (default)
+koji start --dev          # build images from local source (for contributors)
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dev` | Build images from the local source tree instead of pulling. Required when developing on Koji itself. |
+
+First start with `--dev` takes a few minutes for the docling/torch image build. Default `koji start` pulls pre-built images and is usually under a minute once images are cached locally.
+
+The dashboard comes up at `http://127.0.0.1:9400` (or whatever `cluster.base_port` is set to in `koji.yaml`).
+
+---
 
 ### `koji stop`
 
@@ -581,35 +2105,674 @@ Stop the running cluster.
 koji stop
 ```
 
-### `koji process`
+Tears down all containers but preserves Docker volumes (model caches, etc.). Run `koji start` again to bring the cluster back up.
 
-Process documents through the pipeline.
-
-```bash
-koji process ./invoice.pdf --schema ./schemas/invoice.yaml
-koji process ./documents/                                    # process a directory
-koji process ./doc.pdf --schema ./schemas/invoice.yaml --output ./results/
-```
-
-| Flag | Description |
-|------|-------------|
-| `--schema` | Path to extraction schema (overrides `koji.yaml`) |
-| `--output` | Output directory (overrides `koji.yaml`) |
-| `--config` | Path to `koji.yaml` (default: `./koji.yaml`) |
+---
 
 ### `koji status`
 
-Show cluster health and service status.
+Show cluster health and per-service status.
 
 ```bash
 koji status
 ```
 
-Output shows each running service, its port, and health status.
+Output shows each running service, its port, and health check result. Use this to verify the cluster is fully up before processing documents.
 
-## Global Options
+---
+
+### `koji logs`
+
+Stream container logs for one or all services.
+
+```bash
+koji logs                       # tail all services (last 100 lines)
+koji logs extract               # tail just the extract service
+koji logs extract --follow      # follow extract logs in real time
+koji logs parse --tail 500      # show last 500 lines of parse logs
+```
 
 | Flag | Description |
 |------|-------------|
-| `--version` | Show version and exit |
-| `--help` | Show help and exit |
+| `service` (positional) | Service name: `server`, `parse`, `extract`, `ui`, `ollama`. Omit to show all services. |
+| `--follow`, `-f` | Follow log output (like `tail -f`). Press Ctrl-C to stop. |
+| `--tail`, `-t` | Number of lines to show from the end of the log (default: 100). |
+
+---
+
+## Document processing
+
+### `koji process`
+
+Run the full pipeline: parse a source document into markdown, then extract structured data using a schema.
+
+```bash
+koji process ./invoice.pdf --schema schemas/invoice.yaml
+koji process ./documents/                                  # process a whole directory
+koji process ./doc.pdf --schema schemas/invoice.yaml --output ./results/
+```
+
+| Flag | Description |
+|------|-------------|
+| `path` (positional) | Path to a document file or a directory of documents. |
+| `--schema`, `-s` | Path to an extraction schema YAML. If omitted, only the parse step runs. |
+| `--output`, `-o` | Output directory (default: `./output/`). |
+
+When `--schema` is provided, you get the full pipeline: parse → extract → JSON output. Without `--schema`, you get parsed markdown only — useful for inspecting how Koji sees a document before writing a schema.
+
+---
+
+### `koji extract`
+
+Skip the parse step and run extraction against an already-parsed markdown file. Much faster than `koji process` because parsing (Docling + OCR) is the slow step.
+
+```bash
+koji extract ./output/invoice.md \
+  --schema schemas/invoice.yaml \
+  --model openai/gpt-4o-mini
+```
+
+| Flag | Description |
+|------|-------------|
+| `path` (positional) | Path to a markdown file (from a previous parse). |
+| `--schema`, `-s` | **Required.** Path to an extraction schema YAML. |
+| `--model`, `-m` | Model override. Format: `provider/model-name`. Examples: `openai/gpt-4o-mini`, `openai/gpt-4o`, `ollama/llama3.2`. |
+| `--output`, `-o` | Output directory (default: `./output/`). |
+| `--strategy` | Extraction strategy: `parallel` (default, recommended) or `agent`. |
+
+This is the fastest feedback loop while iterating on a schema. Parse once, extract many times with different schemas or models.
+
+---
+
+## Quality and benchmarking
+
+### `koji test`
+
+Run regression tests against fixture files. Catches schema or pipeline changes that break extraction on documents you care about.
+
+```bash
+koji test --schema schemas/invoice.yaml
+koji test --schema schemas/invoice.yaml --update           # snapshot mode: save current outputs as new baseline
+koji test --schema schemas/invoice.yaml --json             # machine-readable output for CI
+```
+
+| Flag | Description |
+|------|-------------|
+| `--schema`, `-s` | **Required.** Path to the schema being tested. |
+| `--model`, `-m` | Model override. |
+| `--update` | Snapshot mode: run extraction and save outputs as the new expected baseline. Use this for first-time setup or after intentional schema changes. |
+| `--json` | Output machine-readable JSON results. |
+| `--strategy` | Extraction strategy. |
+
+`koji test` looks for fixture files alongside your schema. Place markdown documents in `<schema>.fixtures/` and corresponding `<name>.expected.json` files for ground truth. Field-level comparison: numbers and dates are matched semantically, strings case-insensitively, arrays order-insensitively. Exit code is 0 on full pass, 1 on any regression.
+
+---
+
+### `koji bench`
+
+Benchmark extraction accuracy across an entire validation corpus. Use this to measure accuracy before shipping schema changes, compare models, or produce numbers for an accuracy dashboard.
+
+```bash
+koji bench --corpus ./corpus --model openai/gpt-4o-mini
+koji bench --corpus ./corpus --category invoices --limit 10
+koji bench --corpus ./corpus --model openai/gpt-4o --output bench.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--corpus`, `-c` | **Required.** Path to a corpus directory (with `documents/`, `expected/`, `manifests/`, `schemas/` subdirectories per category). |
+| `--model`, `-m` | Model override. |
+| `--category` | Only benchmark a single category (e.g., `invoices`). |
+| `--limit` | Maximum documents to process per category. Useful for fast CI runs. |
+| `--json` | Output machine-readable JSON. |
+| `--output`, `-o` | Write JSON results to a file (always JSON, regardless of `--json`). |
+
+The corpus format is the convention used by [getkoji/corpus](https://github.com/getkoji/corpus). Per-category, per-document, and aggregate accuracy are reported. Exit code is 0 on full pass, 1 on any regression or error.
+
+---
+
+## Misc
+
+### `koji version`
+
+Print the installed Koji version.
+
+```bash
+koji version
+# koji 0.1.0
+```
+
+---
+
+## Global options
+
+| Flag | Description |
+|------|-------------|
+| `--help` | Show help for any command. Pass `--help` to a subcommand for details. |
+| `--install-completion` | Install shell completion for your shell. |
+| `--show-completion` | Show shell completion script. |
+
+---
+
+## What's missing here?
+
+If you find a command, flag, or behavior in this doc that doesn't match what `koji --help` shows, please [open an issue](https://github.com/getkoji/koji/issues). The CLI is the source of truth — this document follows it.
+
+---
+
+# API Reference
+
+The Koji API server runs on port `base_port + 1` (default `9401`). All endpoints return JSON.
+
+Base URL: `http://localhost:9401`
+
+---
+
+## Health
+
+### `GET /health`
+
+Liveness check for the API server.
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "healthy",
+  "service": "koji-server",
+  "version": "0.1.0"
+}
+```
+
+---
+
+## Status
+
+### `GET /api/status`
+
+Cluster status including health of all downstream services, cluster metadata, and the active pipeline configuration.
+
+**Response** `200 OK`
+
+```json
+{
+  "services": {
+    "server": {
+      "status": "healthy",
+      "url": "http://127.0.0.1:9401",
+      "response_ms": 0
+    },
+    "parse": {
+      "status": "healthy",
+      "url": "http://koji-parse:9410",
+      "response_ms": 45
+    },
+    "extract": {
+      "status": "healthy",
+      "url": "http://koji-extract:9420",
+      "response_ms": 32
+    },
+    "ollama": {
+      "status": "unreachable",
+      "url": "http://ollama:11434",
+      "response_ms": null
+    }
+  },
+  "cluster": {
+    "project": "koji-dev",
+    "name": "default",
+    "uptime_seconds": 3600
+  },
+  "pipeline": [
+    { "step": "parse", "engine": "docling" },
+    { "step": "extract", "model": "openai/gpt-4o-mini", "schemas": ["./schemas/invoice.yaml"] }
+  ]
+}
+```
+
+Service status values: `healthy`, `unhealthy`, `unreachable`.
+
+---
+
+## Config
+
+### `GET /api/config`
+
+Returns the active `koji.yaml` configuration as JSON, with `null` fields omitted.
+
+**Response** `200 OK`
+
+```json
+{
+  "project": "koji-dev",
+  "cluster": { "name": "default", "base_port": 9400 },
+  "services": { "parse": true, "ollama": true },
+  "pipeline": [
+    { "step": "parse", "engine": "docling" },
+    { "step": "extract", "model": "openai/gpt-4o-mini" }
+  ],
+  "output": { "structured": "./output/" }
+}
+```
+
+---
+
+## Parse
+
+### `POST /api/parse`
+
+Send a document to the parse service and get markdown back. This calls the parse service directly -- no extraction.
+
+**Request** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | Yes | The document to parse (PDF, DOCX, image, etc.) |
+
+**Response** `200 OK`
+
+```json
+{
+  "filename": "invoice.pdf",
+  "pages": 3,
+  "markdown": "# Invoice\n\nInvoice Number: INV-2026-0042\n...",
+  "elapsed_seconds": 4.2
+}
+```
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `502` | Parse service unavailable. |
+
+---
+
+## Process
+
+### `POST /api/process`
+
+Full pipeline: parse a document, then optionally extract structured data using a schema. Supports both synchronous and asynchronous modes.
+
+**Request** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | Yes | The document to process. |
+| `schema` | string | No | Schema definition (YAML or JSON string). When omitted, returns parse results only. |
+
+**Query parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `async` | boolean | `false` | When `true`, returns immediately with a job ID. Poll `/api/jobs/{id}` for results. |
+
+#### Synchronous response `200 OK`
+
+Without schema (parse only):
+
+```json
+{
+  "filename": "invoice.pdf",
+  "pages": 3,
+  "markdown": "# Invoice\n...",
+  "elapsed_seconds": 4.2
+}
+```
+
+With schema (parse + extract):
+
+```json
+{
+  "filename": "invoice.pdf",
+  "pages": 3,
+  "parse_seconds": 4.2,
+  "extracted": {
+    "invoice_number": "INV-2026-0042",
+    "date": "2026-03-15",
+    "total_amount": 6000.00
+  },
+  "model": "openai/gpt-4o-mini",
+  "schema": "invoice",
+  "elapsed_ms": 2340,
+  "tool_calls": 3,
+  "rounds": 1
+}
+```
+
+#### Async response `202 Accepted`
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending"
+}
+```
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Invalid schema format. |
+| `502` | Upstream service (parse or extract) unavailable or returned an error. |
+
+**Webhooks:** Fires `job.completed` or `job.failed` on completion (synchronous mode).
+
+---
+
+## Extract
+
+### `POST /api/extract`
+
+Extract structured data from markdown using a schema. No file upload -- operates on text directly. Useful for re-running extraction on previously parsed documents.
+
+**Request** `application/json`
+
+```json
+{
+  "markdown": "# Invoice\n\nInvoice Number: INV-2026-0042\n...",
+  "schema": "name: invoice\nfields:\n  invoice_number:\n    type: string\n    required: true",
+  "strategy": "parallel",
+  "model": "openai/gpt-4o-mini"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `markdown` | string | Yes | The markdown text to extract from. |
+| `schema` | string | Yes | Schema definition as a YAML or JSON string. |
+| `strategy` | string | No | Extraction strategy: `parallel` or `agent`. |
+| `model` | string | No | Model override (e.g., `openai/gpt-4o-mini`). |
+
+**Query parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `async` | boolean | `false` | When `true`, returns immediately with a job ID. |
+
+#### Synchronous response `200 OK`
+
+```json
+{
+  "extracted": {
+    "invoice_number": "INV-2026-0042",
+    "date": "2026-03-15",
+    "total_amount": 6000.00
+  },
+  "model": "openai/gpt-4o-mini",
+  "schema": "invoice",
+  "elapsed_ms": 1200,
+  "tool_calls": 3,
+  "rounds": 1
+}
+```
+
+#### Async response `202 Accepted`
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending"
+}
+```
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Invalid schema format. |
+| `502` | Extract service unavailable or returned an error. |
+
+**Webhooks:** Fires `job.completed` or `job.failed` on completion (synchronous mode).
+
+---
+
+## Jobs
+
+Jobs track the status and results of asynchronous processing requests. Jobs are stored in memory with a TTL of 1 hour. The most recent 50 jobs are returned by the list endpoint.
+
+### `GET /api/jobs`
+
+List recent jobs, newest first.
+
+**Response** `200 OK`
+
+```json
+[
+  {
+    "job_id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "completed",
+    "created_at": "2026-04-11T12:00:00+00:00",
+    "completed_at": "2026-04-11T12:00:04+00:00",
+    "schema_name": "invoice"
+  },
+  {
+    "job_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "status": "processing",
+    "created_at": "2026-04-11T12:01:00+00:00",
+    "completed_at": null,
+    "schema_name": null
+  }
+]
+```
+
+### `GET /api/jobs/{job_id}`
+
+Get the status and result of a specific job.
+
+**Path parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `job_id` | string | UUID of the job. |
+
+**Response** `200 OK` (completed job)
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "created_at": "2026-04-11T12:00:00+00:00",
+  "completed_at": "2026-04-11T12:00:04+00:00",
+  "schema_name": "invoice",
+  "result": {
+    "extracted": {
+      "invoice_number": "INV-2026-0042",
+      "total_amount": 6000.00
+    },
+    "model": "openai/gpt-4o-mini",
+    "elapsed_ms": 2340
+  }
+}
+```
+
+**Response** `200 OK` (failed job)
+
+```json
+{
+  "job_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "status": "failed",
+  "created_at": "2026-04-11T12:01:00+00:00",
+  "completed_at": "2026-04-11T12:01:05+00:00",
+  "schema_name": "invoice",
+  "error": "Extract failed: model timeout"
+}
+```
+
+**Job status values**
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Job created, not yet started. |
+| `processing` | Job is actively running. |
+| `completed` | Job finished successfully. `result` field contains output. |
+| `failed` | Job failed. `error` field contains the error message. |
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `404` | Job not found (expired or invalid ID). |
+
+---
+
+## Schemas
+
+CRUD endpoints for managing extraction schemas. Schemas are stored as YAML files in the `KOJI_SCHEMAS_DIR` directory (default `./schemas/`).
+
+### `GET /api/schemas`
+
+List all schemas with summary info.
+
+**Response** `200 OK`
+
+```json
+[
+  {
+    "name": "invoice",
+    "description": "Invoice data extraction",
+    "field_count": 6
+  },
+  {
+    "name": "receipt",
+    "description": null,
+    "field_count": 4
+  }
+]
+```
+
+### `GET /api/schemas/{name}`
+
+Get the full definition of a schema.
+
+**Path parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Schema name (alphanumeric, hyphens, underscores). |
+
+**Response** `200 OK`
+
+```json
+{
+  "name": "invoice",
+  "description": "Invoice data extraction",
+  "categories": null,
+  "fields": {
+    "invoice_number": {
+      "type": "string",
+      "required": true,
+      "description": "The invoice number"
+    },
+    "date": {
+      "type": "date",
+      "description": "Invoice date"
+    },
+    "total_amount": {
+      "type": "number",
+      "description": "Total amount due"
+    }
+  }
+}
+```
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `404` | Schema not found. |
+
+### `POST /api/schemas`
+
+Create a new schema.
+
+**Request** `application/json`
+
+```json
+{
+  "name": "purchase_order",
+  "description": "Purchase order extraction",
+  "fields": {
+    "po_number": {
+      "type": "string",
+      "required": true,
+      "description": "Purchase order number"
+    },
+    "vendor": {
+      "type": "string",
+      "description": "Vendor name"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Schema name. Alphanumeric, hyphens, underscores only. Auto-lowercased. |
+| `description` | string | No | Human-readable description. |
+| `categories` | object | No | Document category definitions. |
+| `fields` | object | Yes | Field definitions. Must contain at least one field. |
+
+**Response** `201 Created`
+
+Returns the created schema in the same format as `GET /api/schemas/{name}`.
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `409` | Schema with that name already exists. |
+| `422` | Validation error (empty name, empty fields, invalid characters). |
+
+### `PUT /api/schemas/{name}`
+
+Update an existing schema. Only provided fields are updated; omitted fields are left unchanged.
+
+**Request** `application/json`
+
+```json
+{
+  "description": "Updated description",
+  "fields": {
+    "po_number": {
+      "type": "string",
+      "required": true
+    },
+    "vendor": {
+      "type": "string"
+    },
+    "ship_date": {
+      "type": "date"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `description` | string | No | Updated description. |
+| `categories` | object | No | Updated categories. |
+| `fields` | object | No | Updated field definitions. Must not be empty if provided. |
+
+**Response** `200 OK`
+
+Returns the updated schema.
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `404` | Schema not found. |
+| `422` | Validation error (empty fields object). |
+
+### `DELETE /api/schemas/{name}`
+
+Delete a schema.
+
+**Response** `204 No Content`
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `404` | Schema not found. |

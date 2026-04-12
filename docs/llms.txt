@@ -2,28 +2,50 @@
 
 > Documents in. Structured data out.
 
-Koji is a self-hosted, config-driven document processing platform. It turns unstructured documents (PDFs, Word, images, scans) into clean, structured JSON data using local models or any API provider.
+Koji is a self-hosted, config-driven document processing platform. It turns unstructured documents (PDFs, Word, images, scans) into clean, structured JSON data using local models or any OpenAI-compatible API provider.
 
 ## Docs
 
 - [Getting Started](https://docs.getkoji.dev/getting-started/): Install, start a cluster, process your first document
-- [Configuration](https://docs.getkoji.dev/configuration/): Full koji.yaml reference — pipelines, models, clusters, output
-- [Schemas](https://docs.getkoji.dev/schemas/): Define extraction schemas — field types, arrays, nested objects
-- [Architecture](https://docs.getkoji.dev/architecture/): How the pipeline, services, and cluster model work
-- [CLI Reference](https://docs.getkoji.dev/cli/): All commands — start, stop, process, status
+- [Schemas](https://docs.getkoji.dev/schema-guide/): Schema authoring guide — field types, hints, arrays, enums, custom signals
+- [Configuration](https://docs.getkoji.dev/configuration/): Full koji.yaml reference — cluster, services, pipeline, models, webhooks
+- [Architecture](https://docs.getkoji.dev/architecture/): How the pipeline works (map → route → extract → validate → reconcile)
+- [CLI Reference](https://docs.getkoji.dev/cli/): Every command — init, start, process, extract, test, bench, logs, doctor
+- [API Reference](https://docs.getkoji.dev/api-reference/): Every HTTP endpoint with request/response shapes
 
-## Quick Start
+## Quick start
 
 ```bash
 pip install koji-cli
+koji init myproject --template invoice
+cd myproject
+export OPENAI_API_KEY=sk-...
 koji start
-koji process ./invoice.pdf --schema ./schemas/invoice.yaml
+koji extract samples/invoice_sample.md \
+  --schema schemas/invoice.yaml \
+  --model openai/gpt-4o-mini
 ```
 
-## Key Concepts
+## Commands
 
-- **Pipeline**: Ordered steps defined in koji.yaml (parse → split → classify → extract → embed)
-- **Schemas**: YAML files defining what data to extract (field names, types, descriptions)
-- **Models**: BYO — local (ollama/vllm) or API (OpenAI, Anthropic, custom endpoints)
-- **Cluster**: Docker-based services, one per pipeline step, orchestrated by a central server
-- **CLI**: `koji start`, `koji stop`, `koji process`, `koji status`
+- `koji init [dir]` — scaffold a new project from a template
+- `koji start` — start the cluster (pulls pre-built images by default)
+- `koji stop` — stop the cluster
+- `koji status` — show service health
+- `koji process <path>` — full pipeline: parse + extract
+- `koji extract <md>` — extract from already-parsed markdown (fast iteration)
+- `koji test --schema <path>` — schema regression tests against fixture files
+- `koji bench --corpus <path>` — benchmark accuracy against a validation corpus
+- `koji logs [service]` — stream service logs
+- `koji doctor` — environment health check
+- `koji version` — show version
+
+## Key concepts
+
+- **Schema** — YAML file defining what to extract: fields, types, descriptions, hints. Domain knowledge lives here, not in the engine.
+- **Pipeline** — `parse` (document → markdown) and `extract` (markdown → structured JSON) steps defined in `koji.yaml`.
+- **Map → Route → Extract → Validate → Reconcile** — the five-phase intelligent extraction pipeline. Parses documents into chunks, routes schema fields to relevant chunks via hints, makes minimum LLM calls, validates types, reconciles results.
+- **Hints** — `look_in`, `patterns`, `signals`, `max_chunks`. Tell the router where to find each field.
+- **Custom signals** — schema-defined regex patterns (e.g., `has_policy_numbers`) that the chunker uses for routing.
+- **Categories** — schema-defined section labels (`header`, `line_items`, `totals`, etc.) that `look_in` hints reference.
+- **Model providers** — any OpenAI-compatible API or local models via ollama. Format: `provider/model-name` (e.g., `openai/gpt-4o-mini`, `ollama/llama3.2`).
