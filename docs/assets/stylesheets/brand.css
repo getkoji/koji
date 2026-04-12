@@ -1,0 +1,643 @@
+/* ==========================================================================
+   Koji Docs — Brand override for Material for MkDocs
+   Matches the marketing site at getkoji.dev — cream palette, Japanese
+   vermillion accent, Fraunces serif for display, Instrument Sans for body,
+   JetBrains Mono for code.
+   ========================================================================== */
+
+/* Load Fraunces for display headings (body + code fonts come from mkdocs.yml) */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&display=swap');
+
+/* ---------- Design tokens ------------------------------------------------- */
+
+:root {
+  /* Warm cream palette */
+  --koji-cream: #F4EEE2;
+  --koji-cream-2: #ECE3D0;
+  --koji-cream-3: #DFD3B9;
+  --koji-cream-4: #C9BC9E;
+
+  /* Ink — warm near-black */
+  --koji-ink: #171410;
+  --koji-ink-2: #3A3328;
+  --koji-ink-3: #665C4B;
+  --koji-ink-4: #998E78;
+
+  /* Accents */
+  --koji-vermillion: #C33520;
+  --koji-vermillion-2: #992718;
+  --koji-vermillion-tint: #F2D9D2;
+  --koji-ochre: #A8802E;
+
+  --koji-border: rgba(23, 20, 16, 0.12);
+  --koji-border-strong: rgba(23, 20, 16, 0.22);
+
+  --koji-font-display: 'Fraunces', 'Times New Roman', serif;
+
+  /* ---------- Material variable overrides ---------- */
+
+  /* Primary = vermillion (used in header, hover states, active nav) */
+  --md-primary-fg-color: var(--koji-vermillion);
+  --md-primary-fg-color--light: #E04A34;
+  --md-primary-fg-color--dark: var(--koji-vermillion-2);
+  --md-primary-bg-color: var(--koji-cream);
+  --md-primary-bg-color--light: var(--koji-cream-2);
+
+  /* Accent = ink for links/interactive contrast */
+  --md-accent-fg-color: var(--koji-vermillion);
+  --md-accent-fg-color--transparent: rgba(195, 53, 32, 0.12);
+  --md-accent-bg-color: var(--koji-cream);
+  --md-accent-bg-color--light: var(--koji-cream-2);
+
+  /* Default surfaces */
+  --md-default-bg-color: var(--koji-cream);
+  --md-default-bg-color--light: var(--koji-cream-2);
+  --md-default-bg-color--lighter: rgba(244, 238, 226, 0.7);
+  --md-default-bg-color--lightest: rgba(244, 238, 226, 0.4);
+
+  --md-default-fg-color: var(--koji-ink);
+  --md-default-fg-color--light: var(--koji-ink-2);
+  --md-default-fg-color--lighter: var(--koji-ink-3);
+  --md-default-fg-color--lightest: var(--koji-ink-4);
+
+  /* Code blocks */
+  --md-code-bg-color: var(--koji-ink);
+  --md-code-fg-color: var(--koji-cream-2);
+  --md-code-hl-color: rgba(195, 53, 32, 0.18);
+  --md-code-hl-number-color: #F2A57B;
+  --md-code-hl-string-color: #C8D79D;
+  --md-code-hl-keyword-color: #E8C583;
+  --md-code-hl-name-color: var(--koji-cream-2);
+  --md-code-hl-operator-color: #8A8577;
+  --md-code-hl-punctuation-color: #8A8577;
+  --md-code-hl-comment-color: #736B5A;
+  --md-code-hl-generic-color: var(--koji-cream-3);
+  --md-code-hl-variable-color: var(--koji-cream);
+  --md-code-hl-special-color: var(--koji-vermillion);
+  --md-code-hl-function-color: var(--koji-cream);
+  --md-code-hl-constant-color: #F2A57B;
+
+  /* Typeset */
+  --md-typeset-color: var(--koji-ink);
+  --md-typeset-a-color: var(--koji-vermillion);
+  --md-typeset-mark-color: rgba(195, 53, 32, 0.18);
+  --md-typeset-del-color: rgba(195, 53, 32, 0.15);
+  --md-typeset-ins-color: rgba(200, 215, 157, 0.35);
+  --md-typeset-kbd-color: var(--koji-cream-2);
+  --md-typeset-kbd-accent-color: var(--koji-cream);
+  --md-typeset-kbd-border-color: var(--koji-border-strong);
+  --md-typeset-table-color: var(--koji-border-strong);
+  --md-typeset-table-color--light: var(--koji-border);
+
+  /* Footer */
+  --md-footer-fg-color: var(--koji-cream-2);
+  --md-footer-fg-color--light: var(--koji-cream-3);
+  --md-footer-fg-color--lighter: var(--koji-cream-4);
+  --md-footer-bg-color: var(--koji-ink);
+  --md-footer-bg-color--dark: #0E0C09;
+
+  /* Admonitions default */
+  --md-admonition-fg-color: var(--koji-ink-2);
+  --md-admonition-bg-color: var(--koji-cream-2);
+
+  /* Shadows — warmer */
+  --md-shadow-z1: 0 1px 2px rgba(23, 20, 16, 0.05);
+  --md-shadow-z2: 0 4px 14px rgba(23, 20, 16, 0.08);
+  --md-shadow-z3: 0 12px 48px rgba(23, 20, 16, 0.14);
+}
+
+/* ---------- Typography ---------------------------------------------------- */
+
+body,
+.md-typeset {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.md-typeset {
+  font-size: 0.82rem;
+  line-height: 1.65;
+  color: var(--koji-ink);
+}
+
+/* Display headings use Fraunces */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-family: var(--koji-font-display);
+  font-variation-settings: 'opsz' 96, 'SOFT' 50;
+  color: var(--koji-ink);
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  text-wrap: balance;
+}
+
+.md-typeset h1 {
+  font-size: 2rem;
+  line-height: 1.08;
+  font-variation-settings: 'opsz' 144, 'SOFT' 50;
+  margin: 0 0 1rem;
+  font-weight: 500;
+}
+
+.md-typeset h2 {
+  font-size: 1.75rem;
+  line-height: 1.15;
+  margin-top: 2.5em;
+  padding-top: 1em;
+  border-top: 1px solid var(--koji-border);
+}
+
+.md-typeset h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 1.75em;
+}
+
+.md-typeset h3 {
+  font-size: 1.3rem;
+  line-height: 1.2;
+  margin-top: 2em;
+}
+
+.md-typeset h4 {
+  font-size: 1.05rem;
+  margin-top: 1.75em;
+}
+
+.md-typeset h5,
+.md-typeset h6 {
+  font-family: inherit;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  color: var(--koji-ink-3);
+}
+
+.md-typeset p {
+  color: var(--koji-ink-2);
+}
+
+/* ---------- Header -------------------------------------------------------- */
+
+.md-header {
+  background: var(--koji-cream);
+  color: var(--koji-ink);
+  border-bottom: 1px solid var(--koji-border);
+  box-shadow: none;
+  height: 3.2rem;
+}
+
+.md-header__inner {
+  height: 3.2rem;
+  display: flex;
+  align-items: center;
+}
+
+.md-header[data-md-state="shadow"] {
+  box-shadow: 0 1px 0 var(--koji-border), 0 2px 8px rgba(23, 20, 16, 0.04);
+}
+
+.md-header__button {
+  color: var(--koji-ink);
+}
+
+/*
+ * Header title centering.
+ *
+ * Fraunces (like most serif fonts) has asymmetric font metrics — the glyph
+ * baseline isn't at the geometric center of the em box, so plain flex
+ * centering makes short words appear too high or too low. We use modern
+ * `text-box-trim` to strip the leading space above cap-height and below
+ * the alphabetic baseline, which makes the glyph block center perfectly.
+ * Chrome 133+ / Safari 18.2+. Fallback is unset line-height.
+ */
+.md-header__title {
+  font-family: var(--koji-font-display);
+  font-size: 1.35rem;
+  font-weight: 500;
+  color: var(--koji-ink);
+  font-variation-settings: 'opsz' 144, 'SOFT' 30;
+  letter-spacing: -0.01em;
+  margin: 0 0 0 0.25rem;
+  line-height: normal;
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.md-header__title .md-header__ellipsis {
+  display: flex;
+  align-items: center;
+}
+
+.md-header__title .md-ellipsis {
+  line-height: 1;
+  text-box-trim: trim-both;
+  text-box-edge: cap alphabetic;
+  /* Let the "j" descender render outside the trimmed box.
+     Safe here because we control the header title text (always "Koji"). */
+  overflow: visible;
+}
+
+/* Bigger branch mark in the header */
+.md-header__button.md-logo {
+  padding: 0.4rem;
+  margin: 0;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.md-header__topic:first-child {
+  font-weight: 500;
+}
+
+.md-header__topic .md-ellipsis {
+  color: var(--koji-ink);
+}
+
+/* Search box in header */
+.md-search__form {
+  background: var(--koji-cream-2);
+  border: 1px solid var(--koji-border);
+  border-radius: 3px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.md-search__form:hover {
+  background: var(--koji-cream-2);
+  border-color: var(--koji-border-strong);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  background: var(--koji-cream);
+  border-color: var(--koji-vermillion);
+  box-shadow: 0 0 0 3px rgba(195, 53, 32, 0.1);
+}
+
+.md-search__input {
+  color: var(--koji-ink);
+  font-family: var(--md-text-font-family);
+}
+
+.md-search__input::placeholder {
+  color: var(--koji-ink-4);
+}
+
+.md-search__icon {
+  color: var(--koji-ink-3);
+}
+
+/* ---------- Tabs (top-level nav) ----------------------------------------- */
+
+.md-tabs {
+  background: var(--koji-cream);
+  color: var(--koji-ink);
+  border-bottom: 1px solid var(--koji-border);
+}
+
+.md-tabs__link {
+  color: var(--koji-ink-2);
+  opacity: 1;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  color: var(--koji-vermillion);
+}
+
+/* ---------- Sidebar nav --------------------------------------------------- */
+
+.md-nav {
+  font-size: 0.76rem;
+}
+
+.md-nav__title {
+  color: var(--koji-ink-3);
+  font-family: var(--md-text-font-family);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  padding-top: 0;
+  padding-bottom: 0.75rem;
+}
+
+.md-nav__link {
+  color: var(--koji-ink-2);
+  transition: color 0.2s;
+  padding: 0.3rem 0;
+}
+
+.md-nav__link:hover {
+  color: var(--koji-vermillion);
+}
+
+.md-nav__link--active,
+.md-nav__link--active code {
+  color: var(--koji-vermillion);
+  font-weight: 500;
+}
+
+/* Active item indicator */
+.md-nav__item .md-nav__link--active {
+  position: relative;
+}
+
+.md-nav__item .md-nav__link--active::before {
+  content: '';
+  position: absolute;
+  left: -0.8rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  background: var(--koji-vermillion);
+  border-radius: 2px;
+}
+
+/* Section headers in sidebar */
+.md-nav__item--section > .md-nav__link {
+  font-family: var(--md-text-font-family);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--koji-ink-3);
+  font-weight: 600;
+}
+
+/* ---------- Main content -------------------------------------------------- */
+
+.md-main__inner {
+  margin-top: 1rem;
+}
+
+.md-content__inner {
+  margin: 0 auto;
+  padding-top: 0.5rem;
+}
+
+.md-content__inner:before {
+  display: none;
+}
+
+.md-sidebar {
+  padding-top: 0.5rem;
+}
+
+/* ---------- Links --------------------------------------------------------- */
+
+.md-typeset a {
+  color: var(--koji-vermillion);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: color 0.2s, text-decoration-color 0.2s;
+}
+
+.md-typeset a:hover {
+  color: var(--koji-vermillion-2);
+  text-decoration-thickness: 2px;
+}
+
+/* ---------- Inline code --------------------------------------------------- */
+
+.md-typeset code {
+  background: var(--koji-cream-2);
+  border: 1px solid var(--koji-border);
+  color: var(--koji-ink);
+  padding: 0.1em 0.4em;
+  border-radius: 2px;
+  font-size: 0.86em;
+}
+
+.md-typeset a code {
+  background: var(--koji-vermillion-tint);
+  border-color: rgba(195, 53, 32, 0.2);
+  color: var(--koji-vermillion-2);
+}
+
+/* ---------- Code blocks --------------------------------------------------- */
+
+.md-typeset pre > code,
+.md-typeset .highlight pre > code {
+  background: var(--koji-ink);
+  color: var(--koji-cream-2);
+  border-radius: 3px;
+  border: none;
+  padding: 1.25rem 1.5rem;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  box-shadow: 0 6px 20px rgba(23, 20, 16, 0.1);
+}
+
+.md-typeset .highlight .filename,
+.md-typeset .highlight [data-linenos]:before {
+  background: transparent;
+  color: var(--koji-cream-4);
+}
+
+/* Copy button on code blocks */
+.md-clipboard {
+  color: var(--koji-cream-4);
+  transition: color 0.2s;
+}
+
+.md-clipboard:hover {
+  color: var(--koji-vermillion);
+}
+
+/* ---------- Blockquotes --------------------------------------------------- */
+
+.md-typeset blockquote {
+  border-left: 3px solid var(--koji-vermillion);
+  background: var(--koji-cream-2);
+  color: var(--koji-ink-2);
+  padding: 1rem 1.25rem;
+  border-radius: 0 3px 3px 0;
+  font-style: italic;
+  font-family: var(--koji-font-display);
+  font-size: 1rem;
+  font-variation-settings: 'opsz' 24, 'SOFT' 80;
+}
+
+.md-typeset blockquote p {
+  margin: 0;
+}
+
+/* ---------- Tables -------------------------------------------------------- */
+
+.md-typeset table:not([class]) {
+  background: var(--koji-cream);
+  border: 1px solid var(--koji-border);
+  border-radius: 3px;
+  overflow: hidden;
+  font-size: 0.8rem;
+  box-shadow: none;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--koji-cream-2);
+  color: var(--koji-ink);
+  font-family: var(--md-text-font-family);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--koji-border-strong);
+}
+
+.md-typeset table:not([class]) td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--koji-border);
+  color: var(--koji-ink-2);
+}
+
+.md-typeset table:not([class]) tr:last-child td {
+  border-bottom: none;
+}
+
+.md-typeset table:not([class]) tr:hover {
+  background: var(--koji-cream-2);
+}
+
+/* ---------- Admonitions --------------------------------------------------- */
+
+.md-typeset .admonition,
+.md-typeset details {
+  background: var(--koji-cream-2);
+  border: 1px solid var(--koji-border);
+  border-left: 3px solid var(--koji-vermillion);
+  border-radius: 0 3px 3px 0;
+  box-shadow: none;
+  font-size: 0.8rem;
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background: transparent;
+  color: var(--koji-ink);
+  font-weight: 600;
+  font-family: var(--md-text-font-family);
+  padding: 0.7rem 0.9rem 0.7rem 2.2rem;
+  border-bottom: none;
+}
+
+.md-typeset .admonition-title::before,
+.md-typeset summary::before {
+  background-color: var(--koji-vermillion);
+}
+
+.md-typeset .admonition.note,
+.md-typeset details.note {
+  border-left-color: var(--koji-ochre);
+}
+.md-typeset .admonition.note > .admonition-title::before,
+.md-typeset details.note > summary::before {
+  background-color: var(--koji-ochre);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-left-color: var(--koji-vermillion);
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-left-color: var(--koji-ochre);
+}
+.md-typeset .admonition.tip > .admonition-title::before,
+.md-typeset details.tip > summary::before {
+  background-color: var(--koji-ochre);
+}
+
+/* ---------- Footer -------------------------------------------------------- */
+
+.md-footer {
+  background: var(--koji-ink);
+  color: var(--koji-cream-3);
+}
+
+.md-footer-meta {
+  background: #0E0C09;
+}
+
+.md-footer-meta__inner {
+  font-size: 0.75rem;
+}
+
+.md-footer__link {
+  color: var(--koji-cream-2);
+}
+
+.md-footer__link:hover {
+  color: var(--koji-vermillion);
+}
+
+.md-footer__title {
+  font-family: var(--koji-font-display);
+  font-variation-settings: 'opsz' 72, 'SOFT' 50;
+  font-weight: 400;
+}
+
+/* ---------- Tables of contents (right sidebar) --------------------------- */
+
+.md-nav--secondary .md-nav__title {
+  color: var(--koji-ink-3);
+  box-shadow: 0 -1px 0 var(--koji-border) inset;
+}
+
+.md-nav--secondary .md-nav__link {
+  color: var(--koji-ink-3);
+}
+
+.md-nav--secondary .md-nav__link--active {
+  color: var(--koji-vermillion);
+}
+
+/* ---------- Selection ----------------------------------------------------- */
+
+::selection {
+  background: var(--koji-vermillion);
+  color: var(--koji-cream);
+}
+
+/* ---------- Tabbed content ------------------------------------------------ */
+
+.md-typeset .tabbed-set > input + label {
+  color: var(--koji-ink-3);
+  font-family: var(--md-text-font-family);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.md-typeset .tabbed-set > input:checked + label {
+  color: var(--koji-vermillion);
+  border-bottom-color: var(--koji-vermillion);
+}
+
+/* ---------- Scrollbar (webkit) -------------------------------------------- */
+
+::-webkit-scrollbar-thumb {
+  background: var(--koji-cream-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--koji-cream-4);
+}
+
+/* ---------- Remove default Material rainbow border ----------------------- */
+
+.md-header__topic + .md-header__topic:nth-child(2) .md-ellipsis {
+  color: var(--koji-ink-3);
+}
