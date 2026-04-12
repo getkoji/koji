@@ -162,6 +162,16 @@ def _first_schema_path(target: Path) -> Path | None:
     return None
 
 
+def _first_sample_path(target: Path) -> Path | None:
+    samples_dir = target / "samples"
+    if not samples_dir.is_dir():
+        return None
+    for entry in sorted(samples_dir.iterdir()):
+        if entry.is_file() and entry.suffix == ".md":
+            return entry
+    return None
+
+
 def run_init(
     project_dir: str | None,
     quickstart: bool,
@@ -212,7 +222,18 @@ def run_init(
     console.print("  1. [cyan]koji start[/cyan]    — start the processing cluster")
     if template is not None:
         schema_hint = _first_schema_path(target)
-        if schema_hint is not None:
+        sample_hint = _first_sample_path(target)
+        if sample_hint is not None and schema_hint is not None:
+            schema_rel = schema_hint.relative_to(target)
+            sample_rel = sample_hint.relative_to(target)
+            console.print(
+                f"  2. [cyan]koji extract ./{sample_rel} --schema {schema_rel} --model openai/gpt-4o-mini[/cyan]"
+            )
+            console.print(
+                f"     [dim]Try it on the bundled sample, or use "
+                f"[cyan]koji process ./your.pdf --schema {schema_rel}[/cyan] for your own docs.[/dim]"
+            )
+        elif schema_hint is not None:
             rel = schema_hint.relative_to(target)
             console.print(f"  2. [cyan]koji process ./doc.pdf --schema {rel}[/cyan]")
         else:

@@ -99,6 +99,38 @@ def test_init_default_skips_schema(tmp_path):
     assert not (tmp_path / "schemas").exists()
 
 
+def test_init_invoice_template_includes_sample(tmp_path):
+    """koji init --template invoice ships with a sample markdown file."""
+    os.chdir(tmp_path)
+    run_init(project_dir=None, quickstart=False, console=_console(), template="invoice")
+
+    sample_path = tmp_path / "samples" / "invoice_sample.md"
+    assert sample_path.exists(), "invoice template should ship with a sample markdown file"
+
+    content = sample_path.read_text()
+    assert "Invoice" in content
+    assert "INV-" in content  # has an invoice number
+    assert "Total" in content  # has a total line
+
+
+def test_init_receipt_template_includes_sample(tmp_path):
+    """koji init --template receipt ships with a sample markdown file."""
+    os.chdir(tmp_path)
+    run_init(project_dir=None, quickstart=False, console=_console(), template="receipt")
+
+    sample_path = tmp_path / "samples" / "receipt_sample.md"
+    assert sample_path.exists()
+
+
+def test_init_contract_template_includes_sample(tmp_path):
+    """koji init --template contract ships with a sample markdown file."""
+    os.chdir(tmp_path)
+    run_init(project_dir=None, quickstart=False, console=_console(), template="contract")
+
+    sample_path = tmp_path / "samples" / "contract_sample.md"
+    assert sample_path.exists()
+
+
 def test_init_generated_yaml_is_valid(tmp_path):
     """The generated koji.yaml is valid YAML that can be parsed."""
     os.chdir(tmp_path)
