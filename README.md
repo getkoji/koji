@@ -146,6 +146,8 @@ koji extract ./output/doc.md --schema ./schema.yaml --model openai/gpt-4o-mini
 | `koji status` | Show service health |
 | `koji process <path>` | Parse a document (add `--schema` for full pipeline) |
 | `koji extract <md>` | Extract from already-parsed markdown |
+| `koji test --schema <schema>` | Run schema regression tests against fixture files |
+| `koji bench --corpus <path>` | Benchmark extraction accuracy against a validation corpus |
 | `koji logs [service]` | Stream service logs (`-f` to follow) |
 | `koji doctor` | Check environment health |
 | `koji version` | Show version |

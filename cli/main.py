@@ -359,6 +359,93 @@ def test(
 
 
 @app.command()
+def bench(
+    corpus: str = typer.Option(..., "--corpus", "-c", help="Path to corpus repository root"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model to use for extraction"),
+    category: str | None = typer.Option(None, "--category", help="Only benchmark one category"),
+    limit: int | None = typer.Option(None, "--limit", help="Max documents per category"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write JSON results to file"),
+):
+    """Benchmark extraction accuracy against a validation corpus.
+
+    Runs extraction against every document in the corpus and compares the
+    output against expected ground truth. Reports per-category, per-document,
+    and aggregate accuracy.
+
+    Requires a running Koji cluster (use `koji start` first). Use this to
+    measure extraction accuracy before shipping schema changes, to compare
+    models, or to produce numbers for the accuracy dashboard.
+    """
+    import json as json_mod
+
+    import httpx
+
+    from .bench import format_report, run_bench
+
+    corpus_path = Path(corpus).resolve()
+    if not corpus_path.is_dir():
+        console.print(f"[red]Corpus path not found: {corpus}[/red]")
+        raise SystemExit(1)
+
+    state = load_cluster_state()
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        console.print("[dim]koji bench needs a running cluster to call the extract API.[/dim]")
+        raise SystemExit(1)
+
+    server_url = f"http://127.0.0.1:{state['server_port']}"
+
+    # Verify connectivity
+    try:
+        httpx.get(f"{server_url}/api/health", timeout=5)
+    except (httpx.ConnectError, httpx.ReadTimeout):
+        console.print("[red]Cluster not reachable. Run [bold]koji start[/bold] and wait for services.[/red]")
+        raise SystemExit(1)
+
+    if not json_output:
+        label_parts = [f"corpus: {corpus_path.name}"]
+        if category:
+            label_parts.append(f"category: {category}")
+        if model:
+            label_parts.append(f"model: {model}")
+        if limit:
+            label_parts.append(f"limit: {limit}/category")
+        console.print(f"\n[bold]koji bench[/bold] — {', '.join(label_parts)}\n")
+
+    def progress(cat: str, i: int, total: int, doc: str) -> None:
+        if not json_output:
+            console.print(f"  [dim]({cat} {i}/{total}) {doc}[/dim]")
+
+    with httpx.Client() as client:
+        result = run_bench(
+            corpus_root=corpus_path,
+            server_url=server_url,
+            model=model,
+            http_client=client,
+            category_filter=category,
+            document_limit=limit,
+            progress_callback=progress if not json_output else None,
+        )
+
+    # Emit the report
+    if json_output:
+        console.print(json_mod.dumps(result.to_dict(), indent=2))
+    else:
+        console.print(format_report(result))
+
+    # Optional file output (always JSON, for CI consumption)
+    if output:
+        Path(output).write_text(json_mod.dumps(result.to_dict(), indent=2) + "\n")
+        if not json_output:
+            console.print(f"[dim]Results written to {output}[/dim]")
+
+    # Exit code reflects pass/fail
+    if not result.all_passed:
+        raise SystemExit(1)
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print("koji 0.1.0")
