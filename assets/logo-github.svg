@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="512" height="512">
+  <!--
+    Koji — GitHub avatar.
+    Dark background so the mark pops against GitHub's light AND dark modes,
+    and safe for the circle-crop GitHub applies to org/repo avatars.
+    The mark is scaled to 82% of canvas size so there's breathing room
+    on every side (safely inside the inscribed circle).
+  -->
+  <rect width="128" height="128" fill="#171410"/>
+
+  <g transform="translate(64 64) scale(0.82) translate(-64 -64)">
+    <ellipse cx="42" cy="82" rx="13" ry="26" transform="rotate(-22 42 82)" fill="#F4EEE2"/>
+    <ellipse cx="86" cy="82" rx="13" ry="26" transform="rotate(22 86 82)" fill="#F4EEE2"/>
+    <ellipse cx="64" cy="44" rx="13" ry="26" fill="#C33520"/>
+  </g>
+</svg>

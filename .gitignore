@@ -32,6 +32,11 @@ docker-compose.override.yml
 # Docs
 site/
 
+# Generated brand assets — PNG/ICO outputs regenerated from SVG sources
+# via scripts/generate-brand-assets.sh. Source of truth is the SVG.
+assets/*.png
+assets/*.ico
+
 # Environment
 .env
 .env.local

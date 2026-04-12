@@ -252,7 +252,7 @@ def test(
 
     # Verify connectivity
     try:
-        httpx.get(f"{server_url}/api/health", timeout=5)
+        httpx.get(f"{server_url}/health", timeout=5)
     except (httpx.ConnectError, httpx.ReadTimeout):
         console.print("[red]Cluster is not reachable. Run [bold]koji start[/bold] and wait for services.[/red]")
         raise SystemExit(1)
@@ -398,7 +398,7 @@ def bench(
 
     # Verify connectivity
     try:
-        httpx.get(f"{server_url}/api/health", timeout=5)
+        httpx.get(f"{server_url}/health", timeout=5)
     except (httpx.ConnectError, httpx.ReadTimeout):
         console.print("[red]Cluster not reachable. Run [bold]koji start[/bold] and wait for services.[/red]")
         raise SystemExit(1)
