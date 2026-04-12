@@ -12,6 +12,35 @@ from .providers import ModelProvider, create_provider
 from .router import group_routes, route_fields, summarize_routing
 
 
+def _describe_array_item(spec: dict) -> str:
+    """Render the shape of an array's items for the prompt.
+
+    When a schema field says `items: {type: object, properties: {...}}`, the
+    LLM needs to know which properties to extract for each element and what
+    types they should be. Otherwise it will guess at names and drop fields
+    it thinks are redundant.
+    """
+    item_spec = spec.get("items") or {}
+    if not isinstance(item_spec, dict):
+        return ""
+
+    item_type = item_spec.get("type")
+    if item_type == "object":
+        properties = item_spec.get("properties") or {}
+        if not properties:
+            return " of objects"
+        parts = []
+        for prop_name, prop_spec in properties.items():
+            prop_type = (prop_spec or {}).get("type", "string") if isinstance(prop_spec, dict) else "string"
+            parts.append(f"{prop_name}: {prop_type}")
+        return " of objects with properties {" + ", ".join(parts) + "}"
+
+    if item_type:
+        return f" of {item_type}"
+
+    return ""
+
+
 def build_group_prompt(group: dict, schema_name: str) -> str:
     """Build a focused extraction prompt for a group of fields from specific chunks."""
     fields = group["field_specs"]
@@ -24,6 +53,10 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
         description = spec.get("description", "")
         req_label = " (REQUIRED)" if required else ""
         desc_label = f" — {description}" if description else ""
+
+        type_label = field_type
+        if field_type == "array":
+            type_label = "array" + _describe_array_item(spec)
 
         options = spec.get("options", spec.get("enum", []))
         mappings = spec.get("mappings", {})
@@ -41,7 +74,7 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
             opts = ", ".join(str(o) for o in options)
             desc_label += f" [pick from: {opts}]"
 
-        field_descriptions.append(f"  - {name}: {field_type}{req_label}{desc_label}")
+        field_descriptions.append(f"  - {name}: {type_label}{req_label}{desc_label}")
 
     fields_block = "\n".join(field_descriptions)
 
@@ -106,6 +139,10 @@ def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk]
     req_label = " (REQUIRED)" if required else ""
     desc_label = f" — {description}" if description else ""
 
+    type_label = field_type
+    if field_type == "array":
+        type_label = "array" + _describe_array_item(field_spec)
+
     options = field_spec.get("options", field_spec.get("enum", []))
     mappings = field_spec.get("mappings", {})
     if mappings:
@@ -121,7 +158,7 @@ def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk]
         opts = ", ".join(str(o) for o in options)
         desc_label += f" [pick from: {opts}]"
 
-    field_line = f"  - {field_name}: {field_type}{req_label}{desc_label}"
+    field_line = f"  - {field_name}: {type_label}{req_label}{desc_label}"
 
     content_blocks = []
     for chunk in chunks:
@@ -435,7 +472,7 @@ async def intelligent_extract(
     schema_name = schema_def.get("name", "document")
 
     # Phase 1: Document mapping
-    chunks = build_document_map(markdown)
+    chunks = build_document_map(markdown, schema_def)
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
 

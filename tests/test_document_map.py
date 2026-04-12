@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from services.extract.document_map import (
     Chunk,
+    _build_category_keywords,
+    _compile_custom_signals,
     build_document_map,
     classify_chunk,
     detect_signals,
     summarize_map,
 )
-from tests.conftest import SAMPLE_INSURANCE_MARKDOWN
+from tests.conftest import SAMPLE_INSURANCE_MARKDOWN, SAMPLE_SCHEMA
 
 # ── Chunk dataclass ───────────────────────────────────────────────────
 
@@ -25,60 +27,116 @@ class TestChunk:
 
     def test_empty_content(self):
         c = Chunk(index=0, title="T", content="")
-        assert c.line_count == 1  # "".split("\n") == [""]
+        assert c.line_count == 1
         assert c.char_count == 0
 
 
-# ── classify_chunk ────────────────────────────────────────────────────
+# ── classify_chunk with schema-defined categories ────────────────────
+
+# Example category keywords an invoice schema might provide.
+INVOICE_CATEGORY_KEYWORDS = [
+    (["invoice", "bill to", "ship to", "receipt"], "header"),
+    (["description", "quantity", "unit price"], "line_items"),
+    (["subtotal", "tax", "total due", "balance due"], "totals"),
+]
+
+# Example from the insurance schema.
+INSURANCE_CATEGORY_KEYWORDS = [
+    (["declaration", "dec page", "named insured", "policy period"], "declarations"),
+    (["schedule of", "coverage schedule", "limits of"], "schedule_of_coverages"),
+    (["endorsement", "amendment", "rider"], "endorsement"),
+]
 
 
 class TestClassifyChunk:
-    def test_declarations_by_title(self):
-        assert classify_chunk("Declarations Page", "Some content") == "declarations"
+    def test_no_keywords_everything_is_other(self):
+        """With no schema categories, no classification happens."""
+        assert classify_chunk("Declarations Page", "Some content") == "other"
+        assert classify_chunk("Schedule of Coverages", "x") == "other"
+        assert classify_chunk("Anything", "anything") == "other"
 
-    def test_declarations_by_named_insured_in_title(self):
-        assert classify_chunk("Named Insured Info", "blah") == "declarations"
+    def test_schema_categories_applied(self):
+        """Schema-provided categories drive classification."""
+        assert classify_chunk("Declarations Page", "Some content", INSURANCE_CATEGORY_KEYWORDS) == "declarations"
+        assert classify_chunk("Schedule of Coverages", "table", INSURANCE_CATEGORY_KEYWORDS) == "schedule_of_coverages"
 
-    def test_endorsement_by_title(self):
-        assert classify_chunk("Business Liability Endorsement", "modifies") == "endorsement"
+    def test_invoice_categories(self):
+        """Different schema, different categories — same function."""
+        assert classify_chunk("Invoice Header", "Bill to Acme", INVOICE_CATEGORY_KEYWORDS) == "header"
+        assert (
+            classify_chunk(
+                "Random", "Description of services. Quantity shipped. Unit price each.", INVOICE_CATEGORY_KEYWORDS
+            )
+            == "line_items"
+        )
 
-    def test_conditions_by_title(self):
-        assert classify_chunk("General Conditions", "stuff") == "conditions"
+    def test_title_match_is_strong_signal(self):
+        """A keyword in the title matches immediately, no content check needed."""
+        assert classify_chunk("Endorsement", "random content", INSURANCE_CATEGORY_KEYWORDS) == "endorsement"
 
-    def test_definitions_by_title(self):
-        assert classify_chunk("Definitions", "As used in this policy") == "definitions"
-
-    def test_exclusions_by_title(self):
-        assert classify_chunk("Exclusions", "does not apply") == "exclusions"
-
-    def test_schedule_by_title(self):
-        assert classify_chunk("Schedule of Coverages", "table") == "schedule_of_coverages"
-
-    def test_content_match_needs_two_keywords(self):
-        # One keyword in content, not in title — not enough
-        result = classify_chunk("Random Title", "this endorsement modifies something")
-        # "endorsement" keyword appears, "this endorsement modifies" appears — that's 2 keywords
-        assert result == "endorsement"
-
-    def test_single_content_keyword_not_enough(self):
-        # Only "amendment" appears, title doesn't match
-        result = classify_chunk("Something Else", "this is an amendment to the form")
-        # Only 1 keyword from endorsement group matches
-        assert result == "other"
+    def test_content_needs_two_keywords(self):
+        """A single keyword in content isn't enough — avoids false positives."""
+        # Title has no keywords, content has only one ("endorsement")
+        assert classify_chunk("Random Title", "this endorsement modifies", INSURANCE_CATEGORY_KEYWORDS) == "other"
+        # But two keywords in content DO match
+        assert (
+            classify_chunk("Random Title", "this endorsement amendment stuff", INSURANCE_CATEGORY_KEYWORDS)
+            == "endorsement"
+        )
 
     def test_unknown_returns_other(self):
-        assert classify_chunk("Random Section", "Nothing special here") == "other"
+        assert classify_chunk("Random Section", "Nothing special", INSURANCE_CATEGORY_KEYWORDS) == "other"
 
-    def test_table_of_contents(self):
-        assert classify_chunk("Table of Contents", "page 1, page 2") == "table_of_contents"
+    def test_case_insensitive(self):
+        assert classify_chunk("DECLARATIONS PAGE", "stuff", INSURANCE_CATEGORY_KEYWORDS) == "declarations"
 
 
-# ── detect_signals ────────────────────────────────────────────────────
+# ── _build_category_keywords ──────────────────────────────────────────
+
+
+class TestBuildCategoryKeywords:
+    def test_none_returns_empty(self):
+        assert _build_category_keywords(None) == []
+
+    def test_no_categories_returns_empty(self):
+        assert _build_category_keywords({"fields": {}}) == []
+
+    def test_empty_keywords_returns_empty(self):
+        assert _build_category_keywords({"categories": {"keywords": {}}}) == []
+
+    def test_invoice_schema_keywords(self):
+        schema = {
+            "categories": {
+                "keywords": {
+                    "header": ["invoice", "bill to"],
+                    "totals": ["subtotal", "total"],
+                }
+            }
+        }
+        pairs = _build_category_keywords(schema)
+        assert len(pairs) == 2
+        categories = {name for _, name in pairs}
+        assert categories == {"header", "totals"}
+
+    def test_insurance_schema_keywords(self):
+        """The bundled insurance schema from conftest should produce category pairs."""
+        pairs = _build_category_keywords(SAMPLE_SCHEMA)
+        # SAMPLE_SCHEMA may or may not define categories — check it doesn't crash
+        assert isinstance(pairs, list)
+
+
+# ── detect_signals — generic only ─────────────────────────────────────
 
 
 class TestDetectSignals:
     def test_dollar_amounts(self):
         signals = detect_signals("Premium: $4,250.00 and deductible $1,000")
+        assert signals["has_dollar_amounts"] is True
+        assert signals["dollar_count"] == 2
+
+    def test_euro_and_other_currencies(self):
+        """Generic dollar signal should match any currency symbol."""
+        signals = detect_signals("Total: €1,200.00 and £500.50")
         assert signals["has_dollar_amounts"] is True
         assert signals["dollar_count"] == 2
 
@@ -91,6 +149,10 @@ class TestDetectSignals:
         signals = detect_signals("Effective: 2025-01-15")
         assert signals["has_dates"] is True
 
+    def test_dotted_dates(self):
+        signals = detect_signals("Datum: 15.08.2025")
+        assert signals["has_dates"] is True
+
     def test_key_value_pairs(self):
         signals = detect_signals("Policy Number: BOP123\nInsured: Acme Corp")
         assert signals["has_key_value_pairs"] is True
@@ -101,65 +163,138 @@ class TestDetectSignals:
         assert signals["has_tables"] is True
         assert signals["table_row_count"] == 3
 
-    def test_policy_numbers(self):
-        signals = detect_signals("Policy Number: BOP7284930")
-        assert signals["has_policy_numbers"] is True
-
-    def test_name_references(self):
-        signals = detect_signals("Named Insured: Acme Widget Corporation")
-        assert signals["has_name_references"] is True
-
     def test_no_signals(self):
         signals = detect_signals("Just plain text with nothing special.")
         assert signals == {}
 
-    def test_multiple_signals(self):
-        signals = detect_signals("Named Insured: Acme Corp\nPolicy Number: BOP12345\nPremium: $1,000\nDate: 01/01/2025")
-        assert signals["has_dollar_amounts"] is True
-        assert signals["has_dates"] is True
-        assert signals["has_key_value_pairs"] is True
+    def test_no_hardcoded_domain_signals(self):
+        """Insurance-specific signals are no longer built in."""
+        signals = detect_signals("Policy Number: BOP7284930")
+        # Should NOT have has_policy_numbers — that's now schema-configurable
+        assert "has_policy_numbers" not in signals
+
+        signals = detect_signals("Named Insured: Acme Widget Corporation")
+        assert "has_name_references" not in signals
+
+
+# ── Custom signals from schema ────────────────────────────────────────
+
+
+class TestCustomSignals:
+    def test_compile_custom_signals_none(self):
+        assert _compile_custom_signals(None) == []
+
+    def test_compile_custom_signals_empty_schema(self):
+        assert _compile_custom_signals({"fields": {}}) == []
+
+    def test_compile_pattern(self):
+        schema = {
+            "signals": {
+                "has_policy_numbers": {"pattern": r"[A-Z]{2,5}\d{5,}"},
+            }
+        }
+        compiled = _compile_custom_signals(schema)
+        assert len(compiled) == 1
+        name, pattern = compiled[0]
+        assert name == "has_policy_numbers"
+        assert pattern.search("Policy Number: BOP7284930")
+
+    def test_case_insensitive_flag(self):
+        schema = {
+            "signals": {
+                "has_named_insured": {
+                    "pattern": r"named\s*insured",
+                    "flags": "i",
+                },
+            }
+        }
+        compiled = _compile_custom_signals(schema)
+        name, pattern = compiled[0]
+        assert pattern.search("NAMED INSURED: Acme Corp")
+
+    def test_invalid_pattern_skipped(self):
+        schema = {"signals": {"bad": {"pattern": "[unclosed"}}}
+        # Should not raise
+        compiled = _compile_custom_signals(schema)
+        assert compiled == []
+
+    def test_detect_signals_with_custom(self):
+        schema = {
+            "signals": {
+                "has_policy_numbers": {"pattern": r"[A-Z]{2,5}\d{5,}"},
+                "has_named_insured": {"pattern": r"named\s*insured", "flags": "i"},
+            }
+        }
+        custom = _compile_custom_signals(schema)
+        signals = detect_signals("Named Insured: Acme Corp\nPolicy: BOP12345", custom)
         assert signals["has_policy_numbers"] is True
-        assert signals["has_name_references"] is True
+        assert signals["has_named_insured"] is True
+
+    def test_custom_signals_added_to_count(self):
+        schema = {"signals": {"has_emails": {"pattern": r"\S+@\S+"}}}
+        custom = _compile_custom_signals(schema)
+        signals = detect_signals("Contact: alice@example.com, bob@example.com", custom)
+        assert signals["has_emails"] is True
+        assert signals["has_emails_count"] == 2
 
 
 # ── build_document_map ────────────────────────────────────────────────
 
 
 class TestBuildDocumentMap:
-    def test_sample_insurance_markdown(self):
+    def test_parses_sections_without_schema(self):
+        """Without a schema, everything categorizes as 'other' but structure works."""
         chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
         assert len(chunks) == 6
         titles = [c.title for c in chunks]
         assert "Declarations Page" in titles
         assert "Schedule of Coverages" in titles
         assert "Business Liability Endorsement" in titles
+        # Without a schema, everything is "other"
+        assert all(c.category == "other" for c in chunks)
 
     def test_chunk_indices_sequential(self):
         chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
         for i, chunk in enumerate(chunks):
             assert chunk.index == i
 
-    def test_declarations_classified(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
+    def test_schema_drives_classification(self):
+        """With a schema, categories are derived from schema keywords."""
+        schema = {
+            "categories": {
+                "keywords": {
+                    "declarations": ["declaration", "named insured"],
+                    "schedule_of_coverages": ["schedule of", "coverage schedule"],
+                    "endorsement": ["endorsement", "amendment"],
+                }
+            }
+        }
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, schema)
         dec = [c for c in chunks if c.title == "Declarations Page"][0]
         assert dec.category == "declarations"
 
-    def test_declarations_signals(self):
+        sched = [c for c in chunks if c.title == "Schedule of Coverages"][0]
+        assert sched.category == "schedule_of_coverages"
+
+    def test_schema_drives_custom_signals(self):
+        schema = {
+            "signals": {
+                "has_policy_numbers": {"pattern": r"[A-Z]{2,5}\d{5,}"},
+            }
+        }
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, schema)
+        dec = [c for c in chunks if c.title == "Declarations Page"][0]
+        assert dec.signals.get("has_policy_numbers") is True
+
+    def test_generic_signals_still_work(self):
+        """Built-in generic signals fire regardless of schema."""
         chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
         dec = [c for c in chunks if c.title == "Declarations Page"][0]
         assert dec.signals.get("has_dollar_amounts") is True
         assert dec.signals.get("has_dates") is True
-        assert dec.signals.get("has_policy_numbers") is True
-
-    def test_schedule_has_tables(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
-        sched = [c for c in chunks if c.title == "Schedule of Coverages"][0]
-        assert sched.signals.get("has_tables") is True
-        assert sched.category == "schedule_of_coverages"
 
     def test_empty_markdown(self):
-        chunks = build_document_map("")
-        assert chunks == []
+        assert build_document_map("") == []
 
     def test_no_headers(self):
         chunks = build_document_map("Just some plain text\nwith no headers at all.")
@@ -176,7 +311,6 @@ class TestBuildDocumentMap:
     def test_empty_sections_skipped(self):
         md = "# Header 1\n\n# Header 2\n\nActual content"
         chunks = build_document_map(md)
-        # Header 1 has no content so should be skipped
         assert len(chunks) == 1
         assert chunks[0].title == "Header 2"
 
@@ -185,6 +319,47 @@ class TestBuildDocumentMap:
         chunks = build_document_map(md)
         assert len(chunks) == 1
         assert chunks[0].title == "Section B"
+
+    def test_invoice_schema(self):
+        """Verifies the invoice use case that drove this refactor."""
+        invoice_md = """# INVOICE
+
+**Sagebrush Design Studio**
+1821 Alder Street
+Portland, OR 97210
+
+## Bill To
+
+Lumen Biotech Inc.
+
+## Services
+
+| Service | Rate |
+|---|---|
+| Design | $200 |
+
+## Totals
+
+Subtotal: $8,400
+Total Due: $8,400
+"""
+        invoice_schema = {
+            "categories": {
+                "keywords": {
+                    "header": ["invoice", "bill to", "ship to"],
+                    "line_items": ["services", "description", "quantity"],
+                    "totals": ["subtotal", "total due", "balance"],
+                }
+            }
+        }
+        chunks = build_document_map(invoice_md, invoice_schema)
+        by_category = {c.category: c for c in chunks}
+        # "INVOICE" title matches "invoice" keyword
+        assert "header" in by_category
+        # "Services" title matches "services" keyword
+        assert "line_items" in by_category
+        # "Totals" title with "subtotal" and "total due" in content matches
+        assert "totals" in by_category
 
 
 # ── summarize_map ─────────────────────────────────────────────────────

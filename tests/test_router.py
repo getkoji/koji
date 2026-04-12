@@ -117,14 +117,14 @@ class TestScoreChunkGeneric:
 
 class TestRouteFields:
     def test_routes_all_fields(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, SAMPLE_SCHEMA)
         routes = route_fields(SAMPLE_SCHEMA, chunks)
         routed_names = {r.field_name for r in routes}
         schema_names = set(SAMPLE_SCHEMA["fields"].keys())
         assert routed_names == schema_names
 
     def test_policy_number_routed_to_declarations(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, SAMPLE_SCHEMA)
         routes = route_fields(SAMPLE_SCHEMA, chunks)
         pn_route = [r for r in routes if r.field_name == "policy_number"][0]
         categories = {c.category for c in pn_route.chunks}
@@ -132,14 +132,14 @@ class TestRouteFields:
         assert pn_route.source == "hint"
 
     def test_coverages_routed_to_schedule(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, SAMPLE_SCHEMA)
         routes = route_fields(SAMPLE_SCHEMA, chunks)
         cov_route = [r for r in routes if r.field_name == "coverages"][0]
         categories = {c.category for c in cov_route.chunks}
         assert "schedule_of_coverages" in categories
 
     def test_max_chunks_per_field(self):
-        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN)
+        chunks = build_document_map(SAMPLE_INSURANCE_MARKDOWN, SAMPLE_SCHEMA)
         routes = route_fields(SAMPLE_SCHEMA, chunks, max_chunks_per_field=2)
         for route in routes:
             assert len(route.chunks) <= 2

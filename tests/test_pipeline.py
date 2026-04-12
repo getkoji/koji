@@ -107,6 +107,66 @@ class TestBuildGroupPrompt:
         prompt = build_group_prompt(group, "my_schema")
         assert "my_schema" in prompt
 
+    def test_array_of_objects_includes_property_names(self):
+        """Array fields with nested object properties must tell the LLM the shape.
+
+        Without this, the LLM guesses at field names and silently drops
+        fields it thinks are redundant (e.g., dropping `amount` because it
+        could be derived from `quantity * unit_price`).
+        """
+        group = {
+            "fields": ["items"],
+            "field_specs": {
+                "items": {
+                    "type": "array",
+                    "description": "Line items",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                            "amount": {"type": "number"},
+                        },
+                    },
+                }
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "invoice")
+        # Every property name must appear in the prompt
+        assert "name" in prompt
+        assert "quantity" in prompt
+        assert "unit_price" in prompt
+        assert "amount" in prompt
+        # And the shape hint should be there
+        assert "array of objects" in prompt or "properties" in prompt
+
+    def test_array_of_primitives_describes_element_type(self):
+        group = {
+            "fields": ["tags"],
+            "field_specs": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                }
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "array of string" in prompt
+
+    def test_array_without_item_spec_still_works(self):
+        group = {
+            "fields": ["items"],
+            "field_specs": {"items": {"type": "array"}},
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        # Should still render something — we don't know the shape
+        assert "items" in prompt
+        assert "array" in prompt
+
 
 # ── validate_field ────────────────────────────────────────────────────
 
