@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from services.extract.document_map import (
+    DEFAULT_CLASSIFICATION_CONFIG,
     Chunk,
     _build_category_keywords,
+    _build_classification_config,
     _compile_custom_signals,
     _infer_headings,
     build_document_map,
@@ -361,6 +363,109 @@ Total Due: $8,400
         assert "line_items" in by_category
         # "Totals" title with "subtotal" and "total due" in content matches
         assert "totals" in by_category
+
+
+# ── Classification config ─────────────────────────────────────────────
+
+
+class TestBuildClassificationConfig:
+    def test_none_returns_defaults(self):
+        assert _build_classification_config(None) == DEFAULT_CLASSIFICATION_CONFIG
+
+    def test_empty_schema_returns_defaults(self):
+        assert _build_classification_config({"fields": {}}) == DEFAULT_CLASSIFICATION_CONFIG
+
+    def test_non_dict_classification_ignored(self):
+        assert _build_classification_config({"classification": "nope"}) == DEFAULT_CLASSIFICATION_CONFIG
+
+    def test_window_override(self):
+        cfg = _build_classification_config({"classification": {"window": 1500}})
+        assert cfg["window"] == 1500
+
+    def test_window_invalid_falls_back(self):
+        cfg = _build_classification_config({"classification": {"window": -1}})
+        assert cfg["window"] == DEFAULT_CLASSIFICATION_CONFIG["window"]
+        cfg = _build_classification_config({"classification": {"window": "big"}})
+        assert cfg["window"] == DEFAULT_CLASSIFICATION_CONFIG["window"]
+
+    def test_threshold_override(self):
+        cfg = _build_classification_config({"classification": {"threshold": 1}})
+        assert cfg["threshold"] == 1
+
+    def test_threshold_zero_rejected(self):
+        cfg = _build_classification_config({"classification": {"threshold": 0}})
+        assert cfg["threshold"] == DEFAULT_CLASSIFICATION_CONFIG["threshold"]
+
+    def test_scan_override(self):
+        for strategy in ("head", "all", "head_and_tail"):
+            cfg = _build_classification_config({"classification": {"scan": strategy}})
+            assert cfg["scan"] == strategy
+
+    def test_scan_invalid_falls_back(self):
+        cfg = _build_classification_config({"classification": {"scan": "bogus"}})
+        assert cfg["scan"] == DEFAULT_CLASSIFICATION_CONFIG["scan"]
+
+    def test_title_priority_override(self):
+        cfg = _build_classification_config({"classification": {"title_priority": False}})
+        assert cfg["title_priority"] is False
+
+    def test_does_not_mutate_defaults(self):
+        """Building a config with overrides must not leak back into the module-level default."""
+        _ = _build_classification_config({"classification": {"window": 9999}})
+        assert DEFAULT_CLASSIFICATION_CONFIG["window"] == 500
+
+
+class TestClassifyChunkWithConfig:
+    KWS = [(["total", "balance"], "totals")]
+
+    def test_threshold_one_loosens_content_match(self):
+        cfg = {"window": 500, "threshold": 1, "scan": "head", "title_priority": True}
+        assert classify_chunk("Random", "the total is listed below", self.KWS, cfg) == "totals"
+        # Default threshold=2 would miss it
+        assert classify_chunk("Random", "the total is listed below", self.KWS) == "other"
+
+    def test_window_limits_content_scanned(self):
+        """With a tiny window, keywords past the window aren't counted."""
+        content = "padding " * 100 + "total balance due"
+        cfg = {"window": 50, "threshold": 2, "scan": "head", "title_priority": True}
+        assert classify_chunk("Random", content, self.KWS, cfg) == "other"
+        # Full scan catches it
+        cfg_all = dict(cfg, scan="all")
+        assert classify_chunk("Random", content, self.KWS, cfg_all) == "totals"
+
+    def test_head_and_tail_strategy(self):
+        """head_and_tail scans first and last halves of the window."""
+        content = "intro text " + "filler " * 200 + "total balance due"
+        cfg = {"window": 60, "threshold": 2, "scan": "head_and_tail", "title_priority": True}
+        assert classify_chunk("Random", content, self.KWS, cfg) == "totals"
+
+    def test_title_priority_off_requires_content_match(self):
+        """With title_priority=false, a single-keyword title no longer short-circuits."""
+        cfg = {"window": 500, "threshold": 2, "scan": "head", "title_priority": False}
+        # Title says "total" but content has nothing — without priority, no match
+        assert classify_chunk("Total", "unrelated body", self.KWS, cfg) == "other"
+        # Default behavior: title match wins
+        assert classify_chunk("Total", "unrelated body", self.KWS) == "totals"
+
+    def test_empty_keywords_still_returns_other(self):
+        cfg = {"window": 500, "threshold": 1, "scan": "all", "title_priority": True}
+        assert classify_chunk("Anything", "anything", None, cfg) == "other"
+
+    def test_integration_via_build_document_map(self):
+        """Schema-level classification config flows through build_document_map."""
+        md = "# Summary\n\nAmount due soon."
+        schema = {
+            "categories": {"keywords": {"totals": ["amount", "due"]}},
+            "classification": {"threshold": 1, "title_priority": False},
+        }
+        chunks = build_document_map(md, schema)
+        assert chunks[0].category == "totals"
+        # Without the schema override, threshold=2 is required and title_priority=true would catch
+        # neither — the chunk would fall through to "other".
+        default_schema = {"categories": {"keywords": {"totals": ["amount", "due"]}}}
+        default_chunks = build_document_map(md, default_schema)
+        # Two keywords ("amount", "due") are both in content, so default threshold=2 matches
+        assert default_chunks[0].category == "totals"
 
 
 # ── Heading inference ─────────────────────────────────────────────────
