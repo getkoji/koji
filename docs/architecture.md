@@ -158,6 +158,8 @@ The mapper splits markdown into **chunks** by heading structure. Each chunk gets
 
 When the parsed markdown contains no `#` headings — common for OCR'd scans, invoices, and table-heavy forms — the mapper runs a **heading inference** pass first, promoting standalone bold lines, ALL CAPS labels, and schema-defined patterns to `##` headings so the chunker has structure to split on. See [Heading inference](schema-guide.md#heading-inference) in the schema guide.
 
+The mapper also normalizes table rows before splitting: parsers like docling sometimes represent column-spanning cells by duplicating the cell content N times across a row (e.g. `| Dated | Dated | Dated | April 9, 2026 | April 9, 2026 | April 9, 2026 |`). Runs of three or more identical adjacent cells are collapsed to a single cell when the row shows an alphabetic-cell triplication signal, so downstream extraction sees the original value instead of treating the repetition as distinct data points. Financial rows that legitimately repeat a value (e.g. `| Revenue | $100 | $100 | $100 |`) are left alone.
+
 The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
 
 ### Phase 2: Route
