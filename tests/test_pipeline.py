@@ -7,7 +7,9 @@ import json
 import pytest
 
 from services.extract.pipeline import (
+    _resolve_conditional_hints,
     _score_label,
+    _toposort_fields,
     build_gap_fill_prompt,
     build_group_prompt,
     compute_confidence_score,
@@ -1327,3 +1329,318 @@ class TestIntelligentExtractConfidenceScores:
         for field in MINIMAL_SCHEMA["fields"]:
             assert field in result["confidence"]
             assert field in result["confidence_scores"]
+
+
+# ── _toposort_fields ──────────────────────────────────────────────────
+
+
+class TestToposortFields:
+    def test_single_wave_when_no_depends(self):
+        schema = {
+            "fields": {
+                "a": {"type": "string"},
+                "b": {"type": "string"},
+                "c": {"type": "string"},
+            }
+        }
+        waves = _toposort_fields(schema)
+        assert len(waves) == 1
+        assert set(waves[0]) == {"a", "b", "c"}
+
+    def test_simple_parent_child(self):
+        schema = {
+            "fields": {
+                "form_type": {"type": "enum"},
+                "period_of_report": {"type": "date", "depends_on": ["form_type"]},
+            }
+        }
+        waves = _toposort_fields(schema)
+        assert waves == [["form_type"], ["period_of_report"]]
+
+    def test_multi_child_same_parent(self):
+        schema = {
+            "fields": {
+                "form_type": {"type": "enum"},
+                "filing_date": {"type": "date", "depends_on": ["form_type"]},
+                "period_of_report": {"type": "date", "depends_on": ["form_type"]},
+            }
+        }
+        waves = _toposort_fields(schema)
+        assert len(waves) == 2
+        assert waves[0] == ["form_type"]
+        assert set(waves[1]) == {"filing_date", "period_of_report"}
+
+    def test_multi_level_chain(self):
+        schema = {
+            "fields": {
+                "a": {"type": "string"},
+                "b": {"type": "string", "depends_on": ["a"]},
+                "c": {"type": "string", "depends_on": ["b"]},
+            }
+        }
+        waves = _toposort_fields(schema)
+        assert waves == [["a"], ["b"], ["c"]]
+
+    def test_circular_dependency_raises(self):
+        schema = {
+            "fields": {
+                "a": {"type": "string", "depends_on": ["b"]},
+                "b": {"type": "string", "depends_on": ["a"]},
+            }
+        }
+        with pytest.raises(ValueError, match="Circular"):
+            _toposort_fields(schema)
+
+    def test_self_dependency_raises(self):
+        schema = {"fields": {"a": {"type": "string", "depends_on": ["a"]}}}
+        with pytest.raises(ValueError, match="cannot depend on itself"):
+            _toposort_fields(schema)
+
+    def test_unknown_parent_reference_raises(self):
+        schema = {
+            "fields": {
+                "a": {"type": "string", "depends_on": ["ghost"]},
+            }
+        }
+        with pytest.raises(ValueError, match="unknown field"):
+            _toposort_fields(schema)
+
+    def test_empty_schema(self):
+        assert _toposort_fields({"fields": {}}) == []
+        assert _toposort_fields({}) == []
+
+    def test_non_list_depends_on_ignored(self):
+        """Defensive: non-list depends_on values don't crash, just get ignored."""
+        schema = {
+            "fields": {
+                "a": {"type": "string"},
+                "b": {"type": "string", "depends_on": "a"},  # string, not list
+            }
+        }
+        waves = _toposort_fields(schema)
+        # Both end up in wave 0 since the invalid depends_on was ignored
+        assert len(waves) == 1
+        assert set(waves[0]) == {"a", "b"}
+
+
+# ── _resolve_conditional_hints ────────────────────────────────────────
+
+
+class TestResolveConditionalHints:
+    def test_no_conditional_block_returns_original(self):
+        spec = {"type": "date", "extraction_hint": "default"}
+        assert _resolve_conditional_hints(spec, {}) is spec
+
+    def test_parent_value_matches_produces_resolved_copy(self):
+        spec = {
+            "type": "date",
+            "extraction_hint": "default",
+            "extraction_hint_by": {
+                "form_type": {
+                    "10-K": "HINT_FOR_10K",
+                    "10-Q": "HINT_FOR_10Q",
+                }
+            },
+        }
+        resolved = _resolve_conditional_hints(spec, {"form_type": "10-K"})
+        assert resolved is not spec  # new dict
+        assert resolved["extraction_hint"] == "HINT_FOR_10K"
+        # Original untouched
+        assert spec["extraction_hint"] == "default"
+
+    def test_parent_missing_falls_back_to_default(self):
+        spec = {
+            "type": "date",
+            "extraction_hint": "default_hint",
+            "extraction_hint_by": {"form_type": {"10-K": "other"}},
+        }
+        resolved = _resolve_conditional_hints(spec, {})
+        assert resolved["extraction_hint"] == "default_hint"
+
+    def test_parent_value_not_in_map_falls_back(self):
+        spec = {
+            "type": "date",
+            "extraction_hint": "default_hint",
+            "extraction_hint_by": {"form_type": {"10-K": "other"}},
+        }
+        resolved = _resolve_conditional_hints(spec, {"form_type": "S-1"})
+        assert resolved["extraction_hint"] == "default_hint"
+
+    def test_parent_value_none_falls_back(self):
+        spec = {
+            "type": "date",
+            "extraction_hint": "default_hint",
+            "extraction_hint_by": {"form_type": {"10-K": "other"}},
+        }
+        resolved = _resolve_conditional_hints(spec, {"form_type": None})
+        assert resolved["extraction_hint"] == "default_hint"
+
+    def test_enum_value_match(self):
+        """Enum values (like '10-K/A') match as strings."""
+        spec = {
+            "extraction_hint": "default",
+            "extraction_hint_by": {
+                "form_type": {
+                    "10-K/A": "amendment_hint",
+                }
+            },
+        }
+        resolved = _resolve_conditional_hints(spec, {"form_type": "10-K/A"})
+        assert resolved["extraction_hint"] == "amendment_hint"
+
+    def test_empty_string_hint_falls_back(self):
+        """A conditional hint that's an empty/whitespace string doesn't override."""
+        spec = {
+            "extraction_hint": "default",
+            "extraction_hint_by": {"form_type": {"10-K": "   "}},
+        }
+        resolved = _resolve_conditional_hints(spec, {"form_type": "10-K"})
+        assert resolved["extraction_hint"] == "default"
+
+    def test_multiple_parents_first_match_wins(self):
+        spec = {
+            "extraction_hint": "default",
+            "extraction_hint_by": {
+                "form_type": {"10-K": "from_form_type"},
+                "filer_name": {"ACME": "from_filer"},
+            },
+        }
+        # Both parents have matching values — the first declared wins (dict order).
+        resolved = _resolve_conditional_hints(spec, {"form_type": "10-K", "filer_name": "ACME"})
+        assert resolved["extraction_hint"] == "from_form_type"
+
+    def test_non_dict_field_spec_returns_as_is(self):
+        assert _resolve_conditional_hints("not a dict", {}) == "not a dict"
+
+
+# ── Wave-based extraction integration ────────────────────────────────
+
+
+class TestWaveExtraction:
+    async def test_dependent_field_gets_resolved_hint_in_prompt(self, monkeypatch):
+        """The wave 1 prompt should contain the conditional hint keyed on wave 0's value."""
+        schema = {
+            "name": "waves",
+            "fields": {
+                "form_type": {"type": "string", "required": True},
+                "period_of_report": {
+                    "type": "date",
+                    "required": True,
+                    "depends_on": ["form_type"],
+                    "extraction_hint": "generic hint",
+                    "extraction_hint_by": {
+                        "form_type": {
+                            "10-K": "MATCHED_10K_HINT_CONTENT",
+                            "10-Q": "MATCHED_10Q_HINT_CONTENT",
+                        }
+                    },
+                },
+            },
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps({"form_type": "10-K"}),  # wave 0
+                json.dumps({"period_of_report": "2025-12-31"}),  # wave 1
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Cover\n\nForm: 10-K\nFor the fiscal year ended December 31, 2025",
+            schema_def=schema,
+            model="mock/test",
+        )
+
+        assert result["extracted"]["form_type"] == "10-K"
+        assert result["extracted"]["period_of_report"] == "2025-12-31"
+        # Two LLM calls — one per wave
+        assert len(provider.calls) == 2
+        # Wave 1 prompt must contain the conditional hint, not the generic one
+        wave1_prompt = provider.calls[1]["prompt"]
+        assert "MATCHED_10K_HINT_CONTENT" in wave1_prompt
+        assert "MATCHED_10Q_HINT_CONTENT" not in wave1_prompt
+
+    async def test_fallback_to_default_hint_when_parent_null(self, monkeypatch):
+        """If wave 0 can't extract the parent, wave 1 falls back to the default extraction_hint."""
+        schema = {
+            "name": "waves",
+            "fields": {
+                "form_type": {"type": "string"},
+                "period_of_report": {
+                    "type": "date",
+                    "depends_on": ["form_type"],
+                    "extraction_hint": "DEFAULT_HINT_FALLBACK",
+                    "extraction_hint_by": {
+                        "form_type": {"10-K": "NEVER_PICKED"},
+                    },
+                },
+            },
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps({"form_type": None}),
+                json.dumps({"period_of_report": "2025-12-31"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        await intelligent_extract(
+            markdown="# Cover\n\nSome content.",
+            schema_def=schema,
+            model="mock/test",
+        )
+
+        wave1_prompt = provider.calls[1]["prompt"]
+        assert "DEFAULT_HINT_FALLBACK" in wave1_prompt
+        assert "NEVER_PICKED" not in wave1_prompt
+
+    async def test_no_depends_on_runs_as_single_wave(self, monkeypatch):
+        """Schemas without depends_on run in a single wave — one LLM call per group, not one per field."""
+        schema = {
+            "name": "single_wave",
+            "fields": {
+                "a": {"type": "string", "required": True},
+                "b": {"type": "string", "required": True},
+            },
+        }
+        provider = MockProvider(responses=[json.dumps({"a": "foo", "b": "bar"})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        result = await intelligent_extract(
+            markdown="# Header\n\nA is foo and B is bar",
+            schema_def=schema,
+            model="mock/test",
+        )
+
+        assert result["extracted"] == {"a": "foo", "b": "bar"}
+        # Grouping means both fields extract in one call
+        assert len(provider.calls) == 1
+
+    async def test_circular_dep_schema_raises(self, monkeypatch):
+        schema = {
+            "name": "bad",
+            "fields": {
+                "a": {"type": "string", "depends_on": ["b"]},
+                "b": {"type": "string", "depends_on": ["a"]},
+            },
+        }
+        provider = MockProvider(responses=[])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        with pytest.raises(ValueError, match="Circular"):
+            await intelligent_extract(
+                markdown="# X\n\nstuff",
+                schema_def=schema,
+                model="mock/test",
+            )
