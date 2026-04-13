@@ -62,6 +62,86 @@ class TestScoreChunkHints:
         score = _score_chunk(chunk, "policy_number", spec)
         assert score == 0.0
 
+    def test_prefer_contains_phrase_in_content(self):
+        """A chunk that contains one of the preferred phrases gets a +12 bonus."""
+        chunk = make_chunk(
+            title="Signatures",
+            content="/s/ John Doe\nChief Financial Officer\nDated: April 9, 2026",
+        )
+        spec = {"hints": {"prefer_contains": ["/s/", "Dated:"]}}
+        assert _score_chunk(chunk, "filing_date", spec) >= 12.0
+
+    def test_prefer_contains_phrase_in_title(self):
+        chunk = make_chunk(title="SIGNATURES", content="nothing here")
+        spec = {"hints": {"prefer_contains": ["signatures"]}}
+        assert _score_chunk(chunk, "filing_date", spec) >= 12.0
+
+    def test_prefer_contains_case_insensitive(self):
+        chunk = make_chunk(content="DATED: April 9, 2026")
+        spec = {"hints": {"prefer_contains": ["dated:"]}}
+        assert _score_chunk(chunk, "filing_date", spec) >= 12.0
+
+    def test_prefer_contains_no_match_no_bonus(self):
+        chunk = make_chunk(content="just a body paragraph about finances")
+        spec = {"hints": {"prefer_contains": ["/s/", "Dated:"]}}
+        assert _score_chunk(chunk, "filing_date", spec) == 0.0
+
+    def test_prefer_contains_single_bonus_per_chunk(self):
+        """Multiple matching phrases still only add the bonus once."""
+        chunk = make_chunk(content="/s/ John Doe Dated: April 9, 2026 SIGNATURES")
+        spec = {"hints": {"prefer_contains": ["/s/", "Dated:", "SIGNATURES"]}}
+        score = _score_chunk(chunk, "filing_date", spec)
+        # Only +12 once, not +36
+        assert 12.0 <= score < 24.0
+
+    def test_prefer_contains_combines_with_other_hints(self):
+        chunk = make_chunk(
+            category="header",
+            title="Signatures",
+            content="/s/ John Doe\nDated: April 9, 2026",
+            signals={"has_dates": True},
+        )
+        spec = {
+            "hints": {
+                "look_in": ["header"],
+                "prefer_contains": ["/s/"],
+                "signals": ["has_dates"],
+            }
+        }
+        # look_in(15) + prefer_contains(12) + signal(4) = 31
+        assert _score_chunk(chunk, "filing_date", spec) >= 31.0
+
+    def test_prefer_contains_beats_pattern_match_alone(self):
+        """The whole point: a signature chunk should outscore a body chunk with pattern matches."""
+        body_chunk = make_chunk(
+            title="Item 1. Business",
+            content="This filing date section describes our filing date practices. "
+            "We discuss filing date policies extensively. Our filing date is important.",
+        )
+        sig_chunk = make_chunk(
+            title="Signatures",
+            content="/s/ John Doe\nChief Financial Officer\nDated: April 9, 2026",
+        )
+        spec = {
+            "hints": {
+                "patterns": ["filing\\s*date"],
+                "prefer_contains": ["/s/", "Dated:"],
+            }
+        }
+        body_score = _score_chunk(body_chunk, "filing_date", spec)
+        sig_score = _score_chunk(sig_chunk, "filing_date", spec)
+        assert sig_score > body_score
+
+    def test_prefer_contains_empty_list_is_no_op(self):
+        chunk = make_chunk(content="anything")
+        spec = {"hints": {"prefer_contains": []}}
+        assert _score_chunk(chunk, "filing_date", spec) == 0.0
+
+    def test_prefer_contains_non_string_entries_skipped(self):
+        chunk = make_chunk(content="/s/ signed here")
+        spec = {"hints": {"prefer_contains": [None, 123, "/s/"]}}
+        assert _score_chunk(chunk, "filing_date", spec) >= 12.0
+
 
 # ── _score_chunk: generic inference (no hints) ───────────────────────
 

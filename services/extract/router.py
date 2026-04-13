@@ -43,6 +43,14 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict) -> float:
         if chunk.category in look_in:
             score += 15.0
 
+    prefer_contains = hints.get("prefer_contains") or []
+    if prefer_contains:
+        haystack = f"{chunk.title} {chunk.content}".lower()
+        for phrase in prefer_contains:
+            if isinstance(phrase, str) and phrase and phrase.lower() in haystack:
+                score += 12.0
+                break
+
     patterns = hints.get("patterns", [])
     if patterns:
         text = f"{chunk.title} {chunk.content[:1500]}".lower()

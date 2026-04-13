@@ -274,6 +274,21 @@ classification:
 
 Unknown or invalid values silently fall back to defaults, so you can add these knobs without worrying about breaking the schema.
 
+### prefer_contains
+
+A list of case-insensitive phrases. Chunks whose title or content contains *any* of the phrases get a strong score bonus (below `look_in` but above `patterns`). Use it when the right chunk for a field is reliably identified by a distinctive phrase that regex patterns can't easily express — or when body chunks with generic keyword matches would otherwise outscore the chunk that actually holds the value.
+
+```yaml
+fields:
+  filing_date:
+    hints:
+      prefer_contains: ["/s/", "Dated:", "SIGNATURES"]
+```
+
+Common pattern: the real value lives in a signature block at the bottom of the document (e.g. SEC filings, contracts), while the body text is full of matches for "filing date" / "dated" that score higher under category and pattern hints alone. `prefer_contains` boosts the signature chunk so it wins.
+
+The bonus is applied at most once per chunk no matter how many phrases match — if you want an additional bump for stronger matches, use `patterns` or `signals` as well.
+
 ### patterns
 
 Regex patterns matched against chunk titles and content. Medium priority -- patterns score below `look_in` but above signals.
@@ -364,10 +379,11 @@ Don't set this for simple scalar fields — it just wastes tokens.
 
 `look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.
 
-Within the filtered pool, `patterns` and `signals` rank which chunks win the slots:
+Within the filtered pool, `prefer_contains`, `patterns`, and `signals` rank which chunks win the slots:
 
-1. **patterns** — +8 points if any regex pattern matches (only the first match counts)
-2. **signals** — +4 points per matching signal
+1. **prefer_contains** — +12 points if any phrase is found (applied at most once)
+2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
+3. **signals** — +4 points per matching signal
 
 If `look_in` is set but no chunks match the listed categories (e.g., the schema author referenced a category the document doesn't have), the router falls back to scoring every chunk with `patterns` + `signals` so the field still gets routed somewhere. Generic inference (field name matching, type-based signals) is skipped whenever any hint is defined — hints are authoritative.
 
