@@ -156,6 +156,8 @@ The mapper splits markdown into **chunks** by heading structure. Each chunk gets
 - A **category** (e.g., `header`, `line_items`, `totals` — or anything you define) inferred from your schema's `categories.keywords` block. Without a schema, every chunk is `other`.
 - **Signals** — built-in structural detectors: `has_dollar_amounts`, `has_dates`, `has_key_value_pairs`, `has_tables`. Schemas can define **custom signals** via regex patterns (e.g., `has_policy_numbers` for insurance, `has_invoice_numbers` for invoices).
 
+When the parsed markdown contains no `#` headings — common for OCR'd scans, invoices, and table-heavy forms — the mapper runs a **heading inference** pass first, promoting standalone bold lines, ALL CAPS labels, and schema-defined patterns to `##` headings so the chunker has structure to split on. See [Heading inference](schema-guide.md#heading-inference) in the schema guide.
+
 The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
 
 ### Phase 2: Route
