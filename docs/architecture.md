@@ -162,6 +162,16 @@ The mapper also normalizes table rows before splitting: parsers like docling som
 
 The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
 
+### Phase 1.5: Classify and split (optional)
+
+When a `step: classify` entry is present in `koji.yaml`, an optional stage runs between mapping and routing. It takes the chunk list and asks a small LLM to partition it into **typed sections** — invoice, COI, policy, SEC filing, or whatever document types the config declares. Each section owns a contiguous run of chunks and carries a type label.
+
+This solves the "stapled packet" problem: if a user uploads one file that contains an invoice (page 1), a certificate of insurance (page 2), and an insurance policy (pages 3–10), the classifier recognizes the three distinct documents, the splitter emits three sections, and the router downstream can be told (via a schema's `apply_to` field) to only run against the sections it cares about. Without this stage, extraction would blend the three documents' text together and usually latch onto whatever keyword appears first.
+
+The classifier is a separate LLM call from extraction, with its own `model` config key so cheap models can be used for classification without sacrificing extraction quality. Its output is validated by a normalizer that deterministically handles overlap, gap, and out-of-range errors — when the classifier fails entirely, the pipeline gracefully falls back to treating the whole document as one section, preserving pre-classifier behavior.
+
+When the classify stage is disabled (the default), the pipeline is byte-identical to single-document processing. See [classify-split design doc](design/classify-split.md) for the full pipeline contract, the `apply_to` schema surface, and the normalizer's failure-mode handling.
+
 ### Phase 2: Route
 
 The router matches each schema field to the chunks most likely to contain its value. Routing uses a scoring system with three tiers:

@@ -197,6 +197,34 @@ When a required field is not found:
 
 Use `required` sparingly. Not every field needs it -- only fields where a missing value means the extraction failed.
 
+## Targeting specific document types with `apply_to`
+
+When you run Koji against a **packet** — a single upload containing multiple stapled-together documents (an invoice + a certificate of insurance + a policy declaration, say) — you usually want each schema to extract only from the section that contains its type of data. The classifier stage in the pipeline can split a packet into typed sections, and the `apply_to` schema key tells the router which of those sections this schema should run against.
+
+```yaml
+name: insurance_policy
+description: Commercial insurance policy extraction
+apply_to: [policy]          # only run against sections classified as "policy"
+
+fields:
+  policy_number: ...
+```
+
+The type IDs in `apply_to` must match the ones declared in your `koji.yaml` classifier config (see `docs/configuration.md` for the classify block). You can target multiple types in one schema:
+
+```yaml
+apply_to: [policy, coi]     # match either policy OR coi sections
+```
+
+**When the classifier is disabled** (the default, and the state of every Koji install that hasn't opted in), `apply_to` is ignored. Adding it to a schema is a no-op under a single-document pipeline — safe to sprinkle in now and activate later.
+
+**When the classifier is enabled and a schema has no `apply_to`**, behavior depends on the `require_apply_to` flag in `koji.yaml`:
+
+- `require_apply_to: false` (default, forgiving): the schema runs against *every* section the classifier produces, regardless of type. Good for migration.
+- `require_apply_to: true` (strict): missing `apply_to` is a config error and extraction raises a clear message at call time. Turn this on once you have more than a few schemas and want to prevent accidental cross-section extraction.
+
+**When `apply_to` matches multiple sections** — a packet with three stapled invoices and an invoice schema — extraction runs once per matching section and each result comes back as its own entry in the output. When it matches zero sections, extraction returns an empty list and an explicit `no_matching_section` reason. See the [classify-split design doc](design/classify-split.md) for the full output shape and pipeline contract.
+
 ## Schema hints
 
 Hints are the key differentiator in Koji's extraction pipeline. Instead of sending the entire document to the model and hoping it finds your fields, hints tell the router exactly where to look.

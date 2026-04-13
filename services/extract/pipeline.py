@@ -8,6 +8,7 @@ import re
 import time
 
 from .document_map import Chunk, build_document_map, summarize_map
+from .packet_splitter import Section, classify_chunks_to_sections
 from .providers import ModelProvider, create_provider
 from .router import group_routes, route_fields, summarize_routing
 
@@ -601,11 +602,35 @@ def reconcile(
     }
 
 
+def _schema_matches_section(
+    schema_def: dict,
+    section: Section,
+    require_apply_to: bool,
+) -> bool:
+    """Does this schema want to run against this section?
+
+    When the classifier is on and the schema declares `apply_to`, only
+    sections whose type is in the list are a match. When the schema has
+    no `apply_to`, behavior depends on `classify.require_apply_to`:
+    forgiving (default) matches every section; strict raises at call
+    time via the caller's ValueError check — this helper only returns
+    True/False.
+    """
+    apply_to = schema_def.get("apply_to")
+    if apply_to is None:
+        # Strict-mode callers catch this before invoking the helper.
+        return not require_apply_to
+    if not isinstance(apply_to, list):
+        return False
+    return section.type in apply_to
+
+
 async def intelligent_extract(
     markdown: str,
     schema_def: dict,
     model: str,
     max_concurrent: int = 5,
+    classify_config: dict | None = None,
 ) -> dict:
     """Run the full intelligent extraction pipeline.
 
@@ -614,143 +639,225 @@ async def intelligent_extract(
     fields into waves; within each wave, fields route/group/extract
     normally. Between waves, any conditional hints (`extraction_hint_by`)
     are resolved against the values already extracted in earlier waves.
+
+    When `classify_config` is provided, an extra classification stage runs
+    between document mapping and routing. It splits the document into
+    typed sections (invoice / coi / policy / etc.) using a small LLM
+    call, then extracts each section independently so a single upload
+    containing multiple stapled documents can be processed correctly.
+    The response shape changes to wrap extraction results in a `sections`
+    list; see docs/design/classify-split.md for the full design.
+
+    `classify_config` shape (a plain dict so the pipeline module stays
+    independent of the pydantic config models):
+
+        {
+          "model": "openai/gpt-4o-mini",       # optional; defaults to extract model
+          "require_apply_to": False,           # optional; defaults to False
+          "types": [                           # required when classifier enabled
+            {"id": "invoice",  "description": "Commercial invoice."},
+            {"id": "policy",   "description": "Insurance policy."},
+          ]
+        }
+
+    Passing `classify_config=None` leaves the response shape and behavior
+    byte-identical to the pre-classifier pipeline.
     """
     start = time.time()
     provider = create_provider(model)
     schema_name = schema_def.get("name", "document")
+    semaphore = asyncio.Semaphore(max_concurrent)
 
     # Phase 1: Document mapping
     chunks = build_document_map(markdown, schema_def)
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
 
-    # Phase 2: Toposort fields into extraction waves
-    waves = _toposort_fields(schema_def)
-    if len(waves) > 1:
-        print(f"[koji-extract] Field waves: {waves}")
+    async def _extract_one_section(section_chunks: list[Chunk]) -> dict:
+        """Run the wave + gap-fill extraction pipeline against a chunk slice.
 
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    # Accumulated state that grows across waves
-    accumulated: dict = {"extracted": {}, "confidence": {}, "confidence_scores": {}}
-    all_routes: list = []
-    all_groups: list[dict] = []
-    routing_plan: dict = {}
-
-    for wave_index, wave in enumerate(waves):
-        wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
-
-        # Phase 3: Field routing for this wave
-        wave_routes = route_fields(wave_schema, chunks)
-        all_routes.extend(wave_routes)
-        wave_plan = summarize_routing(wave_routes)
-        routing_plan.update(wave_plan)
+        Returns a dict with extracted / confidence / confidence_scores /
+        gap_filled / routing_plan / groups keys. The caller decides
+        whether to return this as the whole response or wrap it inside
+        a sections list.
+        """
+        # Toposort fields into extraction waves
+        waves = _toposort_fields(schema_def)
         if len(waves) > 1:
-            print(f"[koji-extract] Wave {wave_index} routing plan:")
-        else:
-            print("[koji-extract] Routing plan:")
-        for field, info in wave_plan.items():
-            print(f"  {field}: {info['source']} → {info['chunks']}")
+            print(f"[koji-extract] Field waves: {waves}")
 
-        # Phase 4: Group and extract
-        wave_groups = group_routes(wave_routes)
-        all_groups.extend(wave_groups)
-        print(f"[koji-extract] Wave {wave_index}: grouped into {len(wave_groups)} extraction calls")
+        accumulated: dict = {"extracted": {}, "confidence": {}, "confidence_scores": {}}
+        routing_plan: dict = {}
+        all_groups: list[dict] = []
 
-        tasks = [extract_group(g, schema_name, provider, semaphore) for g in wave_groups]
-        wave_group_results = await asyncio.gather(*tasks)
-        non_empty = [r for r in wave_group_results if r]
-        print(f"[koji-extract] Wave {wave_index}: {len(non_empty)}/{len(wave_groups)} groups returned results")
+        for wave_index, wave in enumerate(waves):
+            wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
 
-        # Phase 5: Validate and reconcile this wave
-        wave_result = reconcile(list(wave_group_results), wave_schema, routes=wave_routes)
-        accumulated["extracted"].update(wave_result["extracted"])
-        accumulated["confidence"].update(wave_result["confidence"])
-        accumulated["confidence_scores"].update(wave_result["confidence_scores"])
-
-    result = accumulated
-
-    # Phase 6: Check for missing required fields and gap-fill
-    missing_required = [
-        f
-        for f, conf in result["confidence"].items()
-        if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
-    ]
-    gap_filled: list[str] = []
-    if missing_required:
-        print(f"[koji-extract] Missing required fields: {missing_required}")
-        print(f"[koji-extract] Gap filling: broadened retry for {len(missing_required)} fields")
-
-        gap_tasks = []
-        for field_name in missing_required:
-            # Resolve conditional hints against the final accumulated state
-            # before gap-fill, so dependent fields get their form-specific
-            # extraction_hint even on the retry pass.
-            field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
-            # Re-route with hints stripped so the broadened pass actually
-            # broadens. If the main pass missed because look_in / patterns
-            # / prefer_contains over-filtered the candidate pool, re-running
-            # the same hints would just produce the same chunk set and the
-            # same null answer — wasted latency and tokens. Stripping hints
-            # lets the router fall back to generic type-based scoring across
-            # the full chunk pool, giving gap-fill a real shot at new
-            # chunks outside the originally-declared scope.
-            stripped_spec = {k: v for k, v in field_spec.items() if k != "hints"}
-            broadened_routes = route_fields(
-                {"fields": {field_name: stripped_spec}},
-                chunks,
-                max_chunks_per_field=6,
-            )
-            broadened_chunks = broadened_routes[0].chunks if broadened_routes else chunks[:6]
-            gap_tasks.append(
-                (
-                    field_name,
-                    # Keep the resolved field_spec (including extraction_hint)
-                    # for the prompt — only the *routing* hints get stripped.
-                    fill_gap(field_name, field_spec, broadened_chunks, schema_name, provider, semaphore),
-                )
-            )
-
-        gap_results = await asyncio.gather(*[t[1] for t in gap_tasks])
-
-        for (field_name, _), gap_result in zip(gap_tasks, gap_results):
-            value = gap_result.get(field_name)
-            if value is not None:
-                field_spec = schema_def["fields"][field_name]
-                value, is_valid, issue = validate_field(field_name, value, field_spec)
-                result["extracted"][field_name] = value
-                # Gap-filled fields use broadened source, single source
-                gap_score = compute_confidence_score(
-                    route_source="broadened",
-                    multi_source_agree=False,
-                    single_source=True,
-                    validation_passed=is_valid,
-                    has_relevant_signals=False,
-                )
-                result["confidence_scores"][field_name] = gap_score
-                result["confidence"][field_name] = _score_label(gap_score)
-                gap_filled.append(field_name)
-                print(f"[koji-extract] Gap filled: {field_name} = {value}")
+            wave_routes = route_fields(wave_schema, section_chunks)
+            wave_plan = summarize_routing(wave_routes)
+            routing_plan.update(wave_plan)
+            if len(waves) > 1:
+                print(f"[koji-extract] Wave {wave_index} routing plan:")
             else:
-                print(f"[koji-extract] Gap fill failed: {field_name} still missing")
+                print("[koji-extract] Routing plan:")
+            for field, info in wave_plan.items():
+                print(f"  {field}: {info['source']} → {info['chunks']}")
+
+            wave_groups = group_routes(wave_routes)
+            all_groups.extend(wave_groups)
+            print(f"[koji-extract] Wave {wave_index}: grouped into {len(wave_groups)} extraction calls")
+
+            tasks = [extract_group(g, schema_name, provider, semaphore) for g in wave_groups]
+            wave_group_results = await asyncio.gather(*tasks)
+            non_empty = [r for r in wave_group_results if r]
+            print(f"[koji-extract] Wave {wave_index}: {len(non_empty)}/{len(wave_groups)} groups returned results")
+
+            wave_result = reconcile(list(wave_group_results), wave_schema, routes=wave_routes)
+            accumulated["extracted"].update(wave_result["extracted"])
+            accumulated["confidence"].update(wave_result["confidence"])
+            accumulated["confidence_scores"].update(wave_result["confidence_scores"])
+
+        # Gap-fill for missing required fields
+        missing_required = [
+            f
+            for f, conf in accumulated["confidence"].items()
+            if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
+        ]
+        gap_filled: list[str] = []
+        if missing_required:
+            print(f"[koji-extract] Missing required fields: {missing_required}")
+            print(f"[koji-extract] Gap filling: broadened retry for {len(missing_required)} fields")
+
+            gap_tasks = []
+            for field_name in missing_required:
+                # Resolve conditional hints against the final accumulated state
+                # before gap-fill, so dependent fields get their form-specific
+                # extraction_hint even on the retry pass.
+                field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
+                # Re-route with hints stripped so the broadened pass actually
+                # broadens — see oss-10 for why this matters.
+                stripped_spec = {k: v for k, v in field_spec.items() if k != "hints"}
+                broadened_routes = route_fields(
+                    {"fields": {field_name: stripped_spec}},
+                    section_chunks,
+                    max_chunks_per_field=6,
+                )
+                broadened_chunks = broadened_routes[0].chunks if broadened_routes else section_chunks[:6]
+                gap_tasks.append(
+                    (
+                        field_name,
+                        fill_gap(
+                            field_name,
+                            field_spec,
+                            broadened_chunks,
+                            schema_name,
+                            provider,
+                            semaphore,
+                        ),
+                    )
+                )
+
+            gap_results = await asyncio.gather(*[t[1] for t in gap_tasks])
+
+            for (field_name, _), gap_result in zip(gap_tasks, gap_results):
+                value = gap_result.get(field_name)
+                if value is not None:
+                    field_spec = schema_def["fields"][field_name]
+                    value, is_valid, issue = validate_field(field_name, value, field_spec)
+                    accumulated["extracted"][field_name] = value
+                    gap_score = compute_confidence_score(
+                        route_source="broadened",
+                        multi_source_agree=False,
+                        single_source=True,
+                        validation_passed=is_valid,
+                        has_relevant_signals=False,
+                    )
+                    accumulated["confidence_scores"][field_name] = gap_score
+                    accumulated["confidence"][field_name] = _score_label(gap_score)
+                    gap_filled.append(field_name)
+                    print(f"[koji-extract] Gap filled: {field_name} = {value}")
+                else:
+                    print(f"[koji-extract] Gap fill failed: {field_name} still missing")
+
+        return {
+            "extracted": accumulated["extracted"],
+            "confidence": accumulated["confidence"],
+            "confidence_scores": accumulated["confidence_scores"],
+            "gap_filled": gap_filled,
+            "routing_plan": routing_plan,
+            "groups": [
+                {
+                    "fields": group["fields"],
+                    "chunk_count": len(group["chunks"]),
+                }
+                for group in all_groups
+            ],
+        }
+
+    # ── Classifier OFF: classic single-section response shape ───────
+    if not classify_config:
+        section_result = await _extract_one_section(chunks)
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            "extracted": section_result["extracted"],
+            "confidence": section_result["confidence"],
+            "confidence_scores": section_result["confidence_scores"],
+            "chunks_total": doc_summary["total_chunks"],
+            "extraction_groups": len(section_result["groups"]),
+            "elapsed_ms": elapsed_ms,
+            "gap_filled": section_result["gap_filled"],
+            "document_map_summary": doc_summary,
+            "routing_plan": section_result["routing_plan"],
+            "groups": section_result["groups"],
+        }
+
+    # ── Classifier ON: classify, filter by apply_to, extract per-section ──
+    require_apply_to = bool(classify_config.get("require_apply_to", False))
+    apply_to = schema_def.get("apply_to")
+    if require_apply_to and apply_to is None:
+        raise ValueError(
+            f"Schema {schema_name!r} must declare `apply_to` when classify.require_apply_to is true",
+        )
+
+    classify_model = classify_config.get("model") or model
+    classify_provider = create_provider(classify_model)
+    types = classify_config.get("types") or []
+    sections, classifier_meta = await classify_chunks_to_sections(chunks, classify_provider, types)
+    classifier_meta["model"] = classify_model
+    print(
+        f"[koji-extract] Classifier: {len(sections)} section(s) "
+        f"({classifier_meta.get('normalizer_corrections', 0)} corrections, "
+        f"{classifier_meta.get('elapsed_ms', 0)}ms)"
+    )
+
+    section_results: list[dict] = []
+    for section in sections:
+        if not _schema_matches_section(schema_def, section, require_apply_to):
+            continue
+        section_chunks = [chunks[i] for i in section.chunk_indices if 0 <= i < len(chunks)]
+        if not section_chunks:
+            continue
+        print(f"[koji-extract] Extracting section {section.title} ({len(section_chunks)} chunks, type={section.type})")
+        sr = await _extract_one_section(section_chunks)
+        section_results.append(
+            {
+                "section_type": section.type,
+                "section_title": section.title,
+                "section_confidence": section.confidence,
+                "chunk_indices": section.chunk_indices,
+                **sr,
+            }
+        )
+
+    classifier_meta["sections_matched"] = len(section_results)
+    if not section_results:
+        classifier_meta["reason"] = "no_matching_section"
 
     elapsed_ms = int((time.time() - start) * 1000)
-
     return {
-        "extracted": result["extracted"],
-        "confidence": result["confidence"],
-        "confidence_scores": result["confidence_scores"],
+        "sections": section_results,
         "chunks_total": doc_summary["total_chunks"],
-        "extraction_groups": len(all_groups),
         "elapsed_ms": elapsed_ms,
-        "gap_filled": gap_filled,
         "document_map_summary": doc_summary,
-        "routing_plan": routing_plan,
-        "groups": [
-            {
-                "fields": group["fields"],
-                "chunk_count": len(group["chunks"]),
-            }
-            for group in all_groups
-        ],
+        "classifier": classifier_meta,
     }

@@ -1644,3 +1644,312 @@ class TestWaveExtraction:
                 schema_def=schema,
                 model="mock/test",
             )
+
+
+# ── Classifier-enabled intelligent_extract (packet splitting) ────────
+
+
+class TestClassifierEnabled:
+    async def test_no_classify_config_preserves_flat_shape(self, monkeypatch):
+        """classify_config=None → response is byte-identical to pre-classifier."""
+        schema = {
+            "name": "doc",
+            "fields": {"title": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(responses=[json.dumps({"title": "Hello"})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: Hello",
+            schema_def=schema,
+            model="mock/test",
+        )
+        assert "extracted" in result
+        assert "sections" not in result  # flat shape
+        assert result["extracted"]["title"] == "Hello"
+
+    async def test_classifier_enabled_wraps_response_in_sections(self, monkeypatch):
+        """classify_config set → response always wraps in sections, even for single section."""
+        schema = {
+            "name": "invoice",
+            "fields": {"invoice_number": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # 1st call = classifier: one invoice section
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "invoice", "start_chunk": 0, "end_chunk": 1, "confidence": 0.95},
+                        ]
+                    }
+                ),
+                # 2nd call = extract on that section
+                json.dumps({"invoice_number": "INV-001"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "invoice", "description": "Invoice"}],
+        }
+        result = await intelligent_extract(
+            markdown="# Header\n\nInvoice Number: INV-001\n\n# Items\n\nWidget",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+
+        assert "sections" in result
+        assert "extracted" not in result  # wrapped shape
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["section_type"] == "invoice"
+        assert result["sections"][0]["extracted"]["invoice_number"] == "INV-001"
+        assert result["classifier"]["total_sections"] == 1
+        assert result["classifier"]["sections_matched"] == 1
+
+    async def test_apply_to_filters_sections_by_type(self, monkeypatch):
+        """Schema with apply_to:[policy] only runs against policy sections."""
+        schema = {
+            "name": "insurance_policy",
+            "apply_to": ["policy"],
+            "fields": {"policy_number": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # Classifier: invoice + coi + policy
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "invoice", "start_chunk": 0, "end_chunk": 1, "confidence": 0.9},
+                            {"type": "coi", "start_chunk": 2, "end_chunk": 3, "confidence": 0.9},
+                            {"type": "policy", "start_chunk": 4, "end_chunk": 5, "confidence": 0.95},
+                        ]
+                    }
+                ),
+                # Extract: only the policy section gets extracted
+                json.dumps({"policy_number": "BOP-9999"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [
+                {"id": "invoice", "description": "Invoice"},
+                {"id": "coi", "description": "Cert of insurance"},
+                {"id": "policy", "description": "Policy"},
+            ],
+        }
+        # Six chunks so the classifier can split them three ways.
+        markdown = (
+            "# Invoice\n\nINV-111\n\n# Invoice items\n\nWidget\n\n"
+            "# COI\n\nInsurer: ACME\n\n# COI details\n\nCoverage\n\n"
+            "# Policy\n\nPolicy Number: BOP-9999\n\n# Policy details\n\nLimits"
+        )
+        result = await intelligent_extract(
+            markdown=markdown,
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["section_type"] == "policy"
+        assert result["sections"][0]["extracted"]["policy_number"] == "BOP-9999"
+        assert result["classifier"]["total_sections"] == 3
+        assert result["classifier"]["sections_matched"] == 1
+        # Extraction ran only once — one classifier call + one extract call
+        assert len(provider.calls) == 2
+
+    async def test_apply_to_matches_multiple_sections(self, monkeypatch):
+        """Schema with apply_to:[invoice] runs once per matching section in a multi-invoice packet."""
+        schema = {
+            "name": "invoice",
+            "apply_to": ["invoice"],
+            "fields": {"invoice_number": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "invoice", "start_chunk": 0, "end_chunk": 1, "confidence": 0.9},
+                            {"type": "invoice", "start_chunk": 2, "end_chunk": 3, "confidence": 0.9},
+                        ]
+                    }
+                ),
+                json.dumps({"invoice_number": "INV-001"}),
+                json.dumps({"invoice_number": "INV-002"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "invoice", "description": "Invoice"}],
+        }
+        markdown = "# First\n\nINV-001\n\n# Items1\n\nA\n\n# Second\n\nINV-002\n\n# Items2\n\nB"
+        result = await intelligent_extract(
+            markdown=markdown,
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        assert len(result["sections"]) == 2
+        # Each section got its own extract call
+        numbers = {s["extracted"]["invoice_number"] for s in result["sections"]}
+        assert numbers == {"INV-001", "INV-002"}
+
+    async def test_apply_to_no_matching_section_returns_empty_list(self, monkeypatch):
+        """Schema declares apply_to:[policy] but no policy section is classified."""
+        schema = {
+            "name": "policy",
+            "apply_to": ["policy"],
+            "fields": {"policy_number": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "invoice", "start_chunk": 0, "end_chunk": 1, "confidence": 0.9},
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [
+                {"id": "invoice", "description": "Invoice"},
+                {"id": "policy", "description": "Policy"},
+            ],
+        }
+        result = await intelligent_extract(
+            markdown="# Inv\n\nINV-001\n\n# More\n\nfoo",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        assert result["sections"] == []
+        assert result["classifier"]["reason"] == "no_matching_section"
+        # Only the classifier call — no wasted extract calls
+        assert len(provider.calls) == 1
+
+    async def test_require_apply_to_strict_mode_raises_when_missing(self, monkeypatch):
+        schema = {
+            "name": "invoice",
+            # no apply_to declared
+            "fields": {"invoice_number": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(responses=[])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "require_apply_to": True,
+            "types": [{"id": "invoice", "description": "Invoice"}],
+        }
+        with pytest.raises(ValueError, match="apply_to"):
+            await intelligent_extract(
+                markdown="# H\n\nstuff",
+                schema_def=schema,
+                model="mock/test",
+                classify_config=classify_config,
+            )
+
+    async def test_forgiving_mode_runs_against_every_section(self, monkeypatch):
+        """Schema with no apply_to + forgiving mode runs against every section."""
+        schema = {
+            "name": "generic",
+            # no apply_to
+            "fields": {"title": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "invoice", "start_chunk": 0, "end_chunk": 0, "confidence": 0.9},
+                            {"type": "policy", "start_chunk": 1, "end_chunk": 1, "confidence": 0.9},
+                        ]
+                    }
+                ),
+                json.dumps({"title": "Invoice Title"}),
+                json.dumps({"title": "Policy Title"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "require_apply_to": False,
+            "types": [
+                {"id": "invoice", "description": "Invoice"},
+                {"id": "policy", "description": "Policy"},
+            ],
+        }
+        result = await intelligent_extract(
+            markdown="# Inv\n\nInvoice Title\n\n# Pol\n\nPolicy Title",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        # Ran against both sections regardless of type
+        assert len(result["sections"]) == 2
+
+    async def test_classifier_fallback_when_llm_returns_garbage(self, monkeypatch):
+        schema = {
+            "name": "doc",
+            "fields": {"title": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                "not json at all",  # classifier garbage → normalizer fallback
+                json.dumps({"title": "Found"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "doc", "description": "Doc"}],
+        }
+        result = await intelligent_extract(
+            markdown="# Header\n\nTitle: Found",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        # Fallback produced a single `document` section
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["section_type"] == "document"
+        assert result["sections"][0]["extracted"]["title"] == "Found"
+        assert result["classifier"]["normalizer_corrections"] >= 1

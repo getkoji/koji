@@ -232,6 +232,43 @@ pipeline:
 
 Reference models as `provider/model-name`. The provider name must match a key under `models.providers`, or use a well-known provider prefix like `openai/` or `ollama/`.
 
+### Classify step (optional)
+
+Inserts a document-type classifier between parse and extract. This is the stage that handles **packets** — a single upload containing multiple stapled-together documents — by splitting the input into typed sections that downstream schemas can target via their `apply_to` field.
+
+```yaml
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: classify
+    model: openai/gpt-4o-mini      # cheap model recommended; separate from extract model
+    require_apply_to: false        # default false; set true to error on schemas missing apply_to
+    types:
+      - id: invoice
+        description: Commercial invoice with line items, bill-to, and totals.
+      - id: coi
+        description: Certificate of insurance showing coverage, policyholder, and insurer.
+      - id: policy
+        description: Insurance policy document with declarations, coverages, endorsements.
+      - id: sec_filing
+        description: SEC EDGAR filing (10-K, 10-Q, 8-K, DEF 14A, or amendment variants).
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+      - ./schemas/insurance_policy.yaml
+```
+
+**Presence of the `classify` step is the only way to turn classification on.** When it's absent, the pipeline is byte-identical to single-document processing — no behavior change for existing deployments.
+
+Each entry in `types` declares a document type the classifier is allowed to emit. Koji ships with no built-in type taxonomy; you declare the types your pipeline cares about. The reserved type `other` is always valid (used as a catch-all) and `document` is used internally as a fallback when the classifier fails. Type IDs are referenced from schema files via `apply_to` — see [schema-guide.md](schema-guide.md#targeting-specific-document-types-with-apply_to) for how schemas opt into a specific type.
+
+**`require_apply_to`**: when `false` (default), a schema without `apply_to` runs against every section the classifier produces. When `true`, such a schema is a config error at extraction time. Forgiving is fine for small deployments; strict mode is safer once you have many schemas and want to prevent accidental cross-section extraction.
+
+The classify step issues one extra LLM call per document. That call shows up in `koji bench` output as its own cost line alongside the extract call, so you can measure the overhead on your corpus before deciding whether to enable it in production.
+
 ---
 
 ## `models`

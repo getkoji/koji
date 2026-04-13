@@ -42,6 +42,13 @@ class ClusterConfig(BaseModel):
         return self.base_port + 12
 
 
+class ClassifyTypeConfig(BaseModel):
+    """A document type the classifier can emit for a section."""
+
+    id: str
+    description: str = ""
+
+
 class PipelineStep(BaseModel):
     step: str
     engine: str | None = None
@@ -51,6 +58,9 @@ class PipelineStep(BaseModel):
     strategy: str | None = None
     categories: list[str] | None = None
     max_tokens: int | None = None
+    # classify-step fields (ignored for other step types)
+    types: list[ClassifyTypeConfig] | None = None
+    require_apply_to: bool | None = None
 
 
 class ModelProviderConfig(BaseModel):
@@ -89,6 +99,19 @@ class KojiConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     webhooks: list[WebhookConfig] = Field(default_factory=list)
+
+    def classify_step(self) -> PipelineStep | None:
+        """Return the classify pipeline step if present, else None.
+
+        Presence of a `step: classify` entry in the pipeline list is the
+        only way to turn the classifier on — there's no separate enable
+        flag. When this returns None, the extraction pipeline falls back
+        to its pre-classifier single-pass behavior.
+        """
+        for step in self.pipeline:
+            if step.step == "classify":
+                return step
+        return None
 
 
 def load_config(path: str | Path = "koji.yaml") -> KojiConfig:
