@@ -706,6 +706,48 @@ The top 3 scoring chunks are selected for each field by default (or up to `max_c
 
 Start without hints, test extraction, and add hints where accuracy is poor.
 
+## Extraction hints
+
+`description` on a field tells Koji (and the reader) what a field *means*. For tricky fields you also need to tell the model *how* to pick the right value — especially when the document has many plausible candidates and simple keyword matching isn't enough. That's what `extraction_hint` is for:
+
+```yaml
+fields:
+  filing_date:
+    type: date
+    required: true
+    description: Date the filing was submitted to SEC.
+    extraction_hint: |
+      The authoritative filing date is in the signature block at the
+      bottom of the document — look for lines like
+      "/s/ Officer Name ... Dated: April 9, 2026".
+
+      For AMENDMENT forms (10-K/A, 10-Q/A, 8-K/A), the EXPLANATORY NOTE
+      may reference the ORIGINAL filing date. Do NOT use that — the
+      filing_date is the date the AMENDMENT was filed, which appears
+      in the signature block.
+
+  period_of_report:
+    type: date
+    description: Fiscal period the filing covers.
+    extraction_hint: |
+      period_of_report is the fiscal period the filing covers — NOT the
+      submission date, signature date, or preparer date. Look on the
+      COVER PAGE for the form-specific label:
+        - 10-K:    "For the fiscal year ended <date>"
+        - 10-Q:    "For the quarterly period ended <date>"
+        - 8-K:     "Date of Report (Date of earliest event reported): <date>"
+        - DEF 14A: the scheduled meeting date ("to be held on <date>")
+```
+
+Extraction hints are rendered into a dedicated `## Extraction notes` block in the prompt the LLM sees, right under the field list. The wording is free-form — write whatever the model needs to disambiguate.
+
+**When to use `extraction_hint` instead of `description`:**
+
+- `description` is a short, reader-facing summary of what the field means. It ends up in the field list line (`- filing_date: date — Date the filing was submitted`). Keep it under one sentence.
+- `extraction_hint` is multi-line model-facing guidance about *which of several candidates* to pick and *why*. Use it for fields where the document has obvious-looking distractors (e.g. an amendment form's EXPLANATORY NOTE references both the original and current dates).
+
+Hints also flow into the gap-fill pass, so fields that time out on the main extraction attempt still get the guidance on retry. Fields without an `extraction_hint` don't get an "Extraction notes" block — it's only rendered when at least one field in the group provides one.
+
 ## Heading inference
 
 The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.

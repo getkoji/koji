@@ -8,6 +8,7 @@ import pytest
 
 from services.extract.pipeline import (
     _score_label,
+    build_gap_fill_prompt,
     build_group_prompt,
     compute_confidence_score,
     intelligent_extract,
@@ -166,6 +167,101 @@ class TestBuildGroupPrompt:
         # Should still render something — we don't know the shape
         assert "items" in prompt
         assert "array" in prompt
+
+    def test_extraction_hint_rendered_in_notes_section(self):
+        """Field with extraction_hint gets an 'Extraction notes' section in the prompt."""
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {
+                "filing_date": {
+                    "type": "date",
+                    "required": True,
+                    "description": "Date the filing was submitted",
+                    "extraction_hint": "Use the date in the signature block at the bottom. "
+                    "For amendment forms, do not use the original filing date.",
+                }
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "## Extraction notes" in prompt
+        assert "**filing_date**" in prompt
+        assert "signature block" in prompt
+        assert "amendment forms" in prompt
+
+    def test_multiple_extraction_hints_appear_in_order(self):
+        group = {
+            "fields": ["filing_date", "period_of_report"],
+            "field_specs": {
+                "filing_date": {"type": "date", "extraction_hint": "HINT_FILING_DATE"},
+                "period_of_report": {"type": "date", "extraction_hint": "HINT_PERIOD_OF_REPORT"},
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "HINT_FILING_DATE" in prompt
+        assert "HINT_PERIOD_OF_REPORT" in prompt
+        assert prompt.index("HINT_FILING_DATE") < prompt.index("HINT_PERIOD_OF_REPORT")
+
+    def test_no_extraction_notes_section_when_no_hints(self):
+        """Schemas without any extraction_hint shouldn't get an empty Notes section."""
+        group = {
+            "fields": ["name"],
+            "field_specs": {"name": {"type": "string"}},
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "Extraction notes" not in prompt
+
+    def test_extraction_hint_non_string_ignored(self):
+        group = {
+            "fields": ["x", "y", "z"],
+            "field_specs": {
+                "x": {"type": "string", "extraction_hint": None},
+                "y": {"type": "string", "extraction_hint": 42},
+                "z": {"type": "string", "extraction_hint": "   "},  # whitespace only
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "Extraction notes" not in prompt
+
+    def test_extraction_hint_mix_of_hinted_and_unhinted_fields(self):
+        group = {
+            "fields": ["a", "b"],
+            "field_specs": {
+                "a": {"type": "string"},
+                "b": {"type": "string", "extraction_hint": "B_HINT_TEXT"},
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "## Extraction notes" in prompt
+        assert "**b**" in prompt
+        assert "B_HINT_TEXT" in prompt
+        # Unhinted field shouldn't appear in notes
+        assert "**a**:" not in prompt
+
+
+# ── build_gap_fill_prompt ─────────────────────────────────────────────
+
+
+class TestBuildGapFillPrompt:
+    def test_includes_extraction_hint(self):
+        spec = {
+            "type": "date",
+            "required": True,
+            "extraction_hint": "GAP_FILL_HINT_CONTENT",
+        }
+        prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "test")
+        assert "## Extraction notes" in prompt
+        assert "**filing_date**" in prompt
+        assert "GAP_FILL_HINT_CONTENT" in prompt
+
+    def test_no_notes_section_when_no_hint(self):
+        spec = {"type": "date"}
+        prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "test")
+        assert "Extraction notes" not in prompt
 
 
 # ── validate_field ────────────────────────────────────────────────────

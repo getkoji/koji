@@ -41,6 +41,21 @@ def _describe_array_item(spec: dict) -> str:
     return ""
 
 
+def _collect_extraction_notes(fields: dict) -> str:
+    """Render per-field extraction_hint strings into a notes block.
+
+    Returns an empty string if no field has a hint. Otherwise returns a
+    newline-separated list of bullets, one per field that provided a hint.
+    The caller decides whether/how to include the block in the final prompt.
+    """
+    notes: list[str] = []
+    for name, spec in fields.items():
+        hint = spec.get("extraction_hint") if isinstance(spec, dict) else None
+        if isinstance(hint, str) and hint.strip():
+            notes.append(f"- **{name}**: {hint.strip()}")
+    return "\n".join(notes)
+
+
 def build_group_prompt(group: dict, schema_name: str) -> str:
     """Build a focused extraction prompt for a group of fields from specific chunks."""
     fields = group["field_specs"]
@@ -77,6 +92,7 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
         field_descriptions.append(f"  - {name}: {type_label}{req_label}{desc_label}")
 
     fields_block = "\n".join(field_descriptions)
+    notes_block = _collect_extraction_notes(fields)
 
     # Combine chunk content
     content_blocks = []
@@ -84,12 +100,14 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
         content_blocks.append(f"### {chunk.title}\n\n{chunk.content}")
     content = "\n\n---\n\n".join(content_blocks)
 
+    notes_section = f"\n## Extraction notes\n\n{notes_block}\n" if notes_block else ""
+
     return f"""Extract the following fields from the document sections below. Return ONLY valid JSON with the fields you find. If a field is not present, use null.
 
 ## Fields to extract ({schema_name})
 
 {fields_block}
-
+{notes_section}
 ## Document sections
 
 {content}
@@ -160,6 +178,11 @@ def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk]
 
     field_line = f"  - {field_name}: {type_label}{req_label}{desc_label}"
 
+    hint = field_spec.get("extraction_hint") if isinstance(field_spec, dict) else None
+    notes_section = ""
+    if isinstance(hint, str) and hint.strip():
+        notes_section = f"\n## Extraction notes\n\n- **{field_name}**: {hint.strip()}\n"
+
     content_blocks = []
     for chunk in chunks:
         content_blocks.append(f"### {chunk.title}\n\n{chunk.content}")
@@ -170,7 +193,7 @@ def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk]
 ## Missing field to find ({schema_name})
 
 {field_line}
-
+{notes_section}
 ## Document sections (broadened search)
 
 {content}
