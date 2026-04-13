@@ -400,6 +400,8 @@ When that happens, Koji runs a **heading inference** pass before chunking. It pr
 
 Inference only runs when the parsed markdown contains zero `#` headings — well-structured input is left untouched. Lines must start a fresh paragraph (blank line above) to be promoted, which avoids over-promoting bold spans inside flowing prose.
 
+Consecutive bold or ALL CAPS lines separated only by blanks are treated as a single **stanza** — think cover pages, title blocks, contributor lists — and only the *first* line in the stanza is promoted. The stanza resets as soon as non-heuristic content appears, so a real chapter heading after a cover page is still detected. This keeps cover-page-heavy documents from fragmenting into dozens of one-line chunks.
+
 ### Custom heading patterns
 
 If your documents have structural markers that don't fit the bold / ALL CAPS heuristics, declare them explicitly:
@@ -411,16 +413,32 @@ headings:
     - "^ARTICLE \\d+\\."
 ```
 
-Patterns must `fullmatch` the line. They take priority over the generic heuristics and are matched even on short lines that the all-caps rule would skip.
+Patterns must `fullmatch` the line. They take priority over the generic heuristics and are matched even on short lines that the all-caps rule would skip. A pattern match also breaks out of a stanza, so you can use patterns to carve up sections that the bold/ALL CAPS heuristics would otherwise merge.
+
+### Patterns-only mode
+
+If your documents have stylistic bold or ALL CAPS lines that aren't actually structural (marketing copy, emphasized phrases, legalese boilerplate), you can disable the generic heuristics while keeping explicit schema patterns:
+
+```yaml
+headings:
+  generic: false
+  patterns:
+    - "^PART [IVX]+$"
+    - "^SCHEDULE [A-Z]$"
+```
+
+With `generic: false`, bold and ALL CAPS lines are left alone and only your declared patterns produce synthetic headings.
 
 ### Disabling inference
 
-If your parser already produces clean headings and you'd rather skip the inference pass:
+If your parser already produces clean headings and you'd rather skip the whole pass:
 
 ```yaml
 headings:
   infer: false
 ```
+
+`infer: false` is the master kill-switch — it disables both generic heuristics and schema patterns.
 
 ## Arrays and nested objects
 

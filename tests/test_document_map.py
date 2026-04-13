@@ -597,6 +597,91 @@ Total Due: $8,400
         # The bold line stays inside the content, not promoted to a new chunk
         assert "Bold line" in chunks[0].content
 
+    def test_consecutive_bold_stanza_promotes_only_first(self):
+        """Cover pages with stacked bold lines shouldn't fragment into one-chunk-per-line."""
+        md = "**Book Title**\n\n**Author Name**\n\n**Publisher, 2026**\n\nReal body begins here."
+        out = _infer_headings(md)
+        assert out.count("## ") == 1
+        assert "## Book Title" in out
+        # The other bold lines survive as content, unpromoted
+        assert "**Author Name**" in out
+        assert "**Publisher, 2026**" in out
+
+    def test_consecutive_all_caps_stanza_promotes_only_first(self):
+        md = "TITLE PAGE\n\nBY SOMEONE\n\nSEPTEMBER 2026\n\nNow for the body."
+        out = _infer_headings(md)
+        assert out.count("## ") == 1
+        assert "## TITLE PAGE" in out
+        assert "BY SOMEONE" in out  # not promoted, stays as content
+        assert "SEPTEMBER 2026" in out
+
+    def test_mixed_stanza_bold_and_all_caps(self):
+        md = "**Book Title**\n\nBY AUTHOR\n\n**2026 Edition**\n\nBody."
+        out = _infer_headings(md)
+        assert out.count("## ") == 1
+        assert "## Book Title" in out
+
+    def test_stanza_resets_after_body_content(self):
+        """After a non-heuristic line, the next bold candidate is freshly eligible."""
+        md = "**Title**\n\n**Subtitle**\n\nReal body paragraph.\n\n**Chapter 1**\n\nChapter body."
+        out = _infer_headings(md)
+        assert "## Title" in out
+        assert "## Chapter 1" in out
+        assert "**Subtitle**" in out  # part of the cover stanza, not promoted
+        assert out.count("## ") == 2
+
+    def test_schema_pattern_breaks_stanza(self):
+        """A schema-pattern match is explicit intent — it resets stanza state."""
+        schema = {"headings": {"patterns": [r"^PART \d+$"]}}
+        md = "**Title**\n\n**Author**\n\nPART 1\n\n**Section**\n\nbody"
+        out = _infer_headings(md, schema)
+        assert "## Title" in out
+        assert "## PART 1" in out
+        assert "## Section" in out
+        # **Author** is part of the stanza — not promoted
+        assert "**Author**" in out
+
+    def test_generic_false_skips_heuristics(self):
+        """headings.generic: false disables bold/ALL CAPS inference."""
+        schema = {"headings": {"generic": False}}
+        md = "**Title**\n\nINVOICE\n\nbody"
+        out = _infer_headings(md, schema)
+        assert "##" not in out
+        # Original content preserved
+        assert "**Title**" in out
+        assert "INVOICE" in out
+
+    def test_generic_false_still_applies_schema_patterns(self):
+        """With generic heuristics off, explicit schema patterns still fire."""
+        schema = {
+            "headings": {
+                "generic": False,
+                "patterns": [r"^SECTION \d+$"],
+            }
+        }
+        md = "**Title**\n\nSECTION 1\n\nbody"
+        out = _infer_headings(md, schema)
+        assert "## SECTION 1" in out
+        assert "**Title**" in out  # generic off, bold untouched
+        assert "## Title" not in out
+
+    def test_generic_false_with_no_patterns_is_noop(self):
+        schema = {"headings": {"generic": False}}
+        md = "**Title**\n\nINVOICE\n\nBILL TO\n\nbody"
+        assert _infer_headings(md, schema) == md
+
+    def test_infer_false_overrides_generic_and_patterns(self):
+        """infer: false is the master kill-switch — nothing runs."""
+        schema = {
+            "headings": {
+                "infer": False,
+                "generic": True,
+                "patterns": [r"^SECTION \d+$"],
+            }
+        }
+        md = "**Title**\n\nSECTION 1\n\nbody"
+        assert _infer_headings(md, schema) == md
+
 
 # ── summarize_map ─────────────────────────────────────────────────────
 
