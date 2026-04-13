@@ -337,12 +337,32 @@ def _heading_inference_enabled(schema_def: dict | None) -> bool:
     return headings.get("infer", True) is not False
 
 
+def _generic_heading_heuristics_enabled(schema_def: dict | None) -> bool:
+    """Whether the bold / ALL CAPS heuristics should run.
+
+    Schema authors can disable the generic heuristics while keeping
+    their explicit `patterns` — useful on docs where bold/all-caps
+    lines are stylistic rather than structural.
+    """
+    if not schema_def:
+        return True
+    headings = schema_def.get("headings")
+    if not isinstance(headings, dict):
+        return True
+    return headings.get("generic", True) is not False
+
+
 def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
     """Inject synthetic ## markers for prominent lines when markdown has no headings.
 
     Returns markdown unchanged if any `#` heading already exists — we trust
     well-structured input and only fill the gap for parse outputs that lost
     their structure.
+
+    Consecutive bold / ALL CAPS lines separated only by blanks are treated
+    as a single **stanza** (cover pages, title blocks, contributor lists)
+    and only the first line in the stanza is promoted. The stanza resets
+    as soon as non-heuristic content appears.
     """
     if _HAS_MARKDOWN_HEADING_RE.search(markdown):
         return markdown
@@ -350,8 +370,11 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
         return markdown
 
     schema_patterns = _compile_heading_patterns(schema_def)
+    generic_enabled = _generic_heading_heuristics_enabled(schema_def)
     lines = markdown.split("\n")
     out: list[str] = []
+
+    in_stanza = False  # currently inside a run of bold/ALL CAPS lines
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -363,6 +386,7 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
         # signal that the line stands apart from surrounding prose.
         above_blank = i == 0 or lines[i - 1].strip() == ""
         promoted: str | None = None
+        is_heuristic_candidate = False
 
         if above_blank:
             for pat in schema_patterns:
@@ -370,12 +394,24 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
                     promoted = stripped.rstrip(":").strip()
                     break
 
-            if promoted is None:
+            if promoted is None and generic_enabled:
                 m = _BOLD_LINE_RE.match(stripped)
                 if m and len(m.group(1).strip()) <= _HEADING_MAX_LEN:
-                    promoted = m.group(1).strip().rstrip(":").strip()
+                    is_heuristic_candidate = True
+                    if not in_stanza:
+                        promoted = m.group(1).strip().rstrip(":").strip()
                 elif _ALLCAPS_LINE_RE.match(stripped):
-                    promoted = stripped.rstrip(":").strip()
+                    is_heuristic_candidate = True
+                    if not in_stanza:
+                        promoted = stripped.rstrip(":").strip()
+
+        if is_heuristic_candidate:
+            in_stanza = True
+        else:
+            # Any non-blank content that isn't a bold/ALL CAPS candidate
+            # breaks the stanza — this includes schema-pattern promotions,
+            # regular prose, table rows, everything.
+            in_stanza = False
 
         if promoted:
             out.append(f"## {promoted}")
