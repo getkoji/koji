@@ -457,6 +457,98 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
     return "\n".join(out)
 
 
+# ── Table Cell Normalization ────────────────────────────────────────
+
+_TABLE_ROW_CELL_MIN_RUN = 3  # collapse a run of N identical cells into 1 when N >= this
+_TABLE_ROW_PREFIX_RE = re.compile(r"^\s*\|")
+
+
+def _row_is_tripled(parts: list[str]) -> bool:
+    """Heuristic: does this row look like a parser-duplicated table row?
+
+    A row qualifies if at least one run of _TABLE_ROW_CELL_MIN_RUN or more
+    consecutive identical non-empty cells contains alphabetic text. Pure
+    numeric / symbol duplicates alone (e.g. `$100 | $100 | $100`) are not
+    enough — real financial tables legitimately repeat values across
+    quarters or columns.
+    """
+    i = 0
+    while i < len(parts):
+        current = parts[i].strip()
+        if not current:
+            i += 1
+            continue
+        run_end = i + 1
+        while run_end < len(parts) and parts[run_end].strip() == current:
+            run_end += 1
+        run_length = run_end - i
+        if run_length >= _TABLE_ROW_CELL_MIN_RUN and any(c.isalpha() for c in current):
+            return True
+        i = run_end
+    return False
+
+
+def _dedupe_table_row_repeats(markdown: str) -> str:
+    """Collapse runs of identical adjacent cells in markdown table rows.
+
+    Parsers (notably docling) sometimes represent column-spanning cells by
+    duplicating the cell content N times across the row. The result — e.g.
+    `| Dated | Dated | Dated | April 9, 2026 | April 9, 2026 | April 9, 2026 |` —
+    confuses the extractor because the same field appears repeated in a
+    way that looks like distinct values. Collapsing the repeats restores
+    the original meaning without losing information.
+
+    A row is only deduped when it shows an alphabetic-cell triplication
+    signal (see `_row_is_tripled`); otherwise it's left alone so a
+    legitimate financial row like `| Revenue | $100 | $100 | $100 |`
+    keeps its column structure.
+    """
+    if "|" not in markdown:
+        return markdown
+
+    out_lines: list[str] = []
+    for line in markdown.split("\n"):
+        if not _TABLE_ROW_PREFIX_RE.match(line):
+            out_lines.append(line)
+            continue
+
+        stripped = line.strip()
+        # Preserve separator rows (all dashes/colons/pipes/spaces)
+        if all(c in "-:| \t" for c in stripped):
+            out_lines.append(line)
+            continue
+
+        parts = line.split("|")
+        if not _row_is_tripled(parts):
+            out_lines.append(line)
+            continue
+
+        # Row is confirmed tripled — collapse every run of ≥N identical
+        # non-empty cells regardless of cell type.
+        new_parts: list[str] = []
+        i = 0
+        while i < len(parts):
+            current = parts[i]
+            current_stripped = current.strip()
+            if not current_stripped:
+                new_parts.append(current)
+                i += 1
+                continue
+            run_end = i + 1
+            while run_end < len(parts) and parts[run_end].strip() == current_stripped:
+                run_end += 1
+            run_length = run_end - i
+            if run_length >= _TABLE_ROW_CELL_MIN_RUN:
+                new_parts.append(current)
+                i = run_end
+            else:
+                new_parts.append(current)
+                i += 1
+        out_lines.append("|".join(new_parts))
+
+    return "\n".join(out_lines)
+
+
 # ── Document Mapper ─────────────────────────────────────────────────
 
 
@@ -467,10 +559,12 @@ def build_document_map(markdown: str, schema_def: dict | None = None) -> list[Ch
     Without a schema, all chunks are categorized as "other" with only
     built-in generic signals.
 
-    If the markdown contains no `#` headings, a heading inference pass
-    promotes standalone bold / ALL CAPS / schema-pattern lines to `##`
-    headings before splitting — see `_infer_headings`.
+    Preprocessing runs in order:
+    1. `_dedupe_table_row_repeats` — collapse parser-duplicated table cells
+    2. `_infer_headings` — promote visually-prominent lines to `##` when
+       the markdown has no `#` headings
     """
+    markdown = _dedupe_table_row_repeats(markdown)
     markdown = _infer_headings(markdown, schema_def)
     category_keywords = _build_category_keywords(schema_def)
     custom_signals = _compile_custom_signals(schema_def)

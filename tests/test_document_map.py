@@ -8,6 +8,7 @@ from services.extract.document_map import (
     _build_category_keywords,
     _build_classification_config,
     _compile_custom_signals,
+    _dedupe_table_row_repeats,
     _infer_headings,
     build_document_map,
     classify_chunk,
@@ -753,6 +754,79 @@ Total Due: $8,400
         md = "**(305) 907-7600**\n\n**BALANCE**\n\n**LABS, INC.**\n\n(Exact name)"
         out = _infer_headings(md)
         assert "## BALANCE LABS, INC." in out
+
+
+# ── Table cell dedupe ─────────────────────────────────────────────────
+
+
+class TestDedupeTableRowRepeats:
+    def test_no_op_on_non_table_markdown(self):
+        md = "# Heading\n\nSome paragraph.\n\nAnother paragraph."
+        assert _dedupe_table_row_repeats(md) == md
+
+    def test_no_op_when_no_pipes(self):
+        md = "plain text only"
+        assert _dedupe_table_row_repeats(md) == md
+
+    def test_separator_row_preserved(self):
+        md = "|---|---|---|\n| a | b | c |"
+        out = _dedupe_table_row_repeats(md)
+        assert "|---|---|---|" in out
+
+    def test_tripled_signature_row_collapses(self):
+        """The KB HOME 10-Q failure shape: triplicated Dated / date cells."""
+        row = "| Dated | Dated | Dated | April 9, 2026 | April 9, 2026 | April 9, 2026 | By: | By: | By: |"
+        out = _dedupe_table_row_repeats(row)
+        # April 9 should appear exactly once after dedupe
+        assert out.count("April 9, 2026") == 1
+        assert out.count("Dated") == 1
+        assert out.count("By:") == 1
+
+    def test_tripled_row_with_mixed_numeric_cells(self):
+        """When a row is confirmed tripled via an alpha run, numeric runs collapse too."""
+        row = "| Delaware | Delaware | Delaware | 95-3666267 | 95-3666267 | 95-3666267 |"
+        out = _dedupe_table_row_repeats(row)
+        assert out.count("Delaware") == 1
+        assert out.count("95-3666267") == 1
+
+    def test_non_tripled_row_with_repeated_values_preserved(self):
+        """Legitimate financial rows (no alpha triplication signal) are untouched."""
+        row = "| Revenue | $100 | $100 | $100 |"
+        out = _dedupe_table_row_repeats(row)
+        # No triplication signal (Revenue appears only once) — row stays as-is
+        assert out == row
+        assert out.count("$100") == 3
+
+    def test_two_duplicates_not_collapsed(self):
+        """A pair of identical cells stays put — dedupe needs a run of 3+."""
+        row = "| Yes | Yes | No |"
+        out = _dedupe_table_row_repeats(row)
+        assert out.count("Yes") == 2
+
+    def test_mixed_run_lengths(self):
+        """Only runs that meet the ≥3 threshold get collapsed, even once the row is flagged."""
+        row = "| Name | Name | Age | Age | Age | Role | Role |"
+        out = _dedupe_table_row_repeats(row)
+        # Only the triple-Age run collapses; pairs stay put.
+        assert out.count("Name") == 2
+        assert out.count("Age") == 1
+        assert out.count("Role") == 2
+
+    def test_empty_cells_between_runs_preserved(self):
+        """Whitespace cells between runs aren't collapsed into each other."""
+        row = "| Dated | Dated | Dated |    |    |    | By: | By: | By: |"
+        out = _dedupe_table_row_repeats(row)
+        assert out.count("Dated") == 1
+        assert out.count("By:") == 1
+        # Three empty cells stay — nothing to dedupe there (they're empty)
+        assert "|    |    |    |" in out
+
+    def test_build_document_map_applies_dedupe(self):
+        """End-to-end: build_document_map uses the normalizer."""
+        md = "# Signature Block\n\n| Dated | Dated | Dated | April 9, 2026 | April 9, 2026 | April 9, 2026 |"
+        chunks = build_document_map(md)
+        assert len(chunks) == 1
+        assert chunks[0].content.count("April 9, 2026") == 1
 
 
 # ── summarize_map ─────────────────────────────────────────────────────
