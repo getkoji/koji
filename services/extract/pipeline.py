@@ -534,9 +534,17 @@ async def intelligent_extract(
         gap_tasks = []
         for field_name in missing_required:
             field_spec = schema_def["fields"][field_name]
-            # Re-route with broadened search: double chunks, no category filtering
+            # Re-route with hints stripped so the broadened pass actually
+            # broadens. If the main pass missed because look_in / patterns
+            # / prefer_contains over-filtered the candidate pool, re-running
+            # the same hints would just produce the same chunk set and the
+            # same null answer — wasted latency and tokens. Stripping hints
+            # lets the router fall back to generic type-based scoring across
+            # the full chunk pool, giving gap-fill a real shot at new
+            # chunks outside the originally-declared scope.
+            stripped_spec = {k: v for k, v in field_spec.items() if k != "hints"}
             broadened_routes = route_fields(
-                {"fields": {field_name: field_spec}},
+                {"fields": {field_name: stripped_spec}},
                 chunks,
                 max_chunks_per_field=6,
             )
@@ -544,6 +552,8 @@ async def intelligent_extract(
             gap_tasks.append(
                 (
                     field_name,
+                    # Keep the original field_spec (including extraction_hint)
+                    # for the prompt — only the *routing* hints get stripped.
                     fill_gap(field_name, field_spec, broadened_chunks, schema_name, provider, semaphore),
                 )
             )

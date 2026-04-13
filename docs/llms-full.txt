@@ -1851,7 +1851,7 @@ Results from all extraction groups are merged into a single output. When multipl
 - **Medium confidence** -- single source, passes validation
 - **Low confidence** -- validation issues or conflicting sources
 
-After reconciliation, any required fields still missing trigger **gap filling**: a broadened retry that searches up to 6 chunks with a targeted single-field prompt. This catches values that were missed because the initial routing was too narrow.
+After reconciliation, any required fields still missing trigger **gap filling**: a broadened retry that searches up to 6 chunks with a targeted single-field prompt. Routing hints (`look_in`, `patterns`, `prefer_contains`) are *stripped* for the gap-fill re-route so it truly escapes whatever over-filtering the main pass ran into — the router falls back to generic type-based scoring across the full chunk pool. Per-field `extraction_hint` guidance is preserved in the prompt so the model still gets the disambiguation context. This catches values that were missed because the main pass's declared scope didn't include the right chunk.
 
 The final output includes the extracted data, per-field confidence scores, and metadata about the extraction process (chunk count, group count, timing, gap-filled fields).
 

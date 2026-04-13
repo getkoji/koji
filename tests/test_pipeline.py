@@ -816,6 +816,91 @@ class TestGapFilling:
         # Exactly 2 calls: initial + one gap fill attempt
         assert len(provider.calls) == 2
 
+    async def test_gap_fill_strips_hints_to_escape_restrictive_look_in(self, monkeypatch):
+        """When look_in filters out the chunk that actually contains the value,
+        gap-fill should strip the hints and re-route across the full pool so the
+        missing value can be found in a chunk the main pass never saw."""
+        schema = {
+            "name": "test_gap",
+            "categories": {
+                "keywords": {
+                    "header": ["preamble"],
+                    "body": ["content"],
+                }
+            },
+            "fields": {
+                "secret_value": {
+                    "type": "string",
+                    "required": True,
+                    # The schema author thinks the value lives in the "header"
+                    # category — but the document puts it in "body".
+                    "hints": {"look_in": ["header"]},
+                },
+            },
+        }
+        # Main pass sees only the header chunk and returns null. Gap-fill
+        # should then strip look_in and search across all chunks, which
+        # includes the body chunk where the value actually lives.
+        provider = MockProvider(
+            responses=[
+                json.dumps({"secret_value": None}),
+                json.dumps({"secret_value": "hidden-in-body"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        markdown = (
+            "# Preamble\n\nThis is a preamble section with nothing useful.\n\n"
+            "# Content\n\nThe content section has the secret_value: hidden-in-body"
+        )
+        result = await intelligent_extract(
+            markdown=markdown,
+            schema_def=schema,
+            model="mock/test",
+        )
+
+        assert result["extracted"]["secret_value"] == "hidden-in-body"
+        assert "secret_value" in result["gap_filled"]
+        # Main pass + gap fill = 2 calls
+        assert len(provider.calls) == 2
+
+    async def test_gap_fill_preserves_extraction_hint_in_prompt(self, monkeypatch):
+        """Gap-fill strips *routing* hints but keeps extraction_hint in the prompt."""
+        schema = {
+            "name": "test_gap",
+            "fields": {
+                "tricky": {
+                    "type": "string",
+                    "required": True,
+                    "extraction_hint": "THIS_HINT_MUST_SURVIVE_GAP_FILL",
+                    "hints": {"look_in": ["nowhere"]},
+                },
+            },
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps({"tricky": None}),
+                json.dumps({"tricky": "found"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        await intelligent_extract(
+            markdown="# Body\n\nSome content where tricky: found lives.",
+            schema_def=schema,
+            model="mock/test",
+        )
+
+        # Second call is the gap-fill; its prompt should include the extraction_hint
+        gap_call_prompt = provider.calls[1]["prompt"]
+        assert "THIS_HINT_MUST_SURVIVE_GAP_FILL" in gap_call_prompt
+
 
 # ── Pipeline metadata (document_map_summary, routing_plan, groups) ────
 
