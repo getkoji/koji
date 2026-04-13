@@ -119,9 +119,22 @@ def route_fields(
         has_hints = bool(field_spec.get("hints"))
         field_cap = _field_max_chunks(field_spec, max_chunks_per_field)
 
-        # Score every chunk for this field
+        # look_in is a hard filter when any chunks match — schema authors
+        # who declare a category are asserting the field lives there, so a
+        # higher-scoring chunk in a different category should not win. Falls
+        # back to the full pool when the category is absent from the doc,
+        # so the field still gets routed somewhere.
+        hints = field_spec.get("hints") or {}
+        look_in = hints.get("look_in") or []
+        candidate_chunks: list[Chunk] = chunks
+        if look_in:
+            matches = [c for c in chunks if c.category in look_in]
+            if matches:
+                candidate_chunks = matches
+
+        # Score every candidate chunk for this field
         scored = []
-        for chunk in chunks:
+        for chunk in candidate_chunks:
             score = _score_chunk(chunk, field_name, field_spec)
             if score > 0:
                 scored.append((score, chunk))
