@@ -400,7 +400,9 @@ When that happens, Koji runs a **heading inference** pass before chunking. It pr
 
 Inference only runs when the parsed markdown contains zero `#` headings — well-structured input is left untouched. Lines must start a fresh paragraph (blank line above) to be promoted, which avoids over-promoting bold spans inside flowing prose.
 
-Consecutive bold or ALL CAPS lines separated only by blanks are treated as a single **stanza** — think cover pages, title blocks, contributor lists — and only the *first* line in the stanza is promoted. The stanza resets as soon as non-heuristic content appears, so a real chapter heading after a cover page is still detected. This keeps cover-page-heavy documents from fragmenting into dozens of one-line chunks.
+Consecutive bold or ALL CAPS lines separated only by blanks are treated as a single **stanza** — think cover pages, title blocks, multi-line company names. Short stanzas (up to four lines) are merged into one heading so multi-line titles like `**CXJ**` / `**GROUP CO., Limited**` stay intact as a single chunk anchor. Longer stanzas (five or more lines) are assumed to be word-wrapped boilerplate — common when parsers bold every word on an SEC cover page or legal front matter — and nothing is promoted; the whole block falls through to `Document Start` instead. The stanza resets on any non-heuristic content, so a real chapter heading after the stanza is still detected.
+
+Bold lines whose content is mostly digits or punctuation (phone numbers, ZIP codes, registration IDs) are skipped entirely — they aren't semantic headings even when the parser marks them bold.
 
 ### Custom heading patterns
 
