@@ -597,29 +597,34 @@ Total Due: $8,400
         # The bold line stays inside the content, not promoted to a new chunk
         assert "Bold line" in chunks[0].content
 
-    def test_consecutive_bold_stanza_promotes_only_first(self):
-        """Cover pages with stacked bold lines shouldn't fragment into one-chunk-per-line."""
+    def test_short_bold_stanza_merges_into_one_heading(self):
+        """A short run of standalone bold lines merges into a single heading.
+
+        This keeps multi-line titles intact as a single anchor instead of
+        fragmenting them. The original bold lines are still preserved in
+        content so downstream extraction can match against them.
+        """
         md = "**Book Title**\n\n**Author Name**\n\n**Publisher, 2026**\n\nReal body begins here."
         out = _infer_headings(md)
         assert out.count("## ") == 1
-        assert "## Book Title" in out
-        # The other bold lines survive as content, unpromoted
+        assert "## Book Title Author Name Publisher, 2026" in out
+        # Original bold lines survive as content — only the first slot is rewritten
         assert "**Author Name**" in out
         assert "**Publisher, 2026**" in out
 
-    def test_consecutive_all_caps_stanza_promotes_only_first(self):
+    def test_short_all_caps_stanza_merges_into_one_heading(self):
         md = "TITLE PAGE\n\nBY SOMEONE\n\nSEPTEMBER 2026\n\nNow for the body."
         out = _infer_headings(md)
         assert out.count("## ") == 1
-        assert "## TITLE PAGE" in out
-        assert "BY SOMEONE" in out  # not promoted, stays as content
+        assert "## TITLE PAGE BY SOMEONE SEPTEMBER 2026" in out
+        assert "BY SOMEONE" in out
         assert "SEPTEMBER 2026" in out
 
     def test_mixed_stanza_bold_and_all_caps(self):
         md = "**Book Title**\n\nBY AUTHOR\n\n**2026 Edition**\n\nBody."
         out = _infer_headings(md)
         assert out.count("## ") == 1
-        assert "## Book Title" in out
+        assert "## Book Title BY AUTHOR 2026 Edition" in out
 
     def test_stanza_resets_after_body_content(self):
         """After a non-heuristic line, the next bold candidate is freshly eligible."""
@@ -681,6 +686,73 @@ Total Due: $8,400
         }
         md = "**Title**\n\nSECTION 1\n\nbody"
         assert _infer_headings(md, schema) == md
+
+    def test_multiline_company_name_merges_into_heading(self):
+        """Two-line filer names (CXJ pattern) stay intact as a single heading."""
+        md = "**CXJ**\n\n**GROUP CO., Limited**\n\n(Exact name of registrant)"
+        out = _infer_headings(md)
+        assert "## CXJ GROUP CO., Limited" in out
+        # The original bold lines are still there as content
+        assert "**GROUP CO., Limited**" in out
+
+    def test_long_stanza_disbands_no_promotion(self):
+        """5+ consecutive bold/all-caps lines are noise, not a title."""
+        # Mimics docling's per-word-bold SEC cover page shape.
+        md = (
+            "**UNITED**\n\n"
+            "**STATES**\n\n"
+            "**SECURITIES**\n\n"
+            "**AND EXCHANGE COMMISSION**\n\n"
+            "**FORM 10-K**\n\n"
+            "Commission file number\n\n"
+            "**ACME CORP**\n\n"
+            "(Exact name)"
+        )
+        out = _infer_headings(md)
+        # First stanza (5 lines) disbands — no merged heading from it
+        assert "## UNITED" not in out
+        assert "## UNITED STATES SECURITIES" not in out
+        # The original bold lines remain in place
+        assert "**UNITED**" in out
+        assert "**STATES**" in out
+        # The second stanza is short enough to still promote normally
+        assert "## ACME CORP" in out
+
+    def test_disband_threshold_boundary(self):
+        """Exactly 4 stanza lines still merge; 5 disbands."""
+        four = "**A Cat**\n\n**B Dog**\n\n**C Fox**\n\n**D Owl**\n\nbody"
+        five = "**A Cat**\n\n**B Dog**\n\n**C Fox**\n\n**D Owl**\n\n**E Bee**\n\nbody"
+        out_four = _infer_headings(four)
+        out_five = _infer_headings(five)
+        assert "## A Cat B Dog C Fox D Owl" in out_four
+        assert "## A Cat" not in out_five
+        assert "##" not in out_five
+
+    def test_bold_numeric_fragments_not_promoted(self):
+        """Phone numbers, registration IDs, and ZIP codes shouldn't become headings."""
+        md = "**(305) 907-7600**\n\nnext paragraph"
+        out = _infer_headings(md)
+        assert "##" not in out
+        assert "**(305) 907-7600**" in out
+
+    def test_bold_registration_number_not_promoted(self):
+        md = "**333-202959**\n\nfiler name"
+        out = _infer_headings(md)
+        assert "##" not in out
+
+    def test_bold_mostly_digits_with_few_letters_not_promoted(self):
+        """`**D.C. 20549**` is a ZIP/locale line, not a heading."""
+        md = "**D.C. 20549**\n\nnext"
+        out = _infer_headings(md)
+        assert "##" not in out
+
+    def test_stanza_merge_ignores_stanza_lines_failing_alpha_filter(self):
+        """A stanza adjacent to a rejected bold line still merges correctly."""
+        # The phone number is NOT a heuristic candidate, so it breaks any
+        # in-progress stanza. The real filer stanza that follows merges on its own.
+        md = "**(305) 907-7600**\n\n**BALANCE**\n\n**LABS, INC.**\n\n(Exact name)"
+        out = _infer_headings(md)
+        assert "## BALANCE LABS, INC." in out
 
 
 # ── summarize_map ─────────────────────────────────────────────────────

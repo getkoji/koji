@@ -298,6 +298,25 @@ _BOLD_LINE_RE = re.compile(r"^\*\*([^*]+?)\*\*:?\s*$")
 _ALLCAPS_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 &/\-]{2,60}:?$")
 _HEADING_MAX_LEN = 80
 
+# A "stanza" is a run of consecutive bold / ALL CAPS lines separated only by
+# blanks. Short stanzas (2..N-1 lines) are merged into a single heading
+# so multi-line titles like `**Book Title**` / `**Author Name**` stay
+# intact. Stanzas of length N or more are assumed to be word-wrapped
+# boilerplate (cover pages, legal front matter) where no single line is
+# a meaningful heading — nothing gets promoted in that case.
+_STANZA_DISBAND_THRESHOLD = 5
+
+
+def _looks_like_heading_text(text: str) -> bool:
+    """Reject bold spans that are clearly not semantic headings.
+
+    Parsers routinely bold per-word form fields like phone numbers,
+    registration IDs, and ZIP codes. Those aren't headings and shouldn't
+    anchor a chunk. Require enough alphabetic content to count as text.
+    """
+    alpha = sum(1 for c in text if c.isalpha())
+    return alpha >= 3 and alpha / max(len(text), 1) >= 0.3
+
 
 def _compile_heading_patterns(schema_def: dict | None) -> list[re.Pattern]:
     """Compile schema-defined heading regexes.
@@ -359,10 +378,12 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
     well-structured input and only fill the gap for parse outputs that lost
     their structure.
 
-    Consecutive bold / ALL CAPS lines separated only by blanks are treated
-    as a single **stanza** (cover pages, title blocks, contributor lists)
-    and only the first line in the stanza is promoted. The stanza resets
-    as soon as non-heuristic content appears.
+    Consecutive bold / ALL CAPS lines separated only by blanks are a
+    **stanza** — think book cover, article header, multi-line company name.
+    The whole stanza is merged into a single heading so multi-line titles
+    like `**CXJ**` / `**GROUP CO., Limited**` stay intact. If the stanza
+    grows past _STANZA_DISBAND_THRESHOLD lines it's treated as word-wrapped
+    boilerplate (cover pages, legal front matter) and nothing is promoted.
     """
     if _HAS_MARKDOWN_HEADING_RE.search(markdown):
         return markdown
@@ -374,7 +395,23 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
     lines = markdown.split("\n")
     out: list[str] = []
 
-    in_stanza = False  # currently inside a run of bold/ALL CAPS lines
+    # Each stanza entry is (index in `out`, extracted heading text).
+    # Heuristic lines are appended as their original form during the
+    # walk and get rewritten into `## heading` on flush.
+    stanza: list[tuple[int, str]] = []
+
+    def _flush_stanza() -> None:
+        if not stanza:
+            return
+        if len(stanza) >= _STANZA_DISBAND_THRESHOLD:
+            # Too long to be a semantic title — leave all original lines
+            # in place and let the stanza fall through to the next chunk.
+            stanza.clear()
+            return
+        merged = " ".join(text for _, text in stanza)
+        first_idx = stanza[0][0]
+        out[first_idx] = f"## {merged}"
+        stanza.clear()
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -385,39 +422,38 @@ def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
         # Heading-like lines must start a fresh paragraph — that's the
         # signal that the line stands apart from surrounding prose.
         above_blank = i == 0 or lines[i - 1].strip() == ""
-        promoted: str | None = None
-        is_heuristic_candidate = False
+        schema_promoted: str | None = None
+        heuristic_text: str | None = None
 
         if above_blank:
             for pat in schema_patterns:
                 if pat.fullmatch(stripped):
-                    promoted = stripped.rstrip(":").strip()
+                    schema_promoted = stripped.rstrip(":").strip()
                     break
 
-            if promoted is None and generic_enabled:
+            if schema_promoted is None and generic_enabled:
                 m = _BOLD_LINE_RE.match(stripped)
-                if m and len(m.group(1).strip()) <= _HEADING_MAX_LEN:
-                    is_heuristic_candidate = True
-                    if not in_stanza:
-                        promoted = m.group(1).strip().rstrip(":").strip()
+                if m:
+                    captured = m.group(1).strip()
+                    if len(captured) <= _HEADING_MAX_LEN and _looks_like_heading_text(captured):
+                        heuristic_text = captured.rstrip(":").strip()
                 elif _ALLCAPS_LINE_RE.match(stripped):
-                    is_heuristic_candidate = True
-                    if not in_stanza:
-                        promoted = stripped.rstrip(":").strip()
+                    heuristic_text = stripped.rstrip(":").strip()
 
-        if is_heuristic_candidate:
-            in_stanza = True
-        else:
-            # Any non-blank content that isn't a bold/ALL CAPS candidate
-            # breaks the stanza — this includes schema-pattern promotions,
-            # regular prose, table rows, everything.
-            in_stanza = False
-
-        if promoted:
-            out.append(f"## {promoted}")
-        else:
+        if heuristic_text is not None:
+            # Accumulate into the current stanza; commit on flush.
+            stanza.append((len(out), heuristic_text))
             out.append(line)
+        else:
+            # Any non-heuristic content (including schema-pattern
+            # promotions and regular prose) ends the current stanza.
+            _flush_stanza()
+            if schema_promoted is not None:
+                out.append(f"## {schema_promoted}")
+            else:
+                out.append(line)
 
+    _flush_stanza()
     return "\n".join(out)
 
 
