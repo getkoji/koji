@@ -213,13 +213,52 @@ def _normalize_for_set_compare(items: list) -> list[str]:
 
 
 def compare_field(field_name: str, expected: Any, actual: Any) -> FieldResult:
-    """Compare a single expected value against the actual extraction output."""
-    if actual is None:
+    """Compare a single expected value against the actual extraction output.
+
+    Null / empty handling drives four cases, in order:
+
+    1. Both empty (None, "", [], {}) → PASS with detail "correctly absent".
+       Used for adversarial-corpus fixtures that assert a field should NOT
+       be extracted — the model is supposed to decline and return null.
+
+    2. Expected empty, actual non-empty → FAIL with detail "hallucinated".
+       The fixture says the value isn't in the document, but the model
+       produced one anyway. This is hallucination-resistance testing.
+
+    3. Expected non-empty, actual empty → FAIL with detail "missing".
+       The standard failure mode: the model couldn't find a value that
+       the fixture says is present.
+
+    4. Both non-empty → fall through to the existing type-aware
+       comparison logic (date / number / array / string).
+    """
+    exp_empty = _is_empty(expected)
+    act_empty = _is_empty(actual)
+
+    if exp_empty and act_empty:
+        return FieldResult(
+            field_name=field_name,
+            passed=True,
+            expected=expected,
+            actual=actual,
+            detail="correctly absent",
+        )
+
+    if exp_empty and not act_empty:
         return FieldResult(
             field_name=field_name,
             passed=False,
             expected=expected,
-            actual=None,
+            actual=actual,
+            detail=f"hallucinated: expected null, got {actual!r}",
+        )
+
+    if act_empty:
+        return FieldResult(
+            field_name=field_name,
+            passed=False,
+            expected=expected,
+            actual=actual,
             detail="missing from actual",
         )
 

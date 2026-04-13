@@ -139,6 +139,78 @@ class TestMissingFields:
         assert not r.passed
 
 
+# ── Graceful-failure / hallucination-resistance ──────────────────────
+
+
+class TestGracefulFailure:
+    """Adversarial fixtures use expected:null to assert 'the model should NOT
+    extract this field' — both to catch hallucination and to reward models
+    that correctly decline when the data isn't in the document."""
+
+    def test_both_none_passes(self):
+        r = compare_field("field", None, None)
+        assert r.passed
+        assert "correctly absent" in r.detail
+
+    def test_expected_none_actual_string_fails_as_hallucination(self):
+        r = compare_field("filer_name", None, "Made Up Corp")
+        assert not r.passed
+        assert "hallucinated" in r.detail
+        assert "Made Up Corp" in r.detail
+
+    def test_expected_none_actual_number_fails_as_hallucination(self):
+        r = compare_field("amount", None, 4250)
+        assert not r.passed
+        assert "hallucinated" in r.detail
+        assert "4250" in r.detail
+
+    def test_expected_none_actual_empty_list_passes(self):
+        """Extraction returned an empty list — semantically the same as null."""
+        r = compare_field("items", None, [])
+        assert r.passed
+
+    def test_expected_none_actual_populated_list_fails(self):
+        r = compare_field("items", None, [{"name": "ghost"}])
+        assert not r.passed
+        assert "hallucinated" in r.detail
+
+    def test_expected_none_actual_empty_string_passes(self):
+        """Model returned '' which normalizes to null — graceful failure."""
+        r = compare_field("field", None, "")
+        assert r.passed
+
+    def test_expected_none_actual_whitespace_passes(self):
+        r = compare_field("field", None, "   ")
+        assert r.passed
+
+    def test_expected_empty_string_actual_none_passes(self):
+        """Both normalize to null via _is_empty — they're equivalent."""
+        r = compare_field("field", "", None)
+        assert r.passed
+
+    def test_expected_empty_list_actual_none_passes(self):
+        r = compare_field("items", [], None)
+        assert r.passed
+
+    def test_compare_results_handles_null_expected_with_missing_actual(self):
+        """A fixture that declares expected:null for a field which the actual
+        dict doesn't even contain — standard partial-output case — should pass."""
+        results = compare_results({"filer_name": None}, {})
+        assert len(results) == 1
+        assert results[0].passed
+        assert "correctly absent" in results[0].detail
+
+    def test_compare_results_catches_hallucination(self):
+        """Expected null but actual has a value for that key — hallucination."""
+        results = compare_results(
+            {"filer_name": None},
+            {"filer_name": "Hallucinated Corp"},
+        )
+        assert len(results) == 1
+        assert not results[0].passed
+        assert "hallucinated" in results[0].detail
+
+
 # ── Array comparison ──────────────────────────────────────────────────
 
 
