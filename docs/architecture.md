@@ -174,13 +174,15 @@ Each field is routed to the top 3 scoring chunks by default. Fields that legitim
 
 The key design decision: **no hardcoded domain knowledge in the pipeline**. The router is entirely generic. Domain knowledge lives in the schema via hints. This means the same pipeline works for invoices, insurance policies, medical records, or any document type — change the schema, not the code.
 
-### Phase 3: Extract (grouped)
+### Phase 3: Extract (grouped, wave-ordered)
 
-Fields that route to overlapping chunks are **grouped together** into a single LLM call. This is where the efficiency gain comes from: instead of one LLM call per field, or one massive call for the whole document, Koji makes the minimum number of calls needed.
+Before extraction runs, Koji topologically sorts fields into **extraction waves** based on any `depends_on` declarations in the schema. Wave 0 holds every field with no dependencies and runs exactly like the old single-pass extraction. Wave 1+ fields can't start until their parents have been extracted in earlier waves. Between waves, Koji resolves any `extraction_hint_by` conditional hints against the values accumulated so far — so a field like `period_of_report` can see a form-type-specific hint that only makes sense after `form_type` has been extracted. See [Conditional hints](schema-guide.md#conditional-hints-based-on-other-fields) in the schema guide.
+
+Within each wave, fields that route to overlapping chunks are **grouped together** into a single LLM call. This is where the efficiency gain comes from: instead of one LLM call per field, or one massive call for the whole document, Koji makes the minimum number of calls needed.
 
 For example, if `policy_number`, `effective_date`, and `insured_name` all route to the declarations page, they become one extraction group with one focused prompt.
 
-Each group's prompt contains only the relevant document chunks and field specifications. Groups run concurrently (up to 5 in parallel by default).
+Each group's prompt contains only the relevant document chunks and field specifications. Groups run concurrently (up to 5 in parallel by default). Schemas without any `depends_on` declarations always produce a single wave, so grouping maximizes across every field as before.
 
 ### Phase 4: Validate
 

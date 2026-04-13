@@ -41,6 +41,124 @@ def _describe_array_item(spec: dict) -> str:
     return ""
 
 
+# ── Field dependency ordering ───────────────────────────────────────
+
+
+def _toposort_fields(schema_def: dict) -> list[list[str]]:
+    """Topologically sort schema fields into extraction waves.
+
+    Each wave is a list of field names that can be extracted in parallel.
+    Wave N depends only on values produced by waves 0..N-1. A field with
+    no `depends_on` lands in wave 0.
+
+    Raises ValueError on:
+    - A `depends_on` reference to a field that isn't defined in the schema.
+    - A cycle in the dependency graph.
+
+    Schemas with no `depends_on` declarations return a single wave
+    containing every field — behavior is identical to the pre-wave
+    pipeline.
+    """
+    fields = schema_def.get("fields") or {}
+    field_names = list(fields.keys())
+
+    # Build dependency edges — parent -> {children}
+    depends: dict[str, set[str]] = {name: set() for name in field_names}
+    for name, spec in fields.items():
+        if not isinstance(spec, dict):
+            continue
+        raw = spec.get("depends_on") or []
+        if not isinstance(raw, list):
+            continue
+        for parent in raw:
+            if not isinstance(parent, str):
+                continue
+            if parent not in fields:
+                raise ValueError(
+                    f"Field {name!r} depends_on unknown field {parent!r}",
+                )
+            if parent == name:
+                raise ValueError(f"Field {name!r} cannot depend on itself")
+            depends[name].add(parent)
+
+    waves: list[list[str]] = []
+    resolved: set[str] = set()
+    remaining = set(field_names)
+
+    while remaining:
+        ready = sorted(name for name in remaining if depends[name].issubset(resolved))
+        if not ready:
+            cycle = ", ".join(sorted(remaining))
+            raise ValueError(
+                f"Circular field dependency detected among: {cycle}",
+            )
+        waves.append(ready)
+        resolved.update(ready)
+        remaining.difference_update(ready)
+
+    return waves
+
+
+def _resolve_conditional_hints(field_spec: dict, extracted_so_far: dict) -> dict:
+    """Return a copy of `field_spec` with `extraction_hint` resolved.
+
+    Schemas can declare conditional per-parent hints under
+    `extraction_hint_by`, keyed on a parent field name, then on the
+    parent's extracted value:
+
+        extraction_hint_by:
+          form_type:
+            "10-K":    "Look for 'For the fiscal year ended <date>'"
+            "10-K/A":  "Use the ORIGINAL fiscal year, not the amendment date"
+            "10-Q":    "Look for 'For the quarterly period ended <date>'"
+
+    Resolution picks the first parent whose extracted value matches a
+    declared key, and writes that value into the returned copy's
+    `extraction_hint`. If no parent value matches any key (parent is
+    missing, null, or has a value not in the map), the returned copy
+    keeps whatever default `extraction_hint` the schema already had.
+
+    The original `field_spec` is never mutated.
+    """
+    if not isinstance(field_spec, dict):
+        return field_spec
+    by_parent = field_spec.get("extraction_hint_by")
+    if not isinstance(by_parent, dict) or not by_parent:
+        return field_spec
+
+    for parent_name, value_map in by_parent.items():
+        if not isinstance(value_map, dict):
+            continue
+        parent_value = extracted_so_far.get(parent_name) if isinstance(extracted_so_far, dict) else None
+        if parent_value is None:
+            continue
+        # Match by exact string first, then by string coercion, so enum
+        # values like "10-K/A" still hit without requiring schema authors
+        # to think about types.
+        matched = value_map.get(parent_value)
+        if matched is None:
+            matched = value_map.get(str(parent_value))
+        if isinstance(matched, str) and matched.strip():
+            resolved = dict(field_spec)
+            resolved["extraction_hint"] = matched
+            return resolved
+
+    return field_spec
+
+
+def _resolve_wave_fields(schema_def: dict, wave: list[str], extracted_so_far: dict) -> dict:
+    """Build a shallow schema copy whose `fields` block contains only the
+    given wave's fields with their conditional hints resolved against the
+    accumulated state. Used by the wave-based extraction loop.
+    """
+    resolved_fields = {
+        name: _resolve_conditional_hints(schema_def["fields"][name], extracted_so_far)
+        for name in wave
+        if name in schema_def.get("fields", {})
+    }
+    return {**schema_def, "fields": resolved_fields}
+
+
 def _collect_extraction_notes(fields: dict) -> str:
     """Render per-field extraction_hint strings into a notes block.
 
@@ -489,7 +607,14 @@ async def intelligent_extract(
     model: str,
     max_concurrent: int = 5,
 ) -> dict:
-    """Run the full intelligent extraction pipeline."""
+    """Run the full intelligent extraction pipeline.
+
+    Fields can declare `depends_on: [other_field]` to request that their
+    parent fields be extracted first. The pipeline topologically sorts
+    fields into waves; within each wave, fields route/group/extract
+    normally. Between waves, any conditional hints (`extraction_hint_by`)
+    are resolved against the values already extracted in earlier waves.
+    """
     start = time.time()
     provider = create_provider(model)
     schema_name = schema_def.get("name", "document")
@@ -499,28 +624,53 @@ async def intelligent_extract(
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
 
-    # Phase 2: Field routing
-    routes = route_fields(schema_def, chunks)
-    routing_plan = summarize_routing(routes)
-    print("[koji-extract] Routing plan:")
-    for field, info in routing_plan.items():
-        print(f"  {field}: {info['source']} → {info['chunks']}")
-
-    # Phase 3: Group and extract
-    groups = group_routes(routes)
-    print(f"[koji-extract] Grouped into {len(groups)} extraction calls")
+    # Phase 2: Toposort fields into extraction waves
+    waves = _toposort_fields(schema_def)
+    if len(waves) > 1:
+        print(f"[koji-extract] Field waves: {waves}")
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = [extract_group(group, schema_name, provider, semaphore) for group in groups]
-    group_results = await asyncio.gather(*tasks)
 
-    non_empty = [r for r in group_results if r]
-    print(f"[koji-extract] {len(non_empty)}/{len(groups)} groups returned results")
+    # Accumulated state that grows across waves
+    accumulated: dict = {"extracted": {}, "confidence": {}, "confidence_scores": {}}
+    all_routes: list = []
+    all_groups: list[dict] = []
+    routing_plan: dict = {}
 
-    # Phase 4 + 5: Validate and reconcile
-    result = reconcile(list(group_results), schema_def, routes=routes)
+    for wave_index, wave in enumerate(waves):
+        wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
 
-    # Check for missing required fields
+        # Phase 3: Field routing for this wave
+        wave_routes = route_fields(wave_schema, chunks)
+        all_routes.extend(wave_routes)
+        wave_plan = summarize_routing(wave_routes)
+        routing_plan.update(wave_plan)
+        if len(waves) > 1:
+            print(f"[koji-extract] Wave {wave_index} routing plan:")
+        else:
+            print("[koji-extract] Routing plan:")
+        for field, info in wave_plan.items():
+            print(f"  {field}: {info['source']} → {info['chunks']}")
+
+        # Phase 4: Group and extract
+        wave_groups = group_routes(wave_routes)
+        all_groups.extend(wave_groups)
+        print(f"[koji-extract] Wave {wave_index}: grouped into {len(wave_groups)} extraction calls")
+
+        tasks = [extract_group(g, schema_name, provider, semaphore) for g in wave_groups]
+        wave_group_results = await asyncio.gather(*tasks)
+        non_empty = [r for r in wave_group_results if r]
+        print(f"[koji-extract] Wave {wave_index}: {len(non_empty)}/{len(wave_groups)} groups returned results")
+
+        # Phase 5: Validate and reconcile this wave
+        wave_result = reconcile(list(wave_group_results), wave_schema, routes=wave_routes)
+        accumulated["extracted"].update(wave_result["extracted"])
+        accumulated["confidence"].update(wave_result["confidence"])
+        accumulated["confidence_scores"].update(wave_result["confidence_scores"])
+
+    result = accumulated
+
+    # Phase 6: Check for missing required fields and gap-fill
     missing_required = [
         f
         for f, conf in result["confidence"].items()
@@ -533,7 +683,10 @@ async def intelligent_extract(
 
         gap_tasks = []
         for field_name in missing_required:
-            field_spec = schema_def["fields"][field_name]
+            # Resolve conditional hints against the final accumulated state
+            # before gap-fill, so dependent fields get their form-specific
+            # extraction_hint even on the retry pass.
+            field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
             # Re-route with hints stripped so the broadened pass actually
             # broadens. If the main pass missed because look_in / patterns
             # / prefer_contains over-filtered the candidate pool, re-running
@@ -552,7 +705,7 @@ async def intelligent_extract(
             gap_tasks.append(
                 (
                     field_name,
-                    # Keep the original field_spec (including extraction_hint)
+                    # Keep the resolved field_spec (including extraction_hint)
                     # for the prompt — only the *routing* hints get stripped.
                     fill_gap(field_name, field_spec, broadened_chunks, schema_name, provider, semaphore),
                 )
@@ -588,7 +741,7 @@ async def intelligent_extract(
         "confidence": result["confidence"],
         "confidence_scores": result["confidence_scores"],
         "chunks_total": doc_summary["total_chunks"],
-        "extraction_groups": len(groups),
+        "extraction_groups": len(all_groups),
         "elapsed_ms": elapsed_ms,
         "gap_filled": gap_filled,
         "document_map_summary": doc_summary,
@@ -598,6 +751,6 @@ async def intelligent_extract(
                 "fields": group["fields"],
                 "chunk_count": len(group["chunks"]),
             }
-            for group in groups
+            for group in all_groups
         ],
     }

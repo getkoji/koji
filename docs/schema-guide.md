@@ -446,6 +446,53 @@ Extraction hints are rendered into a dedicated `## Extraction notes` block in th
 
 Hints also flow into the gap-fill pass, so fields that time out on the main extraction attempt still get the guidance on retry. Fields without an `extraction_hint` don't get an "Extraction notes" block — it's only rendered when at least one field in the group provides one.
 
+### Conditional hints based on other fields
+
+Sometimes the right guidance for a field depends on another field's value. Classic SEC example: `period_of_report` means different things across form types — "fiscal year ended" for a 10-K, "quarterly period ended" for a 10-Q, "Date of Report" for an 8-K, and the annual meeting date for a DEF 14A. Writing one `extraction_hint` covering all of them would overwhelm the model; writing a narrow one would only help for one form.
+
+Two things make this work: `depends_on` declares that a field's extraction should run *after* another field, and `extraction_hint_by` maps the parent field's value to a specific hint:
+
+```yaml
+fields:
+  form_type:
+    type: enum
+    required: true
+    options: [10-K, 10-K/A, 10-Q, 8-K, DEF 14A]
+    hints:
+      look_in: [header]
+
+  period_of_report:
+    type: date
+    required: true
+    depends_on: [form_type]
+    extraction_hint: |
+      Fallback: the fiscal period the filing covers, on the cover page.
+    extraction_hint_by:
+      form_type:
+        "10-K":    "Look for 'For the fiscal year ended <date>' on the cover page."
+        "10-K/A":  "Same fiscal period as the ORIGINAL 10-K this amends — NOT the amendment filing date."
+        "10-Q":    "Look for 'For the quarterly period ended <date>' on the cover page."
+        "8-K":     "Use the 'Date of Report (Date of earliest event reported)' from the cover."
+        "DEF 14A": "The scheduled annual meeting date ('to be held on <date>' near the top)."
+```
+
+Under the hood, Koji topologically sorts fields into **extraction waves**. `form_type` has no `depends_on`, so it lands in wave 0 and extracts normally. `period_of_report` depends on `form_type`, so it lands in wave 1 and only routes/extracts after wave 0 completes. Before wave 1 runs, Koji resolves every dependent field's `extraction_hint_by` against the values already extracted — in this example, `period_of_report`'s `extraction_hint` becomes the 10-K/A line if that's what the document turned out to be.
+
+**Fallback behavior**:
+- If the parent field is still null after its wave (extraction failed, optional and missing), the dependent field falls back to its unconditional `extraction_hint`.
+- If the parent's extracted value isn't in the `extraction_hint_by` map, same fallback.
+- Empty or whitespace-only hint strings are ignored — also a fallback.
+
+**Cost**: within a wave, field grouping still minimizes LLM calls the same way as before. Across waves, dependent fields can't group with their parents, so you pay one extra LLM call per dependent wave. For a typical SEC schema that's 1 extra call per document — worth it for targeted per-form guidance.
+
+**Rules**:
+- `depends_on` must reference fields defined in the same schema — unknown names raise a schema error.
+- Circular dependencies (`a` depends on `b`, `b` depends on `a`) raise an error at extraction time.
+- Self-dependencies are rejected.
+- `depends_on` applies the ordering constraint regardless of whether `extraction_hint_by` is present, so you can use it just to sequence extraction if that's useful on its own.
+
+If `depends_on` becomes too heavy for your schema, the alternative is to split the polymorphic field into form-specific fields (`period_fiscal_year_end`, `period_quarter_end`, `period_date_of_report`, `period_meeting_date`) with narrow hints each, and normalize them at a later layer. Both approaches are supported.
+
 ## Heading inference
 
 The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.
