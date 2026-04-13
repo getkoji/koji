@@ -2392,6 +2392,8 @@ koji test --schema schemas/invoice.yaml --json             # machine-readable ou
 
 `koji test` looks for fixture files alongside your schema. Place markdown documents in `<schema>.fixtures/` and corresponding `<name>.expected.json` files for ground truth. Field-level comparison: numbers and dates are matched semantically, strings case-insensitively, arrays order-insensitively. Exit code is 0 on full pass, 1 on any regression.
 
+**Adversarial fixtures (`expected: null`)**: a field in the expected JSON that's explicitly set to `null` (or an empty string / empty list / empty dict) asserts that the model should **not** extract that field — either because the value isn't in the document or because the document is a trap meant to measure hallucination resistance. Both empty → pass ("correctly absent"); expected empty but actual populated → fail ("hallucinated"); expected populated but actual empty → fail ("missing"). Use this to build a trap corpus of documents where the right answer is "I don't know" and grade models on how often they correctly decline.
+
 ---
 
 ### `koji bench`
