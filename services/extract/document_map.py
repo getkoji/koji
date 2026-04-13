@@ -54,6 +54,73 @@ class Chunk:
 # ── Section Classification ──────────────────────────────────────────
 
 
+DEFAULT_CLASSIFICATION_CONFIG: dict = {
+    "window": 500,
+    "threshold": 2,
+    "scan": "head",
+    "title_priority": True,
+}
+
+_VALID_SCAN_STRATEGIES = {"head", "all", "head_and_tail"}
+
+
+def _build_classification_config(schema_def: dict | None) -> dict:
+    """Build the classification config from a schema definition.
+
+    Schema format:
+        classification:
+          window: 1000          # chars of content to scan (default 500)
+          threshold: 2          # min content keyword hits to match (default 2)
+          scan: head            # head | all | head_and_tail (default head)
+          title_priority: true  # title match short-circuits (default true)
+
+    Unknown or invalid values fall back to defaults silently — schema
+    authors get sensible behavior without having to validate their config.
+    """
+    cfg = dict(DEFAULT_CLASSIFICATION_CONFIG)
+    if not schema_def:
+        return cfg
+    raw = schema_def.get("classification")
+    if not isinstance(raw, dict):
+        return cfg
+
+    window = raw.get("window")
+    if isinstance(window, int) and window > 0:
+        cfg["window"] = window
+
+    threshold = raw.get("threshold")
+    if isinstance(threshold, int) and threshold >= 1:
+        cfg["threshold"] = threshold
+
+    scan = raw.get("scan")
+    if isinstance(scan, str) and scan in _VALID_SCAN_STRATEGIES:
+        cfg["scan"] = scan
+
+    title_priority = raw.get("title_priority")
+    if isinstance(title_priority, bool):
+        cfg["title_priority"] = title_priority
+
+    return cfg
+
+
+def _scan_text(content: str, window: int, strategy: str) -> str:
+    """Extract the portion of content to classify against.
+
+    - head: first `window` chars
+    - all: entire content
+    - head_and_tail: first window/2 + last window/2 (useful when a
+      category's keywords cluster at the start *or* end of a long section)
+    """
+    if strategy == "all":
+        return content
+    if strategy == "head_and_tail":
+        half = max(1, window // 2)
+        if len(content) <= window:
+            return content
+        return content[:half] + "\n" + content[-half:]
+    return content[:window]
+
+
 def _build_category_keywords(schema_def: dict | None) -> list[tuple[list[str], str]]:
     """Extract category keyword pairs from a schema definition.
 
@@ -80,12 +147,16 @@ def classify_chunk(
     title: str,
     content: str,
     category_keywords: list[tuple[list[str], str]] | None = None,
+    config: dict | None = None,
 ) -> str:
     """Classify a chunk using schema-provided category keywords.
 
-    Matching rules:
-    - A keyword match in the title is a strong signal (immediate hit).
-    - Content matches need 2+ keywords to reduce false positives.
+    Matching rules (tunable via `config`, see DEFAULT_CLASSIFICATION_CONFIG):
+    - If `title_priority` is true, a keyword match in the title is a
+      strong signal (immediate hit).
+    - Content matches need `threshold` keyword hits to count.
+    - Only `window` chars of content are scanned, selected by `scan`
+      strategy (head / all / head_and_tail).
     - If no keywords match, the chunk is categorized as "other".
 
     When no category_keywords are provided, every chunk is "other".
@@ -94,17 +165,23 @@ def classify_chunk(
     if not category_keywords:
         return "other"
 
-    text = f"{title} {content[:500]}".lower()
+    cfg = config or DEFAULT_CLASSIFICATION_CONFIG
+    window = cfg.get("window", 500)
+    threshold = cfg.get("threshold", 2)
+    scan = cfg.get("scan", "head")
+    title_priority = cfg.get("title_priority", True)
+
+    scanned = _scan_text(content, window, scan)
+    text = f"{title} {scanned}".lower()
     title_lower = title.lower()
 
     for keywords, category in category_keywords:
-        # Title match is strong signal
-        for kw in keywords:
-            if kw in title_lower:
-                return category
-        # Content match needs 2+ keywords
+        if title_priority:
+            for kw in keywords:
+                if kw in title_lower:
+                    return category
         matches = sum(1 for kw in keywords if kw in text)
-        if matches >= 2:
+        if matches >= threshold:
             return category
 
     return "other"
@@ -325,6 +402,7 @@ def build_document_map(markdown: str, schema_def: dict | None = None) -> list[Ch
     markdown = _infer_headings(markdown, schema_def)
     category_keywords = _build_category_keywords(schema_def)
     custom_signals = _compile_custom_signals(schema_def)
+    classification_config = _build_classification_config(schema_def)
 
     chunks: list[Chunk] = []
     current_title = "Document Start"
@@ -336,7 +414,7 @@ def build_document_map(markdown: str, schema_def: dict | None = None) -> list[Ch
         content = "\n".join(current_lines).strip()
         if not content:
             return
-        category = classify_chunk(current_title, content, category_keywords)
+        category = classify_chunk(current_title, content, category_keywords, classification_config)
         signals = detect_signals(content, custom_signals)
         chunks.append(
             Chunk(

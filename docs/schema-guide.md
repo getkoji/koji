@@ -252,6 +252,28 @@ Categories are detected from section titles (strong signal — one keyword in th
 
 For an insurance schema, you might define categories like `declarations`, `endorsement`, `conditions`, `exclusions`, etc. For a contract, `parties`, `term`, `compensation`, `termination`. The right categories are the ones that match your document type.
 
+#### Tuning classification
+
+The defaults work well for most documents, but long-section or sparse-keyword documents sometimes need different tradeoffs. Override them under a top-level `classification` block:
+
+```yaml
+classification:
+  window: 1500          # chars of chunk content scanned for keywords (default 500)
+  threshold: 1          # min keyword hits required to match a category (default 2)
+  scan: head_and_tail   # head | all | head_and_tail (default head)
+  title_priority: true  # title keyword match short-circuits content scan (default true)
+```
+
+- **`window`** — how much of each chunk's body is scanned. Raise it for long sections where the classifying keywords live deep in the body. Lower it on short documents where you want to avoid incidental matches.
+- **`threshold`** — how many distinct keywords from the category must appear in the scanned text. The default (2) reduces false positives from single-word overlap. Drop it to 1 when your categories are already specific enough that a single keyword is unambiguous.
+- **`scan`** — how the window is sampled from the content:
+    - `head` (default): first `window` characters
+    - `all`: the entire chunk, regardless of `window`
+    - `head_and_tail`: first `window/2` + last `window/2` characters — useful when a category's keywords consistently cluster at the top *or* bottom of a long section
+- **`title_priority`** — when `true` (default), a title match short-circuits the content scan. Set to `false` if your document titles are generic (e.g. "Section 1", "Page 2") and misleading.
+
+Unknown or invalid values silently fall back to defaults, so you can add these knobs without worrying about breaking the schema.
+
 ### patterns
 
 Regex patterns matched against chunk titles and content. Medium priority -- patterns score below `look_in` but above signals.
