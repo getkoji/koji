@@ -218,7 +218,7 @@ policy_number:
 
 ### look_in
 
-Routes the field to specific document categories. This is the highest-priority hint — if a chunk matches the category, it gets a large score boost.
+Routes the field to specific document categories. `look_in` is a **hard filter**: when any chunk matches one of the listed categories, the router only considers those chunks for this field. Patterns and signals then rank within that filtered pool. If no chunk matches the listed categories, the router falls back to scoring the full document with the remaining hints so the field still gets routed.
 
 ```yaml
 hints:
@@ -362,13 +362,14 @@ Don't set this for simple scalar fields — it just wastes tokens.
 
 ### How hints interact
 
-The router scores every chunk against every field. The scoring priority:
+`look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.
 
-1. **look_in** — +15 points if the chunk's category matches
-2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
-3. **signals** — +4 points per matching signal
+Within the filtered pool, `patterns` and `signals` rank which chunks win the slots:
 
-If a field has hints and any of them score > 0, the router uses only the hint-based score. Generic inference (field name matching, type-based signals) is skipped entirely. This means hints are authoritative — once you add them, you're in control.
+1. **patterns** — +8 points if any regex pattern matches (only the first match counts)
+2. **signals** — +4 points per matching signal
+
+If `look_in` is set but no chunks match the listed categories (e.g., the schema author referenced a category the document doesn't have), the router falls back to scoring every chunk with `patterns` + `signals` so the field still gets routed somewhere. Generic inference (field name matching, type-based signals) is skipped whenever any hint is defined — hints are authoritative.
 
 The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
 

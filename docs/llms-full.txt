@@ -520,7 +520,7 @@ policy_number:
 
 ### look_in
 
-Routes the field to specific document categories. This is the highest-priority hint — if a chunk matches the category, it gets a large score boost.
+Routes the field to specific document categories. `look_in` is a **hard filter**: when any chunk matches one of the listed categories, the router only considers those chunks for this field. Patterns and signals then rank within that filtered pool. If no chunk matches the listed categories, the router falls back to scoring the full document with the remaining hints so the field still gets routed.
 
 ```yaml
 hints:
@@ -553,6 +553,28 @@ fields:
 Categories are detected from section titles (strong signal — one keyword in the title matches) and content keywords (weaker signal — requires 2+ keyword matches in the body). Sections that don't match any defined category are labeled `other`.
 
 For an insurance schema, you might define categories like `declarations`, `endorsement`, `conditions`, `exclusions`, etc. For a contract, `parties`, `term`, `compensation`, `termination`. The right categories are the ones that match your document type.
+
+#### Tuning classification
+
+The defaults work well for most documents, but long-section or sparse-keyword documents sometimes need different tradeoffs. Override them under a top-level `classification` block:
+
+```yaml
+classification:
+  window: 1500          # chars of chunk content scanned for keywords (default 500)
+  threshold: 1          # min keyword hits required to match a category (default 2)
+  scan: head_and_tail   # head | all | head_and_tail (default head)
+  title_priority: true  # title keyword match short-circuits content scan (default true)
+```
+
+- **`window`** — how much of each chunk's body is scanned. Raise it for long sections where the classifying keywords live deep in the body. Lower it on short documents where you want to avoid incidental matches.
+- **`threshold`** — how many distinct keywords from the category must appear in the scanned text. The default (2) reduces false positives from single-word overlap. Drop it to 1 when your categories are already specific enough that a single keyword is unambiguous.
+- **`scan`** — how the window is sampled from the content:
+    - `head` (default): first `window` characters
+    - `all`: the entire chunk, regardless of `window`
+    - `head_and_tail`: first `window/2` + last `window/2` characters — useful when a category's keywords consistently cluster at the top *or* bottom of a long section
+- **`title_priority`** — when `true` (default), a title match short-circuits the content scan. Set to `false` if your document titles are generic (e.g. "Section 1", "Page 2") and misleading.
+
+Unknown or invalid values silently fall back to defaults, so you can add these knobs without worrying about breaking the schema.
 
 ### patterns
 
@@ -642,13 +664,14 @@ Don't set this for simple scalar fields — it just wastes tokens.
 
 ### How hints interact
 
-The router scores every chunk against every field. The scoring priority:
+`look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.
 
-1. **look_in** — +15 points if the chunk's category matches
-2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
-3. **signals** — +4 points per matching signal
+Within the filtered pool, `patterns` and `signals` rank which chunks win the slots:
 
-If a field has hints and any of them score > 0, the router uses only the hint-based score. Generic inference (field name matching, type-based signals) is skipped entirely. This means hints are authoritative — once you add them, you're in control.
+1. **patterns** — +8 points if any regex pattern matches (only the first match counts)
+2. **signals** — +4 points per matching signal
+
+If `look_in` is set but no chunks match the listed categories (e.g., the schema author referenced a category the document doesn't have), the router falls back to scoring every chunk with `patterns` + `signals` so the field still gets routed somewhere. Generic inference (field name matching, type-based signals) is skipped whenever any hint is defined — hints are authoritative.
 
 The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
 
@@ -666,6 +689,40 @@ The top 3 scoring chunks are selected for each field by default (or up to `max_c
 - Extraction is returning values from the wrong section
 
 Start without hints, test extraction, and add hints where accuracy is poor.
+
+## Heading inference
+
+The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.
+
+When that happens, Koji runs a **heading inference** pass before chunking. It promotes visually prominent standalone lines to `##` headings so the chunker has something to split on:
+
+- **Bold lines** on their own paragraph: `**Bill To**`, `**Invoice Summary:**`
+- **ALL CAPS short lines** above content: `INVOICE`, `SOLD TO:`, `SECTION 1`
+- **Schema-defined regex patterns** (see below)
+
+Inference only runs when the parsed markdown contains zero `#` headings — well-structured input is left untouched. Lines must start a fresh paragraph (blank line above) to be promoted, which avoids over-promoting bold spans inside flowing prose.
+
+### Custom heading patterns
+
+If your documents have structural markers that don't fit the bold / ALL CAPS heuristics, declare them explicitly:
+
+```yaml
+headings:
+  patterns:
+    - "^EXHIBIT [A-Z]$"
+    - "^ARTICLE \\d+\\."
+```
+
+Patterns must `fullmatch` the line. They take priority over the generic heuristics and are matched even on short lines that the all-caps rule would skip.
+
+### Disabling inference
+
+If your parser already produces clean headings and you'd rather skip the inference pass:
+
+```yaml
+headings:
+  infer: false
+```
 
 ## Arrays and nested objects
 
@@ -1673,6 +1730,8 @@ The mapper splits markdown into **chunks** by heading structure. Each chunk gets
 
 - A **category** (e.g., `header`, `line_items`, `totals` — or anything you define) inferred from your schema's `categories.keywords` block. Without a schema, every chunk is `other`.
 - **Signals** — built-in structural detectors: `has_dollar_amounts`, `has_dates`, `has_key_value_pairs`, `has_tables`. Schemas can define **custom signals** via regex patterns (e.g., `has_policy_numbers` for insurance, `has_invoice_numbers` for invoices).
+
+When the parsed markdown contains no `#` headings — common for OCR'd scans, invoices, and table-heavy forms — the mapper runs a **heading inference** pass first, promoting standalone bold lines, ALL CAPS labels, and schema-defined patterns to `##` headings so the chunker has structure to split on. See [Heading inference](schema-guide.md#heading-inference) in the schema guide.
 
 The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
 

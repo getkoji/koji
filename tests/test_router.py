@@ -217,6 +217,81 @@ class TestRouteFields:
         routes = route_fields({"fields": {}}, chunks)
         assert routes == []
 
+    def test_look_in_hard_filters_out_higher_scoring_wrong_category(self):
+        """A chunk outside look_in must not win, even with a stronger pattern+signals score."""
+        in_cat = make_chunk(
+            index=0,
+            title="Declarations",
+            content="Policy Number: BOP123456",
+            category="declarations",
+        )
+        wrong_cat = make_chunk(
+            index=1,
+            title="Exclusions",
+            content="Policy Number: BOP999999",
+            category="exclusions",
+            signals={"has_key_value_pairs": True, "has_policy_numbers": True},
+        )
+        schema = {
+            "fields": {
+                "policy_number": {
+                    "type": "string",
+                    "hints": {
+                        "look_in": ["declarations"],
+                        "patterns": ["policy.*number"],
+                        "signals": ["has_key_value_pairs", "has_policy_numbers"],
+                    },
+                }
+            }
+        }
+        routes = route_fields(schema, [in_cat, wrong_cat])
+        assert len(routes) == 1
+        assert [c.index for c in routes[0].chunks] == [0]
+        assert routes[0].source == "hint"
+
+    def test_look_in_partial_pool_returns_only_matches(self):
+        """Only 1 chunk in category, field_cap=3 → returns just that one, not filler."""
+        in_cat = make_chunk(index=0, title="Declarations", category="declarations")
+        other_a = make_chunk(index=1, title="Other A", category="other", signals={"has_key_value_pairs": True})
+        other_b = make_chunk(index=2, title="Other B", category="other", signals={"has_key_value_pairs": True})
+        schema = {
+            "fields": {
+                "policy_number": {
+                    "type": "string",
+                    "hints": {"look_in": ["declarations"]},
+                }
+            }
+        }
+        routes = route_fields(schema, [in_cat, other_a, other_b], max_chunks_per_field=3)
+        assert len(routes[0].chunks) == 1
+        assert routes[0].chunks[0].index == 0
+
+    def test_look_in_empty_pool_falls_back_to_full_scoring(self):
+        """When look_in matches nothing, other hints still route the field somewhere."""
+        chunks = [
+            make_chunk(
+                index=0,
+                title="Section",
+                content="Policy Number: BOP123456",
+                category="other",
+                signals={"has_key_value_pairs": True},
+            ),
+        ]
+        schema = {
+            "fields": {
+                "policy_number": {
+                    "type": "string",
+                    "hints": {
+                        "look_in": ["declarations"],
+                        "patterns": ["policy.*number"],
+                    },
+                }
+            }
+        }
+        routes = route_fields(schema, chunks)
+        assert len(routes) == 1
+        assert routes[0].chunks[0].index == 0
+
 
 # ── group_routes ──────────────────────────────────────────────────────
 
