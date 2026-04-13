@@ -208,6 +208,106 @@ def detect_signals(
     return signals
 
 
+# ── Heading Inference ───────────────────────────────────────────────
+
+# Used when the parsed markdown contains no `#` headers — a common failure
+# mode for OCR'd PDFs, invoices, and table-heavy docs that docling emits as
+# flat text. We promote visually prominent standalone lines (bold, ALL CAPS,
+# or schema-defined patterns) to `##` headings so the chunker has something
+# to split on.
+
+_HAS_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
+_BOLD_LINE_RE = re.compile(r"^\*\*([^*]+?)\*\*:?\s*$")
+_ALLCAPS_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 &/\-]{2,60}:?$")
+_HEADING_MAX_LEN = 80
+
+
+def _compile_heading_patterns(schema_def: dict | None) -> list[re.Pattern]:
+    """Compile schema-defined heading regexes.
+
+    Schema format:
+        headings:
+          infer: true           # optional, defaults to true
+          patterns:
+            - "^INVOICE$"
+            - "^SECTION \\d+"
+    """
+    if not schema_def:
+        return []
+    headings = schema_def.get("headings") or {}
+    if not isinstance(headings, dict):
+        return []
+    patterns = headings.get("patterns") or []
+    if not isinstance(patterns, list):
+        return []
+    compiled = []
+    for p in patterns:
+        if not isinstance(p, str):
+            continue
+        try:
+            compiled.append(re.compile(p))
+        except re.error:
+            continue
+    return compiled
+
+
+def _heading_inference_enabled(schema_def: dict | None) -> bool:
+    if not schema_def:
+        return True
+    headings = schema_def.get("headings")
+    if not isinstance(headings, dict):
+        return True
+    return headings.get("infer", True) is not False
+
+
+def _infer_headings(markdown: str, schema_def: dict | None = None) -> str:
+    """Inject synthetic ## markers for prominent lines when markdown has no headings.
+
+    Returns markdown unchanged if any `#` heading already exists — we trust
+    well-structured input and only fill the gap for parse outputs that lost
+    their structure.
+    """
+    if _HAS_MARKDOWN_HEADING_RE.search(markdown):
+        return markdown
+    if not _heading_inference_enabled(schema_def):
+        return markdown
+
+    schema_patterns = _compile_heading_patterns(schema_def)
+    lines = markdown.split("\n")
+    out: list[str] = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+
+        # Heading-like lines must start a fresh paragraph — that's the
+        # signal that the line stands apart from surrounding prose.
+        above_blank = i == 0 or lines[i - 1].strip() == ""
+        promoted: str | None = None
+
+        if above_blank:
+            for pat in schema_patterns:
+                if pat.fullmatch(stripped):
+                    promoted = stripped.rstrip(":").strip()
+                    break
+
+            if promoted is None:
+                m = _BOLD_LINE_RE.match(stripped)
+                if m and len(m.group(1).strip()) <= _HEADING_MAX_LEN:
+                    promoted = m.group(1).strip().rstrip(":").strip()
+                elif _ALLCAPS_LINE_RE.match(stripped):
+                    promoted = stripped.rstrip(":").strip()
+
+        if promoted:
+            out.append(f"## {promoted}")
+        else:
+            out.append(line)
+
+    return "\n".join(out)
+
+
 # ── Document Mapper ─────────────────────────────────────────────────
 
 
@@ -217,7 +317,12 @@ def build_document_map(markdown: str, schema_def: dict | None = None) -> list[Ch
     Categorization and custom signals come from the schema definition.
     Without a schema, all chunks are categorized as "other" with only
     built-in generic signals.
+
+    If the markdown contains no `#` headings, a heading inference pass
+    promotes standalone bold / ALL CAPS / schema-pattern lines to `##`
+    headings before splitting — see `_infer_headings`.
     """
+    markdown = _infer_headings(markdown, schema_def)
     category_keywords = _build_category_keywords(schema_def)
     custom_signals = _compile_custom_signals(schema_def)
 

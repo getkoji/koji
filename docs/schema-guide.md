@@ -365,6 +365,40 @@ The top 3 scoring chunks are selected for each field by default (or up to `max_c
 
 Start without hints, test extraction, and add hints where accuracy is poor.
 
+## Heading inference
+
+The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.
+
+When that happens, Koji runs a **heading inference** pass before chunking. It promotes visually prominent standalone lines to `##` headings so the chunker has something to split on:
+
+- **Bold lines** on their own paragraph: `**Bill To**`, `**Invoice Summary:**`
+- **ALL CAPS short lines** above content: `INVOICE`, `SOLD TO:`, `SECTION 1`
+- **Schema-defined regex patterns** (see below)
+
+Inference only runs when the parsed markdown contains zero `#` headings — well-structured input is left untouched. Lines must start a fresh paragraph (blank line above) to be promoted, which avoids over-promoting bold spans inside flowing prose.
+
+### Custom heading patterns
+
+If your documents have structural markers that don't fit the bold / ALL CAPS heuristics, declare them explicitly:
+
+```yaml
+headings:
+  patterns:
+    - "^EXHIBIT [A-Z]$"
+    - "^ARTICLE \\d+\\."
+```
+
+Patterns must `fullmatch` the line. They take priority over the generic heuristics and are matched even on short lines that the all-caps rule would skip.
+
+### Disabling inference
+
+If your parser already produces clean headings and you'd rather skip the inference pass:
+
+```yaml
+headings:
+  infer: false
+```
+
 ## Arrays and nested objects
 
 Arrays extract repeated structures -- tables, line items, coverage lists, anything that appears multiple times.
