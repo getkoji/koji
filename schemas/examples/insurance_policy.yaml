@@ -11,6 +11,22 @@ categories:
     conditions: ["conditions", "general conditions", "policy conditions"]
     exclusions: ["exclusion", "does not apply", "we will not"]
 
+# Classification tuning — optional. Defaults scan the first 500 chars of a
+# chunk and require 2+ keyword hits to match a category. Policy documents
+# tend to have long sections where the classifying keywords cluster near
+# the top or bottom, so we widen the scan window here.
+classification:
+  window: 1500
+  scan: head_and_tail
+
+# Heading inference — optional. Only runs when the parsed markdown has no
+# `#` headings. Declare policy-specific structural markers so endorsement
+# forms get their own chunks even when OCR loses the heading hierarchy.
+headings:
+  patterns:
+    - "^ENDORSEMENT\\s*[A-Z0-9-]*$"
+    - "^FORM\\s+[A-Z]{2,}\\s+\\d+"
+
 fields:
   policy_number:
     type: string
