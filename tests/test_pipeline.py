@@ -1698,6 +1698,7 @@ class TestClassifierEnabled:
         classify_config = {
             "model": "mock/classify",
             "types": [{"id": "invoice", "description": "Invoice"}],
+            "short_doc_chunks": 0,  # force LLM path regardless of doc size
         }
         result = await intelligent_extract(
             markdown="# Header\n\nInvoice Number: INV-001\n\n# Items\n\nWidget",
@@ -1842,6 +1843,7 @@ class TestClassifierEnabled:
                 {"id": "invoice", "description": "Invoice"},
                 {"id": "policy", "description": "Policy"},
             ],
+            "short_doc_chunks": 0,
         }
         result = await intelligent_extract(
             markdown="# Inv\n\nINV-001\n\n# More\n\nfoo",
@@ -1912,6 +1914,7 @@ class TestClassifierEnabled:
                 {"id": "invoice", "description": "Invoice"},
                 {"id": "policy", "description": "Policy"},
             ],
+            "short_doc_chunks": 0,
         }
         result = await intelligent_extract(
             markdown="# Inv\n\nInvoice Title\n\n# Pol\n\nPolicy Title",
@@ -1941,6 +1944,7 @@ class TestClassifierEnabled:
         classify_config = {
             "model": "mock/classify",
             "types": [{"id": "doc", "description": "Doc"}],
+            "short_doc_chunks": 0,
         }
         result = await intelligent_extract(
             markdown="# Header\n\nTitle: Found",
@@ -1953,3 +1957,80 @@ class TestClassifierEnabled:
         assert result["sections"][0]["section_type"] == "document"
         assert result["sections"][0]["extracted"]["title"] == "Found"
         assert result["classifier"]["normalizer_corrections"] >= 1
+
+    async def test_short_doc_bypasses_classifier_and_extracts_with_apply_to(self, monkeypatch):
+        """Short doc + apply_to filter — regression test for oss-55.
+
+        Before the fix: tiny synthetic stubs and truncated cover pages got
+        classified as `other`, then silently dropped by apply_to filters,
+        producing empty sections and zero extracted fields.
+
+        After: short docs bypass the classifier and the resulting fallback
+        `document` section matches any apply_to list, preserving extraction.
+        """
+        schema = {
+            "name": "sec_filing",
+            "apply_to": ["sec_filing"],
+            "fields": {"company_name": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # Only one response — classifier is bypassed, so the first
+                # call is the extract.
+                json.dumps({"company_name": "Acme Corp"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "sec_filing", "description": "SEC filing"}],
+            # Use default short_doc_chunks (2)
+        }
+        result = await intelligent_extract(
+            markdown="# 10-K Cover\n\nAcme Corp",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["section_type"] == "document"
+        assert result["sections"][0]["extracted"]["company_name"] == "Acme Corp"
+        assert result["classifier"]["bypassed_short_doc"] is True
+        assert result["classifier"]["sections_matched"] == 1
+        # Only the extract call — no classifier call
+        assert len(provider.calls) == 1
+
+    async def test_short_doc_bypass_respects_config_override(self, monkeypatch):
+        """short_doc_chunks: 0 forces classifier even on tiny docs."""
+        schema = {
+            "name": "doc",
+            "fields": {"title": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                json.dumps({"sections": [{"type": "doc", "start_chunk": 0, "end_chunk": 0, "confidence": 0.9}]}),
+                json.dumps({"title": "Hi"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "doc", "description": "Doc"}],
+            "short_doc_chunks": 0,
+        }
+        result = await intelligent_extract(
+            markdown="# H\n\nHi",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        assert result["classifier"]["bypassed_short_doc"] is False
+        assert len(result["sections"]) == 1
+        assert len(provider.calls) == 2

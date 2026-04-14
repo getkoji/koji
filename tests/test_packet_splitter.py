@@ -371,7 +371,11 @@ class TestClassifyChunksToSections:
         assert meta["total_sections"] == 0
 
     async def test_provider_exception_falls_back(self, monkeypatch):
-        chunks = [Chunk(index=0, title="H", content="text")]
+        chunks = [
+            Chunk(index=0, title="H", content="text"),
+            Chunk(index=1, title="H2", content="more"),
+            Chunk(index=2, title="H3", content="even more"),
+        ]
 
         class FailingProvider:
             model = "mock"
@@ -386,9 +390,65 @@ class TestClassifyChunksToSections:
         assert "network down" in meta["error"]
 
     async def test_invalid_json_response_falls_back(self, monkeypatch):
-        chunks = [Chunk(index=0, title="H", content="text")]
+        chunks = [
+            Chunk(index=0, title="H", content="text"),
+            Chunk(index=1, title="H2", content="more"),
+            Chunk(index=2, title="H3", content="even more"),
+        ]
         provider = MockProvider(responses=["not json"])
         sections, meta = await classify_chunks_to_sections(chunks, provider, [])
         assert len(sections) == 1
         assert sections[0].type == "document"
         assert meta["normalizer_corrections"] >= 1
+
+    async def test_short_doc_bypasses_classifier(self, monkeypatch):
+        """Docs at or below short_doc_chunks skip the LLM entirely."""
+        chunks = [
+            Chunk(index=0, title="Cover", content="SEC FILING"),
+            Chunk(index=1, title="Body", content="more"),
+        ]
+
+        class TrackingProvider:
+            def __init__(self):
+                self.calls = 0
+
+            async def generate(self, prompt, json_mode=False):
+                self.calls += 1
+                return "{}"
+
+        provider = TrackingProvider()
+        types = [{"id": "sec_filing", "description": "SEC filing"}]
+        sections, meta = await classify_chunks_to_sections(chunks, provider, types)
+        assert provider.calls == 0
+        assert len(sections) == 1
+        assert sections[0].type == "document"
+        assert sections[0].chunk_indices == [0, 1]
+        assert meta["bypassed_short_doc"] is True
+        assert meta["total_sections"] == 1
+        assert meta["normalizer_corrections"] == 0
+
+    async def test_short_doc_threshold_configurable(self, monkeypatch):
+        """short_doc_chunks=0 disables the bypass and restores classifier path."""
+        chunks = [Chunk(index=0, title="Solo", content="text")]
+        provider = MockProvider(
+            responses=[
+                json.dumps({"sections": [{"type": "other", "start_chunk": 0, "end_chunk": 0, "confidence": 0.5}]})
+            ]
+        )
+        sections, meta = await classify_chunks_to_sections(chunks, provider, [], short_doc_chunks=0)
+        assert meta["bypassed_short_doc"] is False
+        assert len(sections) == 1
+        assert sections[0].type == "other"
+        assert len(provider.calls) == 1
+
+    async def test_short_doc_bypass_above_threshold_uses_classifier(self, monkeypatch):
+        """A document of N+1 chunks when threshold=N still uses the classifier."""
+        chunks = [Chunk(index=i, title=f"H{i}", content=f"t{i}") for i in range(3)]
+        provider = MockProvider(
+            responses=[json.dumps({"sections": [{"type": "x", "start_chunk": 0, "end_chunk": 2, "confidence": 0.9}]})]
+        )
+        types = [{"id": "x", "description": "X type"}]
+        sections, meta = await classify_chunks_to_sections(chunks, provider, types, short_doc_chunks=2)
+        assert meta["bypassed_short_doc"] is False
+        assert len(sections) == 1
+        assert sections[0].type == "x"

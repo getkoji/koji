@@ -61,6 +61,7 @@ class PipelineStep(BaseModel):
     # classify-step fields (ignored for other step types)
     types: list[ClassifyTypeConfig] | None = None
     require_apply_to: bool | None = None
+    short_doc_chunks: int | None = None
 
 
 class ModelProviderConfig(BaseModel):
