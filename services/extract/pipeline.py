@@ -175,8 +175,65 @@ def _collect_extraction_notes(fields: dict) -> str:
     return "\n".join(notes)
 
 
-def build_group_prompt(group: dict, schema_name: str) -> str:
-    """Build a focused extraction prompt for a group of fields from specific chunks."""
+def _render_context_chunks(
+    context_chunks: list[Chunk] | None,
+    routed_chunks: list[Chunk],
+) -> str:
+    """Render a `## Document context` section for non-routed context chunks.
+
+    Every document type has an identifying region at the top: invoices
+    have a header with vendor and bill-to; contracts have a preamble
+    naming the parties; medical records have a patient block; legal
+    filings have a caption; SEC filings have a cover page. The schema
+    author's extraction rules frequently depend on that identifying
+    region — "return the full vendor name", "use the filing date from
+    the signature block UNLESS this is an amendment", "extract the
+    effective date from the preamble".
+
+    When the router scores a field toward chunks deep in the body (a
+    signature block, a financial table, a diagnosis section), the group
+    that field lands in loses visibility into the document's identity.
+    The model then can't apply the conditional rules the schema author
+    wrote, and falls back to null or guesses.
+
+    This helper injects a small context block — typically the first one
+    or two chunks of the document — into every group's prompt so the
+    model always sees the document's opening, regardless of where the
+    field actually routes. Chunks already present in the group's routed
+    set are skipped to avoid duplication.
+
+    Returns an empty string when there are no context chunks to add
+    (either `context_chunks` is None/empty or every candidate is already
+    in the group's routed chunks).
+    """
+    if not context_chunks:
+        return ""
+    routed_ids = {c.index for c in routed_chunks}
+    fresh = [c for c in context_chunks if c.index not in routed_ids]
+    if not fresh:
+        return ""
+    blocks = [f"### {c.title}\n\n{c.content}" for c in fresh]
+    joined = "\n\n---\n\n".join(blocks)
+    return f"\n## Document context\n\n{joined}\n"
+
+
+def build_group_prompt(
+    group: dict,
+    schema_name: str,
+    context_chunks: list[Chunk] | None = None,
+) -> str:
+    """Build a focused extraction prompt for a group of fields from specific chunks.
+
+    When `context_chunks` is provided, a `## Document context` section is
+    rendered above the routed chunks carrying the document's opening
+    region (typically the first one or two chunks). This gives groups
+    whose routing landed deep in the body enough top-of-document context
+    to disambiguate schema-level conditions — form type on filings,
+    amendment status, contract parties, patient identity, vendor header,
+    whatever the schema author's extraction rules depend on. The context
+    chunks are agnostic to domain; what makes the top of the document
+    meaningful is set by the schema and the document itself.
+    """
     fields = group["field_specs"]
     chunks = group["chunks"]
 
@@ -220,13 +277,14 @@ def build_group_prompt(group: dict, schema_name: str) -> str:
     content = "\n\n---\n\n".join(content_blocks)
 
     notes_section = f"\n## Extraction notes\n\n{notes_block}\n" if notes_block else ""
+    context_section = _render_context_chunks(context_chunks, chunks)
 
     return f"""Extract the following fields from the document sections below. Return ONLY valid JSON with the fields you find. If a field is not present, use null.
 
 ## Fields to extract ({schema_name})
 
 {fields_block}
-{notes_section}
+{notes_section}{context_section}
 ## Document sections
 
 {content}
@@ -243,9 +301,10 @@ async def extract_group(
     schema_name: str,
     provider: ModelProvider,
     semaphore: asyncio.Semaphore,
+    context_chunks: list[Chunk] | None = None,
 ) -> dict:
     """Extract fields from a group of co-located fields."""
-    prompt = build_group_prompt(group, schema_name)
+    prompt = build_group_prompt(group, schema_name, context_chunks=context_chunks)
 
     async with semaphore:
         try:
@@ -268,8 +327,21 @@ async def extract_group(
             return {}
 
 
-def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk], schema_name: str) -> str:
-    """Build a targeted prompt to find a single missing field across broadened chunks."""
+def build_gap_fill_prompt(
+    field_name: str,
+    field_spec: dict,
+    chunks: list[Chunk],
+    schema_name: str,
+    context_chunks: list[Chunk] | None = None,
+) -> str:
+    """Build a targeted prompt to find a single missing field across broadened chunks.
+
+    Like `build_group_prompt`, accepts optional `context_chunks` so the
+    gap-fill retry also sees the document's opening region. Gap-fill
+    fires specifically on fields that the main pass missed, and those
+    are exactly the fields most likely to need cross-document
+    disambiguation context.
+    """
     field_type = field_spec.get("type", "string")
     required = field_spec.get("required", False)
     description = field_spec.get("description", "")
@@ -307,12 +379,14 @@ def build_gap_fill_prompt(field_name: str, field_spec: dict, chunks: list[Chunk]
         content_blocks.append(f"### {chunk.title}\n\n{chunk.content}")
     content = "\n\n---\n\n".join(content_blocks)
 
+    context_section = _render_context_chunks(context_chunks, chunks)
+
     return f"""The field below was not found in an earlier extraction pass. Search thoroughly in ALL sections below and extract it if present. Return ONLY valid JSON. If the field is truly not present, return {{"{field_name}": null}}.
 
 ## Missing field to find ({schema_name})
 
 {field_line}
-{notes_section}
+{notes_section}{context_section}
 ## Document sections (broadened search)
 
 {content}
@@ -331,9 +405,10 @@ async def fill_gap(
     schema_name: str,
     provider: ModelProvider,
     semaphore: asyncio.Semaphore,
+    context_chunks: list[Chunk] | None = None,
 ) -> dict:
     """Attempt to extract a single missing field from broadened chunks."""
-    prompt = build_gap_fill_prompt(field_name, field_spec, chunks, schema_name)
+    prompt = build_gap_fill_prompt(field_name, field_spec, chunks, schema_name, context_chunks=context_chunks)
 
     async with semaphore:
         try:
@@ -691,6 +766,12 @@ async def intelligent_extract(
         whether to return this as the whole response or wrap it inside
         a sections list.
         """
+        # Every group's prompt gets the first chunks of the section as
+        # identifying context — see _render_context_chunks for why. Cap
+        # at 2 to keep the per-group token overhead small while still
+        # carrying typical header / cover / preamble content.
+        context_chunks = section_chunks[:2] if section_chunks else []
+
         # Toposort fields into extraction waves
         waves = _toposort_fields(schema_def)
         if len(waves) > 1:
@@ -717,7 +798,9 @@ async def intelligent_extract(
             all_groups.extend(wave_groups)
             print(f"[koji-extract] Wave {wave_index}: grouped into {len(wave_groups)} extraction calls")
 
-            tasks = [extract_group(g, schema_name, provider, semaphore) for g in wave_groups]
+            tasks = [
+                extract_group(g, schema_name, provider, semaphore, context_chunks=context_chunks) for g in wave_groups
+            ]
             wave_group_results = await asyncio.gather(*tasks)
             non_empty = [r for r in wave_group_results if r]
             print(f"[koji-extract] Wave {wave_index}: {len(non_empty)}/{len(wave_groups)} groups returned results")
@@ -763,6 +846,7 @@ async def intelligent_extract(
                             schema_name,
                             provider,
                             semaphore,
+                            context_chunks=context_chunks,
                         ),
                     )
                 )
