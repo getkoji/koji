@@ -40,6 +40,15 @@ _CHUNK_PREVIEW_CHARS = 400
 # `other` silently drops extraction when `apply_to` filters are enabled.
 DEFAULT_SHORT_DOC_CHUNKS = 2
 
+# Fraction of chunks that must belong to a single non-`other` type for the
+# post-classify coalesce step to fire. When the majority of a document is
+# labeled with one real type and the rest lands in `other`, coalesce merges
+# everything into a single section of the dominant type. This undoes the
+# LLM's tendency to over-split a single-document filing into a multi-section
+# packet where half the sections get labeled `other` and filtered out by
+# apply_to. Set to 0 to disable.
+DEFAULT_COALESCE_OTHER_THRESHOLD = 0.5
+
 
 @dataclass
 class Section:
@@ -283,11 +292,69 @@ def _normalize_classifier_response(
     return (sections, corrections)
 
 
+def _coalesce_other_sections(
+    sections: list[Section],
+    total_chunks: int,
+    threshold: float,
+) -> tuple[list[Section], str | None]:
+    """Collapse `other`-sprinkled single-document output into one typed section.
+
+    When the classifier mis-splits a single document (common failure mode on
+    multi-section SEC filings like DEF 14A proxies) it tends to label the
+    core of the document with the right type and dust the rest with `other`.
+    `apply_to` then drops the `other` sections, silently halving extraction.
+
+    Heuristic: if any sections are typed `other` AND a single non-`other`,
+    non-`document` type covers at least `threshold` of the chunks, treat the
+    whole document as one section of the dominant type. Covers a wide range
+    of LLM over-splitting without touching genuine multi-type packets (where
+    no single type dominates).
+
+    Returns `(new_sections, dominant_type_or_None)`. When no coalesce fires,
+    returns the original list and `None`.
+    """
+    if threshold <= 0 or total_chunks <= 0 or not sections:
+        return (sections, None)
+
+    has_other = any(s.type == _OTHER_TYPE_ID for s in sections)
+    if not has_other:
+        return (sections, None)
+
+    chunks_by_type: dict[str, int] = {}
+    conf_by_type: dict[str, list[float]] = {}
+    for s in sections:
+        if s.type in (_OTHER_TYPE_ID, _FALLBACK_TYPE_ID):
+            continue
+        count = len(s.chunk_indices)
+        chunks_by_type[s.type] = chunks_by_type.get(s.type, 0) + count
+        conf_by_type.setdefault(s.type, []).append(s.confidence)
+
+    if not chunks_by_type:
+        return (sections, None)
+
+    dominant_type = max(chunks_by_type, key=lambda t: chunks_by_type[t])
+    dominant_fraction = chunks_by_type[dominant_type] / total_chunks
+    if dominant_fraction < threshold:
+        return (sections, None)
+
+    confs = conf_by_type.get(dominant_type) or [0.0]
+    merged_conf = sum(confs) / len(confs)
+
+    coalesced = Section(
+        type=dominant_type,
+        title=f"Document (coalesced — {dominant_type})",
+        chunk_indices=list(range(total_chunks)),
+        confidence=merged_conf,
+    )
+    return ([coalesced], dominant_type)
+
+
 async def classify_chunks_to_sections(
     chunks: list[Chunk],
     provider: ModelProvider,
     types: list[dict],
     short_doc_chunks: int = DEFAULT_SHORT_DOC_CHUNKS,
+    coalesce_other_threshold: float = DEFAULT_COALESCE_OTHER_THRESHOLD,
 ) -> tuple[list[Section], dict]:
     """Run the classifier and return (sections, metadata).
 
@@ -295,11 +362,17 @@ async def classify_chunks_to_sections(
     classifier is bypassed entirely — the document is returned as a single
     fallback section with no LLM call. Set to 0 to disable the fast path.
 
+    `coalesce_other_threshold` is the fraction of chunks a single non-`other`
+    type must cover for the coalesce step to collapse `other`-labeled sections
+    into the dominant type. Guards single-document filings against the
+    classifier's over-split tendency. Set to 0 to disable.
+
     metadata shape:
-        - total_sections: int — final section count after normalization
+        - total_sections: int — final section count after coalesce
         - elapsed_ms: int — wall time for the classifier call + normalizer
         - normalizer_corrections: int — number of fix-ups applied
         - bypassed_short_doc: bool — true when the short-doc fast path ran
+        - coalesced_type: str | None — dominant type when coalesce fired, else None
         - error: str (optional) — present if the LLM call raised or JSON
           failed to parse, indicating the pipeline fell back to a single
           default section
@@ -314,6 +387,7 @@ async def classify_chunks_to_sections(
                 "elapsed_ms": 0,
                 "normalizer_corrections": 0,
                 "bypassed_short_doc": False,
+                "coalesced_type": None,
             },
         )
 
@@ -326,6 +400,7 @@ async def classify_chunks_to_sections(
                 "elapsed_ms": int((time.time() - start) * 1000),
                 "normalizer_corrections": 0,
                 "bypassed_short_doc": True,
+                "coalesced_type": None,
             },
         )
 
@@ -345,11 +420,14 @@ async def classify_chunks_to_sections(
     parsed = _parse_classifier_json(raw) if raw is not None else None
     sections, corrections = _normalize_classifier_response(parsed, len(chunks), valid_type_ids)
 
+    sections, coalesced_type = _coalesce_other_sections(sections, len(chunks), coalesce_other_threshold)
+
     metadata: dict = {
         "total_sections": len(sections),
         "elapsed_ms": int((time.time() - start) * 1000),
         "normalizer_corrections": corrections,
         "bypassed_short_doc": False,
+        "coalesced_type": coalesced_type,
     }
     if error is not None:
         metadata["error"] = error

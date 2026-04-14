@@ -62,6 +62,7 @@ class PipelineStep(BaseModel):
     types: list[ClassifyTypeConfig] | None = None
     require_apply_to: bool | None = None
     short_doc_chunks: int | None = None
+    coalesce_other_threshold: float | None = None
 
 
 class ModelProviderConfig(BaseModel):
