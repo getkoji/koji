@@ -328,10 +328,7 @@ def _unwrap_nested_result(result: dict, expected_fields: set[str]) -> dict:
         return result
     if any(f in result for f in expected_fields):
         return result
-    nested_candidates = [
-        v for v in result.values()
-        if isinstance(v, dict) and any(f in v for f in expected_fields)
-    ]
+    nested_candidates = [v for v in result.values() if isinstance(v, dict) and any(f in v for f in expected_fields)]
     if len(nested_candidates) == 1:
         return nested_candidates[0]
     return result
@@ -977,6 +974,16 @@ async def intelligent_extract(
         classify_kwargs["short_doc_chunks"] = short_doc_chunks
     if isinstance(coalesce_threshold, (int, float)) and coalesce_threshold >= 0:
         classify_kwargs["coalesce_other_threshold"] = float(coalesce_threshold)
+    # oss-62: when the schema declares apply_to, force the classifier to
+    # run even on short docs. The short-doc fast path emits a single
+    # `document`-typed section, which _schema_matches_section treats as
+    # matching regardless of apply_to (the oss-55 escape hatch for
+    # classifier-failure fallbacks). Without this override, a one-chunk
+    # adversarial doc (e.g. a COI handed to the SEC schema) would bypass
+    # the filter and hallucinate. Schemas that don't declare apply_to
+    # keep the fast path and the LLM-free short-circuit.
+    if apply_to is not None:
+        classify_kwargs["short_doc_chunks"] = 0
     sections, classifier_meta = await classify_chunks_to_sections(
         chunks,
         classify_provider,

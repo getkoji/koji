@@ -2196,15 +2196,22 @@ class TestClassifierEnabled:
         assert result["sections"][0]["extracted"]["title"] == "Found"
         assert result["classifier"]["normalizer_corrections"] >= 1
 
-    async def test_short_doc_bypasses_classifier_and_extracts_with_apply_to(self, monkeypatch):
-        """Short doc + apply_to filter — regression test for oss-55.
+    async def test_apply_to_forces_classifier_on_short_doc(self, monkeypatch):
+        """Short doc + apply_to declared — regression test for oss-62.
 
-        Before the fix: tiny synthetic stubs and truncated cover pages got
-        classified as `other`, then silently dropped by apply_to filters,
-        producing empty sections and zero extracted fields.
+        Before oss-62: the short-doc fast path emitted a single
+        `document`-typed section, which `_schema_matches_section` treats
+        as matching any apply_to (the oss-55 escape hatch for classifier
+        failures). That hatch silently ran schemas against wrong-domain
+        short docs (e.g. a COI handed to the SEC schema hallucinated
+        filer_name='Zephyr Logistics LLC').
 
-        After: short docs bypass the classifier and the resulting fallback
-        `document` section matches any apply_to list, preserving extraction.
+        Fix: when the schema declares apply_to, pipeline forces
+        `short_doc_chunks=0` so the classifier runs and assigns a real
+        type. The happy path (true SEC stub → classifier labels
+        sec_filing → apply_to matches → extract runs) still works — the
+        regression that oss-55 guarded against is preserved via the
+        classifier rather than via a type-agnostic bypass.
         """
         schema = {
             "name": "sec_filing",
@@ -2213,8 +2220,11 @@ class TestClassifierEnabled:
         }
         provider = MockProvider(
             responses=[
-                # Only one response — classifier is bypassed, so the first
-                # call is the extract.
+                # 1) Classifier call (fast path disabled by apply_to)
+                json.dumps(
+                    {"sections": [{"type": "sec_filing", "start_chunk": 0, "end_chunk": 0, "confidence": 0.97}]}
+                ),
+                # 2) Extract call for the classified section
                 json.dumps({"company_name": "Acme Corp"}),
             ]
         )
@@ -2226,7 +2236,8 @@ class TestClassifierEnabled:
         classify_config = {
             "model": "mock/classify",
             "types": [{"id": "sec_filing", "description": "SEC filing"}],
-            # Use default short_doc_chunks (2)
+            # Use default short_doc_chunks — pipeline must override to 0
+            # when apply_to is declared.
         }
         result = await intelligent_extract(
             markdown="# 10-K Cover\n\nAcme Corp",
@@ -2235,11 +2246,89 @@ class TestClassifierEnabled:
             classify_config=classify_config,
         )
         assert len(result["sections"]) == 1
-        assert result["sections"][0]["section_type"] == "document"
+        assert result["sections"][0]["section_type"] == "sec_filing"
         assert result["sections"][0]["extracted"]["company_name"] == "Acme Corp"
-        assert result["classifier"]["bypassed_short_doc"] is True
+        # Fast path was overridden by apply_to — classifier actually ran.
+        assert result["classifier"]["bypassed_short_doc"] is False
         assert result["classifier"]["sections_matched"] == 1
-        # Only the extract call — no classifier call
+        # Both the classifier call and the extract call happened.
+        assert len(provider.calls) == 2
+
+    async def test_apply_to_forces_classifier_to_reject_wrong_domain_short_doc(self, monkeypatch):
+        """oss-62 negative case: a short doc from the wrong domain now gets
+        filtered out by apply_to instead of hallucinating.
+
+        Before: one-chunk COI + sec_filing schema → fast path emits
+        `document`, apply_to bypass → extract runs → filer_name='Zephyr
+        Logistics LLC' hallucinated.
+        After: classifier forced to run, labels it `coi`, apply_to
+        filters it out → zero matching sections, no hallucination."""
+        schema = {
+            "name": "sec_filing",
+            "apply_to": ["sec_filing"],
+            "fields": {"company_name": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # Classifier says: this is a coi.
+                json.dumps({"sections": [{"type": "coi", "start_chunk": 0, "end_chunk": 0, "confidence": 0.94}]}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+
+        classify_config = {
+            "model": "mock/classify",
+            "types": [
+                {"id": "sec_filing", "description": "SEC filing"},
+                {"id": "coi", "description": "Certificate of insurance"},
+            ],
+        }
+        result = await intelligent_extract(
+            markdown="# Certificate of Liability\n\nZephyr Logistics LLC",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        # Classifier ran, labeled coi, apply_to dropped it — no extract call.
+        assert result["sections"] == []
+        assert result["classifier"]["bypassed_short_doc"] is False
+        assert result["classifier"]["sections_matched"] == 0
+        assert result["classifier"]["reason"] == "no_matching_section"
+        # Only the classifier call — no extract call.
+        assert len(provider.calls) == 1
+
+    async def test_no_apply_to_keeps_short_doc_fast_path(self, monkeypatch):
+        """Schema without apply_to still gets the fast path (oss-62 only
+        overrides when apply_to is declared — the optimization stays for
+        schemas that don't opt into type filtering)."""
+        schema = {
+            "name": "doc",
+            "fields": {"title": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # Only the extract call — classifier is still bypassed.
+                json.dumps({"title": "Hello"}),
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "doc", "description": "Generic"}],
+        }
+        result = await intelligent_extract(
+            markdown="# Hi\n\nHello",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        assert result["classifier"]["bypassed_short_doc"] is True
         assert len(provider.calls) == 1
 
     async def test_short_doc_bypass_respects_config_override(self, monkeypatch):
