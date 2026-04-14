@@ -499,6 +499,27 @@ When a required field is not found:
 
 Use `required` sparingly. Not every field needs it -- only fields where a missing value means the extraction failed.
 
+## Targeting specific document types with `apply_to`
+
+When you run Koji against a **packet** — a single upload containing multiple stapled-together documents (an invoice + a certificate of insurance + a policy declaration, say) — you usually want each schema to extract only from the section that contains its type of data. The classifier stage in the pipeline can split a packet into typed sections, and the `apply_to` schema key tells the router which of those sections this schema should run against.
+
+```yaml
+name: insurance_policy
+description: Commercial insurance policy extraction
+apply_to: [policy]          # only run against sections classified as "policy"
+
+fields:
+  policy_number: ...
+```
+
+The type IDs in `apply_to` must match the ones declared in your `koji.yaml` classifier config. You can target multiple types in one schema (`apply_to: [policy, coi]`).
+
+When the classifier is disabled (the default), `apply_to` is ignored. Adding it to a schema is a no-op under a single-document pipeline — safe to sprinkle in now and activate later.
+
+When the classifier is enabled and a schema has no `apply_to`, behavior depends on the `require_apply_to` flag in `koji.yaml`: `false` (default, forgiving) runs against every section; `true` (strict) errors on missing `apply_to`.
+
+When `apply_to` matches multiple sections — a packet with three stapled invoices and an invoice schema — extraction runs once per matching section and each result comes back as its own entry in the output. When it matches zero sections, extraction returns an empty list with a `no_matching_section` reason.
+
 ## Schema hints
 
 Hints are the key differentiator in Koji's extraction pipeline. Instead of sending the entire document to the model and hoping it finds your fields, hints tell the router exactly where to look.
@@ -1530,6 +1551,41 @@ pipeline:
 
 Reference models as `provider/model-name`. The provider name must match a key under `models.providers`, or use a well-known provider prefix like `openai/` or `ollama/`.
 
+### Classify step (optional)
+
+Inserts a document-type classifier between parse and extract. Handles packets (a single upload containing multiple stapled-together documents) by splitting the input into typed sections that downstream schemas can target via their `apply_to` field.
+
+```yaml
+pipeline:
+  - step: parse
+    engine: docling
+
+  - step: classify
+    model: openai/gpt-4o-mini      # cheap model recommended; separate from extract model
+    require_apply_to: false        # default false; set true to error on schemas missing apply_to
+    types:
+      - id: invoice
+        description: Commercial invoice with line items, bill-to, and totals.
+      - id: coi
+        description: Certificate of insurance showing coverage, policyholder, and insurer.
+      - id: policy
+        description: Insurance policy document with declarations, coverages, endorsements.
+
+  - step: extract
+    model: openai/gpt-4o-mini
+    schemas:
+      - ./schemas/invoice.yaml
+      - ./schemas/insurance_policy.yaml
+```
+
+Presence of the `classify` step is the only way to turn classification on. When it's absent, the pipeline is byte-identical to single-document processing — no behavior change for existing deployments.
+
+Each entry in `types` declares a document type the classifier is allowed to emit. Koji ships with no built-in type taxonomy; you declare the types your pipeline cares about. The reserved type `other` is always valid (catch-all), and `document` is used internally as a fallback when the classifier fails. Type IDs are referenced from schema files via `apply_to`.
+
+`require_apply_to`: when `false` (default), a schema without `apply_to` runs against every section the classifier produces. When `true`, such a schema is a config error at extraction time. Forgiving mode is fine for small deployments; strict mode is safer once you have many schemas and want to prevent accidental cross-section extraction.
+
+The classify step issues one extra LLM call per document. That call shows up in `koji bench` output as its own cost line alongside the extract call.
+
 ---
 
 ## `models`
@@ -1859,6 +1915,16 @@ The mapper splits markdown into **chunks** by heading structure. Each chunk gets
 When the parsed markdown contains no `#` headings — common for OCR'd scans, invoices, and table-heavy forms — the mapper runs a **heading inference** pass first, promoting standalone bold lines, ALL CAPS labels, and schema-defined patterns to `##` headings so the chunker has structure to split on. See [Heading inference](schema-guide.md#heading-inference) in the schema guide.
 
 The result is a structural map of the document — what kind of data is in it and where. The mapper itself is fully domain-agnostic; all domain knowledge lives in your schema.
+
+### Phase 1.5: Classify and split (optional)
+
+When a `step: classify` entry is present in `koji.yaml`, an optional stage runs between mapping and routing. It takes the chunk list and asks a small LLM to partition it into **typed sections** — invoice, COI, policy, SEC filing, or whatever document types the config declares. Each section owns a contiguous run of chunks and carries a type label.
+
+This solves the "stapled packet" problem: if a user uploads one file that contains an invoice (page 1), a certificate of insurance (page 2), and an insurance policy (pages 3–10), the classifier recognizes the three distinct documents, the splitter emits three sections, and the router downstream can be told (via a schema's `apply_to` field) to only run against the sections it cares about. Without this stage, extraction would blend the three documents' text together and usually latch onto whatever keyword appears first.
+
+The classifier is a separate LLM call from extraction, with its own `model` config key so cheap models can be used for classification without sacrificing extraction quality. Its output is validated by a normalizer that deterministically handles overlap, gap, and out-of-range errors — when the classifier fails entirely, the pipeline gracefully falls back to treating the whole document as one section, preserving pre-classifier behavior.
+
+When the classify stage is disabled (the default), the pipeline is byte-identical to single-document processing.
 
 ### Phase 2: Route
 
