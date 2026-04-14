@@ -193,26 +193,74 @@ def classify_chunk(
 # can define custom signals via `signals:` in their schema.
 
 DOLLAR_PATTERN = re.compile(r"[$€£¥][\d,]+\.?\d*|\b\d+[.,]\d{2}\s*(?:USD|EUR|GBP|JPY|CAD|AUD)\b")
-# Date detector recognizes three families:
-# 1. Numeric separators:   04/10/2026, 04-10-2026, 04.10.2026, 2026-04-10
-# 2. Month-name prefix:    April 10, 2026 / Apr 10, 2026 / April 10 2026
-# 3. Ordinal / European:   10 April 2026 / 10th April 2026
-# The old regex only matched family 1, so formal documents that always
-# use text dates (SEC signature blocks, legal contracts, regulatory
-# filings) silently failed the `has_dates` signal. See oss-53.
-_MONTHS = (
+# Date detector recognizes seven families. The signal is used by the router
+# to boost chunks that probably contain dates, so broadness helps as long as
+# it doesn't over-fire on obvious non-dates (building numbers, stock tickers,
+# etc). Anything ambiguous — year-only "2026", compact 8-digit "20260410",
+# spelled-out "the tenth day of April", date ranges — is deliberately omitted.
+#
+# 1. Numeric separators:        04/10/2026, 04-10-2026, 04.10.2026, 2026-04-10
+# 2. Month-name leading:        April 10, 2026 / Apr 10 2026 / Sept 15, 2024
+# 3. Day-leading European:      10 April 2026 / 22nd March 2025
+# 4. Month + year (no day):     April 2026 / Apr 2026 / April, 2026
+# 5. Quarter references:        Q1 2026, Q3 FY26, Q4 FY2025
+# 6. Fiscal year prefix:        FY2026, FY 2026, FY 2025-26, FY25
+# 7. Non-English month names:   10 avril 2026 / 15 März 2025 / 1 de enero de 2026
+#
+# Boundary guards (`\b`) keep the regex from over-matching building numbers,
+# part IDs, or month-as-word sentences ("may be liable", "April showers").
+_MONTHS_EN = (
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
 )
+# French: janvier, février, mars, avril, mai, juin, juillet, août,
+# septembre, octobre, novembre, décembre. `\xe9` = é, `\xfb` = û.
+_MONTHS_FR = (
+    r"(?:janvier|f[e\xe9]vrier|mars|avril|mai|juin|juillet|ao[u\xfb]t|"
+    r"septembre|octobre|novembre|d[e\xe9]cembre)"
+)
+# German: Januar, Februar, März, April, Mai, Juni, Juli, August,
+# September, Oktober, November, Dezember. `\xe4` = ä.
+_MONTHS_DE = (
+    r"(?:Januar|Februar|M[a\xe4]rz|April|Mai|Juni|Juli|August|"
+    r"September|Oktober|November|Dezember)"
+)
+# Spanish: enero, febrero, marzo, abril, mayo, junio, julio, agosto,
+# septiembre, octubre, noviembre, diciembre.
+_MONTHS_ES = (
+    r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+    r"septiembre|octubre|noviembre|diciembre)"
+)
+# Italian: gennaio, febbraio, marzo, aprile, maggio, giugno, luglio,
+# agosto, settembre, ottobre, novembre, dicembre.
+_MONTHS_IT = (
+    r"(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|"
+    r"settembre|ottobre|novembre|dicembre)"
+)
+# Non-English months combined into one alternation — used for families
+# 2, 3, and 4 so "10 avril 2026", "avril 2026", and "22 marzo 2026" all
+# match. English stays in its own constant so the common case doesn't
+# pay for the alternation width on every match.
+_MONTHS_I18N = rf"(?:{_MONTHS_EN[3:-1]}|{_MONTHS_FR[3:-1]}|{_MONTHS_DE[3:-1]}|{_MONTHS_ES[3:-1]}|{_MONTHS_IT[3:-1]})"
 DATE_PATTERN = re.compile(
-    # Numeric separators
+    # Family 1: numeric separators
     r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}"
     r"|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}"
-    # Month-name leading: April 10, 2026 / Apr 10 2026
-    rf"|\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b"
-    # Day-leading European: 10 April 2026 / 10th Apr 2026
-    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}\s+\d{{4}}\b",
-    re.IGNORECASE,
+    # Family 2: month-name leading — April 10, 2026 / Apr 10 2026 (English)
+    rf"|\b{_MONTHS_EN}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b"
+    # Family 3: day-leading European — 10 April 2026 / 10th Apr 2026 (English)
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS_EN}\s+\d{{4}}\b"
+    # Family 4: month + year without day — April 2026 / Apr, 2026
+    rf"|\b{_MONTHS_EN},?\s+\d{{4}}\b"
+    # Family 5: quarter reference — Q1 2026 / Q3 FY26 / Q4 FY 2025
+    r"|\bQ[1-4][\s-]+(?:FY\s*)?\d{2,4}\b"
+    # Family 6: fiscal-year prefix — FY2026 / FY 2026 / FY 2025-26 / FY25
+    r"|\bFY\s*\d{2,4}(?:[/\-]\d{2,4})?\b"
+    # Family 7: non-English month-name leading + day-leading
+    rf"|\b{_MONTHS_I18N}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b"
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:de\s+)?{_MONTHS_I18N}(?:\s+de)?\s+\d{{4}}\b"
+    rf"|\b{_MONTHS_I18N},?\s+\d{{4}}\b",
+    re.IGNORECASE | re.UNICODE,
 )
 KEY_VALUE_PATTERN = re.compile(r"^[\w\s]+:\s+\S+", re.MULTILINE)
 TABLE_ROW_PATTERN = re.compile(r"\|.*\|.*\|")
