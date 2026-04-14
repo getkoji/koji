@@ -12,7 +12,41 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .normalize import normalize_extracted
+from .validate import validate_extracted
+
 app = FastAPI(title="Koji Extract Service", version="0.1.0")
+
+
+def _apply_post_extract(result: dict, schema_def: dict) -> dict:
+    """Run normalization and validation over every extracted payload in `result`.
+
+    Handles both response shapes:
+      - classifier-off: `result["extracted"]` is a dict
+      - classifier-on:  `result["sections"]` is a list of per-section dicts
+                        each with its own `extracted` payload
+    """
+    if "sections" in result and isinstance(result["sections"], list):
+        for section in result["sections"]:
+            if isinstance(section, dict) and "extracted" in section:
+                _apply_one(section, schema_def)
+        return result
+
+    if "extracted" in result:
+        _apply_one(result, schema_def)
+    return result
+
+
+def _apply_one(payload: dict, schema_def: dict) -> None:
+    normalized, norm_report = normalize_extracted(payload.get("extracted"), schema_def)
+    validation_report = validate_extracted(normalized, schema_def)
+    payload["extracted"] = normalized
+    payload["normalization"] = {
+        "applied": [{"field": f, "transform": t} for f, t in norm_report.applied],
+        "warnings": norm_report.warnings,
+    }
+    payload["validation"] = validation_report.to_dict()
+
 
 OLLAMA_URL = os.environ.get("KOJI_OLLAMA_URL", "http://ollama:11434")
 DEFAULT_MODEL = os.environ.get("KOJI_EXTRACT_MODEL", "llama3.2")
@@ -75,6 +109,7 @@ async def extract(req: ExtractionRequest):
                 classify_mode=classify_mode,
             )
 
+        _apply_post_extract(result, req.schema_def)
         elapsed_ms = int((time.time() - start) * 1000)
 
         # The pipeline returns one of two shapes depending on whether the

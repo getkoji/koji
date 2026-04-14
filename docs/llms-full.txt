@@ -520,6 +520,126 @@ All three fields are optional. Any integrity failure is surfaced to the caller a
 
 Recognized canonical types for `allowed_types`: `pdf`, `docx`, `xlsx`, `pptx`, `png`, `jpg`, `tiff`, `html`, `md`, `txt`.
 
+## Normalization
+
+Extraction gives you the values the LLM pulled from the document. Normalization turns those values into the shape your downstream systems actually want — currency as minor units, dates as ISO 8601, phone numbers as E.164, strings trimmed and slugified — without any LLM calls. It's pure Python running after the model returns.
+
+Declare transforms per-field with a `normalize:` directive:
+
+```yaml
+fields:
+  vendor_name:
+    type: string
+    normalize: [trim, lowercase]    # chain transforms, applied in order
+  total_amount:
+    type: number
+    normalize: minor_units          # $1,234.56 → 123456 (cents)
+  invoice_date:
+    type: date
+    normalize: iso8601              # "4/3/26" → "2026-04-03"
+  contact_phone:
+    type: string
+    normalize: e164                 # (555) 123-4567 → +15551234567
+  status:
+    type: enum
+    normalize: slugify              # "Active Status" → "active_status"
+```
+
+Transforms also apply to array-of-object rows — declare them on the inner property:
+
+```yaml
+line_items:
+  type: array
+  items:
+    type: object
+    properties:
+      description:
+        type: string
+        normalize: trim
+      total:
+        type: number
+        normalize: minor_units
+```
+
+### Built-in transforms
+
+| Name | Effect |
+|------|--------|
+| `trim` | Strip leading/trailing whitespace |
+| `lowercase` | ASCII-insensitive lowercasing |
+| `uppercase` | ASCII-insensitive uppercasing |
+| `slugify` | Lowercase + replace non-alphanumerics with `_` + strip underscores at edges |
+| `iso8601` | Parse common date formats (ISO, `MM/DD/YYYY`, `MM-DD-YY`, etc.) to `YYYY-MM-DD` |
+| `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
+| `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
+
+Transforms are deterministic and fault-tolerant: if a value can't be parsed (e.g. `"next Tuesday"` through `iso8601`), the original value is passed through unchanged. Unknown transform names are recorded as warnings in the response's `normalization.warnings` list rather than raising.
+
+## Validation rules
+
+Validation runs immediately after normalization. It evaluates a list of schema-declared rules against the extracted output and returns a report indicating which rules passed and which failed. Think of it as "turn extracted JSON into extracted and verified JSON" — the schema is the contract, and validation is the enforcement point before the data leaves Koji for downstream systems.
+
+Declare rules at the top level of the schema:
+
+```yaml
+validation:
+  - required: [invoice_number, total_amount, invoice_date]
+  - not_empty: [line_items]
+  - enum_in:
+      field: currency
+      allowed: [USD, EUR, GBP]
+  - date_order: [issue_date, due_date]
+  - sum_equals:
+      field: total_amount
+      sum_of: line_items.total
+      tolerance: 0.01
+  - regex:
+      field: invoice_number
+      pattern: "^INV-\\d+$"
+```
+
+Each list entry is a single-key dict. The key is the rule type; the value is either a list of field names (for rules that just reference fields) or a dict of parameters.
+
+### Built-in rules
+
+| Rule | Shape | Description |
+|------|-------|-------------|
+| `required` | list of fields | Fail if any listed field is null, empty string, or empty list |
+| `not_empty` | list of fields | Fail if any listed field has zero length |
+| `enum_in` | `{field, allowed}` | Fail if the field's value is not in the allowed list |
+| `date_order` | list of date fields | Fail if the dates are not in ascending order (ties allowed) |
+| `sum_equals` | `{field, sum_of, tolerance?}` | Fail if `field` != sum of the dotted `sum_of` path (default tolerance 0.01) |
+| `regex` | `{field, pattern}` | Fail if the field's value does not match the regex |
+
+`sum_of` accepts a dotted path that crosses arrays: `line_items.total` sums `row.total` across every row.
+
+### Response shape
+
+Every extraction response now includes a `validation` block alongside `extracted`:
+
+```json
+{
+  "extracted": { ... },
+  "validation": {
+    "ok": false,
+    "issues": [
+      {"rule": "sum_equals", "field": "total_amount", "message": "total_amount=100 but sum of line_items.total=95 (tolerance 0.01)"}
+    ]
+  },
+  "normalization": {
+    "applied": [
+      {"field": "vendor_name", "transform": "trim"},
+      {"field": "total_amount", "transform": "minor_units"}
+    ],
+    "warnings": []
+  }
+}
+```
+
+`validation.ok` is `true` only when every rule passes. The `issues` list contains only failures, so a passing run returns an empty list. Use this to decide whether to accept the extraction into your downstream system, hand it off for human review, or reject it outright.
+
+Validation never raises on malformed rule entries: a bad rule definition surfaces as an issue in the report so your pipeline keeps running and you can see exactly which rule is broken.
+
 ## Targeting specific document types with `apply_to`
 
 When you run Koji against a **packet** — a single upload containing multiple stapled-together documents (an invoice + a certificate of insurance + a policy declaration, say) — you usually want each schema to extract only from the section that contains its type of data. The classifier stage in the pipeline can split a packet into typed sections, and the `apply_to` schema key tells the router which of those sections this schema should run against.
