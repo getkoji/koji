@@ -3,8 +3,8 @@
 import http.server
 import json
 import os
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 KOJI_SERVER_URL = os.environ.get("KOJI_SERVER_URL", "http://koji-server:9401")
