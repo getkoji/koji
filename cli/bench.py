@@ -336,7 +336,7 @@ def benchmark_document(
 
     actual = _unwrap_extracted(data)
     if actual is None:
-        result.error = "classifier returned no matching sections"
+        result.error = f"bad response shape: {type(data).__name__}"
         return result
     if not isinstance(actual, dict):
         result.error = f"extracted is not an object: {type(actual).__name__}"
@@ -360,8 +360,11 @@ def _unwrap_extracted(data: Any) -> dict | None:
     For single-schema bench we collapse the wrapped shape to one field
     dict:
 
-    - Zero matching sections → return None so the caller can flag it as
-      "no matching section" instead of silently passing a 0-field match.
+    - Zero matching sections → return an empty dict. The classifier
+      correctly refused to extract (e.g. a recipe handed to an SEC
+      schema). An empty actual compared against an all-null expected
+      passes naturally via the null-aware field comparator (oss-25),
+      which is exactly the score we want for these adversarial cases.
     - One matching section → return that section's `extracted` dict.
     - Multiple matching sections → union the fields, first non-null wins.
       This handles stapled packets where apply_to matched several sections
@@ -371,8 +374,8 @@ def _unwrap_extracted(data: Any) -> dict | None:
       against without requiring bench fixtures to become lists.
 
     Returns:
-        A dict of extracted fields, or None when the response was
-        classifier-wrapped with zero matching sections.
+        A dict of extracted fields, or None only when the response is
+        not a JSON object at all (malformed / unparseable shape).
     """
     if not isinstance(data, dict):
         return None
@@ -381,7 +384,7 @@ def _unwrap_extracted(data: Any) -> dict | None:
     if "sections" in data and isinstance(data["sections"], list):
         sections = data["sections"]
         if not sections:
-            return None
+            return {}
         if len(sections) == 1:
             return sections[0].get("extracted") or {}
         # Union across matched sections, first non-null wins per field
