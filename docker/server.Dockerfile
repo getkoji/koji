@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir \
     python-multipart>=0.0.9
 
 COPY server/ /app/server/
+COPY services/ /app/services/
 
 EXPOSE 9401
 
