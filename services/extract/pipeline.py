@@ -328,10 +328,7 @@ def _unwrap_nested_result(result: dict, expected_fields: set[str]) -> dict:
         return result
     if any(f in result for f in expected_fields):
         return result
-    nested_candidates = [
-        v for v in result.values()
-        if isinstance(v, dict) and any(f in v for f in expected_fields)
-    ]
+    nested_candidates = [v for v in result.values() if isinstance(v, dict) and any(f in v for f in expected_fields)]
     if len(nested_candidates) == 1:
         return nested_candidates[0]
     return result
