@@ -193,7 +193,27 @@ def classify_chunk(
 # can define custom signals via `signals:` in their schema.
 
 DOLLAR_PATTERN = re.compile(r"[$€£¥][\d,]+\.?\d*|\b\d+[.,]\d{2}\s*(?:USD|EUR|GBP|JPY|CAD|AUD)\b")
-DATE_PATTERN = re.compile(r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}")
+# Date detector recognizes three families:
+# 1. Numeric separators:   04/10/2026, 04-10-2026, 04.10.2026, 2026-04-10
+# 2. Month-name prefix:    April 10, 2026 / Apr 10, 2026 / April 10 2026
+# 3. Ordinal / European:   10 April 2026 / 10th April 2026
+# The old regex only matched family 1, so formal documents that always
+# use text dates (SEC signature blocks, legal contracts, regulatory
+# filings) silently failed the `has_dates` signal. See oss-53.
+_MONTHS = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+DATE_PATTERN = re.compile(
+    # Numeric separators
+    r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}"
+    r"|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}"
+    # Month-name leading: April 10, 2026 / Apr 10 2026
+    rf"|\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b"
+    # Day-leading European: 10 April 2026 / 10th Apr 2026
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS}\s+\d{{4}}\b",
+    re.IGNORECASE,
+)
 KEY_VALUE_PATTERN = re.compile(r"^[\w\s]+:\s+\S+", re.MULTILINE)
 TABLE_ROW_PATTERN = re.compile(r"\|.*\|.*\|")
 

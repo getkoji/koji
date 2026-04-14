@@ -142,6 +142,48 @@ class TestScoreChunkHints:
         spec = {"hints": {"prefer_contains": [None, 123, "/s/"]}}
         assert _score_chunk(chunk, "filing_date", spec) >= 12.0
 
+    def test_prefer_contains_beats_pattern_plus_signal_combo(self):
+        """Regression guard for oss-53.
+
+        When two chunks share the same `look_in` category, a chunk that
+        matches a distinctive `prefer_contains` phrase must outscore a
+        chunk that only matches an overbroad `patterns` regex plus a
+        `signals` flag. At the pre-oss-53 scoring weights (+12 vs
+        +8+4=+12), the two tied and document-order tie-breaking picked
+        body chunks over signature blocks — filing_date on 51 SEC docs
+        regressed from 100% → 86.7%.
+
+        Scoring relationship to assert: prefer_contains > pattern+signal.
+        """
+        body = make_chunk(
+            category="header",
+            title="NOTE 2 - SIGNIFICANT ACCOUNTING POLICIES",
+            content="the date of the financial statements and policy filing date",
+            signals={"has_dates": True},
+        )
+        sig = make_chunk(
+            category="signatures",
+            title="SIGNATURES",
+            content="/s/ Officer Name Dated: April 10, 2026",
+        )
+        spec = {
+            "hints": {
+                "look_in": ["signatures", "header"],
+                "prefer_contains": ["/s/", "Dated:"],
+                "patterns": ["date[:\\s]", "filing\\s*date"],
+                "signals": ["has_dates"],
+            }
+        }
+        body_score = _score_chunk(body, "filing_date", spec)
+        sig_score = _score_chunk(sig, "filing_date", spec)
+        # Both pass the look_in hard filter, so both get +15.
+        # Body additionally gets pattern(+8) + signal(+4) = +12.
+        # Sig gets prefer_contains — must exceed +12 to beat body cleanly.
+        assert sig_score > body_score, (
+            f"Sig chunk ({sig_score}) must outscore body chunk ({body_score}) "
+            "when look_in is shared, to prevent body-chunk tie-breaking for filing_date."
+        )
+
 
 # ── _score_chunk: generic inference (no hints) ───────────────────────
 
