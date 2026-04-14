@@ -26,6 +26,7 @@ from server.db import list_jobs as db_list_jobs
 from server.jobs import job_store
 from server.schemas import router as schemas_router
 from server.webhooks import fire_webhooks
+from services.integrity import IntakeLimits, IntegrityError, check_bytes, check_parsed
 
 START_TIME = time.time()
 
@@ -361,6 +362,11 @@ async def parse(file: UploadFile = File(...)):
     parse_url = get_service_url("parse")
     content = await file.read()
 
+    try:
+        check_bytes(content, file.filename)
+    except IntegrityError as e:
+        return JSONResponse({"error": str(e), "filename": file.filename}, status_code=400)
+
     async with httpx.AsyncClient(timeout=300) as client:
         try:
             resp = await client.post(
@@ -390,6 +396,26 @@ async def _run_process(
     """Core process logic shared by sync and async paths."""
     parse_url = get_service_url("parse")
 
+    # Parse the schema up-front so we can pull intake limits before any
+    # work is done. Invalid schema is a user error → surfaced as 400.
+    schema_def: dict | None = None
+    if schema:
+        try:
+            schema_def = yaml.safe_load(schema)
+        except Exception:
+            try:
+                schema_def = json.loads(schema)
+            except Exception:
+                raise ValueError("Invalid schema format")
+
+    limits = IntakeLimits.from_schema(schema_def)
+
+    # Fail-fast integrity check before spending parse compute or LLM tokens.
+    try:
+        check_bytes(content, filename, limits)
+    except IntegrityError as e:
+        raise ValueError(str(e))
+
     async with httpx.AsyncClient(timeout=1800) as client:
         # Step 1: Parse
         parse_resp = await client.post(
@@ -400,18 +426,14 @@ async def _run_process(
             raise RuntimeError(f"Parse failed: {parse_resp.text}")
         parse_result = parse_resp.json()
 
-        # If no schema, return parse result only
-        if not schema:
-            return parse_result
-
-        # Step 2: Extract
         try:
-            schema_def = yaml.safe_load(schema)
-        except Exception:
-            try:
-                schema_def = json.loads(schema)
-            except Exception:
-                raise ValueError("Invalid schema format")
+            check_parsed(parse_result.get("pages"), limits)
+        except IntegrityError as e:
+            raise ValueError(str(e))
+
+        # If no schema, return parse result only
+        if not schema_def:
+            return parse_result
 
         extract_url = get_service_url("extract")
         extract_resp = await client.post(

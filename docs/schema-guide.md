@@ -197,6 +197,27 @@ When a required field is not found:
 
 Use `required` sparingly. Not every field needs it -- only fields where a missing value means the extraction failed.
 
+## Intake limits
+
+Before Koji parses a document or sends a single token to an LLM, an intake integrity check runs. Header validation (MIME matches extension, PDF magic bytes are valid) and "at least one page was produced" are **always on** and require no configuration. Size, page, and type limits are opt-in per schema via the top-level `intake:` block:
+
+```yaml
+name: invoice
+description: Standard invoice extraction
+
+intake:
+  max_size_mb: 25         # reject files bigger than 25 MB
+  max_pages: 50           # reject documents longer than 50 pages
+  allowed_types: [pdf]    # only accept PDFs — block docx, images, etc.
+
+fields:
+  invoice_number: ...
+```
+
+All three fields are optional. Any integrity failure is surfaced to the caller as an HTTP 400 with a clear reason (e.g. `"File is 34.2 MB, exceeds schema limit of 25 MB."`). Use limits to protect yourself from runaway cost, oversize uploads, or wrong-type files hitting a pipeline tuned for a specific format.
+
+Recognized canonical types for `allowed_types`: `pdf`, `docx`, `xlsx`, `pptx`, `png`, `jpg`, `tiff`, `html`, `md`, `txt`.
+
 ## Targeting specific document types with `apply_to`
 
 When you run Koji against a **packet** — a single upload containing multiple stapled-together documents (an invoice + a certificate of insurance + a policy declaration, say) — you usually want each schema to extract only from the section that contains its type of data. The classifier stage in the pipeline can split a packet into typed sections, and the `apply_to` schema key tells the router which of those sections this schema should run against.
