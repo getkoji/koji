@@ -20,6 +20,12 @@ def _describe_array_item(spec: dict) -> str:
     LLM needs to know which properties to extract for each element and what
     types they should be. Otherwise it will guess at names and drop fields
     it thinks are redundant.
+
+    Recurses into nested arrays and objects so a top-level `policies` array
+    of objects whose `limits` sub-property is itself an array of `{name,
+    amount}` objects renders the full shape end-to-end. Without recursion
+    the inner array reaches the prompt as the bare token `array`, the LLM
+    has nothing to extract into, and returns `[]` (oss-65).
     """
     item_spec = spec.get("items") or {}
     if not isinstance(item_spec, dict):
@@ -32,14 +38,35 @@ def _describe_array_item(spec: dict) -> str:
             return " of objects"
         parts = []
         for prop_name, prop_spec in properties.items():
-            prop_type = (prop_spec or {}).get("type", "string") if isinstance(prop_spec, dict) else "string"
-            parts.append(f"{prop_name}: {prop_type}")
+            parts.append(_describe_property(prop_name, prop_spec))
         return " of objects with properties {" + ", ".join(parts) + "}"
+
+    if item_type == "array":
+        return " of arrays" + _describe_array_item(item_spec)
 
     if item_type:
         return f" of {item_type}"
 
     return ""
+
+
+def _describe_property(prop_name: str, prop_spec) -> str:
+    """Render a single property name + type for use inside a nested object
+    description. Walks into nested arrays/objects via _describe_array_item
+    so the rendered prompt carries full shape information all the way down.
+    """
+    if not isinstance(prop_spec, dict):
+        return f"{prop_name}: string"
+    prop_type = prop_spec.get("type", "string")
+    if prop_type == "array":
+        return f"{prop_name}: array{_describe_array_item(prop_spec)}"
+    if prop_type == "object":
+        nested_props = prop_spec.get("properties") or {}
+        if not nested_props:
+            return f"{prop_name}: object"
+        nested_parts = [_describe_property(n, s) for n, s in nested_props.items()]
+        return f"{prop_name}: object with properties {{" + ", ".join(nested_parts) + "}"
+    return f"{prop_name}: {prop_type}"
 
 
 # ── Field dependency ordering ───────────────────────────────────────
