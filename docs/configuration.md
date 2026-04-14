@@ -242,9 +242,10 @@ pipeline:
     engine: docling
 
   - step: classify
-    model: openai/gpt-4o-mini      # cheap model recommended; separate from extract model
-    require_apply_to: false        # default false; set true to error on schemas missing apply_to
-    short_doc_chunks: 2            # docs at or below this chunk count skip the classifier
+    model: openai/gpt-4o-mini         # cheap model recommended; separate from extract model
+    require_apply_to: false           # default false; set true to error on schemas missing apply_to
+    short_doc_chunks: 2               # docs at or below this chunk count skip the classifier
+    coalesce_other_threshold: 0.5     # if one type covers ≥50% of chunks + rest are `other`, collapse to a single typed section
     types:
       - id: invoice
         description: Commercial invoice with line items, bill-to, and totals.
@@ -269,6 +270,8 @@ Each entry in `types` declares a document type the classifier is allowed to emit
 **`require_apply_to`**: when `false` (default), a schema without `apply_to` runs against every section the classifier produces. When `true`, such a schema is a config error at extraction time. Forgiving is fine for small deployments; strict mode is safer once you have many schemas and want to prevent accidental cross-section extraction.
 
 **`short_doc_chunks`**: the inclusive chunk-count threshold below which the classifier is bypassed entirely. Documents at or below this size return a single fallback `document` section with **no LLM call** — useful for tiny synthetic fixtures, truncated cover pages, and any upload where there's too little structure for a classifier to help. The default is `2`. Set to `0` to disable the fast path and force the classifier on every document. The fallback `document` section is specifically designed to match any schema's `apply_to` list, so you won't silently lose extraction when the classifier has no opinion.
+
+**`coalesce_other_threshold`**: a post-classify safety net that undoes LLM over-splitting on multi-section single documents (the motivating case: a DEF 14A proxy statement where the cover and voting-rights section get labeled `sec_filing` but the comp-table and signature sections get labeled `other`, halving extraction). If any `other` sections are present **and** one non-`other` type covers at least this fraction of chunks, the classifier output is collapsed into a single section of the dominant type covering the whole document. Defaults to `0.5`. Set to `0` to disable — which you'd want only if your pipeline regularly processes genuine packets where a small minority section of type X is surrounded by a majority of type Y and both need independent extraction. When coalesce fires, `classifier.coalesced_type` in the response records the type that won.
 
 The classify step issues one extra LLM call per document (unless the short-doc fast path applies). That call shows up in `koji bench` output as its own cost line alongside the extract call, so you can measure the overhead on your corpus before deciding whether to enable it in production.
 

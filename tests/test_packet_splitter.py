@@ -10,6 +10,7 @@ from services.extract.document_map import Chunk
 from services.extract.packet_splitter import (
     Section,
     _build_classifier_prompt,
+    _coalesce_other_sections,
     _normalize_classifier_response,
     _parse_classifier_json,
     classify_chunks_to_sections,
@@ -452,3 +453,149 @@ class TestClassifyChunksToSections:
         assert meta["bypassed_short_doc"] is False
         assert len(sections) == 1
         assert sections[0].type == "x"
+
+
+# ── Coalesce-other post-step ─────────────────────────────────────────
+
+
+class TestCoalesceOtherSections:
+    """Unit tests for the post-classify coalesce that undoes LLM over-splitting.
+
+    Motivation: when a classifier sprinkles `other` sections into a single
+    logical document (common failure on multi-section SEC filings), the
+    coalesce step merges everything into one dominant-type section so
+    apply_to filtering doesn't silently drop half the extraction.
+    """
+
+    def test_dominant_type_with_other_coalesces(self):
+        """4 sec_filing chunks + 2 other chunks → one sec_filing section."""
+        sections = [
+            Section(type="sec_filing", title="Cover", chunk_indices=[0, 1], confidence=0.9),
+            Section(type="other", title="Signatures", chunk_indices=[2, 3], confidence=0.2),
+            Section(type="sec_filing", title="Voting", chunk_indices=[4, 5], confidence=0.95),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=6, threshold=0.5)
+        assert dominant == "sec_filing"
+        assert len(new_sections) == 1
+        assert new_sections[0].type == "sec_filing"
+        assert new_sections[0].chunk_indices == [0, 1, 2, 3, 4, 5]
+        # Confidence averaged over the two sec_filing sections
+        assert new_sections[0].confidence == pytest.approx((0.9 + 0.95) / 2)
+
+    def test_no_other_sections_no_coalesce(self):
+        """If the classifier had no `other` sections, trust it — don't coalesce."""
+        sections = [
+            Section(type="invoice", title="Inv", chunk_indices=[0, 1], confidence=0.9),
+            Section(type="policy", title="Pol", chunk_indices=[2, 3], confidence=0.9),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=4, threshold=0.5)
+        assert dominant is None
+        assert new_sections is sections
+
+    def test_two_real_types_below_threshold_no_coalesce(self):
+        """Genuine multi-type packet stays split — no single dominant type."""
+        sections = [
+            Section(type="invoice", title="Inv", chunk_indices=[0, 1], confidence=0.9),
+            Section(type="policy", title="Pol", chunk_indices=[2, 3], confidence=0.9),
+            Section(type="other", title="Misc", chunk_indices=[4], confidence=0.1),
+        ]
+        # invoice is 2/5 = 40%, below 0.5 threshold
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=5, threshold=0.5)
+        assert dominant is None
+        assert new_sections is sections
+
+    def test_single_section_all_other_no_coalesce(self):
+        """All `other` sections → nothing to promote to, no-op."""
+        sections = [
+            Section(type="other", title="Mystery", chunk_indices=[0, 1, 2], confidence=0.1),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=3, threshold=0.5)
+        assert dominant is None
+        assert new_sections is sections
+
+    def test_threshold_disabled(self):
+        sections = [
+            Section(type="sec_filing", title="Cover", chunk_indices=[0, 1], confidence=0.9),
+            Section(type="other", title="Other", chunk_indices=[2], confidence=0.2),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=3, threshold=0.0)
+        assert dominant is None
+        assert new_sections is sections
+
+    def test_fallback_type_not_counted_as_dominant(self):
+        """`document` fallback sections don't become a coalesce target."""
+        sections = [
+            Section(type="document", title="Whole", chunk_indices=[0, 1, 2], confidence=0.0),
+            Section(type="other", title="Trailer", chunk_indices=[3], confidence=0.1),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=4, threshold=0.5)
+        assert dominant is None
+        assert new_sections is sections
+
+    def test_above_threshold_with_higher_bar(self):
+        """A strict threshold (0.8) still coalesces when dominant is overwhelming."""
+        sections = [
+            Section(type="sec_filing", title="Body", chunk_indices=list(range(9)), confidence=0.9),
+            Section(type="other", title="Footer", chunk_indices=[9], confidence=0.1),
+        ]
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=10, threshold=0.8)
+        assert dominant == "sec_filing"
+        assert len(new_sections) == 1
+        assert new_sections[0].chunk_indices == list(range(10))
+
+    def test_just_below_threshold_no_coalesce(self):
+        """Threshold is inclusive-on-the-high-side: just under leaves sections alone."""
+        sections = [
+            Section(type="sec_filing", title="Body", chunk_indices=[0, 1, 2, 3], confidence=0.9),
+            Section(type="other", title="Rest", chunk_indices=[4, 5, 6, 7, 8], confidence=0.1),
+        ]
+        # sec_filing is 4/9 ≈ 0.444, below 0.5
+        new_sections, dominant = _coalesce_other_sections(sections, total_chunks=9, threshold=0.5)
+        assert dominant is None
+
+    async def test_classify_chunks_emits_coalesced_type_in_metadata(self, monkeypatch):
+        """The end-to-end classifier call surfaces coalesced_type in metadata."""
+        chunks = [Chunk(index=i, title=f"S{i}", content=f"c{i}") for i in range(6)]
+        provider = MockProvider(
+            responses=[
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "sec_filing", "start_chunk": 0, "end_chunk": 1, "confidence": 0.9},
+                            {"type": "other", "start_chunk": 2, "end_chunk": 3, "confidence": 0.2},
+                            {"type": "sec_filing", "start_chunk": 4, "end_chunk": 5, "confidence": 0.95},
+                        ]
+                    }
+                )
+            ]
+        )
+        types = [{"id": "sec_filing", "description": "SEC filing"}]
+        sections, meta = await classify_chunks_to_sections(chunks, provider, types)
+        assert meta["coalesced_type"] == "sec_filing"
+        assert len(sections) == 1
+        assert sections[0].type == "sec_filing"
+
+    async def test_classify_chunks_coalesce_disabled_via_threshold(self, monkeypatch):
+        """Setting coalesce_other_threshold=0 preserves the split output."""
+        chunks = [Chunk(index=i, title=f"S{i}", content=f"c{i}") for i in range(4)]
+        provider = MockProvider(
+            responses=[
+                json.dumps(
+                    {
+                        "sections": [
+                            {"type": "sec_filing", "start_chunk": 0, "end_chunk": 2, "confidence": 0.9},
+                            {"type": "other", "start_chunk": 3, "end_chunk": 3, "confidence": 0.2},
+                        ]
+                    }
+                )
+            ]
+        )
+        types = [{"id": "sec_filing", "description": "SEC filing"}]
+        sections, meta = await classify_chunks_to_sections(
+            chunks,
+            provider,
+            types,
+            coalesce_other_threshold=0.0,
+        )
+        assert meta["coalesced_type"] is None
+        assert len(sections) == 2

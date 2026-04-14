@@ -917,9 +917,12 @@ async def intelligent_extract(
     classify_provider = create_provider(classify_model)
     types = classify_config.get("types") or []
     short_doc_chunks = classify_config.get("short_doc_chunks")
+    coalesce_threshold = classify_config.get("coalesce_other_threshold")
     classify_kwargs: dict = {}
     if isinstance(short_doc_chunks, int) and short_doc_chunks >= 0:
         classify_kwargs["short_doc_chunks"] = short_doc_chunks
+    if isinstance(coalesce_threshold, (int, float)) and coalesce_threshold >= 0:
+        classify_kwargs["coalesce_other_threshold"] = float(coalesce_threshold)
     sections, classifier_meta = await classify_chunks_to_sections(
         chunks,
         classify_provider,
