@@ -550,7 +550,7 @@ Don't set this for simple scalar fields — it just wastes tokens.
 
 Within the filtered pool, `prefer_contains`, `patterns`, and `signals` rank which chunks win the slots:
 
-1. **prefer_contains** — +12 points if any phrase is found (applied at most once)
+1. **prefer_contains** — +15 points if any phrase is found (applied at most once; matches the `look_in` weight so a distinctive phrase is decisive against a body chunk that only matches broad patterns + signals)
 2. **patterns** — +8 points if any regex pattern matches (only the first match counts)
 3. **signals** — +4 points per matching signal
 

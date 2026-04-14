@@ -157,6 +157,53 @@ class TestDetectSignals:
         signals = detect_signals("Datum: 15.08.2025")
         assert signals["has_dates"] is True
 
+    def test_month_name_leading_dates(self):
+        """SEC signature blocks, legal docs, contracts use text dates
+        exclusively. The pre-oss-53 DATE_PATTERN only matched numeric
+        separators, so `has_dates` silently failed on those documents
+        and filing_date routing couldn't find signature blocks."""
+        signals = detect_signals("Dated: April 10, 2026 by /s/ Officer")
+        assert signals["has_dates"] is True
+        assert signals["date_count"] >= 1
+
+    def test_month_name_variations(self):
+        # Full month name, no comma, with comma
+        assert detect_signals("April 10, 2026")["has_dates"] is True
+        assert detect_signals("April 10 2026")["has_dates"] is True
+        # Abbreviated month
+        assert detect_signals("Apr 10, 2026")["has_dates"] is True
+        assert detect_signals("Sep 1 2025")["has_dates"] is True
+        # Sept variant
+        assert detect_signals("Sept 15, 2024")["has_dates"] is True
+
+    def test_day_leading_european_dates(self):
+        """10 April 2026 style — common in UK/EU filings."""
+        assert detect_signals("Signed on 10 April 2026")["has_dates"] is True
+        assert detect_signals("15 August 2025")["has_dates"] is True
+
+    def test_ordinal_dates(self):
+        """1st, 2nd, 3rd, 4th, ..., 31st / Xth."""
+        assert detect_signals("January 1st, 2026")["has_dates"] is True
+        assert detect_signals("10th June 2025")["has_dates"] is True
+        assert detect_signals("22nd March 2025")["has_dates"] is True
+
+    def test_multiple_text_dates(self):
+        content = "Dated: April 10, 2026\nSigned: May 15, 2026\nFiled: June 1, 2026"
+        signals = detect_signals(content)
+        assert signals["has_dates"] is True
+        assert signals["date_count"] == 3
+
+    def test_non_date_month_words_not_matched(self):
+        """Month words alone (no day / no year) should not count as dates.
+
+        `has_dates` is only set when the detector actually matches, so
+        these inputs leave it absent from the signals dict.
+        """
+        signals = detect_signals("April showers bring May flowers")
+        assert "has_dates" not in signals
+        signals = detect_signals("The company may be liable")
+        assert "has_dates" not in signals
+
     def test_key_value_pairs(self):
         signals = detect_signals("Policy Number: BOP123\nInsured: Acme Corp")
         assert signals["has_key_value_pairs"] is True

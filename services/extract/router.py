@@ -48,7 +48,12 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict) -> float:
         haystack = f"{chunk.title} {chunk.content}".lower()
         for phrase in prefer_contains:
             if isinstance(phrase, str) and phrase and phrase.lower() in haystack:
-                score += 12.0
+                # Match on a distinctive phrase is worth more than pattern+signal
+                # combined (+8 + +4 = +12). At +12 the two tied in practice, and
+                # document-order tie-breaking picked body chunks over signature
+                # blocks — oss-53. Raising to +15 makes prefer_contains decisive
+                # against any pattern+signal combination on a body chunk.
+                score += 15.0
                 break
 
     patterns = hints.get("patterns", [])
