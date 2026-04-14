@@ -615,6 +615,14 @@ def _schema_matches_section(
     forgiving (default) matches every section; strict raises at call
     time via the caller's ValueError check — this helper only returns
     True/False.
+
+    Fallback sections (type == `document`) bypass apply_to: they arise
+    from the short-doc fast path, classifier failures, or completely
+    dropped responses — situations where the classifier couldn't add
+    information. Silently filtering them would turn a "classifier had
+    no opinion" signal into "schema returned nothing", which is exactly
+    the regression oss-55 tracked down. Trust the schema's declared type
+    when the classifier offered none.
     """
     apply_to = schema_def.get("apply_to")
     if apply_to is None:
@@ -622,6 +630,8 @@ def _schema_matches_section(
         return not require_apply_to
     if not isinstance(apply_to, list):
         return False
+    if section.type == "document":
+        return True
     return section.type in apply_to
 
 
@@ -822,7 +832,16 @@ async def intelligent_extract(
     classify_model = classify_config.get("model") or model
     classify_provider = create_provider(classify_model)
     types = classify_config.get("types") or []
-    sections, classifier_meta = await classify_chunks_to_sections(chunks, classify_provider, types)
+    short_doc_chunks = classify_config.get("short_doc_chunks")
+    classify_kwargs: dict = {}
+    if isinstance(short_doc_chunks, int) and short_doc_chunks >= 0:
+        classify_kwargs["short_doc_chunks"] = short_doc_chunks
+    sections, classifier_meta = await classify_chunks_to_sections(
+        chunks,
+        classify_provider,
+        types,
+        **classify_kwargs,
+    )
     classifier_meta["model"] = classify_model
     print(
         f"[koji-extract] Classifier: {len(sections)} section(s) "

@@ -25,11 +25,20 @@ from .providers import ModelProvider
 #   recognize a block as one of the declared types.
 # - `document` is the fallback type written by the normalizer when the
 #   classifier fails entirely (invalid JSON, every section rejected, etc.)
-#   and the whole document collapses back to a single section.
+#   and when a document is too short to usefully classify. It's also the
+#   signal that `_schema_matches_section` uses to bypass `apply_to` so a
+#   schema's declared type claim wins over a missing classifier verdict.
 _OTHER_TYPE_ID = "other"
 _FALLBACK_TYPE_ID = "document"
 
 _CHUNK_PREVIEW_CHARS = 400
+
+# Documents at or below this chunk count skip the LLM classifier entirely
+# and are returned as a single fallback section. Short docs (tiny synthetic
+# stubs, truncated cover pages, single-section filings) don't have enough
+# structure for the classifier to add value, and misclassifying them as
+# `other` silently drops extraction when `apply_to` filters are enabled.
+DEFAULT_SHORT_DOC_CHUNKS = 2
 
 
 @dataclass
@@ -278,13 +287,19 @@ async def classify_chunks_to_sections(
     chunks: list[Chunk],
     provider: ModelProvider,
     types: list[dict],
+    short_doc_chunks: int = DEFAULT_SHORT_DOC_CHUNKS,
 ) -> tuple[list[Section], dict]:
     """Run the classifier and return (sections, metadata).
+
+    `short_doc_chunks` is the inclusive threshold at or below which the
+    classifier is bypassed entirely — the document is returned as a single
+    fallback section with no LLM call. Set to 0 to disable the fast path.
 
     metadata shape:
         - total_sections: int — final section count after normalization
         - elapsed_ms: int — wall time for the classifier call + normalizer
         - normalizer_corrections: int — number of fix-ups applied
+        - bypassed_short_doc: bool — true when the short-doc fast path ran
         - error: str (optional) — present if the LLM call raised or JSON
           failed to parse, indicating the pipeline fell back to a single
           default section
@@ -298,6 +313,19 @@ async def classify_chunks_to_sections(
                 "total_sections": 0,
                 "elapsed_ms": 0,
                 "normalizer_corrections": 0,
+                "bypassed_short_doc": False,
+            },
+        )
+
+    if short_doc_chunks > 0 and len(chunks) <= short_doc_chunks:
+        section = _fallback_section(len(chunks))
+        return (
+            [section],
+            {
+                "total_sections": 1,
+                "elapsed_ms": int((time.time() - start) * 1000),
+                "normalizer_corrections": 0,
+                "bypassed_short_doc": True,
             },
         )
 
@@ -321,6 +349,7 @@ async def classify_chunks_to_sections(
         "total_sections": len(sections),
         "elapsed_ms": int((time.time() - start) * 1000),
         "normalizer_corrections": corrections,
+        "bypassed_short_doc": False,
     }
     if error is not None:
         metadata["error"] = error
