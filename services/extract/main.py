@@ -26,6 +26,14 @@ class ExtractionRequest(BaseModel):
     strategy: str | None = None  # "parallel" or "agent"
     classify_mode: str | None = None  # "keywords" (default), "llm", "all"
     relevant_categories: list[str] | None = None  # which chunk categories to extract from
+    # Optional document-type classifier config from koji.yaml's `step: classify`
+    # pipeline entry. When present AND strategy is "intelligent", the pipeline
+    # runs the classify+split stage: partition the chunk list into typed
+    # sections and extract each independently. None means disabled (default
+    # behavior, byte-identical to pre-classifier pipeline).
+    # Shape matches pipeline.intelligent_extract's classify_config param —
+    # see docs/design/classify-split.md.
+    classify_config: dict | None = None
 
 
 @app.get("/health")
@@ -47,7 +55,12 @@ async def extract(req: ExtractionRequest):
         if strategy == "intelligent":
             from .pipeline import intelligent_extract
 
-            result = await intelligent_extract(req.markdown, req.schema_def, model)
+            result = await intelligent_extract(
+                req.markdown,
+                req.schema_def,
+                model,
+                classify_config=req.classify_config,
+            )
         elif strategy == "agent":
             result = await _run_agent(req.markdown, req.schema_def, model)
         else:
@@ -64,13 +77,27 @@ async def extract(req: ExtractionRequest):
 
         elapsed_ms = int((time.time() - start) * 1000)
 
+        # The pipeline returns one of two shapes depending on whether the
+        # classifier ran:
+        #   - classifier off → flat shape with top-level `extracted` key
+        #   - classifier on  → wrapped shape with `sections` list + classifier
+        #                      metadata; extracted values live inside each
+        #                      section.
+        # Detect and forward the right shape. Caller code (server/main.py,
+        # bench, CLI) checks for `sections` before falling back to the flat
+        # shape, so both paths are handled downstream.
+        envelope = {
+            "model": model,
+            "strategy": strategy,
+            "schema": req.schema_def.get("name", "unknown"),
+            "elapsed_ms": elapsed_ms,
+        }
+        if "sections" in result:
+            return JSONResponse({**envelope, **result})
         return JSONResponse(
             {
-                "extracted": result["extracted"],
-                "model": model,
-                "strategy": strategy,
-                "schema": req.schema_def.get("name", "unknown"),
-                "elapsed_ms": elapsed_ms,
+                **envelope,
+                "extracted": result.get("extracted"),
                 **{k: v for k, v in result.items() if k != "extracted"},
             }
         )

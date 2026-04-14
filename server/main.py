@@ -436,30 +436,47 @@ async def _run_process(
             return parse_result
 
         extract_url = get_service_url("extract")
-        extract_resp = await client.post(
-            f"{extract_url}/extract",
-            json={"markdown": parse_result["markdown"], "schema_def": schema_def},
-        )
+        extract_payload: dict = {
+            "markdown": parse_result["markdown"],
+            "schema_def": schema_def,
+        }
+        # Forward the classify+split step from koji.yaml when present, so
+        # /api/process gets the same classifier behavior as /api/extract.
+        classify_step = get_config().classify_step()
+        if classify_step is not None:
+            classify_dict = classify_step.model_dump(exclude_none=True)
+            classify_dict.pop("step", None)
+            extract_payload["classify_config"] = classify_dict
+
+        extract_resp = await client.post(f"{extract_url}/extract", json=extract_payload)
         if extract_resp.status_code != 200:
             raise RuntimeError(f"Extract failed: {extract_resp.text}")
         extract_result = extract_resp.json()
 
-        return {
+        # Base envelope shared by both response shapes.
+        response: dict = {
             "filename": parse_result.get("filename"),
             "pages": parse_result.get("pages"),
             "parse_seconds": parse_result.get("elapsed_seconds"),
-            "extracted": extract_result.get("extracted"),
             "model": extract_result.get("model"),
             "schema": extract_result.get("schema"),
             "elapsed_ms": extract_result.get("elapsed_ms"),
-            "tool_calls": extract_result.get("tool_calls"),
-            "rounds": extract_result.get("rounds"),
-            "confidence": extract_result.get("confidence"),
-            "confidence_scores": extract_result.get("confidence_scores"),
             "document_map_summary": extract_result.get("document_map_summary"),
-            "routing_plan": extract_result.get("routing_plan"),
-            "groups": extract_result.get("groups"),
         }
+        if "sections" in extract_result:
+            # Classifier enabled → wrapped shape
+            response["sections"] = extract_result["sections"]
+            response["classifier"] = extract_result.get("classifier")
+        else:
+            # Flat shape (unchanged from pre-classifier)
+            response["extracted"] = extract_result.get("extracted")
+            response["tool_calls"] = extract_result.get("tool_calls")
+            response["rounds"] = extract_result.get("rounds")
+            response["confidence"] = extract_result.get("confidence")
+            response["confidence_scores"] = extract_result.get("confidence_scores")
+            response["routing_plan"] = extract_result.get("routing_plan")
+            response["groups"] = extract_result.get("groups")
+        return response
 
 
 async def _process_job_bg(
@@ -527,18 +544,19 @@ async def process(
     try:
         result = await _run_process(content, filename, content_type, schema)
         elapsed_ms = round((time.monotonic() - t0) * 1000)
-        asyncio.create_task(
-            fire_webhooks(
-                config,
-                "job.completed",
-                {
-                    "filename": filename,
-                    "schema": schema,
-                    "extracted": result.get("extracted"),
-                    "elapsed_ms": elapsed_ms,
-                },
-            )
-        )
+        # Webhook payload mirrors whichever response shape the pipeline
+        # produced: `sections` when the classifier ran, `extracted`
+        # otherwise. Subscribers see exactly what the API returned.
+        webhook_payload: dict = {
+            "filename": filename,
+            "schema": schema,
+            "elapsed_ms": elapsed_ms,
+        }
+        if "sections" in result:
+            webhook_payload["sections"] = result["sections"]
+        else:
+            webhook_payload["extracted"] = result.get("extracted")
+        asyncio.create_task(fire_webhooks(config, "job.completed", webhook_payload))
         now = datetime.now(UTC)
         _persist_job(
             job_id=str(uuid.uuid4()),
@@ -589,6 +607,18 @@ async def _run_extract(req: ExtractRequest) -> dict:
         payload["strategy"] = req.strategy
     if req.model:
         payload["model"] = req.model
+
+    # If koji.yaml declares a `step: classify` pipeline entry, forward its
+    # config to the extract service so the classify+split stage (oss-28) runs.
+    # Absence of the step leaves the payload untouched — every existing
+    # deployment sees byte-identical behavior.
+    classify_step = get_config().classify_step()
+    if classify_step is not None:
+        classify_dict = classify_step.model_dump(exclude_none=True)
+        # Drop the `step` key — intelligent_extract only cares about
+        # model / types / require_apply_to.
+        classify_dict.pop("step", None)
+        payload["classify_config"] = classify_dict
 
     async with httpx.AsyncClient(timeout=1800) as client:
         resp = await client.post(f"{extract_url}/extract", json=payload)
@@ -649,18 +679,16 @@ async def extract_endpoint(
     try:
         result = await _run_extract(req)
         elapsed_ms = round((time.monotonic() - t0) * 1000)
-        asyncio.create_task(
-            fire_webhooks(
-                config,
-                "job.completed",
-                {
-                    "filename": None,
-                    "schema": req.schema,
-                    "extracted": result.get("extracted"),
-                    "elapsed_ms": elapsed_ms,
-                },
-            )
-        )
+        webhook_payload: dict = {
+            "filename": None,
+            "schema": req.schema,
+            "elapsed_ms": elapsed_ms,
+        }
+        if "sections" in result:
+            webhook_payload["sections"] = result["sections"]
+        else:
+            webhook_payload["extracted"] = result.get("extracted")
+        asyncio.create_task(fire_webhooks(config, "job.completed", webhook_payload))
         now = datetime.now(UTC)
         _persist_job(
             job_id=str(uuid.uuid4()),
