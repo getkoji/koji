@@ -157,6 +157,13 @@ class TestServerRunExtractClassifyWiring:
 # ── server/main.py::_run_process (upload + parse + extract) ─────────
 
 
+# A minimal valid PDF header — enough to pass the services/integrity.py
+# magic-byte check that runs before /api/process hits the parse service.
+# The integrity validator only inspects the first few bytes; the mocked
+# parse service response shape handles everything beyond that.
+_MINIMAL_PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+
+
 class TestServerRunProcessClassifyWiring:
     """/api/process (file upload flow) must also thread classify_config
     through to the extract service and handle the sections-wrapped
@@ -216,7 +223,7 @@ class TestServerRunProcessClassifyWiring:
             patch("httpx.AsyncClient.post", new=_fake_post),
         ):
             result = await _run_process(
-                content=b"fake pdf bytes",
+                content=_MINIMAL_PDF_BYTES,
                 filename="packet.pdf",
                 content_type="application/pdf",
                 schema="name: p\napply_to: [policy]\nfields:\n  policy_number:\n    type: string",
@@ -272,7 +279,7 @@ class TestServerRunProcessClassifyWiring:
             patch("httpx.AsyncClient.post", new=_fake_post),
         ):
             result = await _run_process(
-                content=b"bytes",
+                content=_MINIMAL_PDF_BYTES,
                 filename="doc.pdf",
                 content_type="application/pdf",
                 schema="name: t\nfields:\n  title:\n    type: string",
