@@ -184,6 +184,68 @@ class TestBuildGroupPrompt:
         prompt = build_group_prompt(group, "test")
         assert "array of string" in prompt
 
+    def test_nested_array_of_objects_renders_recursively(self):
+        """oss-65: a top-level `policies` array whose items have a `limits`
+        sub-array of `{name, amount}` objects must render the inner shape
+        too. Pre-fix the inner array was rendered as the bare token
+        `array`, the LLM had no shape to extract into and returned `[]`,
+        and the COI bench dropped from 100% to 83.3%."""
+        group = {
+            "fields": ["policies"],
+            "field_specs": {
+                "policies": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "policy_number": {"type": "string"},
+                            "limits": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "amount": {"type": "number"},
+                                    },
+                                },
+                            },
+                            "additional_insureds": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                }
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "coi")
+        # Outer array is described
+        assert "policies: array of objects" in prompt
+        # Inner limits array carries its own object shape
+        assert "limits: array of objects with properties {name: string, amount: number}" in prompt
+        # Inner primitive array is rendered as `array of string`, not bare `array`
+        assert "additional_insureds: array of string" in prompt
+
+    def test_array_of_arrays_renders(self):
+        """Defensive: array-of-arrays (matrix-like) must not crash and
+        should describe the inner element type."""
+        group = {
+            "fields": ["matrix"],
+            "field_specs": {
+                "matrix": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                    },
+                }
+            },
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "matrix: array of arrays of number" in prompt
+
     def test_array_without_item_spec_still_works(self):
         group = {
             "fields": ["items"],
