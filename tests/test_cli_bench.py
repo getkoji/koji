@@ -301,11 +301,21 @@ class TestUnwrapExtracted:
         # first non-null wins
         assert result == {"merchant": "Acme", "total": 100}
 
-    def test_zero_matching_sections_returns_none(self):
-        """apply_to didn't match any section — caller should flag this
-        as 'no matching section' instead of silently passing."""
-        data = {"sections": [], "classifier": {"total_sections": 3, "sections_matched": 0}}
-        assert _unwrap_extracted(data) is None
+    def test_zero_matching_sections_returns_empty_dict(self):
+        """apply_to didn't match any section — classifier correctly
+        refused. Return an empty dict so compare_results can score
+        against expected naturally (all-null expected → all-pass,
+        non-null expected → fails the field, but doesn't blow up
+        the doc as an error). Regression guard for oss-63."""
+        data = {
+            "sections": [],
+            "classifier": {
+                "total_sections": 3,
+                "sections_matched": 0,
+                "reason": "no_matching_section",
+            },
+        }
+        assert _unwrap_extracted(data) == {}
 
     def test_section_without_extracted_is_empty_dict(self):
         """Defensive: a section with no `extracted` key produces {} for
@@ -367,8 +377,13 @@ class TestBenchmarkDocumentClassifyShape:
         assert result.passed == 2
         assert result.all_passed
 
-    def test_classify_no_matching_sections_flags_error(self, tmp_path):
-        entry = self._make_entry(tmp_path)
+    def test_classify_no_matching_sections_scores_against_expected(self, tmp_path):
+        """oss-63: zero matching sections is not a doc error. It's a
+        correctly-null extraction that gets compared against the expected
+        JSON field-by-field. Adversarial cases with all-null expected
+        pass; cases with non-null expected fail their fields (which is
+        the accurate score)."""
+        entry = self._make_entry(tmp_path)  # sample_01, non-null expected
         client = _make_mock_client(
             [
                 _make_mock_response(
@@ -385,8 +400,52 @@ class TestBenchmarkDocumentClassifyShape:
             ]
         )
         result = benchmark_document(entry, "http://test", None, client)
-        assert result.error is not None
-        assert "matching section" in result.error.lower()
+        # No doc error — the classifier gave us a valid (empty) answer.
+        assert result.error is None
+        # Expected has two non-null fields, actual is empty → 0/2.
+        assert result.total == 2
+        assert result.passed == 0
+        assert not result.all_passed
+
+    def test_classify_no_matching_sections_all_null_expected_passes(self, tmp_path):
+        """Adversarial doc where the corpus expected JSON is all-null
+        (e.g. a recipe handed to an SEC schema). Classifier refuses,
+        actual={}, null-aware comparator scores it as all-pass."""
+        root = _make_corpus(tmp_path)
+        # Add an all-null adversarial entry — matches the convention
+        # used by corpus/adversarial/anomaly_out_of_scope.
+        inv = root / "invoices"
+        (inv / "documents" / "adversarial.md").write_text("# Recipe\n\nChocolate chip cookies.\n")
+        (inv / "expected" / "adversarial.expected.json").write_text(
+            json.dumps({"merchant_name": None, "total_amount": None})
+        )
+        (inv / "manifests" / "adversarial.json").write_text(
+            json.dumps({"filename": "adversarial.md", "schema": "invoices/schemas/invoice_basic.yaml"})
+        )
+        entries = [e for e in discover_documents(root, "invoices") if "adversarial" in e.document_path.name]
+        assert entries, "adversarial entry not discovered"
+        entry = entries[0]
+
+        client = _make_mock_client(
+            [
+                _make_mock_response(
+                    200,
+                    {
+                        "sections": [],
+                        "classifier": {
+                            "total_sections": 1,
+                            "sections_matched": 0,
+                            "reason": "no_matching_section",
+                        },
+                    },
+                )
+            ]
+        )
+        result = benchmark_document(entry, "http://test", None, client)
+        assert result.error is None
+        assert result.total == 2
+        assert result.passed == 2
+        assert result.all_passed
 
     def test_classify_multi_section_merges(self, tmp_path):
         """Stapled packet with three invoices → merged fields beat expected."""
