@@ -279,9 +279,15 @@ def build_group_prompt(
     notes_section = f"\n## Extraction notes\n\n{notes_block}\n" if notes_block else ""
     context_section = _render_context_chunks(context_chunks, chunks)
 
+    # schema_name is intentionally NOT in the header. gpt-4o-mini (and to a
+    # lesser degree gpt-4o) treats a schema name in the heading as a hint
+    # that the output should be nested under that key — especially on
+    # single-field groups, where it returns {"<schema_name>": {field: ...}}
+    # instead of {field: ...}. Reconcile looks for field names at the top
+    # level, misses the nested form, marks the field not_found. See oss-60.
     return f"""Extract the following fields from the document sections below. Return ONLY valid JSON with the fields you find. If a field is not present, use null.
 
-## Fields to extract ({schema_name})
+## Fields to extract
 
 {fields_block}
 {notes_section}{context_section}
@@ -291,9 +297,44 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a JSON object with ONLY the listed fields. Dates as YYYY-MM-DD. Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
 
 JSON:"""
+
+
+def _unwrap_nested_result(result: dict, expected_fields: set[str]) -> dict:
+    """Flatten a result the LLM wrapped under a single non-field key.
+
+    Despite a prompt that explicitly asks for a flat JSON object with the
+    listed field names as top-level keys, gpt-4o-mini occasionally wraps
+    single-field output under the schema name (or some other label it
+    picked up from the prompt). For example: expected
+    `{"filing_date": "2026-04-10"}` but got
+    `{"filing_metadata": {"filing_date": "2026-04-10"}}`. The wrapped form
+    is semantically correct — the field IS extracted — but `reconcile`
+    only looks at top-level keys and marks the field not_found.
+
+    This helper detects and flattens that case. It only activates when:
+
+      1. No expected field name appears as a top-level key (otherwise the
+         result is already flat and there is nothing to do), AND
+      2. There is exactly one nested dict at the top level whose keys
+         overlap with the expected field set.
+
+    In all other cases the result passes through unchanged, so legitimate
+    nested outputs (e.g., array items, struct fields) are never touched.
+    """
+    if not isinstance(result, dict) or not result or not expected_fields:
+        return result
+    if any(f in result for f in expected_fields):
+        return result
+    nested_candidates = [
+        v for v in result.values()
+        if isinstance(v, dict) and any(f in v for f in expected_fields)
+    ]
+    if len(nested_candidates) == 1:
+        return nested_candidates[0]
+    return result
 
 
 async def extract_group(
@@ -305,22 +346,27 @@ async def extract_group(
 ) -> dict:
     """Extract fields from a group of co-located fields."""
     prompt = build_group_prompt(group, schema_name, context_chunks=context_chunks)
+    expected_fields = set(group.get("field_specs", {}).keys())
 
     async with semaphore:
         try:
             raw = await provider.generate(prompt, json_mode=True)
 
             try:
-                return json.loads(raw)
+                parsed = json.loads(raw)
             except json.JSONDecodeError:
                 match = re.search(r"\{[\s\S]*\}", raw)
                 if match:
                     try:
-                        return json.loads(match.group())
+                        parsed = json.loads(match.group())
                     except json.JSONDecodeError:
-                        pass
-                print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
-                return {}
+                        print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                        return {}
+                else:
+                    print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                    return {}
+
+            return _unwrap_nested_result(parsed, expected_fields)
 
         except Exception as e:
             print(f"[koji-extract] Group {group['fields']} error: {e}")
@@ -381,9 +427,13 @@ def build_gap_fill_prompt(
 
     context_section = _render_context_chunks(context_chunks, chunks)
 
+    # schema_name intentionally omitted from the header for the same
+    # reason as build_group_prompt — see oss-60. A schema name there is
+    # enough to push gpt-4o-mini to wrap the gap-fill output under that
+    # key, which then fails the top-level lookup in _run_gap_fill.
     return f"""The field below was not found in an earlier extraction pass. Search thoroughly in ALL sections below and extract it if present. Return ONLY valid JSON. If the field is truly not present, return {{"{field_name}": null}}.
 
-## Missing field to find ({schema_name})
+## Missing field to find
 
 {field_line}
 {notes_section}{context_section}
@@ -393,7 +443,7 @@ def build_gap_fill_prompt(
 
 ## Instructions
 
-Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a JSON object with ONLY the single field. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
+Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a FLAT JSON object with ONLY the single field — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"{field_name}": ...}}`, not `{{"{schema_name}": {{"{field_name}": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
 
 JSON:"""
 
@@ -414,16 +464,20 @@ async def fill_gap(
         try:
             raw = await provider.generate(prompt, json_mode=True)
             try:
-                return json.loads(raw)
+                parsed = json.loads(raw)
             except json.JSONDecodeError:
                 match = re.search(r"\{[\s\S]*\}", raw)
                 if match:
                     try:
-                        return json.loads(match.group())
+                        parsed = json.loads(match.group())
                     except json.JSONDecodeError:
-                        pass
-                print(f"[koji-extract] Gap fill for {field_name} returned invalid JSON")
-                return {}
+                        print(f"[koji-extract] Gap fill for {field_name} returned invalid JSON")
+                        return {}
+                else:
+                    print(f"[koji-extract] Gap fill for {field_name} returned invalid JSON")
+                    return {}
+
+            return _unwrap_nested_result(parsed, {field_name})
         except Exception as e:
             print(f"[koji-extract] Gap fill for {field_name} error: {e}")
             return {}

@@ -10,6 +10,7 @@ from services.extract.pipeline import (
     _resolve_conditional_hints,
     _score_label,
     _toposort_fields,
+    _unwrap_nested_result,
     build_gap_fill_prompt,
     build_group_prompt,
     compute_confidence_score,
@@ -102,6 +103,10 @@ class TestBuildGroupPrompt:
         assert "---" in prompt
 
     def test_schema_name_in_prompt(self):
+        """Schema name must still appear in the prompt so the LLM can
+        see it in the negative example in the instructions — but it
+        must NOT sit in a header where the model might interpret it as
+        "wrap output under this key". See oss-60."""
         group = {
             "fields": ["f"],
             "field_specs": {"f": {"type": "string"}},
@@ -109,6 +114,26 @@ class TestBuildGroupPrompt:
         }
         prompt = build_group_prompt(group, "my_schema")
         assert "my_schema" in prompt
+        # Must not appear in the "Fields to extract" section header — the
+        # header that previously caused gpt-4o-mini to wrap output under
+        # the schema name on single-field groups.
+        assert "## Fields to extract (my_schema)" not in prompt
+        assert "## Fields to extract\n" in prompt
+
+    def test_instructs_flat_output_shape(self):
+        """Prompt must explicitly tell the model not to wrap extracted
+        fields under a schema name. See oss-60 — the repro was gpt-4o-mini
+        returning {"filing_metadata": {"filing_date": ...}} for a
+        single-field group because the section header mentioned the
+        schema name and the instructions didn't forbid wrapping."""
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "filing_metadata")
+        assert "FLAT JSON object" in prompt
+        assert "do NOT nest" in prompt
 
     def test_array_of_objects_includes_property_names(self):
         """Array fields with nested object properties must tell the LLM the shape.
@@ -354,6 +379,87 @@ class TestBuildGapFillPrompt:
         spec = {"type": "date"}
         prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "test")
         assert "## Document context" not in prompt
+
+    def test_gap_fill_instructs_flat_output_shape(self):
+        """Gap-fill prompt must tell the model not to nest the field
+        under a schema name. See oss-60."""
+        spec = {"type": "date"}
+        prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "filing_metadata")
+        assert "FLAT JSON object" in prompt
+        assert "do NOT nest" in prompt
+
+
+# ── _unwrap_nested_result — oss-60 defensive flattening ───────────────
+
+
+class TestUnwrapNestedResult:
+    """Flatten LLM output that was wrapped under a non-field key.
+
+    Despite a prompt that asks for a flat JSON object, gpt-4o-mini
+    sometimes wraps single-field output under the schema name or another
+    label from the prompt. The unwrap helper lets reconcile still find
+    the field at the top level. See oss-60 for the sec_filings
+    filing_date repro that uncovered this.
+    """
+
+    def test_already_flat_passes_through(self):
+        result = {"filing_date": "2026-04-10"}
+        assert _unwrap_nested_result(result, {"filing_date"}) == {"filing_date": "2026-04-10"}
+
+    def test_wrapped_under_schema_name(self):
+        result = {"filing_metadata": {"filing_date": "2026-04-10"}}
+        assert _unwrap_nested_result(result, {"filing_date"}) == {"filing_date": "2026-04-10"}
+
+    def test_wrapped_under_any_wrapper_key(self):
+        # The wrapper key can be anything; the helper detects "no expected
+        # field at top level, exactly one nested dict containing the fields"
+        # regardless of what that wrapper is named.
+        result = {"result": {"merchant_name": "Acme", "total": 100}}
+        assert _unwrap_nested_result(result, {"merchant_name", "total"}) == {
+            "merchant_name": "Acme",
+            "total": 100,
+        }
+
+    def test_partial_nested_match_unwraps(self):
+        # Only filing_date is expected and it's the only thing nested —
+        # unwrap still applies even though the inner dict has only one
+        # of the expected fields.
+        result = {"filing_metadata": {"filing_date": "2026-04-10"}}
+        expected = {"filing_date", "filer_name", "form_type"}
+        assert _unwrap_nested_result(result, expected) == {"filing_date": "2026-04-10"}
+
+    def test_top_level_field_wins_over_nested(self):
+        # If the expected field IS at the top level, don't touch the
+        # result — even if a nested dict also contains the name.
+        result = {
+            "filing_date": "2026-04-10",
+            "nested": {"filing_date": "2025-01-01"},
+        }
+        assert _unwrap_nested_result(result, {"filing_date"}) == result
+
+    def test_two_candidate_wrappers_pass_through(self):
+        # If there are multiple nested dicts containing expected fields,
+        # we can't confidently pick one — pass through unchanged and let
+        # reconcile mark not_found rather than guess wrong.
+        result = {
+            "first": {"filing_date": "2026-04-10"},
+            "second": {"filing_date": "2025-01-01"},
+        }
+        assert _unwrap_nested_result(result, {"filing_date"}) == result
+
+    def test_nested_without_expected_fields_pass_through(self):
+        # A nested dict that doesn't overlap with expected fields
+        # (e.g., legitimate array-item metadata) is not touched.
+        result = {"metadata": {"source": "xbrl", "confidence": 0.9}}
+        assert _unwrap_nested_result(result, {"filing_date"}) == result
+
+    def test_empty_inputs(self):
+        assert _unwrap_nested_result({}, {"filing_date"}) == {}
+        assert _unwrap_nested_result({"a": 1}, set()) == {"a": 1}
+
+    def test_non_dict_input_passes_through(self):
+        assert _unwrap_nested_result(None, {"x"}) is None  # type: ignore[arg-type]
+        assert _unwrap_nested_result([1, 2, 3], {"x"}) == [1, 2, 3]  # type: ignore[arg-type]
 
 
 # ── validate_field ────────────────────────────────────────────────────
