@@ -204,6 +204,68 @@ class TestDetectSignals:
         signals = detect_signals("The company may be liable")
         assert "has_dates" not in signals
 
+    def test_month_plus_year_without_day(self):
+        """'April 2026' / 'Apr, 2026' — common on quarterly reports,
+        subscriptions, effective-dates. Added in oss-56."""
+        assert detect_signals("Effective April 2026")["has_dates"] is True
+        assert detect_signals("Apr 2026")["has_dates"] is True
+        assert detect_signals("December, 2025")["has_dates"] is True
+        assert detect_signals("Sept 2024")["has_dates"] is True
+        # Negative — building or section number, not a date
+        assert "has_dates" not in detect_signals("building 2026")
+        assert "has_dates" not in detect_signals("section 2026")
+
+    def test_quarter_references(self):
+        """Q1 2026 / Q3 FY26 / Q4 FY 2025 — common in financial filings."""
+        assert detect_signals("Revenue in Q1 2026")["has_dates"] is True
+        assert detect_signals("Guidance for Q3 FY26")["has_dates"] is True
+        assert detect_signals("Q4 FY 2025 earnings")["has_dates"] is True
+        # Negative — Q without a year
+        assert "has_dates" not in detect_signals("Q3 earnings call")
+
+    def test_fiscal_year_prefix(self):
+        """FY2026 / FY 2026 / FY 2025-26 / FY25 — common financial shorthand."""
+        assert detect_signals("FY2026 revenue")["has_dates"] is True
+        assert detect_signals("FY 2026 plan")["has_dates"] is True
+        assert detect_signals("FY 2025-26 budget")["has_dates"] is True
+        assert detect_signals("FY25 results")["has_dates"] is True
+        assert detect_signals("FY2025/26")["has_dates"] is True
+
+    def test_french_month_dates(self):
+        """janvier-décembre + day / year variations."""
+        assert detect_signals("10 avril 2026")["has_dates"] is True
+        assert detect_signals("avril 2026")["has_dates"] is True
+        assert detect_signals("15 mars 2025")["has_dates"] is True
+        assert detect_signals("décembre 2025")["has_dates"] is True
+
+    def test_german_month_dates(self):
+        """Januar-Dezember including umlaut March (März)."""
+        assert detect_signals("15 März 2025")["has_dates"] is True
+        assert detect_signals("März 2025")["has_dates"] is True
+        assert detect_signals("1 Januar 2026")["has_dates"] is True
+        assert detect_signals("Dezember 2024")["has_dates"] is True
+
+    def test_spanish_month_dates(self):
+        """enero-diciembre + the Spanish 'de' connector."""
+        assert detect_signals("1 de enero de 2026")["has_dates"] is True
+        assert detect_signals("enero 2026")["has_dates"] is True
+        assert detect_signals("15 marzo 2025")["has_dates"] is True
+        assert detect_signals("diciembre 2024")["has_dates"] is True
+
+    def test_italian_month_dates(self):
+        """gennaio-dicembre variations."""
+        assert detect_signals("10 aprile 2026")["has_dates"] is True
+        assert detect_signals("gennaio 2026")["has_dates"] is True
+        assert detect_signals("31 dicembre 2025")["has_dates"] is True
+        assert detect_signals("settembre 2024")["has_dates"] is True
+
+    def test_mixed_language_dates_in_same_content(self):
+        """Multi-locale documents (e.g. bilingual contracts) fire once per date."""
+        content = "Signé le 10 avril 2026 / Signed April 10, 2026"
+        signals = detect_signals(content)
+        assert signals["has_dates"] is True
+        assert signals["date_count"] == 2
+
     def test_key_value_pairs(self):
         signals = detect_signals("Policy Number: BOP123\nInsured: Acme Corp")
         assert signals["has_key_value_pairs"] is True

@@ -334,13 +334,75 @@ def benchmark_document(
         result.error = f"bad response: {e}"
         return result
 
-    actual = data.get("extracted", data)
+    actual = _unwrap_extracted(data)
+    if actual is None:
+        result.error = "classifier returned no matching sections"
+        return result
     if not isinstance(actual, dict):
         result.error = f"extracted is not an object: {type(actual).__name__}"
         return result
 
     result.field_results = compare_results(expected, actual)
     return result
+
+
+def _unwrap_extracted(data: Any) -> dict | None:
+    """Return the field-dict to compare against expected output.
+
+    Handles both extraction response shapes:
+
+    1. Flat shape (classifier disabled, non-intelligent strategies):
+        {"extracted": {field: value, ...}, ...}
+
+    2. Classify-wrapped shape (oss-28 packet splitting, classifier enabled):
+        {"sections": [{"extracted": {...}, "section_type": ..., ...}], ...}
+
+    For single-schema bench we collapse the wrapped shape to one field
+    dict:
+
+    - Zero matching sections → return None so the caller can flag it as
+      "no matching section" instead of silently passing a 0-field match.
+    - One matching section → return that section's `extracted` dict.
+    - Multiple matching sections → union the fields, first non-null wins.
+      This handles stapled packets where apply_to matched several sections
+      of the same schema type (e.g. three stapled invoices). The expected
+      JSON in the corpus still describes one extracted document, so the
+      union produces the best single-document projection we can score
+      against without requiring bench fixtures to become lists.
+
+    Returns:
+        A dict of extracted fields, or None when the response was
+        classifier-wrapped with zero matching sections.
+    """
+    if not isinstance(data, dict):
+        return None
+
+    # Classify-wrapped shape
+    if "sections" in data and isinstance(data["sections"], list):
+        sections = data["sections"]
+        if not sections:
+            return None
+        if len(sections) == 1:
+            return sections[0].get("extracted") or {}
+        # Union across matched sections, first non-null wins per field
+        merged: dict = {}
+        for section in sections:
+            section_fields = section.get("extracted")
+            if not isinstance(section_fields, dict):
+                continue
+            for key, value in section_fields.items():
+                if merged.get(key) is None and value is not None:
+                    merged[key] = value
+        return merged
+
+    # Flat shape — unchanged from pre-classifier behavior
+    extracted = data.get("extracted")
+    if isinstance(extracted, dict):
+        return extracted
+    # Best-effort fallback: if the payload itself looks like a field dict
+    # (e.g. a custom strategy that returns the extracted shape directly),
+    # let the caller type-check it.
+    return data
 
 
 def run_bench(

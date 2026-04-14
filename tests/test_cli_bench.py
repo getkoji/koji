@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 from cli.bench import (
     DocumentEntry,
+    _unwrap_extracted,
     benchmark_document,
     discover_categories,
     discover_documents,
@@ -255,6 +256,163 @@ class TestBenchmarkDocument:
             [_make_mock_response(200, {"extracted": {"merchant_name": "Acme Corp", "total_amount": 100}})]
         )
         result = benchmark_document(entry, "http://test", None, client)
+        assert result.passed == 2
+
+
+# ── Classify-wrapped response shape (oss-54) ────────────────────────
+
+
+class TestUnwrapExtracted:
+    """Unit tests for the classify-aware response unwrapper.
+
+    Before oss-54, bench.py naively did `data.get("extracted", data)`
+    which returned the whole response dict for classify-wrapped shapes,
+    producing 0/N field matches for every doc in a classify-enabled run.
+    """
+
+    def test_flat_shape_returns_extracted(self):
+        data = {"extracted": {"field_a": 1, "field_b": 2}}
+        assert _unwrap_extracted(data) == {"field_a": 1, "field_b": 2}
+
+    def test_single_wrapped_section(self):
+        data = {
+            "sections": [
+                {
+                    "section_type": "invoice",
+                    "extracted": {"merchant": "Acme", "total": 100},
+                }
+            ],
+            "classifier": {"total_sections": 1},
+        }
+        assert _unwrap_extracted(data) == {"merchant": "Acme", "total": 100}
+
+    def test_multi_section_merges_field_wise(self):
+        """Stapled packet with multiple same-type sections — union the fields,
+        first non-null wins per key, so bench can score against a single
+        expected JSON."""
+        data = {
+            "sections": [
+                {"section_type": "invoice", "extracted": {"merchant": "Acme", "total": None}},
+                {"section_type": "invoice", "extracted": {"merchant": None, "total": 100}},
+                {"section_type": "invoice", "extracted": {"merchant": "Widget", "total": 200}},
+            ]
+        }
+        result = _unwrap_extracted(data)
+        # first non-null wins
+        assert result == {"merchant": "Acme", "total": 100}
+
+    def test_zero_matching_sections_returns_none(self):
+        """apply_to didn't match any section — caller should flag this
+        as 'no matching section' instead of silently passing."""
+        data = {"sections": [], "classifier": {"total_sections": 3, "sections_matched": 0}}
+        assert _unwrap_extracted(data) is None
+
+    def test_section_without_extracted_is_empty_dict(self):
+        """Defensive: a section with no `extracted` key produces {} for
+        that section, not a crash."""
+        data = {"sections": [{"section_type": "invoice"}]}
+        assert _unwrap_extracted(data) == {}
+
+    def test_multi_section_skips_non_dict_extracted(self):
+        data = {
+            "sections": [
+                {"section_type": "x", "extracted": "not a dict"},
+                {"section_type": "x", "extracted": {"merchant": "Acme"}},
+            ]
+        }
+        assert _unwrap_extracted(data) == {"merchant": "Acme"}
+
+    def test_non_dict_input_returns_none(self):
+        assert _unwrap_extracted(None) is None
+        assert _unwrap_extracted("string") is None
+        assert _unwrap_extracted([1, 2, 3]) is None
+
+
+class TestBenchmarkDocumentClassifyShape:
+    """End-to-end bench against the two shapes (regression guards)."""
+
+    def _make_entry(self, tmp_path: Path) -> DocumentEntry:
+        root = _make_corpus(tmp_path)
+        entries = discover_documents(root, "invoices")
+        return entries[0]
+
+    def test_classify_single_section_scores_correctly(self, tmp_path):
+        entry = self._make_entry(tmp_path)
+        client = _make_mock_client(
+            [
+                _make_mock_response(
+                    200,
+                    {
+                        "sections": [
+                            {
+                                "section_type": "invoice",
+                                "section_title": "Section 0 — invoice",
+                                "chunk_indices": [0, 1],
+                                "extracted": {"merchant_name": "Acme Corp", "total_amount": 100.00},
+                                "confidence": {"merchant_name": "high", "total_amount": "high"},
+                            }
+                        ],
+                        "classifier": {
+                            "model": "openai/gpt-4o-mini",
+                            "total_sections": 1,
+                            "sections_matched": 1,
+                        },
+                    },
+                )
+            ]
+        )
+        result = benchmark_document(entry, "http://test", None, client)
+        assert result.error is None
+        assert result.total == 2
+        assert result.passed == 2
+        assert result.all_passed
+
+    def test_classify_no_matching_sections_flags_error(self, tmp_path):
+        entry = self._make_entry(tmp_path)
+        client = _make_mock_client(
+            [
+                _make_mock_response(
+                    200,
+                    {
+                        "sections": [],
+                        "classifier": {
+                            "total_sections": 2,
+                            "sections_matched": 0,
+                            "reason": "no_matching_section",
+                        },
+                    },
+                )
+            ]
+        )
+        result = benchmark_document(entry, "http://test", None, client)
+        assert result.error is not None
+        assert "matching section" in result.error.lower()
+
+    def test_classify_multi_section_merges(self, tmp_path):
+        """Stapled packet with three invoices → merged fields beat expected."""
+        entry = self._make_entry(tmp_path)
+        client = _make_mock_client(
+            [
+                _make_mock_response(
+                    200,
+                    {
+                        "sections": [
+                            {
+                                "section_type": "invoice",
+                                "extracted": {"merchant_name": "Acme Corp", "total_amount": None},
+                            },
+                            {
+                                "section_type": "invoice",
+                                "extracted": {"merchant_name": None, "total_amount": 100.00},
+                            },
+                        ],
+                    },
+                )
+            ]
+        )
+        result = benchmark_document(entry, "http://test", None, client)
+        assert result.error is None
+        # Merged: Acme Corp + total_amount 100 → both fields match expected
         assert result.passed == 2
 
 
