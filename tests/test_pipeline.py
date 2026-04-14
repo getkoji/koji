@@ -244,6 +244,75 @@ class TestBuildGroupPrompt:
         # Unhinted field shouldn't appear in notes
         assert "**a**:" not in prompt
 
+    def test_context_chunks_rendered_when_not_in_group(self):
+        """oss-58: isolated groups should see the document's opening
+        region so the model can apply schema-level conditional rules."""
+        header_chunk = make_chunk(index=0, title="Document Start", content="FORM 10-K DOCUMENT HEADER")
+        body_chunk = make_chunk(index=42, title="SIGNATURES", content="/s/ Officer Dated: April 10, 2026")
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [body_chunk],
+        }
+        prompt = build_group_prompt(group, "test", context_chunks=[header_chunk])
+        # The context section appears
+        assert "## Document context" in prompt
+        assert "FORM 10-K DOCUMENT HEADER" in prompt
+        # Context comes BEFORE Document sections
+        assert prompt.index("## Document context") < prompt.index("## Document sections")
+        # Routed chunk still rendered in the main sections
+        assert "SIGNATURES" in prompt
+        assert "Dated: April 10, 2026" in prompt
+
+    def test_context_chunks_skip_duplicates_already_in_group(self):
+        """Context chunks already in the group's routed set are dropped
+        to avoid duplication in the prompt."""
+        shared_chunk = make_chunk(index=0, title="Document Start", content="DO NOT DUPLICATE")
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [shared_chunk],
+        }
+        prompt = build_group_prompt(group, "test", context_chunks=[shared_chunk])
+        # DO NOT DUPLICATE should appear exactly once — in Document sections,
+        # not also in Document context.
+        assert prompt.count("DO NOT DUPLICATE") == 1
+        assert "## Document context" not in prompt
+
+    def test_context_chunks_partial_dedupe(self):
+        """If some context chunks are in the group and others aren't,
+        render only the new ones in the context section."""
+        in_group = make_chunk(index=0, title="Header", content="ALREADY HERE")
+        not_in_group = make_chunk(index=1, title="Commission", content="UNIQUE CONTEXT")
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [in_group],
+        }
+        prompt = build_group_prompt(group, "test", context_chunks=[in_group, not_in_group])
+        assert "## Document context" in prompt
+        assert "UNIQUE CONTEXT" in prompt
+        # ALREADY HERE appears in Document sections, not Document context
+        assert prompt.count("ALREADY HERE") == 1
+
+    def test_context_chunks_none_omits_section(self):
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test")  # no context_chunks
+        assert "## Document context" not in prompt
+
+    def test_context_chunks_empty_list_omits_section(self):
+        group = {
+            "fields": ["filing_date"],
+            "field_specs": {"filing_date": {"type": "date"}},
+            "chunks": [make_chunk()],
+        }
+        prompt = build_group_prompt(group, "test", context_chunks=[])
+        assert "## Document context" not in prompt
+
 
 # ── build_gap_fill_prompt ─────────────────────────────────────────────
 
@@ -264,6 +333,27 @@ class TestBuildGapFillPrompt:
         spec = {"type": "date"}
         prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "test")
         assert "Extraction notes" not in prompt
+
+    def test_gap_fill_context_chunks_rendered(self):
+        """Gap-fill prompts also get document context so retry pass
+        sees top-of-document information."""
+        header_chunk = make_chunk(index=0, title="Header", content="DOC IDENTITY CONTEXT")
+        body_chunk = make_chunk(index=42, title="Body", content="body text")
+        spec = {"type": "date", "extraction_hint": "use signature date"}
+        prompt = build_gap_fill_prompt(
+            "filing_date",
+            spec,
+            [body_chunk],
+            "test",
+            context_chunks=[header_chunk],
+        )
+        assert "## Document context" in prompt
+        assert "DOC IDENTITY CONTEXT" in prompt
+
+    def test_gap_fill_no_context_chunks_omits_section(self):
+        spec = {"type": "date"}
+        prompt = build_gap_fill_prompt("filing_date", spec, [make_chunk()], "test")
+        assert "## Document context" not in prompt
 
 
 # ── validate_field ────────────────────────────────────────────────────
@@ -534,6 +624,48 @@ class TestIntelligentExtract:
         # Should still return a result structure, fields just won't be found
         assert "extracted" in result
         assert "confidence" in result
+
+    async def test_context_chunks_flow_to_single_field_group_prompt(self, monkeypatch):
+        """oss-58 regression guard: a single-field group's prompt must
+        include the document's opening chunks as Document context so the
+        model can disambiguate schema-level conditional rules."""
+        schema = {
+            "name": "test_context",
+            "fields": {
+                "filing_date": {
+                    "type": "date",
+                    "required": True,
+                    "hints": {"look_in": ["header"]},
+                },
+            },
+        }
+        provider = MockProvider(responses=[json.dumps({"filing_date": "2026-04-10"})])
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        # Multi-chunk markdown so routing can land deep; the first chunk
+        # carries the distinguishing identifier and must make it into the
+        # prompt even if filing_date routes elsewhere.
+        markdown = (
+            "# Document Start\n\n"
+            "DOC_IDENTITY_MARKER FORM 10-K\n\n"
+            "# Body\n\n"
+            "Lots of text without the marker.\n\n"
+            "# Body 2\n\n"
+            "More body text.\n\n"
+            "# Signatures\n\n"
+            "Dated: April 10, 2026 /s/ Officer\n"
+        )
+        await intelligent_extract(markdown=markdown, schema_def=schema, model="mock/test")
+
+        assert len(provider.calls) >= 1
+        prompt = provider.calls[0]["prompt"]
+        # The marker from chunk 0 is present in the prompt even though
+        # filing_date routes on hints.look_in=header — the context block
+        # threads it in regardless.
+        assert "DOC_IDENTITY_MARKER" in prompt
+        assert "## Document context" in prompt or "Document Start" in prompt
 
 
 # ── mapping field type ───────────────────────────────────────────────
