@@ -864,6 +864,62 @@ Total Due: $8,400
         out = _infer_headings(md)
         assert "## BALANCE LABS, INC." in out
 
+    def test_lone_orphan_hash_does_not_disable_inference(self):
+        """A stray `#` with no content after it (empty page footer, orphan
+        token) must not count as a real heading — inference still needs to
+        run on the rest of the doc. Regression guard for the flat-S-1/A
+        failure mode where a 7000-line body landed as 1-2 megachunks."""
+        md = "**COMPANY NAME**\n\nbody text\n\n#\n\n**NEXT SECTION**\n\nmore body"
+        out = _infer_headings(md)
+        # Both prominent headings should be promoted — the lone `#` does
+        # not count as prior structure.
+        assert "## COMPANY NAME" in out
+        assert "## NEXT SECTION" in out
+
+    def test_hash_with_content_still_disables_inference(self):
+        """A real `# Heading` still disables inference (unchanged behavior)."""
+        md = "# Real Heading\n\n**Bold line that would have been promoted**\n\nbody"
+        out = _infer_headings(md)
+        assert out == md
+        assert "## Bold" not in out
+
+
+class TestOversizedChunkSplit:
+    """oss-69: post-build safety net splits megachunks at paragraph
+    boundaries so the router and extract LLM never see a single
+    pathological oversized chunk."""
+
+    def test_small_chunk_is_passed_through(self):
+        md = "# Section\n\nshort body"
+        chunks = build_document_map(md)
+        assert len(chunks) == 1
+        assert chunks[0].title == "Section"
+
+    def test_oversized_chunk_splits_at_paragraph_boundaries(self):
+        # 600 lines of content under one heading, with a paragraph break
+        # after line 400. Expect at least 2 chunks out.
+        body_a = "\n".join(f"line {i}" for i in range(400))
+        body_b = "\n".join(f"line {i}" for i in range(400, 600))
+        md = f"# Big Section\n\n{body_a}\n\n{body_b}\n"
+        chunks = build_document_map(md)
+        assert len(chunks) >= 2
+        # First chunk keeps the original title; follow-ups are labelled "(part N)".
+        titles = [c.title for c in chunks]
+        assert titles[0] == "Big Section"
+        assert any("part 2" in t for t in titles[1:])
+        # No chunk exceeds the line cap.
+        for c in chunks:
+            assert c.content.count("\n") + 1 <= 500, f"chunk {c.index} too long: {c.content.count(chr(10)) + 1} lines"
+
+    def test_hardcut_when_no_paragraph_boundary(self):
+        # 1200 lines of unbroken content (no blank lines) must still be
+        # hard-cut into multiple chunks — no unbounded megachunk output.
+        md = "# Wall\n\n" + "\n".join(f"line {i}" for i in range(1200))
+        chunks = build_document_map(md)
+        assert len(chunks) >= 3
+        for c in chunks:
+            assert c.content.count("\n") + 1 <= 500
+
 
 # ── Table cell dedupe ─────────────────────────────────────────────────
 

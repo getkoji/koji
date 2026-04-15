@@ -361,10 +361,24 @@ def detect_signals(
 # or schema-defined patterns) to `##` headings so the chunker has something
 # to split on.
 
-_HAS_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
+# Requires non-whitespace heading text on the SAME line as the `#`
+# markers. Parsers sometimes emit lone `#` markers (empty rows, stray
+# page tokens); those must not count as "the document has structure"
+# — that single orphan used to disable heading inference and leave
+# 800KB of unheaded prose as one megachunk. `[ \t]` instead of `\s`
+# prevents the regex from skipping across blank lines to consume text
+# in the next paragraph.
+_HAS_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S", re.MULTILINE)
 _BOLD_LINE_RE = re.compile(r"^\*\*([^*]+?)\*\*:?\s*$")
 _ALLCAPS_LINE_RE = re.compile(r"^[A-Z][A-Z0-9 &/\-]{2,60}:?$")
 _HEADING_MAX_LEN = 80
+
+# Post-build safety net: any single chunk larger than this gets split
+# at paragraph boundaries into sub-chunks. Prevents one giant run of
+# unheaded prose from bypassing per-field routing and landing in front
+# of the extract LLM as a single oversized prompt. 500 lines ≈ 15KB ≈
+# 4000 tokens of chunk body, roughly a "typical" section.
+_CHUNK_MAX_LINES = 500
 
 # A "stanza" is a run of consecutive bold / ALL CAPS lines separated only by
 # blanks. Short stanzas (2..N-1 lines) are merged into a single heading
@@ -672,7 +686,94 @@ def build_document_map(markdown: str, schema_def: dict | None = None) -> list[Ch
     # Last section
     _finalize()
 
-    return chunks
+    return _split_oversized_chunks(chunks, category_keywords, classification_config, custom_signals)
+
+
+def _split_oversized_chunks(
+    chunks: list[Chunk],
+    category_keywords: dict,
+    classification_config: dict,
+    custom_signals: dict,
+) -> list[Chunk]:
+    """Split chunks longer than _CHUNK_MAX_LINES at paragraph boundaries.
+
+    Heading inference handles the common case where a flat document has
+    visually-prominent lines to promote. This catches the pathological
+    case where the body is a long run of unheaded prose — tables,
+    boilerplate, or a wall of paragraphs — that inference can't
+    meaningfully structure. Without the split, the router gets one
+    megachunk and the extract LLM sees an oversized prompt it drops
+    fields from (or returns all-null on).
+    """
+    out: list[Chunk] = []
+    next_index = 0
+    for chunk in chunks:
+        lines = chunk.content.split("\n")
+        if len(lines) <= _CHUNK_MAX_LINES:
+            out.append(
+                Chunk(
+                    index=next_index,
+                    title=chunk.title,
+                    content=chunk.content,
+                    category=chunk.category,
+                    signals=chunk.signals,
+                )
+            )
+            next_index += 1
+            continue
+
+        parts = _split_at_paragraphs(lines, _CHUNK_MAX_LINES)
+        for i, part_lines in enumerate(parts, start=1):
+            part_content = "\n".join(part_lines).strip()
+            if not part_content:
+                continue
+            title = chunk.title if i == 1 else f"{chunk.title} (part {i})"
+            # Re-classify each split part so category/signals reflect
+            # the sub-content, not the aggregate.
+            category = classify_chunk(title, part_content, category_keywords, classification_config)
+            signals = detect_signals(part_content, custom_signals)
+            out.append(
+                Chunk(
+                    index=next_index,
+                    title=title,
+                    content=part_content,
+                    category=category,
+                    signals=signals,
+                )
+            )
+            next_index += 1
+    return out
+
+
+def _split_at_paragraphs(lines: list[str], max_lines: int) -> list[list[str]]:
+    """Break a long run of lines into groups <= max_lines, preferring blank-line boundaries.
+
+    The greedy algorithm walks forward, closing the current group whenever
+    a blank line is hit past the max_lines mark. If no blank line appears
+    in time, it hard-cuts at max_lines. This keeps related paragraphs
+    together when possible without letting one unbroken block stay
+    unbounded.
+    """
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        current.append(line)
+        if len(current) >= max_lines and line.strip() == "":
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+
+    # Final pass: hard-cut any group that's still oversized (no blank
+    # lines found — e.g., a single wall-of-text paragraph).
+    final: list[list[str]] = []
+    for group in groups:
+        if len(group) <= max_lines:
+            final.append(group)
+            continue
+        for start in range(0, len(group), max_lines):
+            final.append(group[start : start + max_lines])
+    return final
 
 
 def summarize_map(chunks: list[Chunk]) -> dict:
