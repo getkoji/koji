@@ -47,6 +47,16 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* Thin, unobtrusive scrollbars — only visible on hover/scroll */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cream-3) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--cream-3); border-radius: 3px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--cream-4); }
+
 body {
   margin: 0;
   background: var(--cream);
