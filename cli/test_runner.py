@@ -322,24 +322,41 @@ def compare_field(field_name: str, expected: Any, actual: Any, fuzzy_threshold: 
 
     # Array comparison
     if isinstance(expected, list) and isinstance(actual, list):
-        if len(expected) != len(actual):
-            return FieldResult(
-                field_name=field_name,
-                passed=False,
-                expected=expected,
-                actual=actual,
-                detail=f"array length: expected {len(expected)}, got {len(actual)}",
-            )
-        # Order-insensitive comparison for objects, ordered for primitives
         exp_keys = sorted(_normalize_for_set_compare(expected))
         act_keys = sorted(_normalize_for_set_compare(actual))
-        ok = exp_keys == act_keys
+        if exp_keys == act_keys:
+            return FieldResult(
+                field_name=field_name,
+                passed=True,
+                expected=expected,
+                actual=actual,
+            )
+        # Tolerant mode: when fuzzy_threshold is set, score by fraction
+        # of expected items that have a match in actual. Handles the
+        # common case where the model gets 4/5 line items right but
+        # misparses one, or extracts items in a different order with
+        # minor value diffs.
+        if fuzzy_threshold > 0 and expected:
+            matched = sum(1 for k in exp_keys if k in act_keys)
+            ratio = matched / len(exp_keys)
+            if ratio >= fuzzy_threshold:
+                return FieldResult(
+                    field_name=field_name,
+                    passed=True,
+                    expected=expected,
+                    actual=actual,
+                    detail=f"fuzzy array match ({matched}/{len(exp_keys)} items, {ratio:.0%})",
+                )
+        if len(expected) != len(actual):
+            detail = f"array length: expected {len(expected)}, got {len(actual)}"
+        else:
+            detail = "array items differ"
         return FieldResult(
             field_name=field_name,
-            passed=ok,
+            passed=False,
             expected=expected,
             actual=actual,
-            detail="" if ok else "array items differ",
+            detail=detail,
         )
 
     # String comparison: case-insensitive after trimming whitespace.
