@@ -143,6 +143,59 @@ class TestSumEquals:
         assert report["ok"] is True
 
 
+# ── field_sum ──────────────────────────────────────────────────────
+
+
+class TestFieldSum:
+    def test_consistent_passes(self):
+        report = _run(
+            {"total_amount": 110, "subtotal": 100, "tax": 10},
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"]}}],
+        )
+        assert report["ok"] is True
+
+    def test_inconsistent_fails(self):
+        report = _run(
+            {"total_amount": 1100, "subtotal": 100, "tax": 10},
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"]}}],
+        )
+        assert report["ok"] is False
+        assert "field_sum" in report["issues"][0]["rule"]
+
+    def test_auto_correct_replaces_value(self):
+        data = {"total_amount": 1100, "subtotal": 100, "tax": 10}
+        report = _run(
+            data,
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"], "auto_correct": True}}],
+        )
+        assert report["ok"] is False  # still reported as an issue
+        assert "corrected" in report["issues"][0]["message"]
+        assert data["total_amount"] == 110.0
+
+    def test_auto_correct_no_op_when_consistent(self):
+        data = {"total_amount": 110, "subtotal": 100, "tax": 10}
+        report = _run(
+            data,
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"], "auto_correct": True}}],
+        )
+        assert report["ok"] is True
+        assert data["total_amount"] == 110
+
+    def test_tolerance_applies(self):
+        report = _run(
+            {"total_amount": 110.005, "subtotal": 100, "tax": 10},
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"], "tolerance": 0.01}}],
+        )
+        assert report["ok"] is True
+
+    def test_missing_addend_skips(self):
+        report = _run(
+            {"total_amount": 100, "subtotal": 100},
+            [{"field_sum": {"field": "total_amount", "addends": ["subtotal", "tax"]}}],
+        )
+        assert report["ok"] is True  # can't validate without all addends
+
+
 # ── regex ───────────────────────────────────────────────────────────
 
 
