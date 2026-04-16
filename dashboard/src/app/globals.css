@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@koji/ui/styles.css";
 
 :root {
   --cream:        #F4EEE2;
