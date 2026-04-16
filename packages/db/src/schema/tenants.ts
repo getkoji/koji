@@ -1,0 +1,129 @@
+import { sql } from "drizzle-orm";
+import {
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
+
+import {
+  bytea,
+  createdAt,
+  deletedAt,
+  inet,
+  primaryKey,
+  tenantId,
+  updatedAt,
+} from "./_shared";
+
+export const tenants = pgTable(
+  "tenants",
+  {
+    id: primaryKey(),
+    slug: varchar("slug", { length: 64 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    plan: varchar("plan", { length: 32 }).notNull().default("free"),
+    billingEmail: varchar("billing_email", { length: 255 }),
+    enterpriseContractId: uuid("enterprise_contract_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    slugIdx: uniqueIndex("tenants_slug_idx").on(t.slug).where(sql`deleted_at IS NULL`),
+  }),
+);
+
+export const users = pgTable(
+  "users",
+  {
+    id: primaryKey(),
+    email: varchar("email", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }),
+    avatarUrl: varchar("avatar_url", { length: 2048 }),
+    authProvider: varchar("auth_provider", { length: 32 }).notNull(),
+    authProviderId: varchar("auth_provider_id", { length: 255 }).notNull(),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    emailIdx: index("users_email_idx").on(t.email).where(sql`deleted_at IS NULL`),
+    providerIdx: uniqueIndex("users_auth_provider_idx").on(t.authProvider, t.authProviderId),
+  }),
+);
+
+export const memberships = pgTable(
+  "memberships",
+  {
+    id: primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    roles: text("roles").array().notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id),
+    invitedAt: timestamp("invited_at", { withTimezone: true, mode: "date" }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    userTenantIdx: uniqueIndex("memberships_user_tenant_idx").on(t.userId, t.tenantId),
+    tenantIdx: index("memberships_tenant_idx").on(t.tenantId),
+    userIdx: index("memberships_user_idx").on(t.userId),
+  }),
+);
+
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    keyPrefix: varchar("key_prefix", { length: 16 }).notNull(),
+    keyHash: bytea("key_hash").notNull(),
+    scopes: text("scopes").array().notNull(),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true, mode: "date" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "date" }),
+  },
+  (t) => ({
+    tenantNameIdx: uniqueIndex("api_keys_tenant_name_idx").on(t.tenantId, t.name),
+    hashIdx: index("api_keys_hash_idx").on(t.keyHash).where(sql`revoked_at IS NULL`),
+    tenantIdx: index("api_keys_tenant_idx").on(t.tenantId),
+  }),
+);
+
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id),
+    actorType: varchar("actor_type", { length: 32 }).notNull(),
+    actorId: varchar("actor_id", { length: 64 }),
+    action: varchar("action", { length: 64 }).notNull(),
+    resourceType: varchar("resource_type", { length: 64 }).notNull(),
+    resourceId: varchar("resource_id", { length: 128 }).notNull(),
+    traceId: varchar("trace_id", { length: 64 }),
+    ipAddress: inet("ip_address"),
+    userAgent: varchar("user_agent", { length: 512 }),
+    detailsJson: jsonb("details_json"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tenantCreatedIdx: index("audit_log_tenant_created_idx").on(t.tenantId, sql`${t.createdAt} DESC`),
+    actorIdx: index("audit_log_actor_idx").on(t.tenantId, t.actorUserId, sql`${t.createdAt} DESC`),
+    resourceIdx: index("audit_log_resource_idx").on(t.tenantId, t.resourceType, t.resourceId),
+  }),
+);

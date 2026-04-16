@@ -1,0 +1,17 @@
+{
+  "name": "@koji/api-spec",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenAPI 3.1 contract for the Koji API. Source of truth for generated clients and server validation.",
+  "files": [
+    "openapi.yaml"
+  ],
+  "exports": {
+    "./openapi.yaml": "./openapi.yaml"
+  },
+  "scripts": {
+    "lint": "pnpm --package=@redocly/cli dlx redocly lint openapi.yaml",
+    "bundle": "pnpm --package=@redocly/cli dlx redocly bundle openapi.yaml -o dist/openapi.bundled.yaml",
+    "docs": "python3 docs-server.py"
+  }
+}
