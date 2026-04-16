@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Koji token mapping.
+ *
+ * shadcn components reference these semantic tokens via Tailwind utility
+ * classes (bg-primary, text-muted-foreground, border-input, ring-ring, etc.).
+ * This file maps every token to the Koji palette from 00-shell.html.
+ *
+ * The mapping is intentional:
+ *   primary  = ink (dark buttons, strong text)
+ *   accent   = cream-2 (hover highlights — NOT vermillion; shadcn's "accent"
+ *              means "interactive hover bg", not "brand color")
+ *   destructive = vermillion (errors, danger actions)
+ *   ring     = vermillion-2 (focus indicators match the brand)
+ *
+ * Brand pass 2 (platform-22) handles typography.
+ * Brand pass 3 (platform-23) handles geometry (radii, padding, hairlines).
+ */
+
+:root {
+  --background:           #F4EEE2;
+  --foreground:           #171410;
+
+  --card:                 #F4EEE2;
+  --card-foreground:      #171410;
+
+  --popover:              #F4EEE2;
+  --popover-foreground:   #171410;
+
+  --primary:              #171410;
+  --primary-foreground:   #F4EEE2;
+
+  --secondary:            #ECE3D0;
+  --secondary-foreground: #171410;
+
+  --muted:                #ECE3D0;
+  --muted-foreground:     #665C4B;
+
+  --accent:               #ECE3D0;
+  --accent-foreground:    #171410;
+
+  --destructive:          #C33520;
+  --destructive-foreground: #F4EEE2;
+
+  --border:               #1714101a;
+  --input:                #17141038;
+  --ring:                 #992718;
+
+  --radius:               0.1875rem;
+
+  --chart-1:              #C33520;
+  --chart-2:              #171410;
+  --chart-3:              #665C4B;
+  --chart-4:              #998E78;
+  --chart-5:              #3E7A3E;
+
+  --sidebar:                      #F4EEE2;
+  --sidebar-foreground:           #3A3328;
+  --sidebar-primary:              #171410;
+  --sidebar-primary-foreground:   #F4EEE2;
+  --sidebar-accent:               #ECE3D0;
+  --sidebar-accent-foreground:    #171410;
+  --sidebar-border:               #1714101a;
+  --sidebar-ring:                 #992718;
+}
+
+@theme inline {
+  --color-background:           var(--background);
+  --color-foreground:           var(--foreground);
+  --color-card:                 var(--card);
+  --color-card-foreground:      var(--card-foreground);
+  --color-popover:              var(--popover);
+  --color-popover-foreground:   var(--popover-foreground);
+  --color-primary:              var(--primary);
+  --color-primary-foreground:   var(--primary-foreground);
+  --color-secondary:            var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted:                var(--muted);
+  --color-muted-foreground:     var(--muted-foreground);
+  --color-accent:               var(--accent);
+  --color-accent-foreground:    var(--accent-foreground);
+  --color-destructive:          var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border:               var(--border);
+  --color-input:                var(--input);
+  --color-ring:                 var(--ring);
+
+  --color-chart-1:              var(--chart-1);
+  --color-chart-2:              var(--chart-2);
+  --color-chart-3:              var(--chart-3);
+  --color-chart-4:              var(--chart-4);
+  --color-chart-5:              var(--chart-5);
+
+  --color-sidebar:                      var(--sidebar);
+  --color-sidebar-foreground:           var(--sidebar-foreground);
+  --color-sidebar-primary:              var(--sidebar-primary);
+  --color-sidebar-primary-foreground:   var(--sidebar-primary-foreground);
+  --color-sidebar-accent:               var(--sidebar-accent);
+  --color-sidebar-accent-foreground:    var(--sidebar-accent-foreground);
+  --color-sidebar-border:               var(--sidebar-border);
+  --color-sidebar-ring:                 var(--sidebar-ring);
+
+  --radius-sm:  calc(var(--radius) - 0.0625rem);
+  --radius-md:  var(--radius);
+  --radius-lg:  calc(var(--radius) + 0.0625rem);
+  --radius-xl:  calc(var(--radius) + 0.125rem);
+
+  /*
+   * Typography — maps Tailwind's font utilities to the Koji font stack.
+   *
+   * font-sans    → Instrument Sans (body text, UI labels, form fields)
+   * font-mono    → JetBrains Mono (data values, IDs, code, trace IDs)
+   * font-display → Fraunces (page titles, metric values, editorial headings)
+   *
+   * Consumers load the actual font files via next/font/google in the root
+   * layout and set the CSS variables (--font-instrument-sans, etc.). The
+   * @theme entries here wire Tailwind's `font-sans` / `font-mono` /
+   * `font-display` utilities to those variables.
+   */
+  --font-sans:    var(--font-instrument-sans, 'Instrument Sans', system-ui, sans-serif);
+  --font-mono:    var(--font-jetbrains-mono, 'JetBrains Mono', ui-monospace, monospace);
+  --font-display: var(--font-fraunces, 'Fraunces', Georgia, serif);
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
+  --text-base: 0.875rem;
+
+  /*
+   * Geometry — flat aesthetic, no elevation shadows.
+   *
+   * The 00-shell.html sketch uses zero box-shadows. Separation comes from
+   * borders (1px solid var(--border)) and background-color differences
+   * (cream vs cream-2). Overlays (dialogs, popovers, dropdowns) use a
+   * thin border ring instead of shadow blur.
+   */
+  --shadow-xs:  none;
+  --shadow-sm:  none;
+  /* Overlays (dropdowns, popovers, dialogs) need enough shadow to
+     separate from the same-color cream background behind them. */
+  --shadow-md:  0 2px 8px -2px rgba(23, 20, 16, 0.12), 0 0 0 1px var(--border);
+  --shadow-lg:  0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
+  --shadow-xl:  0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
+  --shadow-2xl: 0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
+}
