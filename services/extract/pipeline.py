@@ -759,6 +759,7 @@ def _schema_matches_section(
     schema_def: dict,
     section: Section,
     require_apply_to: bool,
+    classifier_errored: bool = False,
 ) -> bool:
     """Does this schema want to run against this section?
 
@@ -769,22 +770,27 @@ def _schema_matches_section(
     time via the caller's ValueError check — this helper only returns
     True/False.
 
-    Fallback sections (type == `document`) bypass apply_to: they arise
-    from the short-doc fast path, classifier failures, or completely
-    dropped responses — situations where the classifier couldn't add
-    information. Silently filtering them would turn a "classifier had
-    no opinion" signal into "schema returned nothing", which is exactly
-    the regression oss-55 tracked down. Trust the schema's declared type
-    when the classifier offered none.
+    Fallback sections (type == `document`) get special treatment:
+
+    - **Classifier errored** (LLM threw, network failure, etc.):
+      bypass apply_to. The classifier had a transient failure, not
+      a classification judgment. Silently filtering a legit filing
+      because the classifier hiccupped is the regression oss-55
+      tracked down.
+    - **Classifier succeeded** but fell back to `document` (normalizer
+      corrected garbage JSON into the default type): do NOT bypass
+      apply_to. The classifier ran, processed the content, and
+      couldn't match it to any declared type. That's the classifier
+      saying "this doesn't look like what the schema is looking for"
+      — exactly the signal apply_to is designed to act on.
     """
     apply_to = schema_def.get("apply_to")
     if apply_to is None:
-        # Strict-mode callers catch this before invoking the helper.
         return not require_apply_to
     if not isinstance(apply_to, list):
         return False
     if section.type == "document":
-        return True
+        return classifier_errored
     return section.type in apply_to
 
 
@@ -1024,9 +1030,10 @@ async def intelligent_extract(
         f"{classifier_meta.get('elapsed_ms', 0)}ms)"
     )
 
+    classifier_errored = "error" in classifier_meta
     section_results: list[dict] = []
     for section in sections:
-        if not _schema_matches_section(schema_def, section, require_apply_to):
+        if not _schema_matches_section(schema_def, section, require_apply_to, classifier_errored):
             continue
         section_chunks = [chunks[i] for i in section.chunk_indices if 0 <= i < len(chunks)]
         if not section_chunks:

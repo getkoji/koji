@@ -2362,6 +2362,95 @@ class TestClassifierEnabled:
         # Only the classifier call — no extract call.
         assert len(provider.calls) == 1
 
+    async def test_document_fallback_without_error_respects_apply_to(self, monkeypatch):
+        """Classifier runs, returns garbage that normalizes to `document`
+        fallback (no LLM error), and apply_to is declared. The `document`
+        escape hatch must NOT fire — the classifier is saying "I don't
+        recognize this as any declared type", which means apply_to should
+        filter normally. This is the oss-68 cross-domain leak: a COI
+        handed to an SEC schema with the classifier returning `document`
+        fallback was bypassing apply_to and hallucinating SEC fields."""
+        schema = {
+            "name": "sec_filing",
+            "apply_to": ["sec_filing"],
+            "fields": {"company_name": {"type": "string", "required": True}},
+        }
+        provider = MockProvider(
+            responses=[
+                # Classifier returns garbage — normalizer will correct
+                # it to a single `document`-type fallback section.
+                "this is not valid json at all",
+            ]
+        )
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: provider,
+        )
+        classify_config = {
+            "model": "mock/classify",
+            "types": [
+                {"id": "sec_filing", "description": "SEC filing"},
+                {"id": "coi", "description": "Certificate of insurance"},
+            ],
+        }
+        result = await intelligent_extract(
+            markdown="# Certificate of Liability\n\nZephyr Logistics LLC",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        # Classifier ran (no error — it returned a response, just bad JSON),
+        # normalizer fell back to `document`, apply_to=[sec_filing] should
+        # filter it out. No hallucination.
+        assert result["sections"] == []
+        assert result["classifier"]["sections_matched"] == 0
+        assert result["classifier"]["reason"] == "no_matching_section"
+
+    async def test_document_fallback_with_error_preserves_escape_hatch(self, monkeypatch):
+        """When the classifier LLM errors (network failure, timeout), the
+        normalizer produces a `document` fallback AND the metadata has an
+        `error` key. In this case the escape hatch should STILL fire —
+        a transient failure shouldn't silently drop extraction for a
+        potentially-legitimate document."""
+        schema = {
+            "name": "sec_filing",
+            "apply_to": ["sec_filing"],
+            "fields": {"company_name": {"type": "string", "required": True}},
+        }
+        # First call raises (classifier error), second call is the extract.
+        call_count = 0
+        original_provider = MockProvider(responses=[])
+
+        async def _generate_with_error(prompt, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("network timeout")
+            return json.dumps({"company_name": "Acme Corp"})
+
+        original_provider.generate = _generate_with_error
+        monkeypatch.setattr(
+            "services.extract.pipeline.create_provider",
+            lambda model: original_provider,
+        )
+        classify_config = {
+            "model": "mock/classify",
+            "types": [{"id": "sec_filing", "description": "SEC filing"}],
+        }
+        result = await intelligent_extract(
+            markdown="# 10-K Cover\n\nAcme Corp",
+            schema_def=schema,
+            model="mock/test",
+            classify_config=classify_config,
+        )
+        # Classifier errored → `document` fallback → escape hatch fires →
+        # extraction runs. The extract call is the second generate call.
+        assert len(result["sections"]) == 1
+        assert result["sections"][0]["section_type"] == "document"
+        assert result["sections"][0]["extracted"]["company_name"] == "Acme Corp"
+        assert "error" in result["classifier"]
+        assert result["classifier"]["sections_matched"] == 1
+
     async def test_no_apply_to_keeps_short_doc_fast_path(self, monkeypatch):
         """Schema without apply_to still gets the fast path (oss-62 only
         overrides when apply_to is declared — the optimization stays for
