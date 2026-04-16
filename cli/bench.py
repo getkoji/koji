@@ -295,12 +295,15 @@ def benchmark_document(
     )
 
     try:
-        _, schema_content = load_schema(entry.schema_path)
+        schema_dict, schema_content = load_schema(entry.schema_path)
         markdown = entry.document_path.read_text()
         expected = json.loads(entry.expected_path.read_text())
     except Exception as e:
         result.error = f"setup: {e}"
         return result
+
+    compare_config = schema_dict.get("compare") or {} if isinstance(schema_dict, dict) else {}
+    fuzzy_threshold = float(compare_config.get("fuzzy_threshold", 0.0))
 
     payload: dict = {"markdown": markdown, "schema": schema_content}
     if model:
@@ -342,7 +345,7 @@ def benchmark_document(
         result.error = f"extracted is not an object: {type(actual).__name__}"
         return result
 
-    result.field_results = compare_results(expected, actual)
+    result.field_results = compare_results(expected, actual, fuzzy_threshold=fuzzy_threshold)
     return result
 
 

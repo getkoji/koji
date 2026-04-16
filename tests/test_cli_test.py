@@ -339,6 +339,53 @@ class TestCompareResults:
         assert results == []
 
 
+class TestFuzzyStringComparison:
+    def test_exact_match_still_works_with_threshold(self):
+        r = compare_field("name", "Acme Corp", "Acme Corp", fuzzy_threshold=0.85)
+        assert r.passed
+        assert "fuzzy" not in (r.detail or "")
+
+    def test_case_insensitive_still_works_with_threshold(self):
+        r = compare_field("name", "ACME CORP", "acme corp", fuzzy_threshold=0.85)
+        assert r.passed
+        assert "fuzzy" not in (r.detail or "")
+
+    def test_ocr_typo_passes_with_threshold(self):
+        r = compare_field("name", "TEO HENG STATIONERY", "TED HENG STATIONERY", fuzzy_threshold=0.85)
+        assert r.passed
+        assert "fuzzy" in r.detail
+
+    def test_ocr_typo_fails_without_threshold(self):
+        r = compare_field("name", "TEO HENG STATIONERY", "TED HENG STATIONERY", fuzzy_threshold=0.0)
+        assert not r.passed
+
+    def test_completely_different_string_fails_even_with_threshold(self):
+        r = compare_field("name", "ASIA MART", "123 JALAN KAPAR KLANG SELANGOR", fuzzy_threshold=0.85)
+        assert not r.passed
+
+    def test_sdn_bhd_variant_passes(self):
+        r = compare_field("name", "MR D.I.Y. (M) SDN BHD", "MR D.I.Y. (M) SON BHD", fuzzy_threshold=0.85)
+        assert r.passed
+
+    def test_threshold_boundary(self):
+        from cli.test_runner import string_similarity
+
+        sim = string_similarity("BOOK TA .K", "BOOK TA -K")
+        assert sim > 0.85
+        r = compare_field("name", "BOOK TA .K", "BOOK TA -K", fuzzy_threshold=0.85)
+        assert r.passed
+
+    def test_compare_results_passes_threshold(self):
+        expected = {"name": "TEO HENG", "total": 9.0}
+        actual = {"name": "TED HENG", "total": 9.0}
+        results = compare_results(expected, actual, fuzzy_threshold=0.85)
+        assert all(r.passed for r in results)
+
+    def test_non_string_fields_unaffected_by_threshold(self):
+        r = compare_field("amount", 100.0, 200.0, fuzzy_threshold=0.99)
+        assert not r.passed
+
+
 # ── Fixture discovery ─────────────────────────────────────────────────
 
 
