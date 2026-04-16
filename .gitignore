@@ -21,6 +21,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Node / pnpm
+node_modules/
+
 # Koji
 output/
 .koji/

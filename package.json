@@ -1,0 +1,16 @@
+{
+  "name": "koji",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Koji — documents in, structured data out. OSS product monorepo.",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "generate": "pnpm -r generate"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

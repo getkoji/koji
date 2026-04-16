@@ -1,0 +1,12 @@
+extends:
+  - recommended
+
+rules:
+  # localhost is a documented dev URL for the self-hosted OSS build, not a
+  # placeholder — suppressing the example.com warning is intentional.
+  no-server-example.com: off
+
+  # /health and /ready intentionally advertise only 2xx/5xx. These probes
+  # are unauthenticated and not rate-limited; a 4xx response is meaningless
+  # for a liveness check.
+  operation-4xx-response: off

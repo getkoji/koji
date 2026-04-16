@@ -1,0 +1,5655 @@
+openapi: 3.1.0
+info:
+  title: Koji API
+  version: 1.0.0-draft
+  summary: Document extraction platform API — hosted cloud and self-hosted OSS.
+  description: |
+    The Koji API. Documents in, structured data out.
+
+    This spec is the contract surface for the Koji product across the hosted
+    platform (`api.getkoji.cloud`), the self-hosted OSS distribution, and
+    enterprise / BYOC deployments. Every dashboard surface, every CLI command,
+    and every public integration eventually maps to an operation defined here.
+
+    This document is the **source of truth** for:
+
+    - The REST API exposed by `platform/apps/hosted` (Cloudflare Workers).
+    - Generated TypeScript types consumed via `@koji/types/api`.
+    - Server-side request/response validation (Zod or equivalent middleware
+      generated from this spec).
+    - Public documentation rendered on `getkoji.dev/docs/reference/api`.
+
+    The endpoint inventory follows `docs/specs/api-endpoints.md` §3 through §15.
+    Resource shapes follow `docs/specs/database-schema.md`, stripped of fields
+    that are purely internal (`tenant_id`, `deleted_at`, raw auth blobs, hashed
+    secrets, etc.).
+
+    **Status:** first-draft contract for Wave 0 of the platform roadmap. Exact
+    request/response shapes are stable enough to generate clients and type
+    stubs against, but may still be refined as the first endpoints land. Any
+    breaking change bumps this doc and the consumers in lock-step.
+  contact:
+    name: Koji
+    url: https://getkoji.dev
+    email: support@getkoji.dev
+  license:
+    name: Proprietary (hosted); Apache-2.0 (OSS core)
+    url: https://github.com/getkoji/koji/blob/main/LICENSE
+
+servers:
+  - url: https://api.getkoji.cloud/v1
+    description: Hosted platform (production)
+  - url: http://localhost:9400/v1
+    description: Self-hosted OSS default
+  - url: '{baseUrl}/v1'
+    description: Enterprise / BYOC deployment
+    variables:
+      baseUrl:
+        default: https://koji.internal.example.com
+        description: The deployment's base URL (up to but not including `/v1`).
+
+security:
+  - apiKey: []
+  - sessionCookie: []
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes. Unauthenticated.
+  - name: Session
+    description: Current user, login, and logout.
+  - name: Projects
+    description: |
+      Top-level tenant containers. `project` and `tenant` are the same entity;
+      the URL uses the friendlier `project` term.
+  - name: Schemas
+    description: Schema definitions and versioned YAML.
+  - name: Schema samples
+    description: Build-mode scratch documents used for iterative authoring.
+  - name: Corpus
+    description: Committed test set with ground truth per schema.
+  - name: Validate & Benchmarks
+    description: Run a schema against its corpus and compare to baselines.
+  - name: Pipelines
+    description: Ingress → classify → extract → emit stage graphs.
+  - name: Sources
+    description: Inbound document sources (S3, webhook, email, FTP).
+  - name: Jobs
+    description: Pipeline execution records and per-document results.
+  - name: Document traces
+    description: Per-document lifecycle and stage-level observability.
+  - name: Review queue
+    description: Low-confidence fields and validation failures flagged for human review.
+  - name: Model endpoints
+    description: Configured AI model endpoints (OpenAI, Azure, Bedrock, Ollama, etc.).
+  - name: Agent
+    description: Context-aware agent sessions per dashboard surface.
+  - name: Playground
+    description: Anonymous marketing-facing extraction demo. Rate-limited.
+  - name: Audit log
+    description: Append-only record of every mutation. Admin-only reads.
+  - name: API keys
+    description: Machine credentials for CLI and server-to-server integrations.
+  - name: Webhooks out
+    description: |
+      Outbound webhook target management. Endpoints here are inferred from
+      `api-endpoints.md` §5.4 and `database-schema.md` §13. Marked TODO in
+      the spec doc pending formal §3.17 design.
+
+paths:
+  # ==========================================================================
+  # §3.1 Health & session
+  # ==========================================================================
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Liveness check
+      description: Returns process-level liveness. Does not check downstream dependencies.
+      security: []
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /ready:
+    get:
+      operationId: getReadiness
+      tags: [Health]
+      summary: Readiness check
+      description: |
+        Verifies that downstream dependencies (database, configured model
+        endpoints, object storage) respond within timeout budgets.
+      security: []
+      responses:
+        '200':
+          description: All checks passed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+        '503':
+          description: One or more dependencies are unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /me:
+    get:
+      operationId: getCurrentUser
+      tags: [Session]
+      summary: Current user
+      description: |
+        Returns the authenticated user plus every tenant/project the user has
+        access to and the roles held on each.
+      responses:
+        '200':
+          description: Current session user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/session:
+    post:
+      operationId: createSession
+      tags: [Session]
+      summary: Log in
+      description: |
+        Adapter-specific login. The body shape depends on the configured auth
+        adapter (local credentials, OIDC callback, SAML assertion, Clerk
+        webhook, etc.). The response is a standard session envelope plus any
+        provider-specific redirect state.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session established.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      operationId: deleteSession
+      tags: [Session]
+      summary: Log out
+      description: Invalidates the current session. Idempotent.
+      responses:
+        '204':
+          description: Session invalidated (or was already invalid).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==========================================================================
+  # §3.2 Projects
+  # ==========================================================================
+
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [Projects]
+      summary: List projects the current user can access
+      responses:
+        '200':
+          description: Project memberships for the current user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createProject
+      tags: [Projects]
+      summary: Create a project
+      description: Creates a new project within the current tenant. Requires `tenant-owner`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /projects/{projectSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: getProject
+      tags: [Projects]
+      summary: Project detail
+      responses:
+        '200':
+          description: Project found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateProject
+      tags: [Projects]
+      summary: Update project metadata
+      description: Requires `project-admin`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteProject
+      tags: [Projects]
+      summary: Delete a project (permanent)
+      description: |
+        Requires `tenant-owner`. Soft-deletes the project and schedules a
+        90-day window before hard deletion. **Dangerous — there is no UI
+        undo beyond the recovery window.**
+      responses:
+        '204':
+          description: Project deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/metrics:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - name: period
+        in: query
+        required: false
+        description: Aggregation window. Defaults to `24h`.
+        schema:
+          type: string
+          enum: [1h, 24h, 7d, 30d]
+          default: 24h
+    get:
+      operationId: getProjectMetrics
+      tags: [Projects]
+      summary: Overview metrics strip
+      description: |
+        Powers the **Overview** page metrics strip. Aggregates accuracy,
+        throughput, latency, cost, and error rate across the requested window.
+      responses:
+        '200':
+          description: Aggregated metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMetrics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/activity:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Since'
+    get:
+      operationId: listProjectActivity
+      tags: [Projects]
+      summary: Recent project activity feed
+      description: |
+        Powers the **Overview** activity feed. Returns recent events
+        (jobs completed, deploys, review decisions, drift alerts).
+      responses:
+        '200':
+          description: Activity events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ActivityEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/alerts:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listProjectAlerts
+      tags: [Projects]
+      summary: Open project alerts
+      description: |
+        Powers the **Overview → Attention** panel. Drift alerts, review-queue
+        backlogs, pending schema proposals, failing sources.
+      responses:
+        '200':
+          description: Open alerts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectAlert'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/users:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listProjectUsers
+      tags: [Projects]
+      summary: List project members
+      responses:
+        '200':
+          description: Members.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectMember'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: addProjectUser
+      tags: [Projects]
+      summary: Invite or add a project member
+      description: Requires `project-admin`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteUserRequest'
+      responses:
+        '201':
+          description: Invitation created or existing user added.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      operationId: updateProjectUser
+      tags: [Projects]
+      summary: Change a member's roles
+      description: Requires `project-admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemberRolesRequest'
+      responses:
+        '200':
+          description: Roles updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: removeProjectUser
+      tags: [Projects]
+      summary: Remove a member from a project
+      description: Requires `project-admin`.
+      responses:
+        '204':
+          description: Member removed.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.3 Schemas
+  # ==========================================================================
+
+  /projects/{projectSlug}/schemas:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listSchemas
+      tags: [Schemas]
+      summary: List schemas in a project
+      description: |
+        Powers the top-bar **schema picker** dropdown. Returns a fast, compact
+        summary for each schema with current version, health, and document
+        counts.
+      responses:
+        '200':
+          description: Schemas.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchemaSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createSchema
+      tags: [Schemas]
+      summary: Create a schema
+      description: |
+        Creates a new schema within the project. Requires `schema-write`. The
+        schema may be seeded from blank, from a Playground session, or from a
+        public template.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSchemaRequest'
+      responses:
+        '201':
+          description: Schema created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schema'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getSchema
+      tags: [Schemas]
+      summary: Schema detail
+      description: |
+        Returns the schema plus the current version's YAML and any unsaved
+        Build-mode draft.
+      responses:
+        '200':
+          description: Schema detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schema'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateSchemaDraft
+      tags: [Schemas]
+      summary: Update Build-mode draft YAML
+      description: |
+        Updates the in-progress draft YAML for this schema without committing
+        a new version. Requires `schema-write`. Committing is a separate
+        operation (`POST …/versions`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSchemaDraftRequest'
+      responses:
+        '200':
+          description: Draft updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schema'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteSchema
+      tags: [Schemas]
+      summary: Archive a schema
+      description: |
+        Soft-delete. Pipelines that still reference the schema begin failing
+        their routing stage; recover with an admin restore action within 90 days.
+      responses:
+        '204':
+          description: Schema archived.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: listSchemaVersions
+      tags: [Schemas]
+      summary: List schema versions
+      responses:
+        '200':
+          description: Versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchemaVersionSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: commitSchemaVersion
+      tags: [Schemas]
+      summary: Commit the draft as a new version
+      description: |
+        Promotes the current draft YAML to an immutable version (`vN+1`).
+        Requires `schema-write`. The request may optionally update
+        `current_version_id` to the new version.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitSchemaVersionRequest'
+      responses:
+        '201':
+          description: Version committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/VersionNumber'
+    get:
+      operationId: getSchemaVersion
+      tags: [Schemas]
+      summary: Specific schema version
+      responses:
+        '200':
+          description: Version detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaVersion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}/rollback:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/VersionNumber'
+    post:
+      operationId: rollbackSchemaVersion
+      tags: [Schemas]
+      summary: Rollback to an older version
+      description: |
+        Creates a new version (`vN+1`) that clones the YAML of the target
+        version and optionally updates `current_version_id`. Immutability is
+        preserved — the older version is never modified.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackSchemaVersionRequest'
+      responses:
+        '201':
+          description: Rollback committed as a new version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaVersion'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/deploy:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    post:
+      operationId: deploySchema
+      tags: [Schemas]
+      summary: Deploy a schema version
+      description: |
+        Maps to the `koji deploy` CLI. Sets the deployed version for the
+        target environment. In single-env deployments, the `environment`
+        parameter may be omitted.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploySchemaRequest'
+      responses:
+        '200':
+          description: Deployed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ==========================================================================
+  # §3.4 Schema samples (Build mode)
+  # ==========================================================================
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/samples:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: listSchemaSamples
+      tags: [Schema samples]
+      summary: List samples attached to a schema
+      responses:
+        '200':
+          description: Samples.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchemaSample'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: uploadSchemaSample
+      tags: [Schema samples]
+      summary: Upload a sample document
+      description: |
+        Build-mode scratch upload. Requires `schema-write`. Samples live for
+        ~30 days via bucket lifecycle and are not part of the corpus.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The document file.
+                filename:
+                  type: string
+                  description: Optional override for the displayed filename.
+      responses:
+        '201':
+          description: Sample uploaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaSample'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: File too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/SampleId'
+    delete:
+      operationId: deleteSchemaSample
+      tags: [Schema samples]
+      summary: Remove a sample document
+      responses:
+        '204':
+          description: Sample deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}/test:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/SampleId'
+    post:
+      operationId: testSchemaSample
+      tags: [Schema samples]
+      summary: Run the current draft against a sample
+      description: |
+        Powers **Build mode**'s live extraction. Runs the current draft YAML
+        (not a committed version) against the sample document and returns the
+        extraction result, per-field confidence, and provenance. Debounced and
+        cached server-side when Build mode's auto-run toggle is on.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SampleTestRequest'
+      responses:
+        '200':
+          description: Extraction result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SampleTestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # ==========================================================================
+  # §3.5 Schema corpus
+  # ==========================================================================
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/corpus:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - name: tag
+        in: query
+        required: false
+        description: Filter entries by tag (repeatable).
+        schema:
+          type: array
+          items:
+            type: string
+        style: form
+        explode: true
+    get:
+      operationId: listCorpusEntries
+      tags: [Corpus]
+      summary: List corpus entries for a schema
+      description: Powers the **Corpus** page list.
+      responses:
+        '200':
+          description: Corpus entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CorpusEntrySummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: uploadCorpusEntry
+      tags: [Corpus]
+      summary: Upload a new corpus document with ground truth
+      description: Requires `schema-write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, ground_truth]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                ground_truth:
+                  type: string
+                  description: JSON-encoded ground-truth document for the extraction.
+                tags:
+                  type: string
+                  description: Comma-separated tag list (e.g. `normal,edge`).
+      responses:
+        '201':
+          description: Entry created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          description: File too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/promote-from-review:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    post:
+      operationId: promoteReviewToCorpus
+      tags: [Corpus]
+      summary: Promote a resolved review item to a corpus entry
+      description: |
+        Creates a corpus entry from a resolved review item, using the
+        reviewer's final value as the ground truth. Requires `schema-write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoteFromReviewRequest'
+      responses:
+        '201':
+          description: Corpus entry created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/CorpusEntryId'
+    get:
+      operationId: getCorpusEntry
+      tags: [Corpus]
+      summary: Corpus entry detail with ground truth
+      responses:
+        '200':
+          description: Entry detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateCorpusEntry
+      tags: [Corpus]
+      summary: Edit ground truth or metadata
+      description: |
+        Rare operation. Requires `schema-write`. Every mutation is audit-logged
+        and forces all downstream runs to re-score against the new ground truth.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCorpusEntryRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteCorpusEntry
+      tags: [Corpus]
+      summary: Remove a corpus entry
+      responses:
+        '204':
+          description: Entry removed.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/retag:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/CorpusEntryId'
+    post:
+      operationId: retagCorpusEntry
+      tags: [Corpus]
+      summary: Replace the tag set on a corpus entry
+      description: |
+        Tags drive Validate and Benchmark filters (`normal`, `adversarial`,
+        `edge`, `held_out`, `regression`). Replaces the existing tag array
+        wholesale.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetagRequest'
+      responses:
+        '200':
+          description: Tags updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/history:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/CorpusEntryId'
+    get:
+      operationId: getCorpusEntryHistory
+      tags: [Corpus]
+      summary: Per-version pass/fail timeline for a corpus doc
+      description: Powers the version-history timeline on the Corpus detail panel.
+      responses:
+        '200':
+          description: History.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CorpusHistoryPoint'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.6 Validate & Benchmarks
+  # ==========================================================================
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/validate:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    post:
+      operationId: triggerValidateRun
+      tags: [Validate & Benchmarks]
+      summary: Trigger a validate run
+      description: |
+        Enqueues a validate run against the corpus. Requires `schema-write`.
+        Returns `202` with a run ID; poll `GET .../validate/runs/{runId}` for
+        progress.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerRunRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+    get:
+      operationId: listValidateRuns
+      tags: [Validate & Benchmarks]
+      summary: List validate runs for a schema
+      responses:
+        '200':
+          description: Runs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SchemaRunSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getValidateRun
+      tags: [Validate & Benchmarks]
+      summary: Run detail with aggregate + per-doc results
+      description: Powers the **Validate** mode results panel.
+      responses:
+        '200':
+          description: Run detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaRun'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/regressions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: listRunRegressions
+      tags: [Validate & Benchmarks]
+      summary: Regression-only view for a run
+      description: Entries that passed the baseline version but fail this run.
+      responses:
+        '200':
+          description: Regressions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RegressionEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/dismiss:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: dismissRunRegression
+      tags: [Validate & Benchmarks]
+      summary: Dismiss a regression
+      description: Annotates a regression as expected or accepted. Requires `schema-write`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DismissRegressionRequest'
+      responses:
+        '204':
+          description: Dismissed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getBenchmarkHeadline
+      tags: [Validate & Benchmarks]
+      summary: Aggregate benchmark metrics
+      description: Powers the **Benchmarks** headline metrics card.
+      responses:
+        '200':
+          description: Aggregate metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkHeadline'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/trend:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+      - name: versions
+        in: query
+        required: false
+        description: Maximum number of versions to include in the trend (most recent first).
+        schema:
+          type: integer
+          minimum: 2
+          maximum: 100
+          default: 20
+    get:
+      operationId: getBenchmarkTrend
+      tags: [Validate & Benchmarks]
+      summary: Per-version accuracy trajectory
+      responses:
+        '200':
+          description: Trend points.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BenchmarkTrendPoint'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/fields:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getBenchmarkFieldMatrix
+      tags: [Validate & Benchmarks]
+      summary: Per-field × per-version heatmap
+      description: Powers the **Benchmarks** field heatmap.
+      responses:
+        '200':
+          description: Field × version accuracy matrix.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BenchmarkFieldMatrix'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/models:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getBenchmarkModelComparison
+      tags: [Validate & Benchmarks]
+      summary: Per-model comparison table
+      description: Accuracy, latency, and cost per configured model endpoint.
+      responses:
+        '200':
+          description: Model comparison rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BenchmarkModelComparison'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/categories:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getBenchmarkCategories
+      tags: [Validate & Benchmarks]
+      summary: Per-tag category breakdown
+      responses:
+        '200':
+          description: Category cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BenchmarkCategoryBreakdown'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/run:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    post:
+      operationId: triggerBenchmarkRun
+      tags: [Validate & Benchmarks]
+      summary: Trigger a full benchmark run
+      description: |
+        Runs the entire corpus against every enabled model endpoint. Long-
+        running — returns `202` with a run ID.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerRunRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.7 Pipelines
+  # ==========================================================================
+
+  /projects/{projectSlug}/pipelines:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listPipelines
+      tags: [Pipelines]
+      summary: List pipelines
+      description: Powers the **Pipelines** list.
+      responses:
+        '200':
+          description: Pipelines.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PipelineSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createPipeline
+      tags: [Pipelines]
+      summary: Create a pipeline from YAML
+      description: Requires `pipeline-write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePipelineRequest'
+      responses:
+        '201':
+          description: Pipeline created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /projects/{projectSlug}/pipelines/{pipelineSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/PipelineSlug'
+    get:
+      operationId: getPipeline
+      tags: [Pipelines]
+      summary: Pipeline detail
+      description: |
+        Powers the **Pipelines detail** page. Includes full config, stage
+        diagram data, recent jobs, and rollup metrics.
+      responses:
+        '200':
+          description: Pipeline.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updatePipeline
+      tags: [Pipelines]
+      summary: Update pipeline YAML
+      description: Requires `pipeline-write`. The full YAML is replaced — no partial merges.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePipelineRequest'
+      responses:
+        '200':
+          description: Pipeline updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deletePipeline
+      tags: [Pipelines]
+      summary: Delete a pipeline
+      responses:
+        '204':
+          description: Deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/pipelines/{pipelineSlug}/run:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/PipelineSlug'
+    post:
+      operationId: runPipeline
+      tags: [Pipelines]
+      summary: Manual trigger — creates a job
+      description: Requires `pipeline-write`. Creates a job and returns `202`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualRunRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/pipelines/{pipelineSlug}/pause:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/PipelineSlug'
+    post:
+      operationId: pausePipeline
+      tags: [Pipelines]
+      summary: Pause pipeline triggers
+      description: |
+        Stops future trigger firings. In-flight jobs complete normally.
+        Requires `pipeline-write`.
+      responses:
+        '200':
+          description: Paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/pipelines/{pipelineSlug}/resume:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/PipelineSlug'
+    post:
+      operationId: resumePipeline
+      tags: [Pipelines]
+      summary: Resume pipeline triggers
+      responses:
+        '200':
+          description: Resumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/pipelines/{pipelineSlug}/stages/{stageName}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/PipelineSlug'
+      - $ref: '#/components/parameters/StageName'
+    get:
+      operationId: getPipelineStage
+      tags: [Pipelines]
+      summary: Stage-specific configuration
+      description: |
+        Powers the stage config panel on the Pipelines detail page (e.g. the
+        classify stage's routing table).
+      responses:
+        '200':
+          description: Stage config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineStageConfig'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.8 Sources
+  # ==========================================================================
+
+  /projects/{projectSlug}/sources:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listSources
+      tags: [Sources]
+      summary: List sources
+      responses:
+        '200':
+          description: Sources.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SourceSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createSource
+      tags: [Sources]
+      summary: Create a source
+      description: Requires `source-write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSourceRequest'
+      responses:
+        '201':
+          description: Source created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/sources/{sourceSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+    get:
+      operationId: getSource
+      tags: [Sources]
+      summary: Source detail
+      responses:
+        '200':
+          description: Source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateSource
+      tags: [Sources]
+      summary: Update source config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSourceRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteSource
+      tags: [Sources]
+      summary: Delete a source
+      responses:
+        '204':
+          description: Deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/sources/{sourceSlug}/test:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+    post:
+      operationId: testSourceConnection
+      tags: [Sources]
+      summary: Test source connectivity
+      description: |
+        Verifies credentials and connectivity without consuming a document.
+        For S3 watchers, performs a `ListObjectsV2`; for webhooks, returns the
+        expected URL + signing secret; for email, verifies inbound routing.
+      responses:
+        '200':
+          description: Test result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceTestResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/sources/{sourceSlug}/pause:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+    post:
+      operationId: pauseSource
+      tags: [Sources]
+      summary: Pause a source
+      responses:
+        '200':
+          description: Paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/sources/{sourceSlug}/resume:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+    post:
+      operationId: resumeSource
+      tags: [Sources]
+      summary: Resume a source
+      responses:
+        '200':
+          description: Resumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Source'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/sources/{sourceSlug}/ingestions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Since'
+    get:
+      operationId: listSourceIngestions
+      tags: [Sources]
+      summary: Recent ingestions for a source
+      description: Powers the recent-ingestions list on the Sources detail page.
+      responses:
+        '200':
+          description: Ingestions.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Ingestion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/sources/{sourceSlug}/webhook:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SourceSlug'
+    post:
+      operationId: receiveSourceWebhook
+      tags: [Sources]
+      summary: Inbound webhook delivery (customer-facing)
+      description: |
+        The public webhook endpoint a customer configures in their upstream
+        system. Signed payload verified via `X-Koji-Signature`. Successful
+        deliveries create an ingestion record and enqueue the pipeline.
+
+        **This endpoint is not authenticated with the normal `apiKey` or
+        session flows — it uses per-source HMAC signatures.** Rate limits are
+        per-source.
+      security:
+        - webhookSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Free-form JSON payload. Consumed by the source's payload
+                adapter to extract the document bytes or URL.
+              additionalProperties: true
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw document bytes (for sources configured for binary payloads).
+      responses:
+        '202':
+          description: Accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ingestion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: Payload too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # ==========================================================================
+  # §3.9 Jobs
+  # ==========================================================================
+
+  /projects/{projectSlug}/jobs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Since'
+      - name: pipeline
+        in: query
+        required: false
+        description: Filter by pipeline slug.
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/JobStatus'
+    get:
+      operationId: listJobs
+      tags: [Jobs]
+      summary: List jobs
+      description: Powers the **Jobs** list.
+      responses:
+        '200':
+          description: Jobs.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/JobSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+    get:
+      operationId: getJob
+      tags: [Jobs]
+      summary: Job detail
+      description: Powers the **Job detail** page.
+      responses:
+        '200':
+          description: Job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+    get:
+      operationId: listJobDocuments
+      tags: [Jobs]
+      summary: Documents processed within a job
+      responses:
+        '200':
+          description: Documents.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DocumentSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+    post:
+      operationId: retryJob
+      tags: [Jobs]
+      summary: Retry a job
+      description: |
+        Re-runs the job. The body controls whether only failed documents are
+        retried or the entire corpus. Requires `pipeline-write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryJobRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+    post:
+      operationId: cancelJob
+      tags: [Jobs]
+      summary: Cancel a running job
+      description: |
+        Sets the job to `cancel_requested`. The worker loop drains gracefully
+        on the next poll.
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/download:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - name: format
+        in: query
+        required: true
+        schema:
+          type: string
+          enum: [json, csv]
+    get:
+      operationId: downloadJobResults
+      tags: [Jobs]
+      summary: Download full job results
+      description: |
+        Streams the full extracted results for every document in the job as
+        JSON or CSV. Large jobs may return a signed download URL instead of
+        inlining the body.
+      responses:
+        '200':
+          description: Result bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResultsBundle'
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '302':
+          description: Redirect to a signed download URL (large jobs).
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/stream:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+    get:
+      operationId: streamJobEvents
+      tags: [Jobs]
+      summary: Server-Sent Events stream for a job
+      description: |
+        Returns a `text/event-stream` connection that emits `stage.start`,
+        `stage.complete`, `review.queued`, `review.resolved`, and `job.status`
+        events as the job progresses. Clients should reconnect with
+        exponential backoff on disconnect.
+      responses:
+        '200':
+          description: SSE stream.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/JobStreamEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.10 Document traces
+  # ==========================================================================
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      operationId: getJobDocument
+      tags: [Document traces]
+      summary: Document metadata + extracted JSON + trace summary
+      responses:
+        '200':
+          description: Document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      operationId: getDocumentTrace
+      tags: [Document traces]
+      summary: Full document trace tree
+      description: Powers the **Trace view** waterfall.
+      responses:
+        '200':
+          description: Trace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Trace'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/StageId'
+    get:
+      operationId: getTraceStage
+      tags: [Document traces]
+      summary: Stage detail with all spans
+      responses:
+        '200':
+          description: Stage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceStage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}/raw:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/StageId'
+    get:
+      operationId: getTraceStageRaw
+      tags: [Document traces]
+      summary: Raw prompt/response for a stage
+      description: |
+        Powers the expandable **Show raw** rows on the Trace view. Fetches
+        the raw prompt text and raw LLM response for this stage's model call
+        (if applicable). Raw blobs are cold-storage — retention is 90 days on
+        hosted, 30 days on self-hosted default.
+      responses:
+        '200':
+          description: Raw I/O.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceStageRawIO'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Raw I/O retention expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/original:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/JobSlug'
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      operationId: getOriginalDocument
+      tags: [Document traces]
+      summary: Original uploaded document bytes
+      responses:
+        '200':
+          description: Document bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '302':
+          description: Redirect to a signed storage URL.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Document retention expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /traces/{traceExternalId}:
+    parameters:
+      - name: traceExternalId
+        in: path
+        required: true
+        description: External trace ID (`trc_…`), as shown in the trace bar.
+        schema:
+          type: string
+          pattern: '^trc_[A-Za-z0-9]+$'
+    get:
+      operationId: lookupTrace
+      tags: [Document traces]
+      summary: Universal trace-ID lookup
+      description: |
+        Powers the top-bar trace lookup. Resolves the trace across any project
+        the current user can access. Returns `404` if the ID doesn't resolve
+        or the caller lacks access (no leak of "exists but denied").
+      responses:
+        '200':
+          description: Trace plus locator metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceLookupResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.11 Review queue
+  # ==========================================================================
+
+  /projects/{projectSlug}/review:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [pending, in_review, resolved, escalated]
+      - name: assigned_to
+        in: query
+        required: false
+        description: |
+          Filter by assignee. Accepts a user ID or the literal value `me` for
+          the current session user.
+        schema:
+          type: string
+      - name: reason
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [low_confidence, validation_failure, manual_flag]
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [oldest, newest, confidence_asc, confidence_desc]
+          default: oldest
+    get:
+      operationId: listReviewItems
+      tags: [Review queue]
+      summary: List review queue items
+      description: Powers the **Review** queue list.
+      responses:
+        '200':
+          description: Review items.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ReviewItemSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/review/{reviewId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    get:
+      operationId: getReviewItem
+      tags: [Review queue]
+      summary: Review item detail
+      description: Powers the **Review detail** page with full item context.
+      responses:
+        '200':
+          description: Review item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/review/{reviewId}/accept:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      operationId: acceptReviewItem
+      tags: [Review queue]
+      summary: Accept the model's extraction as-is
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewDecisionRequest'
+      responses:
+        '200':
+          description: Resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/review/{reviewId}/override:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      operationId: overrideReviewItem
+      tags: [Review queue]
+      summary: Override the extracted value
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewOverrideRequest'
+      responses:
+        '200':
+          description: Resolved with override.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/review/{reviewId}/skip:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      operationId: skipReviewItem
+      tags: [Review queue]
+      summary: Skip without resolving
+      responses:
+        '200':
+          description: Skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/review/{reviewId}/escalate:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      operationId: escalateReviewItem
+      tags: [Review queue]
+      summary: Escalate to another reviewer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewEscalateRequest'
+      responses:
+        '200':
+          description: Escalated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/review/{reviewId}/assign:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ReviewId'
+    post:
+      operationId: assignReviewItem
+      tags: [Review queue]
+      summary: Assign to a specific reviewer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewAssignRequest'
+      responses:
+        '200':
+          description: Assigned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/review/bulk-approve:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    post:
+      operationId: bulkApproveReview
+      tags: [Review queue]
+      summary: Bulk approve review items
+      description: Requires `review-admin`. Audit-logged. Approves up to 1000 items per call.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkApproveRequest'
+      responses:
+        '200':
+          description: Bulk result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkApproveResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.12 Model endpoints
+  # ==========================================================================
+
+  /projects/{projectSlug}/endpoints:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listModelEndpoints
+      tags: [Model endpoints]
+      summary: List configured model endpoints
+      responses:
+        '200':
+          description: Endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelEndpointSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createModelEndpoint
+      tags: [Model endpoints]
+      summary: Create a model endpoint
+      description: Requires `endpoint-write`. Secrets are write-only.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateModelEndpointRequest'
+      responses:
+        '201':
+          description: Endpoint created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/endpoints/{endpointSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/EndpointSlug'
+    get:
+      operationId: getModelEndpoint
+      tags: [Model endpoints]
+      summary: Endpoint detail
+      description: Powers the **Settings → Endpoints detail** page.
+      responses:
+        '200':
+          description: Endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateModelEndpoint
+      tags: [Model endpoints]
+      summary: Update an endpoint
+      description: Requires `endpoint-write`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateModelEndpointRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteModelEndpoint
+      tags: [Model endpoints]
+      summary: Delete an endpoint
+      description: Fails with `409` if still referenced by active pipelines or schemas.
+      responses:
+        '204':
+          description: Deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/endpoints/{endpointSlug}/test:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/EndpointSlug'
+    post:
+      operationId: testModelEndpoint
+      tags: [Model endpoints]
+      summary: Test connectivity with a trivial call
+      responses:
+        '200':
+          description: Test result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointTestResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/endpoints/{endpointSlug}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/EndpointSlug'
+      - name: range
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [24h, 7d, 30d, 90d]
+          default: 30d
+    get:
+      operationId: getModelEndpointUsage
+      tags: [Model endpoints]
+      summary: Per-endpoint usage and cost rollup
+      description: |
+        Powers the usage card + sparkline on the endpoint detail page. Pulls
+        from the `endpoint_usage_rollups` table.
+      responses:
+        '200':
+          description: Usage rollup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointUsage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.13 Agent
+  # ==========================================================================
+
+  /projects/{projectSlug}/agent/session:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    post:
+      operationId: createAgentSession
+      tags: [Agent]
+      summary: Create or resume an agent session
+      description: |
+        Sessions are per-user per-context. Calling with the same `(context,
+        entity_id)` pair as an active session resumes it instead of creating a
+        new one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentSessionRequest'
+      responses:
+        '200':
+          description: Session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/agent/sessions/{agentSessionId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/AgentSessionId'
+    delete:
+      operationId: deleteAgentSession
+      tags: [Agent]
+      summary: End an agent session
+      responses:
+        '204':
+          description: Archived.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/agent/sessions/{agentSessionId}/history:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/AgentSessionId'
+    get:
+      operationId: getAgentSessionHistory
+      tags: [Agent]
+      summary: Message history for a session
+      responses:
+        '200':
+          description: Messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentMessage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/agent/sessions/{agentSessionId}/message:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/AgentSessionId'
+    post:
+      operationId: sendAgentMessage
+      tags: [Agent]
+      summary: Send a user message; receive an SSE response stream
+      description: |
+        Accepts a user message and returns a `text/event-stream` response. The
+        stream emits `token`, `tool_call`, `tool_result`, `proposed_edit`, and
+        `done` events.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentMessageRequest'
+      responses:
+        '200':
+          description: SSE stream.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AgentStreamEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /projects/{projectSlug}/agent/sessions/{agentSessionId}/accept-edit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/AgentSessionId'
+    post:
+      operationId: acceptAgentEdit
+      tags: [Agent]
+      summary: Accept a proposed edit
+      description: Requires the role that owns the target resource (e.g. `schema-write`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEditDecisionRequest'
+      responses:
+        '200':
+          description: Edit applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProposedEdit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/agent/sessions/{agentSessionId}/reject-edit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/AgentSessionId'
+    post:
+      operationId: rejectAgentEdit
+      tags: [Agent]
+      summary: Reject a proposed edit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEditDecisionRequest'
+      responses:
+        '200':
+          description: Edit rejected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProposedEdit'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.14 Playground (anonymous)
+  # ==========================================================================
+
+  /playground/extract:
+    post:
+      operationId: playgroundExtract
+      tags: [Playground]
+      summary: Anonymous extraction
+      description: |
+        Public extraction demo. Strict rate limits: 3/hour per anonymous IP,
+        10/hour per free-tier authenticated user. Only the free-tier model is
+        used — callers cannot specify a model endpoint.
+
+        Documents are held for 24 hours then deleted from storage.
+      security: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                schema_yaml:
+                  type: string
+                  description: Optional schema YAML to run. If omitted, a default template is used.
+      responses:
+        '200':
+          description: Extraction result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaygroundResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: File too large (5 MB max).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /playground/propose-schema:
+    post:
+      operationId: playgroundProposeSchema
+      tags: [Playground]
+      summary: Anonymous schema suggestion
+      description: |
+        Given an uploaded document, the agent returns a starter schema YAML
+        the caller can iterate on. Subject to the same rate limits as
+        `/playground/extract`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Proposed schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaygroundProposedSchema'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: File too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /playground/promote:
+    post:
+      operationId: playgroundPromote
+      tags: [Playground]
+      summary: Promote a Playground session to a project schema
+      description: |
+        Copies the Playground schema + sample into a real project and creates
+        a new schema. Requires an authenticated user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaygroundPromoteRequest'
+      responses:
+        '201':
+          description: Schema created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schema'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.15 Audit log
+  # ==========================================================================
+
+  /projects/{projectSlug}/audit:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Since'
+      - name: actor
+        in: query
+        required: false
+        description: Filter by actor (user ID, API key ID, or `system`).
+        schema:
+          type: string
+      - name: action
+        in: query
+        required: false
+        description: Filter by action name (e.g. `schema.deploy`).
+        schema:
+          type: string
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: resource_id
+        in: query
+        required: false
+        schema:
+          type: string
+    get:
+      operationId: listAuditLog
+      tags: [Audit log]
+      summary: Read the audit log
+      description: Requires `project-admin`.
+      responses:
+        '200':
+          description: Entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CursorPage'
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuditLogEntry'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectSlug}/audit/export:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - name: format
+        in: query
+        required: true
+        description: Export format. `cef` is Splunk-flavoured CEF; `jsonl` is newline-delimited JSON.
+        schema:
+          type: string
+          enum: [cef, jsonl]
+      - $ref: '#/components/parameters/Since'
+    get:
+      operationId: exportAuditLog
+      tags: [Audit log]
+      summary: Bulk export for SIEM ingestion
+      description: |
+        Streams the audit log for the requested window. Enterprise-only for
+        CEF format. Requires `project-admin`.
+      responses:
+        '200':
+          description: Export stream.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+                description: CEF-formatted records, one per line.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.16 API keys
+  # ==========================================================================
+
+  /projects/{projectSlug}/api-keys:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listApiKeys
+      tags: [API keys]
+      summary: List API keys for a project
+      description: |
+        Requires `project-admin`. The full token is **never** returned here —
+        only the prefix (e.g. `kj_live_a91c`) and metadata.
+      responses:
+        '200':
+          description: Keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createApiKey
+      tags: [API keys]
+      summary: Create a new API key
+      description: |
+        Returns the full token **once** in the response. It is never returned
+        again and cannot be recovered — the caller must store it immediately.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+      responses:
+        '201':
+          description: API key created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/api-keys/{apiKeyId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/ApiKeyId'
+    patch:
+      operationId: updateApiKey
+      tags: [API keys]
+      summary: Rename or change scopes on an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateApiKeyRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: revokeApiKey
+      tags: [API keys]
+      summary: Revoke an API key (immediate effect)
+      responses:
+        '204':
+          description: Revoked.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==========================================================================
+  # §3.17 Webhooks out (inferred — api-endpoints.md §5.4 flags this as TODO)
+  # ==========================================================================
+
+  /projects/{projectSlug}/webhooks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+    get:
+      operationId: listWebhookTargets
+      tags: [Webhooks out]
+      summary: List outbound webhook targets
+      description: |
+        **TODO (api-endpoints.md §3.17):** this operation is inferred from
+        `webhook_targets` in `database-schema.md` §13 and mentioned by
+        `api-endpoints.md` §5.4. Shape may change when §3.17 is formally
+        written.
+      responses:
+        '200':
+          description: Targets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookTarget'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createWebhookTarget
+      tags: [Webhooks out]
+      summary: Create a webhook target (inferred)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookTargetRequest'
+      responses:
+        '201':
+          description: Target created — includes the signing secret once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTargetCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /projects/{projectSlug}/webhooks/{webhookSlug}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/WebhookSlug'
+    get:
+      operationId: getWebhookTarget
+      tags: [Webhooks out]
+      summary: Webhook target detail (inferred)
+      responses:
+        '200':
+          description: Target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTarget'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateWebhookTarget
+      tags: [Webhooks out]
+      summary: Update a webhook target (inferred)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookTargetRequest'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTarget'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteWebhookTarget
+      tags: [Webhooks out]
+      summary: Delete a webhook target (inferred)
+      responses:
+        '204':
+          description: Deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: kj_live_*
+      description: |
+        Bearer token issued via `POST /projects/{p}/api-keys`. Tokens carry a
+        scope list checked in the app layer; see `docs/specs/auth-permissioning.md`.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: koji_session
+      description: |
+        Browser session cookie set by the auth adapter after `POST /auth/session`.
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Koji-Signature
+      description: |
+        HMAC-SHA256 signature over `timestamp.body` using the per-source
+        secret. Format: `t=<unix>,v1=<hex>`. Used only for the inbound
+        customer webhook endpoint (`/projects/{p}/sources/{s}/webhook`).
+
+  parameters:
+    ProjectSlug:
+      name: projectSlug
+      in: path
+      required: true
+      description: Project (tenant) slug. Lowercase alphanumeric + hyphens.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$'
+        maxLength: 64
+    SchemaSlug:
+      name: schemaSlug
+      in: path
+      required: true
+      description: Schema slug, unique within the project.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        maxLength: 64
+    VersionNumber:
+      name: versionNumber
+      in: path
+      required: true
+      description: Schema version number (integer, 1-indexed).
+      schema:
+        type: integer
+        minimum: 1
+    SampleId:
+      name: sampleId
+      in: path
+      required: true
+      description: Sample document ID (ULID-prefixed).
+      schema:
+        type: string
+    CorpusEntryId:
+      name: corpusEntryId
+      in: path
+      required: true
+      description: Corpus entry ID.
+      schema:
+        type: string
+    RunId:
+      name: runId
+      in: path
+      required: true
+      description: Validate or benchmark run ID (ULID-prefixed).
+      schema:
+        type: string
+    PipelineSlug:
+      name: pipelineSlug
+      in: path
+      required: true
+      description: Pipeline slug, unique within the project.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        maxLength: 64
+    StageName:
+      name: stageName
+      in: path
+      required: true
+      description: Pipeline stage name (e.g. `classify`, `extract`).
+      schema:
+        type: string
+    SourceSlug:
+      name: sourceSlug
+      in: path
+      required: true
+      description: Source slug, unique within the project.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        maxLength: 64
+    EndpointSlug:
+      name: endpointSlug
+      in: path
+      required: true
+      description: Model endpoint slug, unique within the project.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        maxLength: 64
+    JobSlug:
+      name: jobSlug
+      in: path
+      required: true
+      description: Job slug (`job-YYYYMMDD-HHMM-shortid`).
+      schema:
+        type: string
+        pattern: '^job-[0-9]{8}-[0-9]{4}-[a-z0-9]+$'
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      description: Document ID (`doc_<hex>`).
+      schema:
+        type: string
+        pattern: '^doc_[A-Za-z0-9]+$'
+    StageId:
+      name: stageId
+      in: path
+      required: true
+      description: Trace stage ID or stage name within a trace.
+      schema:
+        type: string
+    ReviewId:
+      name: reviewId
+      in: path
+      required: true
+      description: Review item ID (`rev_<ulid>`).
+      schema:
+        type: string
+        pattern: '^rev_[A-Za-z0-9]+$'
+    AgentSessionId:
+      name: agentSessionId
+      in: path
+      required: true
+      description: Agent session ID (`asn_<ulid>`).
+      schema:
+        type: string
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: User ID (`usr_<ulid>`).
+      schema:
+        type: string
+        pattern: '^usr_[A-Za-z0-9]+$'
+    ApiKeyId:
+      name: apiKeyId
+      in: path
+      required: true
+      description: API key ID (not the token).
+      schema:
+        type: string
+    WebhookSlug:
+      name: webhookSlug
+      in: path
+      required: true
+      description: Webhook target slug.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size. Default 50, max 200.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from the previous page's `next_cursor`.
+      schema:
+        type: string
+    Since:
+      name: since
+      in: query
+      required: false
+      description: RFC 3339 / ISO 8601 lower-bound timestamp.
+      schema:
+        type: string
+        format: date-time
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-supplied key to safely retry mutations. Scoped per user, retained
+        for 24 hours. Replaying the same key returns the original response.
+      schema:
+        type: string
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing or invalid credentials.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Authenticated but missing the required role.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: |
+        Resource not found. Cross-tenant misses return `404`, not `403`, to
+        avoid leaking the existence of resources the caller cannot see.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: State conflict — e.g. the resource already exists or is in use.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnprocessableEntity:
+      description: The request was well-formed but semantically invalid (e.g. schema YAML fails to compile).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    RateLimited:
+      description: Too many requests — back off per `Retry-After`.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the next request will be accepted.
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Unix timestamp when the window resets.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Accepted:
+      description: Request accepted for asynchronous processing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AcceptedResponse'
+
+  schemas:
+    # ------------------------------------------------------------------
+    # Shared primitives
+    # ------------------------------------------------------------------
+
+    Problem:
+      type: object
+      description: RFC 7807 problem detail. All error responses conform to this shape.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A URI identifying the problem class.
+          examples: [https://docs.getkoji.dev/errors/schema-not-found]
+        title:
+          type: string
+          examples: [Schema not found]
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+        trace_id:
+          type: string
+          description: Server-side trace ID for correlating this error with logs.
+          examples: [trc_8f3a91c2]
+        code:
+          type: string
+          description: Stable machine-readable error code (e.g. `schema.not_found`, `auth.missing_scope`).
+
+    AcceptedResponse:
+      type: object
+      description: |
+        Returned from endpoints that enqueue background work. The caller polls
+        the indicated resource or connects to the appropriate SSE stream.
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: accepted
+        job_id:
+          type: string
+          description: Optional job identifier (for background-jobs-backed operations).
+        run_id:
+          type: string
+          description: Optional run identifier (for validate/benchmark runs).
+        poll_url:
+          type: string
+          format: uri
+          description: Suggested URL to poll for progress.
+        stream_url:
+          type: string
+          format: uri
+          description: Optional SSE stream URL.
+
+    CursorPage:
+      type: object
+      description: Envelope common to all cursor-paginated collections.
+      required: [has_more]
+      properties:
+        next_cursor:
+          type: [string, 'null']
+          description: Cursor to pass as `?cursor=` on the next request. `null` when `has_more=false`.
+        has_more:
+          type: boolean
+
+    # ------------------------------------------------------------------
+    # Enums
+    # ------------------------------------------------------------------
+
+    JobStatus:
+      type: string
+      enum: [queued, running, complete, failed, canceled, cancel_requested]
+
+    DocumentStatus:
+      type: string
+      enum: [queued, processing, complete, failed, review, emitted]
+
+    RunType:
+      type: string
+      enum: [validate, benchmark, nightly_bench]
+
+    RunStatus:
+      type: string
+      enum: [queued, running, complete, failed, canceled]
+
+    PipelineStatus:
+      type: string
+      enum: [active, paused, errored]
+
+    SourceStatus:
+      type: string
+      enum: [active, paused, errored]
+
+    SourceType:
+      type: string
+      enum: [s3_watcher, webhook, email, ftp, dashboard_upload]
+
+    CorpusTag:
+      type: string
+      enum: [normal, adversarial, edge, held_out, regression]
+
+    TriggerType:
+      type: string
+      enum: [s3_watcher, webhook, scheduled, manual, email, ftp, api]
+
+    ReviewReason:
+      type: string
+      enum: [low_confidence, validation_failure, manual_flag]
+
+    ReviewStatus:
+      type: string
+      enum: [pending, in_review, resolved, escalated]
+
+    ReviewResolution:
+      type: string
+      enum: [accepted, overridden, skipped, escalated]
+
+    TraceStatus:
+      type: string
+      enum: [running, complete, failed]
+
+    TraceStageStatus:
+      type: string
+      enum: [pending, running, complete, failed, skipped]
+
+    Role:
+      type: string
+      enum:
+        - tenant-owner
+        - project-admin
+        - schema-write
+        - pipeline-write
+        - source-write
+        - review-write
+        - review-admin
+        - endpoint-write
+        - project-read
+
+    # ------------------------------------------------------------------
+    # Health / session / users
+    # ------------------------------------------------------------------
+
+    HealthStatus:
+      type: object
+      required: [ok, version]
+      properties:
+        ok:
+          type: boolean
+        version:
+          type: string
+        commit:
+          type: string
+
+    ReadinessStatus:
+      type: object
+      required: [ok, checks]
+      properties:
+        ok:
+          type: boolean
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok]
+            properties:
+              name:
+                type: string
+                examples: [database, storage, model_endpoint_openai-primary]
+              ok:
+                type: boolean
+              latency_ms:
+                type: integer
+              detail:
+                type: string
+
+    LoginRequest:
+      type: object
+      description: |
+        Adapter-specific login body. Fields are optional individually — the
+        adapter dispatches on shape. For local credentials, use `email` +
+        `password`. For OIDC, use `code` + `state`. For SAML, use
+        `saml_response`. For Clerk-issued tokens, use `clerk_token`.
+      additionalProperties: true
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        code:
+          type: string
+        state:
+          type: string
+        saml_response:
+          type: string
+        clerk_token:
+          type: string
+
+    SessionEnvelope:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/CurrentUser'
+        redirect_url:
+          type: string
+          format: uri
+
+    CurrentUser:
+      type: object
+      required: [id, email, memberships]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+        auth_provider:
+          type: string
+          examples: [clerk, local, oidc, saml]
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+        last_login_at:
+          type: string
+          format: date-time
+
+    Membership:
+      type: object
+      required: [project_slug, roles]
+      properties:
+        project_slug:
+          type: string
+        project_display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        accepted_at:
+          type: string
+          format: date-time
+
+    # ------------------------------------------------------------------
+    # Projects
+    # ------------------------------------------------------------------
+
+    Project:
+      type: object
+      required: [slug, display_name, plan, created_at]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        plan:
+          type: string
+          enum: [free, pro, scale, enterprise]
+        billing_email:
+          type: string
+          format: email
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          $ref: '#/components/schemas/UserRef'
+
+    ProjectSummary:
+      type: object
+      required: [slug, display_name]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        plan:
+          type: string
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    CreateProjectRequest:
+      type: object
+      required: [slug, display_name]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        billing_email:
+          type: string
+          format: email
+
+    UpdateProjectRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        billing_email:
+          type: string
+          format: email
+
+    ProjectMetrics:
+      type: object
+      required: [period]
+      properties:
+        period:
+          type: string
+          enum: [1h, 24h, 7d, 30d]
+        accuracy:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+        throughput:
+          type: integer
+          description: Documents processed in the window.
+        latency_p50_ms:
+          type: integer
+        latency_p95_ms:
+          type: integer
+        cost_per_doc_usd:
+          type: number
+          format: double
+        error_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    ActivityEvent:
+      type: object
+      required: [id, kind, occurred_at]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          description: Event kind (e.g. `job.complete`, `schema.deploy`, `review.resolved`).
+        occurred_at:
+          type: string
+          format: date-time
+        actor:
+          $ref: '#/components/schemas/UserRef'
+        summary:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+
+    ProjectAlert:
+      type: object
+      required: [id, severity, kind, title]
+      properties:
+        id:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        kind:
+          type: string
+          description: Alert kind (e.g. `drift.accuracy`, `review.backlog`, `source.errored`).
+        title:
+          type: string
+        detail:
+          type: string
+        opened_at:
+          type: string
+          format: date-time
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+
+    ProjectMember:
+      type: object
+      required: [user, roles]
+      properties:
+        user:
+          $ref: '#/components/schemas/UserRef'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        invited_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+
+    InviteUserRequest:
+      type: object
+      required: [email, roles]
+      properties:
+        email:
+          type: string
+          format: email
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Role'
+
+    UpdateMemberRolesRequest:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Role'
+
+    UserRef:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+
+    # ------------------------------------------------------------------
+    # Schemas
+    # ------------------------------------------------------------------
+
+    SchemaSummary:
+      type: object
+      required: [slug, display_name, status]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        current_version:
+          type: integer
+        status:
+          type: string
+          enum: [draft, published, archived]
+        doc_count:
+          type: integer
+          description: Number of corpus entries for this schema.
+        last_run_at:
+          type: string
+          format: date-time
+        health:
+          type: string
+          enum: [green, yellow, red, unknown]
+
+    Schema:
+      allOf:
+        - $ref: '#/components/schemas/SchemaSummary'
+        - type: object
+          required: [created_at]
+          properties:
+            description:
+              type: string
+            current_version_yaml:
+              type: string
+              description: YAML for the current `published` version (null if the schema has no committed versions yet).
+            draft_yaml:
+              type: string
+              description: Unsaved draft YAML from Build mode.
+            draft_updated_at:
+              type: string
+              format: date-time
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            created_by:
+              $ref: '#/components/schemas/UserRef'
+
+    CreateSchemaRequest:
+      type: object
+      required: [slug, display_name]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        description:
+          type: string
+        initial_yaml:
+          type: string
+          description: Optional seed YAML (from a template, Playground, or blank).
+
+    UpdateSchemaDraftRequest:
+      type: object
+      required: [draft_yaml]
+      properties:
+        draft_yaml:
+          type: string
+
+    SchemaVersionSummary:
+      type: object
+      required: [version_number, committed_at]
+      properties:
+        version_number:
+          type: integer
+        commit_message:
+          type: string
+        committed_at:
+          type: string
+          format: date-time
+        committed_by:
+          $ref: '#/components/schemas/UserRef'
+        yaml_hash:
+          type: string
+          description: SHA-256 of the version's YAML source.
+        accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Latest benchmark accuracy for this version, if any.
+
+    SchemaVersion:
+      allOf:
+        - $ref: '#/components/schemas/SchemaVersionSummary'
+        - type: object
+          required: [yaml_source]
+          properties:
+            yaml_source:
+              type: string
+            parsed:
+              type: object
+              description: Parsed form of the YAML, as used by the server.
+              additionalProperties: true
+
+    CommitSchemaVersionRequest:
+      type: object
+      properties:
+        commit_message:
+          type: string
+          maxLength: 500
+        set_current:
+          type: boolean
+          default: true
+          description: Whether to update `current_version_id` to point at the new version.
+
+    RollbackSchemaVersionRequest:
+      type: object
+      properties:
+        commit_message:
+          type: string
+        set_current:
+          type: boolean
+          default: true
+
+    DeploySchemaRequest:
+      type: object
+      properties:
+        version_number:
+          type: integer
+          description: Target version. Defaults to the current version.
+        environment:
+          type: string
+          description: |
+            Deployment environment. Optional — single-env deployments omit this
+            field. Multi-environment support is deferred per the vision doc.
+
+    DeploymentStatus:
+      type: object
+      required: [schema_slug, deployed_version, deployed_at]
+      properties:
+        schema_slug:
+          type: string
+        deployed_version:
+          type: integer
+        environment:
+          type: string
+        deployed_at:
+          type: string
+          format: date-time
+        deployed_by:
+          $ref: '#/components/schemas/UserRef'
+
+    # ------------------------------------------------------------------
+    # Schema samples
+    # ------------------------------------------------------------------
+
+    SchemaSample:
+      type: object
+      required: [id, filename, uploaded_at]
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        file_size:
+          type: integer
+        mime_type:
+          type: string
+        uploaded_at:
+          type: string
+          format: date-time
+        uploaded_by:
+          $ref: '#/components/schemas/UserRef'
+
+    SampleTestRequest:
+      type: object
+      properties:
+        draft_yaml:
+          type: string
+          description: |
+            Optional — if provided, the server runs this YAML instead of the
+            stored draft. Used when Build mode's unsaved draft hasn't been
+            persisted yet.
+        model_endpoint_slug:
+          type: string
+
+    SampleTestResult:
+      type: object
+      required: [fields, confidence]
+      properties:
+        fields:
+          type: object
+          additionalProperties: true
+          description: Extracted field values keyed by field name.
+        confidence:
+          type: object
+          description: Per-field confidence scores (0.0 to 1.0).
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+        provenance:
+          type: object
+          description: Per-field provenance (page numbers, bounding boxes, source chunks).
+          additionalProperties: true
+        trace_id:
+          type: string
+        duration_ms:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+
+    # ------------------------------------------------------------------
+    # Corpus
+    # ------------------------------------------------------------------
+
+    CorpusEntrySummary:
+      type: object
+      required: [id, filename]
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/CorpusTag'
+        pass_status:
+          type: string
+          enum: [pass, fail, partial, unknown]
+          description: Latest pass status at the schema's current version.
+        added_at:
+          type: string
+          format: date-time
+
+    CorpusEntry:
+      allOf:
+        - $ref: '#/components/schemas/CorpusEntrySummary'
+        - type: object
+          required: [ground_truth]
+          properties:
+            ground_truth:
+              type: object
+              additionalProperties: true
+            file_size:
+              type: integer
+            mime_type:
+              type: string
+            content_hash:
+              type: string
+            source:
+              type: string
+              enum: [manual_upload, promoted_from_review, ingested_from_source]
+            source_ref:
+              type: string
+            added_by:
+              $ref: '#/components/schemas/UserRef'
+            last_verified_at:
+              type: string
+              format: date-time
+
+    PromoteFromReviewRequest:
+      type: object
+      required: [review_id]
+      properties:
+        review_id:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/CorpusTag'
+
+    UpdateCorpusEntryRequest:
+      type: object
+      properties:
+        ground_truth:
+          type: object
+          additionalProperties: true
+        filename:
+          type: string
+        last_verified_at:
+          type: string
+          format: date-time
+
+    RetagRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/CorpusTag'
+
+    CorpusHistoryPoint:
+      type: object
+      required: [version_number, pass_status]
+      properties:
+        version_number:
+          type: integer
+        pass_status:
+          type: string
+          enum: [pass, fail, partial]
+        accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+        run_id:
+          type: string
+        ran_at:
+          type: string
+          format: date-time
+
+    # ------------------------------------------------------------------
+    # Validate & Benchmarks
+    # ------------------------------------------------------------------
+
+    TriggerRunRequest:
+      type: object
+      properties:
+        corpus_filter:
+          type: object
+          description: Optional filter on the corpus (tags, filename glob).
+          properties:
+            tags:
+              type: array
+              items:
+                $ref: '#/components/schemas/CorpusTag'
+            filename_glob:
+              type: string
+        model_endpoint_slug:
+          type: string
+          description: Restrict to a single model endpoint.
+        baseline_version:
+          type: integer
+          description: Version to compare regressions against.
+
+    SchemaRunSummary:
+      type: object
+      required: [id, run_type, status, created_at]
+      properties:
+        id:
+          type: string
+        run_type:
+          $ref: '#/components/schemas/RunType'
+        schema_version:
+          type: integer
+        baseline_version:
+          type: integer
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        docs_total:
+          type: integer
+        docs_passed:
+          type: integer
+        docs_failed:
+          type: integer
+        accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+        regressions_count:
+          type: integer
+        duration_ms:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        triggered_by:
+          $ref: '#/components/schemas/UserRef'
+        triggered_reason:
+          type: string
+          enum: [manual, scheduled, ci, pre_deploy]
+        created_at:
+          type: string
+          format: date-time
+
+    SchemaRun:
+      allOf:
+        - $ref: '#/components/schemas/SchemaRunSummary'
+        - type: object
+          properties:
+            results:
+              type: array
+              items:
+                $ref: '#/components/schemas/CorpusRunResult'
+            error_message:
+              type: string
+
+    CorpusRunResult:
+      type: object
+      required: [corpus_entry_id, overall_status, fields_total, fields_passed]
+      properties:
+        corpus_entry_id:
+          type: string
+        filename:
+          type: string
+        overall_status:
+          type: string
+          enum: [pass, fail, partial]
+        fields_total:
+          type: integer
+        fields_passed:
+          type: integer
+        field_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldResult'
+        regressed_from_baseline:
+          type: boolean
+        duration_ms:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+
+    FieldResult:
+      type: object
+      required: [name, pass]
+      properties:
+        name:
+          type: string
+        expected:
+          description: Expected value from the ground truth.
+        actual:
+          description: Actual extracted value.
+        pass:
+          type: boolean
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    RegressionEntry:
+      type: object
+      required: [corpus_entry_id, field_name]
+      properties:
+        corpus_entry_id:
+          type: string
+        filename:
+          type: string
+        field_name:
+          type: string
+        baseline_value:
+          description: Value the baseline version extracted correctly.
+        current_value:
+          description: Value the current version extracted incorrectly.
+        dismissed:
+          type: boolean
+        dismissed_note:
+          type: string
+
+    DismissRegressionRequest:
+      type: object
+      required: [corpus_entry_id, field_name]
+      properties:
+        corpus_entry_id:
+          type: string
+        field_name:
+          type: string
+        note:
+          type: string
+
+    BenchmarkHeadline:
+      type: object
+      required: [accuracy, latency_p50_ms, cost_per_doc_usd]
+      properties:
+        accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+        latency_p50_ms:
+          type: integer
+        latency_p95_ms:
+          type: integer
+        cost_per_doc_usd:
+          type: number
+          format: double
+        docs_tested:
+          type: integer
+        last_run_at:
+          type: string
+          format: date-time
+
+    BenchmarkTrendPoint:
+      type: object
+      required: [version_number, accuracy]
+      properties:
+        version_number:
+          type: integer
+        accuracy:
+          type: number
+          minimum: 0
+          maximum: 1
+        ran_at:
+          type: string
+          format: date-time
+        run_id:
+          type: string
+
+    BenchmarkFieldMatrix:
+      type: object
+      required: [fields, versions, cells]
+      properties:
+        fields:
+          type: array
+          items:
+            type: string
+        versions:
+          type: array
+          items:
+            type: integer
+        cells:
+          type: array
+          items:
+            type: object
+            required: [field, version_number, accuracy]
+            properties:
+              field:
+                type: string
+              version_number:
+                type: integer
+              accuracy:
+                type: number
+                minimum: 0
+                maximum: 1
+              doc_count:
+                type: integer
+
+    BenchmarkModelComparison:
+      type: object
+      required: [endpoint_slug, accuracy, latency_ms, cost_usd]
+      properties:
+        endpoint_slug:
+          type: string
+        display_name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        accuracy:
+          type: number
+        latency_ms:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        docs_tested:
+          type: integer
+
+    BenchmarkCategoryBreakdown:
+      type: object
+      required: [tag, accuracy, doc_count]
+      properties:
+        tag:
+          $ref: '#/components/schemas/CorpusTag'
+        accuracy:
+          type: number
+        doc_count:
+          type: integer
+        regression_count:
+          type: integer
+
+    # ------------------------------------------------------------------
+    # Pipelines
+    # ------------------------------------------------------------------
+
+    PipelineSummary:
+      type: object
+      required: [slug, display_name, status]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        trigger_type:
+          $ref: '#/components/schemas/TriggerType'
+        status:
+          $ref: '#/components/schemas/PipelineStatus'
+        last_run_at:
+          type: string
+          format: date-time
+        target_schemas:
+          type: array
+          items:
+            type: string
+        throughput_24h:
+          type: integer
+
+    Pipeline:
+      allOf:
+        - $ref: '#/components/schemas/PipelineSummary'
+        - type: object
+          required: [yaml_source]
+          properties:
+            yaml_source:
+              type: string
+            parsed:
+              type: object
+              additionalProperties: true
+            trigger_config:
+              type: object
+              additionalProperties: true
+            recent_jobs:
+              type: array
+              items:
+                $ref: '#/components/schemas/JobSummary'
+            metrics:
+              $ref: '#/components/schemas/ProjectMetrics'
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    CreatePipelineRequest:
+      type: object
+      required: [slug, display_name, yaml_source]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        yaml_source:
+          type: string
+
+    UpdatePipelineRequest:
+      type: object
+      required: [yaml_source]
+      properties:
+        yaml_source:
+          type: string
+        display_name:
+          type: string
+
+    ManualRunRequest:
+      type: object
+      properties:
+        document_ids:
+          type: array
+          items:
+            type: string
+          description: Optional — re-run specific documents only.
+        note:
+          type: string
+
+    PipelineStageConfig:
+      type: object
+      required: [stage_name, config]
+      properties:
+        stage_name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        metrics:
+          type: object
+          additionalProperties: true
+
+    # ------------------------------------------------------------------
+    # Sources
+    # ------------------------------------------------------------------
+
+    SourceSummary:
+      type: object
+      required: [slug, display_name, source_type, status]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        source_type:
+          $ref: '#/components/schemas/SourceType'
+        status:
+          $ref: '#/components/schemas/SourceStatus'
+        last_ingested_at:
+          type: string
+          format: date-time
+        throughput_24h:
+          type: integer
+        error_count_24h:
+          type: integer
+
+    Source:
+      allOf:
+        - $ref: '#/components/schemas/SourceSummary'
+        - type: object
+          properties:
+            config:
+              type: object
+              description: |
+                Type-specific public config (bucket name, email address,
+                webhook URL). Secrets (credentials) are never returned — use
+                `POST .../test` to verify without exposing them.
+              additionalProperties: true
+            filter_config:
+              type: object
+              additionalProperties: true
+            target_pipeline_slug:
+              type: string
+            webhook_url:
+              type: string
+              format: uri
+              description: |
+                Populated for webhook-type sources. The URL the customer
+                configures in their upstream system. Never modified server-
+                side except on explicit rotation.
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            created_by:
+              $ref: '#/components/schemas/UserRef'
+
+    CreateSourceRequest:
+      type: object
+      required: [slug, display_name, source_type, config]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        source_type:
+          $ref: '#/components/schemas/SourceType'
+        config:
+          type: object
+          additionalProperties: true
+        auth:
+          type: object
+          description: Write-only secrets (API keys, SMTP credentials). Never returned on read.
+          additionalProperties: true
+        target_pipeline_slug:
+          type: string
+        filter_config:
+          type: object
+          additionalProperties: true
+
+    UpdateSourceRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        auth:
+          type: object
+          additionalProperties: true
+        filter_config:
+          type: object
+          additionalProperties: true
+        target_pipeline_slug:
+          type: string
+
+    SourceTestResult:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok]
+            properties:
+              name:
+                type: string
+              ok:
+                type: boolean
+              detail:
+                type: string
+        webhook_url:
+          type: string
+          format: uri
+          description: Returned for webhook-type sources.
+
+    Ingestion:
+      type: object
+      required: [id, status, received_at]
+      properties:
+        id:
+          type: string
+        source_slug:
+          type: string
+        external_key:
+          type: string
+        filename:
+          type: string
+        file_size:
+          type: integer
+        status:
+          type: string
+          enum: [received, processing, complete, failed_integrity, failed_processing]
+        failure_reason:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        job_slug:
+          type: string
+        document_id:
+          type: string
+
+    # ------------------------------------------------------------------
+    # Jobs & documents
+    # ------------------------------------------------------------------
+
+    JobSummary:
+      type: object
+      required: [slug, status, created_at]
+      properties:
+        slug:
+          type: string
+        pipeline_slug:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        trigger_type:
+          $ref: '#/components/schemas/TriggerType'
+        docs_total:
+          type: integer
+        docs_processed:
+          type: integer
+        docs_passed:
+          type: integer
+        docs_failed:
+          type: integer
+        docs_reviewing:
+          type: integer
+        avg_latency_ms:
+          type: integer
+        total_cost_usd:
+          type: number
+          format: double
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    Job:
+      allOf:
+        - $ref: '#/components/schemas/JobSummary'
+        - type: object
+          properties:
+            triggered_by:
+              $ref: '#/components/schemas/UserRef'
+            error_message:
+              type: string
+
+    RetryJobRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [failed_only, all]
+          default: failed_only
+
+    JobResultsBundle:
+      type: object
+      required: [job_slug, documents]
+      properties:
+        job_slug:
+          type: string
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+
+    DocumentSummary:
+      type: object
+      required: [id, filename, status, created_at]
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        status:
+          $ref: '#/components/schemas/DocumentStatus'
+        schema_slug:
+          type: string
+        schema_version:
+          type: integer
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        page_count:
+          type: integer
+        duration_ms:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        emitted_at:
+          type: string
+          format: date-time
+
+    Document:
+      allOf:
+        - $ref: '#/components/schemas/DocumentSummary'
+        - type: object
+          properties:
+            extraction:
+              type: object
+              additionalProperties: true
+              description: Final extracted field values.
+            validation:
+              type: object
+              additionalProperties: true
+              description: Per-rule validation outcomes.
+            trace_id:
+              type: string
+            file_size:
+              type: integer
+            mime_type:
+              type: string
+            content_hash:
+              type: string
+
+    # ------------------------------------------------------------------
+    # Traces
+    # ------------------------------------------------------------------
+
+    Trace:
+      type: object
+      required: [trace_id, document_id, status, started_at, stages]
+      properties:
+        trace_id:
+          type: string
+          description: External trace ID (`trc_…`).
+        document_id:
+          type: string
+        job_slug:
+          type: string
+        status:
+          $ref: '#/components/schemas/TraceStatus'
+        total_duration_ms:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceStage'
+
+    TraceStage:
+      type: object
+      required: [id, stage_name, stage_order, status]
+      properties:
+        id:
+          type: string
+        stage_name:
+          type: string
+          description: Stage kind (e.g. `ingress`, `classify`, `extract`, `normalize`, `validate`, `review`, `emit`).
+        stage_order:
+          type: integer
+        status:
+          $ref: '#/components/schemas/TraceStageStatus'
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        summary:
+          type: object
+          description: Stage-specific summary (model used, tokens, chunks processed).
+          additionalProperties: true
+        error_message:
+          type: string
+
+    TraceStageRawIO:
+      type: object
+      properties:
+        stage_id:
+          type: string
+        model:
+          type: string
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        raw_prompt:
+          type: string
+          description: Fetched lazily from cold storage.
+        raw_response:
+          type: string
+          description: Fetched lazily from cold storage.
+        raw_headers:
+          type: object
+          additionalProperties:
+            type: string
+
+    TraceLookupResult:
+      type: object
+      required: [trace, locator]
+      properties:
+        trace:
+          $ref: '#/components/schemas/Trace'
+        locator:
+          type: object
+          required: [project_slug, job_slug, document_id]
+          properties:
+            project_slug:
+              type: string
+            job_slug:
+              type: string
+            document_id:
+              type: string
+
+    JobStreamEvent:
+      type: object
+      description: |
+        Discriminated event envelope emitted on the job SSE stream. The SSE
+        `event:` line matches the `event` field; the `data:` line is the
+        JSON-serialized `data` object. See `api-endpoints.md` §4.1.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [stage.start, stage.complete, review.queued, review.resolved, job.status]
+        data:
+          type: object
+          additionalProperties: true
+
+    # ------------------------------------------------------------------
+    # Review queue
+    # ------------------------------------------------------------------
+
+    ReviewItemSummary:
+      type: object
+      required: [id, reason, status, created_at]
+      properties:
+        id:
+          type: string
+        reason:
+          $ref: '#/components/schemas/ReviewReason'
+        field_name:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        status:
+          $ref: '#/components/schemas/ReviewStatus'
+        schema_slug:
+          type: string
+        document_id:
+          type: string
+        document_filename:
+          type: string
+        assigned_to:
+          $ref: '#/components/schemas/UserRef'
+        created_at:
+          type: string
+          format: date-time
+
+    ReviewItem:
+      allOf:
+        - $ref: '#/components/schemas/ReviewItemSummary'
+        - type: object
+          properties:
+            proposed_value:
+              description: Value the model extracted.
+            final_value:
+              description: Value chosen by the reviewer (set on resolution).
+            validation_rule:
+              type: string
+            resolution:
+              $ref: '#/components/schemas/ReviewResolution'
+            resolved_by:
+              $ref: '#/components/schemas/UserRef'
+            resolved_at:
+              type: string
+              format: date-time
+            note:
+              type: string
+
+    ReviewDecisionRequest:
+      type: object
+      properties:
+        note:
+          type: string
+
+    ReviewOverrideRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          description: The corrected value.
+        note:
+          type: string
+
+    ReviewEscalateRequest:
+      type: object
+      required: [reviewer_id]
+      properties:
+        reviewer_id:
+          type: string
+        note:
+          type: string
+
+    ReviewAssignRequest:
+      type: object
+      required: [reviewer_id]
+      properties:
+        reviewer_id:
+          type: string
+
+    BulkApproveRequest:
+      type: object
+      properties:
+        review_ids:
+          type: array
+          items:
+            type: string
+          maxItems: 1000
+        filter:
+          type: object
+          description: |
+            Alternative to `review_ids` — approve every item matching the
+            filter. Applied server-side with the same audit-log surface.
+          properties:
+            reason:
+              $ref: '#/components/schemas/ReviewReason'
+            schema_slug:
+              type: string
+            min_confidence:
+              type: number
+              minimum: 0
+              maximum: 1
+
+    BulkApproveResult:
+      type: object
+      required: [approved_count]
+      properties:
+        approved_count:
+          type: integer
+        skipped_count:
+          type: integer
+        audit_log_id:
+          type: string
+
+    # ------------------------------------------------------------------
+    # Model endpoints
+    # ------------------------------------------------------------------
+
+    ModelEndpointSummary:
+      type: object
+      required: [slug, display_name, provider, model, status]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        provider:
+          type: string
+          enum: [openai, anthropic, azure_openai, bedrock, ollama, vllm, custom]
+        model:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled, errored]
+        last_health_check_at:
+          type: string
+          format: date-time
+
+    ModelEndpoint:
+      allOf:
+        - $ref: '#/components/schemas/ModelEndpointSummary'
+        - type: object
+          properties:
+            config:
+              type: object
+              additionalProperties: true
+              description: |
+                Public configuration (endpoint URL, region, deployment name).
+                Auth secrets are write-only and never returned.
+            pricing_mode:
+              type: string
+              enum: [default, flat_rate, hardware_params]
+            pricing_override:
+              type: object
+              additionalProperties: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            created_by:
+              $ref: '#/components/schemas/UserRef'
+
+    CreateModelEndpointRequest:
+      type: object
+      required: [slug, display_name, provider, model, config]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        auth:
+          type: object
+          description: Write-only secrets.
+          additionalProperties: true
+        pricing_mode:
+          type: string
+          enum: [default, flat_rate, hardware_params]
+        pricing_override:
+          type: object
+          additionalProperties: true
+
+    UpdateModelEndpointRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        auth:
+          type: object
+          additionalProperties: true
+        pricing_mode:
+          type: string
+          enum: [default, flat_rate, hardware_params]
+        pricing_override:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [active, disabled]
+
+    EndpointTestResult:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        latency_ms:
+          type: integer
+        model_returned:
+          type: string
+        detail:
+          type: string
+
+    EndpointUsage:
+      type: object
+      required: [range, totals, points]
+      properties:
+        range:
+          type: string
+          enum: [24h, 7d, 30d, 90d]
+        totals:
+          type: object
+          required: [calls, tokens_in, tokens_out, cost_usd]
+          properties:
+            calls:
+              type: integer
+            tokens_in:
+              type: integer
+            tokens_out:
+              type: integer
+            cost_usd:
+              type: number
+              format: double
+            error_count:
+              type: integer
+        points:
+          type: array
+          description: Hour-bucketed usage points powering the sparkline.
+          items:
+            type: object
+            required: [period_start, calls]
+            properties:
+              period_start:
+                type: string
+                format: date-time
+              calls:
+                type: integer
+              tokens_in:
+                type: integer
+              tokens_out:
+                type: integer
+              cost_usd:
+                type: number
+                format: double
+              avg_latency_ms:
+                type: integer
+              error_count:
+                type: integer
+
+    # ------------------------------------------------------------------
+    # Agent
+    # ------------------------------------------------------------------
+
+    AgentSession:
+      type: object
+      required: [id, context, context_entity_id, status]
+      properties:
+        id:
+          type: string
+        context:
+          type: string
+          enum:
+            - build
+            - validate
+            - trace
+            - jobs
+            - review
+            - corpus
+            - benchmarks
+            - endpoints
+            - pipelines
+            - sources
+        context_entity_id:
+          type: string
+        status:
+          type: string
+          enum: [active, archived]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateAgentSessionRequest:
+      type: object
+      required: [context, entity_id]
+      properties:
+        context:
+          type: string
+          enum:
+            - build
+            - validate
+            - trace
+            - jobs
+            - review
+            - corpus
+            - benchmarks
+            - endpoints
+            - pipelines
+            - sources
+        entity_id:
+          type: string
+
+    AgentMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    AgentMessage:
+      type: object
+      required: [id, role, content, created_at]
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
+
+    AgentProposedEdit:
+      type: object
+      required: [id, kind, target_id, diff, status]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [schema_yaml, pipeline_yaml, validation_rule, config]
+        target_id:
+          type: string
+          description: The entity this edit modifies (schema slug, pipeline slug, etc.).
+        diff:
+          type: string
+          description: Human-readable diff.
+        proposed_change:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [proposed, accepted, rejected]
+        resolved_by:
+          $ref: '#/components/schemas/UserRef'
+        resolved_at:
+          type: string
+          format: date-time
+
+    AgentEditDecisionRequest:
+      type: object
+      required: [edit_id]
+      properties:
+        edit_id:
+          type: string
+        note:
+          type: string
+
+    AgentStreamEvent:
+      type: object
+      description: |
+        Discriminated event emitted on the agent SSE stream. See
+        `api-endpoints.md` §4.2. The SSE `event:` line matches the `event`
+        field; the `data:` line is the JSON-serialized `data` object.
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum: [token, tool_call, tool_result, proposed_edit, done]
+        data:
+          type: object
+          additionalProperties: true
+
+    # ------------------------------------------------------------------
+    # Playground
+    # ------------------------------------------------------------------
+
+    PlaygroundResult:
+      type: object
+      required: [session_id, extraction]
+      properties:
+        session_id:
+          type: string
+        extraction:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: object
+          additionalProperties:
+            type: number
+        trace:
+          $ref: '#/components/schemas/Trace'
+        model_used:
+          type: string
+        cost_usd:
+          type: number
+          format: double
+        remaining_extractions:
+          type: integer
+          description: Extractions remaining in the current rate window.
+
+    PlaygroundProposedSchema:
+      type: object
+      required: [session_id, yaml]
+      properties:
+        session_id:
+          type: string
+        yaml:
+          type: string
+        rationale:
+          type: string
+
+    PlaygroundPromoteRequest:
+      type: object
+      required: [session_id, project_slug, schema_slug, schema_display_name]
+      properties:
+        session_id:
+          type: string
+        project_slug:
+          type: string
+        schema_slug:
+          type: string
+        schema_display_name:
+          type: string
+
+    # ------------------------------------------------------------------
+    # Audit log
+    # ------------------------------------------------------------------
+
+    AuditLogEntry:
+      type: object
+      required: [id, action, resource_type, resource_id, created_at]
+      properties:
+        id:
+          type: string
+        actor_type:
+          type: string
+          enum: [user, api_key, system, webhook]
+        actor:
+          $ref: '#/components/schemas/UserRef'
+        actor_id:
+          type: string
+          description: Generic actor ID for non-user actors (API key ID, webhook ID).
+        action:
+          type: string
+          examples: [schema.deploy, corpus.promote, review.bulk_approve]
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        trace_id:
+          type: string
+        ip_address:
+          type: string
+        user_agent:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    # ------------------------------------------------------------------
+    # API keys
+    # ------------------------------------------------------------------
+
+    ApiKey:
+      type: object
+      required: [id, name, key_prefix, scopes, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: |
+            First bytes of the token for UI display (e.g. `kj_live_a91c`).
+            **The full token is never returned outside of key creation.**
+        scopes:
+          type: array
+          items:
+            type: string
+        created_by:
+          $ref: '#/components/schemas/UserRef'
+        last_used_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+
+    ApiKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: |
+                The full API key (`kj_live_…`). Returned **once** at creation
+                time. Clients must persist it immediately — it cannot be
+                recovered later.
+
+    CreateApiKeyRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        expires_at:
+          type: string
+          format: date-time
+
+    UpdateApiKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+
+    # ------------------------------------------------------------------
+    # Webhooks out (inferred)
+    # ------------------------------------------------------------------
+
+    WebhookTarget:
+      type: object
+      required: [slug, display_name, url, subscribed_events, status]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        url:
+          type: string
+          format: uri
+        subscribed_events:
+          type: array
+          items:
+            type: string
+            examples: [job.complete, review.queued, drift.alert, benchmark.regression]
+        status:
+          type: string
+          enum: [active, paused, errored]
+        last_delivered_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        created_by:
+          $ref: '#/components/schemas/UserRef'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookTargetCreated:
+      allOf:
+        - $ref: '#/components/schemas/WebhookTarget'
+        - type: object
+          required: [signing_secret]
+          properties:
+            signing_secret:
+              type: string
+              description: |
+                HMAC signing secret. Returned **once** at creation and never
+                again — clients must persist it immediately.
+
+    CreateWebhookTargetRequest:
+      type: object
+      required: [slug, display_name, url, subscribed_events]
+      properties:
+        slug:
+          type: string
+        display_name:
+          type: string
+        url:
+          type: string
+          format: uri
+        subscribed_events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+
+    UpdateWebhookTargetRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        url:
+          type: string
+          format: uri
+        subscribed_events:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, paused]
