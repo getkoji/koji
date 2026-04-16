@@ -6,7 +6,7 @@ export default async function OverviewPage({
   const { tenantSlug } = await params;
 
   return (
-    <>
+    <div className="px-10 py-8 pb-16">
       {/* Page header */}
       <div className="flex items-start justify-between gap-8 mb-8">
         <div>
@@ -178,6 +178,6 @@ export default async function OverviewPage({
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
