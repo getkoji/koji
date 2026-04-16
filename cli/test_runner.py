@@ -219,9 +219,16 @@ def _normalize_value_for_compare(value: Any) -> Any:
         return normalized if normalized else None
     if isinstance(value, list):
         normalized = [_normalize_value_for_compare(v) for v in value]
-        # Drop elements that normalized to None
         normalized = [v for v in normalized if v is not None]
-        return normalized if normalized else None
+        if not normalized:
+            return None
+        # Sort lists of dicts by canonical JSON so order doesn't matter
+        # at any nesting depth. A limits array like [{name: B}, {name: A}]
+        # and [{name: A}, {name: B}] should compare equal — the extraction
+        # order is an implementation detail, not semantic content.
+        if all(isinstance(v, dict) for v in normalized):
+            normalized.sort(key=lambda v: json.dumps(v, sort_keys=True))
+        return normalized
     return value
 
 
