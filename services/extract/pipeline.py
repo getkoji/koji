@@ -248,6 +248,7 @@ def build_group_prompt(
     group: dict,
     schema_name: str,
     context_chunks: list[Chunk] | None = None,
+    schema_config: dict | None = None,
 ) -> str:
     """Build a focused extraction prompt for a group of fields from specific chunks.
 
@@ -306,12 +307,27 @@ def build_group_prompt(
     notes_section = f"\n## Extraction notes\n\n{notes_block}\n" if notes_block else ""
     context_section = _render_context_chunks(context_chunks, chunks)
 
-    # schema_name is intentionally NOT in the header. gpt-4o-mini (and to a
-    # lesser degree gpt-4o) treats a schema name in the heading as a hint
-    # that the output should be nested under that key — especially on
-    # single-field groups, where it returns {"<schema_name>": {field: ...}}
-    # instead of {field: ...}. Reconcile looks for field names at the top
-    # level, misses the nested form, marks the field not_found. See oss-60.
+    cfg = schema_config or {}
+    extra_instructions = []
+    date_locale = cfg.get("date_locale")
+    if date_locale:
+        extra_instructions.append(
+            f"Dates in this document use {date_locale} format. "
+            f"When you encounter an ambiguous date like 04/06/2018, "
+            f"interpret it according to {date_locale} ordering. "
+            f"Output all dates as YYYY-MM-DD regardless of input format."
+        )
+    default_currency = cfg.get("default_currency")
+    if default_currency:
+        extra_instructions.append(f"When no explicit currency code is present, assume {default_currency}.")
+
+    date_instruction = "Dates as YYYY-MM-DD."
+    if date_locale:
+        date_instruction = f"Dates as YYYY-MM-DD (input uses {date_locale})."
+    extra_block = "\n".join(extra_instructions)
+    if extra_block:
+        extra_block = "\n\n" + extra_block
+
     return f"""Extract the following fields from the document sections below. Return ONLY valid JSON with the fields you find. If a field is not present, use null.
 
 ## Fields to extract
@@ -324,7 +340,7 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.{extra_block}
 
 JSON:"""
 
@@ -367,9 +383,10 @@ async def extract_group(
     provider: ModelProvider,
     semaphore: asyncio.Semaphore,
     context_chunks: list[Chunk] | None = None,
+    schema_config: dict | None = None,
 ) -> dict:
     """Extract fields from a group of co-located fields."""
-    prompt = build_group_prompt(group, schema_name, context_chunks=context_chunks)
+    prompt = build_group_prompt(group, schema_name, context_chunks=context_chunks, schema_config=schema_config)
     expected_fields = set(group.get("field_specs", {}).keys())
 
     async with semaphore:
@@ -883,7 +900,10 @@ async def intelligent_extract(
             print(f"[koji-extract] Wave {wave_index}: grouped into {len(wave_groups)} extraction calls")
 
             tasks = [
-                extract_group(g, schema_name, provider, semaphore, context_chunks=context_chunks) for g in wave_groups
+                extract_group(
+                    g, schema_name, provider, semaphore, context_chunks=context_chunks, schema_config=schema_def
+                )
+                for g in wave_groups
             ]
             wave_group_results = await asyncio.gather(*tasks)
             non_empty = [r for r in wave_group_results if r]
