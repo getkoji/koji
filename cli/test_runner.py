@@ -9,6 +9,38 @@ from pathlib import Path
 from typing import Any
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Compute the Levenshtein edit distance between two strings."""
+    if len(a) < len(b):
+        return _levenshtein(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+def string_similarity(a: str, b: str) -> float:
+    """Normalized string similarity ratio (0.0 = completely different, 1.0 = identical).
+
+    Uses Levenshtein distance normalized by the longer string's length.
+    Case-insensitive after stripping whitespace, matching the existing
+    string comparison convention.
+    """
+    a = a.strip().lower()
+    b = b.strip().lower()
+    if a == b:
+        return 1.0
+    max_len = max(len(a), len(b))
+    if max_len == 0:
+        return 1.0
+    return 1.0 - _levenshtein(a, b) / max_len
+
+
 @dataclass
 class FieldResult:
     """Result of comparing a single field."""
@@ -212,7 +244,7 @@ def _normalize_for_set_compare(items: list) -> list[str]:
 # ── Core comparison ───────────────────────────────────────────────────
 
 
-def compare_field(field_name: str, expected: Any, actual: Any) -> FieldResult:
+def compare_field(field_name: str, expected: Any, actual: Any, fuzzy_threshold: float = 0.0) -> FieldResult:
     """Compare a single expected value against the actual extraction output.
 
     Null / empty handling drives four cases, in order:
@@ -316,13 +348,33 @@ def compare_field(field_name: str, expected: Any, actual: Any) -> FieldResult:
     # the same data by any reasonable definition. If you need strict case
     # matching, use an enum field with explicit options instead.
     if isinstance(expected, str) and isinstance(actual, str):
-        ok = expected.strip().lower() == actual.strip().lower()
+        if expected.strip().lower() == actual.strip().lower():
+            return FieldResult(
+                field_name=field_name,
+                passed=True,
+                expected=expected,
+                actual=actual,
+            )
+        # Fuzzy match: when the exact check fails and a threshold is set,
+        # accept strings that are "close enough" — catches OCR typos like
+        # "TEO HENG" vs "TED HENG" or "SDN BHD" vs "SON BHD" on degraded
+        # scans where the extraction is substantively correct.
+        if fuzzy_threshold > 0:
+            sim = string_similarity(expected, actual)
+            if sim >= fuzzy_threshold:
+                return FieldResult(
+                    field_name=field_name,
+                    passed=True,
+                    expected=expected,
+                    actual=actual,
+                    detail=f"fuzzy match ({sim:.0%} similar)",
+                )
         return FieldResult(
             field_name=field_name,
-            passed=ok,
+            passed=False,
             expected=expected,
             actual=actual,
-            detail="" if ok else f"expected {expected!r}, got {actual!r}",
+            detail=f"expected {expected!r}, got {actual!r}",
         )
 
     # Other types: exact equality via string conversion
@@ -336,16 +388,22 @@ def compare_field(field_name: str, expected: Any, actual: Any) -> FieldResult:
     )
 
 
-def compare_results(expected: dict, actual: dict) -> list[FieldResult]:
+def compare_results(expected: dict, actual: dict, fuzzy_threshold: float = 0.0) -> list[FieldResult]:
     """Compare expected fields against actual extraction output.
 
     Only fields present in *expected* are checked (partial expectations).
     Fields in actual but not in expected are ignored.
+
+    When ``fuzzy_threshold`` > 0, string fields that fail exact match
+    are re-checked with Levenshtein similarity. A value of 0.85 means
+    "at least 85% of characters match" — enough to pass OCR typos like
+    "TEO HENG" vs "TED HENG" while still failing completely wrong
+    values like "ASIA MART" vs an address string.
     """
     results = []
     for field_name, exp_value in expected.items():
         act_value = actual.get(field_name)
-        results.append(compare_field(field_name, exp_value, act_value))
+        results.append(compare_field(field_name, exp_value, act_value, fuzzy_threshold))
     return results
 
 
