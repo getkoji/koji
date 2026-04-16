@@ -201,12 +201,56 @@ def _check_regex(params: Any, data: dict, report: ValidationReport) -> None:
         report.fail("regex", fname, f"value {value!r} does not match /{pattern}/")
 
 
+def _check_field_sum(params: Any, data: dict, report: ValidationReport) -> None:
+    """Verify that a field equals the sum of other top-level fields.
+
+    Schema config:
+        - field_sum: { field: total_amount, addends: [subtotal, tax], tolerance: 0.01, auto_correct: true }
+
+    When `auto_correct` is true and the sum check fails, the field's
+    value in `data` is REPLACED with the computed sum. This handles the
+    common case where OCR misreads one digit in the total but subtotal
+    and tax are read correctly from a different part of the receipt.
+    """
+    if not isinstance(params, dict):
+        return
+    fname = params.get("field")
+    addends = params.get("addends") or []
+    tolerance = float(params.get("tolerance", 0.01))
+    auto_correct = bool(params.get("auto_correct", False))
+    if not fname or not isinstance(addends, list) or len(addends) < 2:
+        return
+    expected = _coerce_number(data.get(fname))
+    if expected is None:
+        return
+    parts = [_coerce_number(data.get(a)) for a in addends]
+    if any(p is None for p in parts):
+        return
+    computed = sum(parts)
+    if abs(expected - computed) <= tolerance:
+        return
+    if auto_correct:
+        data[fname] = round(computed, 2)
+        report.fail(
+            "field_sum",
+            fname,
+            f"corrected {fname}: was {expected}, set to {computed} (sum of {', '.join(addends)})",
+        )
+    else:
+        report.fail(
+            "field_sum",
+            fname,
+            f"{fname}={expected} but sum of [{', '.join(addends)}]={computed} (tolerance {tolerance})",
+        )
+
+
 RULES = {
     "required": _check_required,
     "not_empty": _check_not_empty,
     "enum_in": _check_enum_in,
     "date_order": _check_date_order,
     "sum_equals": _check_sum_equals,
+    "field_sum": _check_field_sum,
     "regex": _check_regex,
 }
 
