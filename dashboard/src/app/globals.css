@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+  --cream:        #F4EEE2;
+  --cream-2:      #ECE3D0;
+  --cream-3:      #DFD3B9;
+  --cream-4:      #C9BC9E;
+  --ink:          #171410;
+  --ink-2:        #3A3328;
+  --ink-3:        #665C4B;
+  --ink-4:        #998E78;
+  --vermillion:   #C33520;
+  --vermillion-2: #992718;
+  --vermillion-3: #F2D9D2;
+  --border:       rgba(23, 20, 16, 0.10);
+  --border-strong: rgba(23, 20, 16, 0.22);
+  --green:        #3E7A3E;
+}
+
+@theme inline {
+  --color-cream:        var(--cream);
+  --color-cream-2:      var(--cream-2);
+  --color-cream-3:      var(--cream-3);
+  --color-cream-4:      var(--cream-4);
+  --color-ink:          var(--ink);
+  --color-ink-2:        var(--ink-2);
+  --color-ink-3:        var(--ink-3);
+  --color-ink-4:        var(--ink-4);
+  --color-vermillion:   var(--vermillion);
+  --color-vermillion-2: var(--vermillion-2);
+  --color-vermillion-3: var(--vermillion-3);
+  --color-border:       var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-green:        var(--green);
+
+  --font-display: var(--font-fraunces);
+  --font-body:    var(--font-instrument-sans);
+  --font-mono:    var(--font-jetbrains-mono);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
