@@ -31,7 +31,7 @@ TYPE_SIGNAL_MAP = {
 }
 
 
-def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict) -> float:
+def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict, total_chunks: int = 1) -> float:
     """Score how likely a chunk is to contain a field. Uses schema hints or generic inference."""
     score = 0.0
     hints = field_spec.get("hints", {})
@@ -48,13 +48,24 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict) -> float:
         haystack = f"{chunk.title} {chunk.content}".lower()
         for phrase in prefer_contains:
             if isinstance(phrase, str) and phrase and phrase.lower() in haystack:
-                # Match on a distinctive phrase is worth more than pattern+signal
-                # combined (+8 + +4 = +12). At +12 the two tied in practice, and
-                # document-order tie-breaking picked body chunks over signature
-                # blocks — oss-53. Raising to +15 makes prefer_contains decisive
-                # against any pattern+signal combination on a body chunk.
                 score += 15.0
                 break
+
+    prefer_position = hints.get("prefer_position")
+    if prefer_position:
+        # Positional bias: 0-10 point bonus that favors chunks near
+        # the requested end of the document. "top" gives max bonus to
+        # chunk 0 (the header), decaying linearly; "bottom" is the
+        # mirror. Designed for fields like merchant_name (always at
+        # the top) or signature blocks (always at the bottom).
+        if total_chunks <= 1:
+            frac = 0.0
+        else:
+            frac = chunk.index / (total_chunks - 1)
+        if prefer_position == "top":
+            score += 10.0 * (1.0 - frac)
+        elif prefer_position == "bottom":
+            score += 10.0 * frac
 
     patterns = hints.get("patterns", [])
     if patterns:
@@ -146,9 +157,10 @@ def route_fields(
                 candidate_chunks = matches
 
         # Score every candidate chunk for this field
+        total_chunks = len(chunks)
         scored = []
         for chunk in candidate_chunks:
-            score = _score_chunk(chunk, field_name, field_spec)
+            score = _score_chunk(chunk, field_name, field_spec, total_chunks)
             if score > 0:
                 scored.append((score, chunk))
 

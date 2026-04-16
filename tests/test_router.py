@@ -185,6 +185,42 @@ class TestScoreChunkHints:
         )
 
 
+# ── _score_chunk: positional bias ──────────────────────────────────
+
+
+class TestScoreChunkPosition:
+    def test_prefer_top_favors_first_chunk(self):
+        spec = {"hints": {"prefer_position": "top"}}
+        first = make_chunk(index=0)
+        last = make_chunk(index=9)
+        s_first = _score_chunk(first, "merchant_name", spec, total_chunks=10)
+        s_last = _score_chunk(last, "merchant_name", spec, total_chunks=10)
+        assert s_first > s_last
+        assert s_first >= 10.0
+        assert s_last < 2.0
+
+    def test_prefer_bottom_favors_last_chunk(self):
+        spec = {"hints": {"prefer_position": "bottom"}}
+        first = make_chunk(index=0)
+        last = make_chunk(index=9)
+        s_first = _score_chunk(first, "signature", spec, total_chunks=10)
+        s_last = _score_chunk(last, "signature", spec, total_chunks=10)
+        assert s_last > s_first
+
+    def test_position_has_no_effect_without_hint(self):
+        spec = {"hints": {"look_in": ["header"]}}
+        c = make_chunk(index=0, category="header")
+        s_with_1 = _score_chunk(c, "f", spec, total_chunks=1)
+        s_with_10 = _score_chunk(c, "f", spec, total_chunks=10)
+        assert s_with_1 == s_with_10
+
+    def test_single_chunk_document_gets_full_bonus(self):
+        spec = {"hints": {"prefer_position": "top"}}
+        c = make_chunk(index=0)
+        s = _score_chunk(c, "f", spec, total_chunks=1)
+        assert s >= 10.0
+
+
 # ── _score_chunk: generic inference (no hints) ───────────────────────
 
 
