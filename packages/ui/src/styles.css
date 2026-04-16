@@ -138,8 +138,10 @@
    */
   --shadow-xs:  none;
   --shadow-sm:  none;
-  --shadow-md:  0 0 0 1px var(--border);
-  --shadow-lg:  0 0 0 1px var(--border);
-  --shadow-xl:  0 0 0 1px var(--border);
-  --shadow-2xl: 0 0 0 1px var(--border);
+  /* Overlays (dropdowns, popovers, dialogs) need enough shadow to
+     separate from the same-color cream background behind them. */
+  --shadow-md:  0 2px 8px -2px rgba(23, 20, 16, 0.12), 0 0 0 1px var(--border);
+  --shadow-lg:  0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
+  --shadow-xl:  0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
+  --shadow-2xl: 0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
 }

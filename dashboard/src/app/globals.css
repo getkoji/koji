@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "@koji/ui/styles.css";
 
+/* Tell Tailwind to scan the @koji/ui source files for class names.
+   Without this, utilities used inside the library components (bg-white,
+   rounded-sm, etc.) never get generated because Tailwind v4's automatic
+   content detection doesn't follow workspace symlinks. */
+@source "../../../packages/ui/src";
+
 :root {
   --cream:        #F4EEE2;
   --cream-2:      #ECE3D0;
