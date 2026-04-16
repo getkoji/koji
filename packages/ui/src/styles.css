@@ -107,4 +107,24 @@
   --radius-md:  var(--radius);
   --radius-lg:  calc(var(--radius) + 0.0625rem);
   --radius-xl:  calc(var(--radius) + 0.125rem);
+
+  /*
+   * Typography — maps Tailwind's font utilities to the Koji font stack.
+   *
+   * font-sans    → Instrument Sans (body text, UI labels, form fields)
+   * font-mono    → JetBrains Mono (data values, IDs, code, trace IDs)
+   * font-display → Fraunces (page titles, metric values, editorial headings)
+   *
+   * Consumers load the actual font files via next/font/google in the root
+   * layout and set the CSS variables (--font-instrument-sans, etc.). The
+   * @theme entries here wire Tailwind's `font-sans` / `font-mono` /
+   * `font-display` utilities to those variables.
+   */
+  --font-sans:    var(--font-instrument-sans, 'Instrument Sans', system-ui, sans-serif);
+  --font-mono:    var(--font-jetbrains-mono, 'JetBrains Mono', ui-monospace, monospace);
+  --font-display: var(--font-fraunces, 'Fraunces', Georgia, serif);
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
+  --text-base: 0.875rem;
 }
