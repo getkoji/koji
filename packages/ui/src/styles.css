@@ -127,4 +127,19 @@
   --text-xs:   0.75rem;
   --text-sm:   0.8125rem;
   --text-base: 0.875rem;
+
+  /*
+   * Geometry — flat aesthetic, no elevation shadows.
+   *
+   * The 00-shell.html sketch uses zero box-shadows. Separation comes from
+   * borders (1px solid var(--border)) and background-color differences
+   * (cream vs cream-2). Overlays (dialogs, popovers, dropdowns) use a
+   * thin border ring instead of shadow blur.
+   */
+  --shadow-xs:  none;
+  --shadow-sm:  none;
+  --shadow-md:  0 0 0 1px var(--border);
+  --shadow-lg:  0 0 0 1px var(--border);
+  --shadow-xl:  0 0 0 1px var(--border);
+  --shadow-2xl: 0 0 0 1px var(--border);
 }
