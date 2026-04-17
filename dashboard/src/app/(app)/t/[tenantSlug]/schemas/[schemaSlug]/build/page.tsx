@@ -1,12 +1,23 @@
 "use client";
 
 import { useState } from "react";
+import { useParams } from "next/navigation";
 import { WorkbenchLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { Switch, Label } from "@koji/ui";
+import { schemas as schemasApi } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 import { MOCK_SCHEMA_LINES, MOCK_EXTRACTION } from "@/lib/mock-schema";
 
 export default function BuildModePage() {
   const [autoRun, setAutoRun] = useState(true);
+  const params = useParams<{ schemaSlug: string }>();
+  const schemaSlug = params.schemaSlug ?? "invoice";
+
+  const { data: schemaData, live } = useApi(
+    () => schemasApi.get(schemaSlug),
+    { slug: schemaSlug, displayName: schemaSlug, description: null, createdAt: "", draftYaml: null },
+  );
+
   const header = (
     <>
       <Breadcrumbs

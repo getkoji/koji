@@ -6,6 +6,7 @@ import { logger } from "hono/logger";
 import { createDb } from "@koji/db";
 import type { Db } from "@koji/db";
 
+import { bootstrap } from "./bootstrap";
 import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
 import { jobs } from "./routes/jobs";
@@ -34,7 +35,19 @@ app.route("/health", health);
 app.route("/api/schemas", schemas);
 app.route("/api/jobs", jobs);
 
-console.log(`[koji-api] Starting on port ${PORT}`);
-console.log(`[koji-api] Database: ${DATABASE_URL.replace(/:[^@]+@/, ":***@")}`);
+// Start
+async function start() {
+  console.log(`[koji-api] Starting on port ${PORT}`);
+  console.log(`[koji-api] Database: ${DATABASE_URL.replace(/:[^@]+@/, ":***@")}`);
 
-serve({ fetch: app.fetch, port: PORT });
+  try {
+    await bootstrap(db);
+  } catch (err) {
+    console.warn(`[koji-api] Bootstrap skipped: ${err}`);
+  }
+
+  serve({ fetch: app.fetch, port: PORT });
+  console.log(`[koji-api] Ready`);
+}
+
+start();
