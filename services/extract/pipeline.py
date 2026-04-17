@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import re
 import time
@@ -11,6 +12,43 @@ from .document_map import Chunk, build_document_map, summarize_map
 from .packet_splitter import Section, classify_chunks_to_sections
 from .providers import ModelProvider, create_provider
 from .router import group_routes, route_fields, summarize_routing
+
+
+def _snap_to_source(value: str, chunks: list[Chunk], min_ratio: float = 0.5) -> str:
+    """Find the best matching substring in the source chunks for a value.
+
+    Used for fields with `verbatim: true`. The LLM's extraction may
+    paraphrase or truncate; this snaps the output back to the actual
+    document text. Uses difflib.SequenceMatcher for sliding-window
+    fuzzy matching.
+
+    Returns the best matching substring if the similarity ratio exceeds
+    `min_ratio`, otherwise returns the original value unchanged.
+    """
+    if not value or not chunks:
+        return value
+
+    source_text = "\n".join(c.content for c in chunks)
+    value_lower = value.strip().lower()
+    best_match = value
+    best_ratio = min_ratio
+
+    # Slide a window roughly the size of the value across the source
+    words = source_text.split()
+    val_word_count = len(value.split())
+    window_sizes = [val_word_count, val_word_count + 3, val_word_count + 6, val_word_count - 2]
+
+    for window_size in window_sizes:
+        if window_size < 2:
+            continue
+        for i in range(len(words) - window_size + 1):
+            candidate = " ".join(words[i : i + window_size])
+            ratio = difflib.SequenceMatcher(None, value_lower, candidate.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = candidate
+
+    return best_match
 
 
 def _describe_array_item(spec: dict) -> str:
@@ -339,6 +377,13 @@ def build_group_prompt(
     default_currency = cfg.get("default_currency")
     if default_currency:
         extra_instructions.append(f"When no explicit currency code is present, assume {default_currency}.")
+    if cfg.get("blank_form_aware"):
+        extra_instructions.append(
+            "If this document appears to be a BLANK unfilled form with placeholder text "
+            "(underscores, empty brackets, 'MM/DD/YYYY' placeholders, '___________'), "
+            "return null for ALL fields. Do not extract from form labels or instructions — "
+            "only extract actual filled-in data."
+        )
 
     date_instruction = "Dates as YYYY-MM-DD."
     if date_locale:
@@ -995,6 +1040,18 @@ async def intelligent_extract(
                     print(f"[koji-extract] Gap filled: {field_name} = {value}")
                 else:
                     print(f"[koji-extract] Gap fill failed: {field_name} still missing")
+
+        # Verbatim snap-to-source: for fields with verbatim: true, replace
+        # the LLM's potentially-paraphrased output with the closest matching
+        # substring from the actual document chunks.
+        for field_name, value in accumulated["extracted"].items():
+            if not isinstance(value, str) or not value:
+                continue
+            field_spec = schema_def.get("fields", {}).get(field_name, {})
+            if field_spec.get("verbatim"):
+                snapped = _snap_to_source(value, section_chunks)
+                if snapped != value:
+                    accumulated["extracted"][field_name] = snapped
 
         return {
             "extracted": accumulated["extracted"],

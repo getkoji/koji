@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Search, Bell } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
 
 export function TopBar({ tenantSlug }: { tenantSlug?: string }) {
@@ -46,18 +47,18 @@ export function TopBar({ tenantSlug }: { tenantSlug?: string }) {
       </div>
 
       {/* Right side */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1.5">
         <button
-          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 text-sm hover:bg-cream-2 hover:text-ink transition-colors"
+          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
           aria-label="Search"
         >
-          ⌕
+          <Search className="w-4 h-4" />
         </button>
         <button
-          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 text-sm hover:bg-cream-2 hover:text-ink transition-colors"
+          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
           aria-label="Notifications"
         >
-          ◔
+          <Bell className="w-4 h-4" />
         </button>
         <button
           className="w-[30px] h-[30px] rounded-full bg-vermillion-2 text-cream font-mono text-[11px] font-medium inline-flex items-center justify-center"
