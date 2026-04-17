@@ -1,4 +1,10 @@
-"""Chunk classification — quickly label chunks to filter before extraction."""
+"""Chunk classification — label chunks with caller-provided categories.
+
+The module is fully generic. Callers pass in the category list and the
+keyword-to-category rules that come from the schema's `categories` block.
+No document-type or field-name defaults live here — domain knowledge is
+the schema author's territory, not the engine's.
+"""
 
 from __future__ import annotations
 
@@ -6,42 +12,29 @@ import asyncio
 
 import httpx
 
-# Common insurance document section types
-DEFAULT_CATEGORIES = [
-    "declarations",
-    "schedule_of_coverages",
-    "endorsement",
-    "conditions",
-    "definitions",
-    "exclusions",
-    "boilerplate",
-    "table_of_contents",
-    "other",
-]
-
-# Keywords that can classify without hitting the LLM
-KEYWORD_RULES: list[tuple[list[str], str]] = [
-    (["declaration", "dec page", "named insured", "policy period"], "declarations"),
-    (["schedule of", "coverage schedule", "limits of"], "schedule_of_coverages"),
-    (["endorsement", "amendment", "rider"], "endorsement"),
-    (["conditions", "general conditions", "policy conditions"], "conditions"),
-    (["definitions", "defined terms", "as used in"], "definitions"),
-    (["exclusion", "does not apply", "we will not"], "exclusions"),
-    (["table of contents", "index"], "table_of_contents"),
-]
+# Type alias: a list of (keywords, category_name) pairs. A chunk matches
+# a category when its title contains any keyword, or its title+content
+# contains two or more keywords.
+KeywordRules = list[tuple[list[str], str]]
 
 
-def classify_by_keywords(chunk: dict) -> str | None:
-    """Try to classify a chunk using simple keyword matching. Returns None if uncertain."""
+def classify_by_keywords(chunk: dict, rules: KeywordRules) -> str | None:
+    """Classify a chunk using caller-provided keyword rules.
+
+    Returns the category name or None if no rule fires.
+    """
+    if not rules:
+        return None
+
     text = f"{chunk['title']} {chunk['content'][:500]}".lower()
+    title = chunk["title"].lower()
 
-    for keywords, category in KEYWORD_RULES:
+    for keywords, category in rules:
         matches = sum(1 for kw in keywords if kw in text)
         if matches >= 2:
             return category
-        # Title match is strong signal
         for kw in keywords:
-            if kw in chunk["title"].lower():
+            if kw in title:
                 return category
 
     return None
@@ -83,7 +76,6 @@ Return ONLY the category name, nothing else."""
                 if resp.status_code == 200:
                     result = resp.json()
                     label = result.get("response", "").strip().lower()
-                    # Fuzzy match to valid categories
                     for cat in categories:
                         if cat in label or label in cat:
                             return cat
@@ -97,22 +89,28 @@ Return ONLY the category name, nothing else."""
 
 async def classify_chunks(
     chunks: list[dict],
-    categories: list[str] | None,
+    categories: list[str],
+    keyword_rules: KeywordRules,
     model: str,
     ollama_url: str,
     max_concurrent: int = 5,
     use_llm: bool = False,
 ) -> list[dict]:
-    """Classify all chunks. Uses keywords first. LLM fallback only if use_llm=True."""
-    cats = categories or DEFAULT_CATEGORIES
+    """Classify all chunks. Keyword-first, LLM fallback if `use_llm=True`.
+
+    `categories` and `keyword_rules` come from the schema's
+    `categories` block — the engine never supplies defaults.
+    """
+    if not categories:
+        return [{**chunk, "category": "other"} for chunk in chunks]
+
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    classified = []
-    llm_needed = []
+    classified: list[dict] = []
+    llm_needed: list[dict] = []
 
-    # First pass: keyword classification (instant, free)
     for chunk in chunks:
-        label = classify_by_keywords(chunk)
+        label = classify_by_keywords(chunk, keyword_rules)
         if label:
             classified.append({**chunk, "category": label})
         else:
@@ -121,34 +119,24 @@ async def classify_chunks(
     print(f"[koji-extract] Classified {len(classified)} by keywords, {len(llm_needed)} unmatched")
 
     if use_llm and llm_needed:
-        # LLM classification for uncertain chunks (requires decent compute)
         print(f"[koji-extract] Running LLM classification on {len(llm_needed)} chunks")
-        tasks = [classify_chunk_llm(chunk, cats, model, ollama_url, semaphore) for chunk in llm_needed]
+        tasks = [classify_chunk_llm(chunk, categories, model, ollama_url, semaphore) for chunk in llm_needed]
         labels = await asyncio.gather(*tasks)
         for chunk, label in zip(llm_needed, labels):
             classified.append({**chunk, "category": label})
     else:
-        # Keywords only — label everything else as "other"
         for chunk in llm_needed:
             classified.append({**chunk, "category": "other"})
 
     return classified
 
 
-# Which categories are relevant for extraction (vs boilerplate/legal text)
-RELEVANT_CATEGORIES = {
-    "declarations",
-    "schedule_of_coverages",
-    "endorsement",
-}
+def filter_relevant(classified_chunks: list[dict], relevant: set[str]) -> list[dict]:
+    """Filter chunks to only those whose category is in `relevant`.
 
-
-def filter_relevant(
-    classified_chunks: list[dict],
-    relevant: set[str] | None = None,
-) -> list[dict]:
-    """Filter chunks to only those relevant for extraction."""
-    relevant_cats = relevant or RELEVANT_CATEGORIES
-    filtered = [c for c in classified_chunks if c["category"] in relevant_cats]
+    `relevant` is required. An empty set returns an empty list, which
+    gives the caller a clear signal to fall back to the full chunk list.
+    """
+    filtered = [c for c in classified_chunks if c["category"] in relevant]
     print(f"[koji-extract] Filtered: {len(filtered)} relevant chunks out of {len(classified_chunks)}")
     return filtered

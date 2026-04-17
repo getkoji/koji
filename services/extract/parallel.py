@@ -164,6 +164,35 @@ def merge_results(chunk_results: list[dict], schema_def: dict) -> dict:
     return merged
 
 
+def _categories_from_schema(
+    schema_def: dict | None,
+) -> tuple[list[str], list[tuple[list[str], str]], set[str]]:
+    """Extract (categories, keyword_rules, default_relevant) from schema.
+
+    Schema format:
+        categories:
+          keywords:
+            header: ["title", "abstract"]
+            body: ["section", "paragraph"]
+          relevant: ["body"]   # optional — defaults to every declared category
+
+    When the schema declares no categories, returns empty containers and
+    `parallel_extract` skips the classify/filter step entirely.
+    """
+    categories_cfg = (schema_def or {}).get("categories") or {}
+    keywords = categories_cfg.get("keywords") or {}
+    if not isinstance(keywords, dict):
+        keywords = {}
+    rules = [(list(kws), cat) for cat, kws in keywords.items() if kws]
+    categories = list(keywords.keys())
+    declared_relevant = categories_cfg.get("relevant")
+    if isinstance(declared_relevant, list) and declared_relevant:
+        relevant = set(declared_relevant)
+    else:
+        relevant = set(categories)
+    return categories, rules, relevant
+
+
 async def parallel_extract(
     markdown: str,
     schema_def: dict,
@@ -182,20 +211,25 @@ async def parallel_extract(
     all_chunks = split_into_chunks(markdown)
     print(f"[koji-extract] Split: {len(all_chunks)} chunks")
 
-    if classify_mode == "all":
+    categories, keyword_rules, schema_relevant = _categories_from_schema(schema_def)
+    effective_relevant = relevant_categories if relevant_categories else schema_relevant
+
+    if classify_mode == "all" or not categories:
         chunks = all_chunks
         classified = all_chunks
-        print(f"[koji-extract] Mode 'all': extracting from all {len(chunks)} chunks")
+        reason = "Mode 'all'" if classify_mode == "all" else "No schema categories declared"
+        print(f"[koji-extract] {reason}: extracting from all {len(chunks)} chunks")
     else:
         use_llm = classify_mode == "llm"
         classified = await classify_chunks(
             all_chunks,
-            None,
+            categories,
+            keyword_rules,
             model,
             ollama_url,
             use_llm=use_llm,
         )
-        chunks = filter_relevant(classified, relevant_categories)
+        chunks = filter_relevant(classified, effective_relevant)
 
     if not chunks:
         print("[koji-extract] No relevant chunks found, falling back to all chunks")
