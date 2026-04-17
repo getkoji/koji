@@ -1,0 +1,69 @@
+@import "tailwindcss";
+@import "@koji/ui/styles.css";
+
+/* Tell Tailwind to scan the @koji/ui source files for class names.
+   Without this, utilities used inside the library components (bg-white,
+   rounded-sm, etc.) never get generated because Tailwind v4's automatic
+   content detection doesn't follow workspace symlinks. */
+@source "../../../packages/ui/src";
+
+:root {
+  --cream:        #F4EEE2;
+  --cream-2:      #ECE3D0;
+  --cream-3:      #DFD3B9;
+  --cream-4:      #C9BC9E;
+  --ink:          #171410;
+  --ink-2:        #3A3328;
+  --ink-3:        #665C4B;
+  --ink-4:        #998E78;
+  --vermillion:   #C33520;
+  --vermillion-2: #992718;
+  --vermillion-3: #F2D9D2;
+  --border:       rgba(23, 20, 16, 0.10);
+  --border-strong: rgba(23, 20, 16, 0.22);
+  --green:        #3E7A3E;
+}
+
+@theme inline {
+  --color-cream:        var(--cream);
+  --color-cream-2:      var(--cream-2);
+  --color-cream-3:      var(--cream-3);
+  --color-cream-4:      var(--cream-4);
+  --color-ink:          var(--ink);
+  --color-ink-2:        var(--ink-2);
+  --color-ink-3:        var(--ink-3);
+  --color-ink-4:        var(--ink-4);
+  --color-vermillion:   var(--vermillion);
+  --color-vermillion-2: var(--vermillion-2);
+  --color-vermillion-3: var(--vermillion-3);
+  --color-border:       var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-green:        var(--green);
+
+  --font-display: var(--font-fraunces);
+  --font-body:    var(--font-instrument-sans);
+  --font-mono:    var(--font-jetbrains-mono);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Thin, unobtrusive scrollbars — only visible on hover/scroll */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cream-3) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--cream-3); border-radius: 3px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--cream-4); }
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
