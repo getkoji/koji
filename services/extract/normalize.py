@@ -284,20 +284,37 @@ _STATE_ABBREV_RE = re.compile(
 )
 
 
-def _extract_state_from_text(text: str) -> str | None:
-    """Find a US state abbreviation in address-like text."""
+def _us_state_lookup(text: str, prefer: str = "last") -> str | None:
+    """Extract a US state abbreviation from text containing an address.
+
+    `prefer` is "first" or "last" — controls which match to return
+    when multiple states appear in the same text.
+    """
     if not text:
         return None
-    # Try abbreviation pattern first (most reliable)
-    m = _STATE_ABBREV_RE.search(text)
-    if m:
-        return m.group(1).upper()
-    # Try full state names
+    matches = _STATE_ABBREV_RE.findall(text)
+    if matches:
+        pick = matches[-1] if prefer == "last" else matches[0]
+        return pick.upper()
     text_lower = text.lower()
+    found: list[tuple[int, str]] = []
     for name, abbrev in _US_STATES.items():
-        if name in text_lower:
-            return abbrev
+        pos = text_lower.rfind(name) if prefer == "last" else text_lower.find(name)
+        if pos >= 0:
+            found.append((pos, abbrev))
+    if found:
+        found.sort(key=lambda x: x[0], reverse=(prefer == "last"))
+        return found[0][1]
     return None
+
+
+# Registry of derivation methods. Each takes (text, **kwargs) and returns
+# the derived value (or None). The engine dispatches by name from the
+# schema's `derived_from.method`. Extra schema keys (like `prefer`)
+# are passed through as kwargs.
+DERIVATION_METHODS: dict[str, callable] = {
+    "us_state_lookup": _us_state_lookup,
+}
 
 
 TRANSFORMS = {
@@ -407,8 +424,15 @@ def normalize_extracted(
         result[field_name] = value
 
     # Derived fields: populate fields whose values can be computed from
-    # other extracted fields. Runs after all transforms so source fields
-    # are in their final form.
+    # other extracted fields. Schema declares:
+    #
+    #   state:
+    #     derived_from:
+    #       field: description_of_loss   # source field (or "*" for all strings)
+    #       method: us_state_lookup      # registered derivation method
+    #       prefer: last                 # optional: "first" or "last" match
+    #
+    # Runs after all transforms so source fields are in their final form.
     for field_name, spec in fields_spec.items():
         if not isinstance(spec, dict):
             continue
@@ -416,30 +440,32 @@ def normalize_extracted(
         if not isinstance(derived, dict):
             continue
         source_field = derived.get("field")
-        transform = derived.get("transform")
-        if not source_field or not transform:
+        method_name = derived.get("method") or derived.get("transform")
+        if not method_name:
             continue
-        # Only derive if the field is empty/missing and the source exists
+        method = DERIVATION_METHODS.get(method_name)
+        if method is None:
+            report.warn(f"{field_name}: unknown derivation method {method_name!r}")
+            continue
+        # Only derive if the target field is empty/missing
         current = result.get(field_name)
         if current is not None and str(current).strip():
             continue
-        source_value = result.get(source_field)
-        if not isinstance(source_value, str) or not source_value:
-            # Try scanning ALL string fields for the state if no specific source
-            if transform == "state_from_address":
-                for v in result.values():
-                    if isinstance(v, str) and len(v) > 10:
-                        derived_val = _extract_state_from_text(v)
-                        if derived_val:
-                            result[field_name] = derived_val
-                            report.applied.append(f"{field_name}: derived state '{derived_val}' from text")
-                            break
-            continue
-        if transform == "state_from_address":
-            derived_val = _extract_state_from_text(source_value)
+        # Collect source text(s)
+        if source_field == "*" or not source_field:
+            # Scan all string fields
+            sources = [(k, v) for k, v in result.items() if isinstance(v, str) and len(v) > 5]
+        else:
+            v = result.get(source_field)
+            sources = [(source_field, v)] if isinstance(v, str) and v else []
+        # Pass any extra keys from the schema config as kwargs to the method
+        method_kwargs = {k: v for k, v in derived.items() if k not in ("field", "method", "transform")}
+        for src_name, src_value in sources:
+            derived_val = method(src_value, **method_kwargs)
             if derived_val:
                 result[field_name] = derived_val
-                report.applied.append(f"{field_name}: derived state '{derived_val}' from {source_field}")
+                report.applied.append(f"{field_name}: derived via {method_name} from {src_name}")
+                break
 
     return result, report
 
