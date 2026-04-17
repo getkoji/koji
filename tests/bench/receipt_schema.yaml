@@ -1,0 +1,28 @@
+name: receipt
+description: Receipt extraction — thermal prints, POS output, handwritten
+hint: receipt
+
+ocr:
+  vision_bypass:
+    enabled: true
+    when:
+      - page_count <= 3
+      - ocr_confidence < 0.70
+      - schema_hint: receipt
+
+fields:
+  company:
+    type: string
+    required: true
+    description: Company or store name
+  date:
+    type: date
+    required: true
+    description: Transaction date
+  address:
+    type: string
+    description: Store address
+  total:
+    type: number
+    required: true
+    description: Total amount

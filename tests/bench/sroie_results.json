@@ -1,0 +1,225 @@
+{
+  "vision": [],
+  "text": [
+    {
+      "file": "000.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.5,
+      "elapsed": 38.8
+    },
+    {
+      "file": "001.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 0.0
+      },
+      "avg": 0.5,
+      "elapsed": 2.8
+    },
+    {
+      "file": "002.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 0.0,
+        "address": 0.8,
+        "total": 1.0
+      },
+      "avg": 0.45,
+      "elapsed": 3.7
+    },
+    {
+      "file": "003.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 1.0,
+        "total": 1.0
+      },
+      "avg": 1.0,
+      "elapsed": 2.2
+    },
+    {
+      "file": "004.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 0.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.25,
+      "elapsed": 4.2
+    },
+    {
+      "file": "005.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 2.8
+    },
+    {
+      "file": "006.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 3.9
+    },
+    {
+      "file": "007.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 1.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 2.1
+    },
+    {
+      "file": "008.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.5,
+      "elapsed": 2.9
+    },
+    {
+      "file": "009.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 1.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 3.2
+    },
+    {
+      "file": "010.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 4.1
+    },
+    {
+      "file": "011.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.5,
+      "elapsed": 4.0
+    },
+    {
+      "file": "012.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 4.0
+    },
+    {
+      "file": "013.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 0.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.5,
+      "elapsed": 4.4
+    },
+    {
+      "file": "014.jpg",
+      "scores": {
+        "company": 0.0,
+        "date": 1.0,
+        "address": 1.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 8.9
+    },
+    {
+      "file": "015.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 4.2
+    },
+    {
+      "file": "016.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 4.7
+    },
+    {
+      "file": "017.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 0.0,
+        "address": 0.0,
+        "total": 0.0
+      },
+      "avg": 0.25,
+      "elapsed": 17.9
+    },
+    {
+      "file": "018.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 1.0,
+        "address": 0.0,
+        "total": 1.0
+      },
+      "avg": 0.75,
+      "elapsed": 4.6
+    },
+    {
+      "file": "019.jpg",
+      "scores": {
+        "company": 1.0,
+        "date": 0.0,
+        "address": 0.8,
+        "total": 1.0
+      },
+      "avg": 0.7,
+      "elapsed": 2.8
+    }
+  ]
+}
