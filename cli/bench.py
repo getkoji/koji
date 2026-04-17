@@ -345,7 +345,7 @@ def benchmark_document(
         result.error = f"extracted is not an object: {type(actual).__name__}"
         return result
 
-    result.field_results = compare_results(expected, actual, fuzzy_threshold=fuzzy_threshold)
+    result.field_results = compare_results(expected, actual, fuzzy_threshold=fuzzy_threshold, schema_def=schema_dict)
     return result
 
 

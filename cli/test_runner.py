@@ -248,10 +248,36 @@ def _normalize_for_set_compare(items: list) -> list[str]:
     return keys
 
 
+def _resolve_mapping(value: str, mappings: dict) -> str:
+    """Normalize a string value through schema-declared mappings.
+
+    Mappings map canonical values to lists of aliases:
+        {"10-K/A": ["10-K/A", "10K/A", "10-KA"], ...}
+
+    If `value` matches any alias (case-insensitive), the canonical
+    form is returned. If no match, the original value passes through.
+    """
+    v_lower = value.strip().lower()
+    for canonical, aliases in mappings.items():
+        if v_lower == str(canonical).strip().lower():
+            return canonical
+        if isinstance(aliases, list):
+            for alias in aliases:
+                if v_lower == str(alias).strip().lower():
+                    return canonical
+    return value
+
+
 # ── Core comparison ───────────────────────────────────────────────────
 
 
-def compare_field(field_name: str, expected: Any, actual: Any, fuzzy_threshold: float = 0.0) -> FieldResult:
+def compare_field(
+    field_name: str,
+    expected: Any,
+    actual: Any,
+    fuzzy_threshold: float = 0.0,
+    mappings: dict | None = None,
+) -> FieldResult:
     """Compare a single expected value against the actual extraction output.
 
     Null / empty handling drives four cases, in order:
@@ -372,6 +398,12 @@ def compare_field(field_name: str, expected: Any, actual: Any, fuzzy_threshold: 
     # the same data by any reasonable definition. If you need strict case
     # matching, use an enum field with explicit options instead.
     if isinstance(expected, str) and isinstance(actual, str):
+        # Resolve enum aliases before comparing — "First Report of Injury"
+        # and "Employer's First Report" can be declared as equivalent via
+        # schema mappings so both pass.
+        if mappings:
+            expected = _resolve_mapping(expected, mappings)
+            actual = _resolve_mapping(actual, mappings)
         if expected.strip().lower() == actual.strip().lower():
             return FieldResult(
                 field_name=field_name,
@@ -412,22 +444,29 @@ def compare_field(field_name: str, expected: Any, actual: Any, fuzzy_threshold: 
     )
 
 
-def compare_results(expected: dict, actual: dict, fuzzy_threshold: float = 0.0) -> list[FieldResult]:
+def compare_results(
+    expected: dict,
+    actual: dict,
+    fuzzy_threshold: float = 0.0,
+    schema_def: dict | None = None,
+) -> list[FieldResult]:
     """Compare expected fields against actual extraction output.
 
     Only fields present in *expected* are checked (partial expectations).
     Fields in actual but not in expected are ignored.
 
     When ``fuzzy_threshold`` > 0, string fields that fail exact match
-    are re-checked with Levenshtein similarity. A value of 0.85 means
-    "at least 85% of characters match" — enough to pass OCR typos like
-    "TEO HENG" vs "TED HENG" while still failing completely wrong
-    values like "ASIA MART" vs an address string.
+    are re-checked with Levenshtein similarity.
+
+    When ``schema_def`` is provided, per-field ``mappings`` are read
+    from the schema and used to normalize enum aliases before comparing.
     """
+    fields_spec = (schema_def or {}).get("fields") or {}
     results = []
     for field_name, exp_value in expected.items():
         act_value = actual.get(field_name)
-        results.append(compare_field(field_name, exp_value, act_value, fuzzy_threshold))
+        field_mappings = (fields_spec.get(field_name) or {}).get("mappings")
+        results.append(compare_field(field_name, exp_value, act_value, fuzzy_threshold, mappings=field_mappings))
     return results
 
 
