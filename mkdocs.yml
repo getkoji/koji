@@ -55,6 +55,7 @@ nav:
   - Architecture: architecture.md
   - CLI Reference: cli.md
   - API Reference: api-reference.md
+  - Trace Format: trace-format.md
 
 hooks:
   - scripts/mkdocs-hooks.py
