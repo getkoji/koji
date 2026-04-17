@@ -298,10 +298,29 @@ def build_group_prompt(
     fields_block = "\n".join(field_descriptions)
     notes_block = _collect_extraction_notes(fields)
 
+    # Collect exclude_contains patterns from all fields in this group.
+    # Lines matching any pattern are stripped from the chunk content
+    # before the LLM sees them — deterministic exclusion that can't be
+    # ignored the way a prompt-level "do NOT use" instruction can.
+    exclude_patterns: list[str] = []
+    for spec in fields.values():
+        for phrase in (spec.get("hints") or {}).get("exclude_contains") or []:
+            if isinstance(phrase, str) and phrase.strip():
+                exclude_patterns.append(phrase.strip().lower())
+
     # Combine chunk content
     content_blocks = []
     for chunk in chunks:
-        content_blocks.append(f"### {chunk.title}\n\n{chunk.content}")
+        chunk_text = chunk.content
+        if exclude_patterns:
+            filtered_lines = []
+            for line in chunk_text.split("\n"):
+                line_lower = line.lower()
+                if any(pat in line_lower for pat in exclude_patterns):
+                    continue
+                filtered_lines.append(line)
+            chunk_text = "\n".join(filtered_lines)
+        content_blocks.append(f"### {chunk.title}\n\n{chunk_text}")
     content = "\n\n---\n\n".join(content_blocks)
 
     notes_section = f"\n## Extraction notes\n\n{notes_block}\n" if notes_block else ""
