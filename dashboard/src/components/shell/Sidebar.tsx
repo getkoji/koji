@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { useSettingsExtensions } from "./SettingsExtensions";
 import {
   LayoutDashboard,
   Workflow,
@@ -73,6 +74,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
   const base = `/t/${tenantSlug}`;
   const inSettings = pathname.startsWith(`${base}/settings`);
+  const settingsExtensions = useSettingsExtensions();
 
   return (
     <aside className="border-r border-border px-3.5 pt-5 pb-8 bg-cream flex flex-col gap-5 sticky top-[60px] h-[calc(100vh-60px)] overflow-y-auto w-[256px] shrink-0">
@@ -132,6 +134,10 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
           <NavItem href={`${base}/settings/api-keys`} icon={<Key className={ICON_SIZE} />} label="API Keys" />
           <NavItem href={`${base}/settings/endpoints`} icon={<Radio className={ICON_SIZE} />} label="Endpoints" />
           <NavItem href={`${base}/settings/webhooks`} icon={<Webhook className={ICON_SIZE} />} label="Webhooks" />
+          {/* Commercial extensions injected by platform/ via SettingsExtensionsProvider */}
+          {settingsExtensions.navItems.map((item) => (
+            <NavItem key={item.href} href={`${base}${item.href}`} icon={item.icon} label={item.label} />
+          ))}
         </div>
       </div>
     </aside>

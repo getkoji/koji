@@ -2,8 +2,9 @@
 
 import { usePathname } from "next/navigation";
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
+import { useSettingsExtensions } from "@/components/shell/SettingsExtensions";
 
-const SETTINGS_TITLES: Record<string, string> = {
+const CORE_TITLES: Record<string, string> = {
   members: "Members",
   "api-keys": "API Keys",
   endpoints: "Endpoints",
@@ -12,8 +13,9 @@ const SETTINGS_TITLES: Record<string, string> = {
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { titleMap: extensionTitles } = useSettingsExtensions();
   const segment = pathname.split("/settings/")[1]?.split("/")[0] ?? "members";
-  const title = SETTINGS_TITLES[segment] ?? "Settings";
+  const title = CORE_TITLES[segment] ?? extensionTitles[segment] ?? "Settings";
 
   return (
     <div className="flex flex-col h-[calc(100vh-60px)]">
