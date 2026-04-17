@@ -474,7 +474,7 @@ def normalize_extracted(
     # Merge: inferred wins over fallback, explicit schema keys win over both
     effective_locale = {**fallback, **inferred}
     if effective_locale:
-        report.applied.append(f"locale: inferred {effective_locale}")
+        report.note("_locale", f"inferred {effective_locale}")
 
     for field_name, spec in fields_spec.items():
         if field_name not in result:
@@ -522,7 +522,7 @@ def normalize_extracted(
                         best_opt = opt
                 max_len = max(len(value_lower), 1)
                 if best_opt is not None and best_dist / max_len < 0.5:
-                    report.applied.append(f"{field_name}: enum snap {value!r} → {best_opt!r}")
+                    report.note(field_name, f"enum snap {value!r} → {best_opt!r}")
                     value = best_opt
 
         result[field_name] = value
@@ -568,7 +568,7 @@ def normalize_extracted(
             derived_val = method(src_value, **method_kwargs)
             if derived_val:
                 result[field_name] = derived_val
-                report.applied.append(f"{field_name}: derived via {method_name} from {src_name}")
+                report.note(field_name, f"derived via {method_name} from {src_name}")
                 break
 
     return result, report
