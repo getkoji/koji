@@ -446,6 +446,22 @@ def bench(
 
 
 @app.command()
+def serve(
+    port: int = typer.Option(9000, "--port", "-p", help="Port to listen on"),
+):
+    """Start the stateless extraction HTTP server.
+
+    Exposes POST /extract (multipart: file + schema YAML),
+    GET /health, and POST /schemas/compile. No auth, no persistence —
+    the hosted platform calls this from its Containers runtime.
+    """
+    console.print(f"\n[bold]Starting Koji extraction server on port {port}...[/bold]\n")
+    from .serve import run_server
+
+    run_server(port)
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print("koji 0.1.0")

@@ -29,6 +29,7 @@ dependencies = [
     "docker>=7.0",
     "fastapi>=0.111",
     "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
