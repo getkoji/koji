@@ -401,6 +401,56 @@ class TestBuildGroupPrompt:
         assert "## Document context" not in prompt
 
 
+class TestExcludeContains:
+    def test_matching_lines_stripped_from_prompt(self):
+        chunk = make_chunk(
+            content="| Nature of Injury | Crush Injury |\n| Cause of Injury | Caught in/between |\n\n## Description of Accident\n\nWorker caught left wrist in conveyor belt."
+        )
+        group = {
+            "fields": ["description"],
+            "field_specs": {
+                "description": {
+                    "type": "string",
+                    "hints": {
+                        "exclude_contains": ["Nature of Injury", "Cause of Injury"],
+                    },
+                }
+            },
+            "chunks": [chunk],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "Crush Injury" not in prompt
+        assert "Caught in/between" not in prompt
+        assert "Worker caught left wrist" in prompt
+
+    def test_no_exclusions_passes_all_content(self):
+        chunk = make_chunk(content="| Nature of Injury | Crush Injury |\nSome other content")
+        group = {
+            "fields": ["description"],
+            "field_specs": {"description": {"type": "string"}},
+            "chunks": [chunk],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "Crush Injury" in prompt
+        assert "Some other content" in prompt
+
+    def test_case_insensitive_exclusion(self):
+        chunk = make_chunk(content="NATURE OF INJURY: Burns\nDescription: Fire in warehouse")
+        group = {
+            "fields": ["description"],
+            "field_specs": {
+                "description": {
+                    "type": "string",
+                    "hints": {"exclude_contains": ["nature of injury"]},
+                }
+            },
+            "chunks": [chunk],
+        }
+        prompt = build_group_prompt(group, "test")
+        assert "Burns" not in prompt
+        assert "Fire in warehouse" in prompt
+
+
 # ── build_gap_fill_prompt ─────────────────────────────────────────────
 
 
