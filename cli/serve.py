@@ -207,9 +207,7 @@ async def _parse_document(content: bytes, filename: str) -> dict:
 
     start = time.time()
     try:
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, functools.partial(_convert_sync, tmp_path)
-        )
+        result = await asyncio.get_event_loop().run_in_executor(None, functools.partial(_convert_sync, tmp_path))
         result["elapsed_seconds"] = round(time.time() - start, 3)
         result["filename"] = filename
         return result
