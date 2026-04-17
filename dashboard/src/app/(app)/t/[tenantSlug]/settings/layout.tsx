@@ -8,7 +8,6 @@ const SETTINGS_TITLES: Record<string, string> = {
   "api-keys": "API Keys",
   endpoints: "Endpoints",
   webhooks: "Webhooks",
-  billing: "Billing",
 };
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {

@@ -19,7 +19,7 @@ import {
   Key,
   Radio,
   Webhook,
-  CreditCard,
+
 } from "lucide-react";
 
 interface NavItemProps {
@@ -132,7 +132,6 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
           <NavItem href={`${base}/settings/api-keys`} icon={<Key className={ICON_SIZE} />} label="API Keys" />
           <NavItem href={`${base}/settings/endpoints`} icon={<Radio className={ICON_SIZE} />} label="Endpoints" />
           <NavItem href={`${base}/settings/webhooks`} icon={<Webhook className={ICON_SIZE} />} label="Webhooks" />
-          <NavItem href={`${base}/settings/billing`} icon={<CreditCard className={ICON_SIZE} />} label="Billing" />
         </div>
       </div>
     </aside>
