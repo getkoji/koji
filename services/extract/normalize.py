@@ -79,24 +79,83 @@ def _slugify(value):
 
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 _US_DATE_RE = re.compile(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})")
+_EU_DATE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})")
+_MONTH_NAMES = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "sept": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+# "January 15, 2025" or "Jan 15, 2025"
+_VERBOSE_MDY_RE = re.compile(
+    r"(?:^|\b)(" + "|".join(_MONTH_NAMES) + r")\s+(\d{1,2}),?\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+# "15 January 2025" or "15 Jan 2025"
+_VERBOSE_DMY_RE = re.compile(
+    r"(?:^|\b)(\d{1,2})\s+(" + "|".join(_MONTH_NAMES) + r"),?\s+(\d{4})\b",
+    re.IGNORECASE,
+)
 
 
 def _iso8601(value):
     """Best-effort date normalization to YYYY-MM-DD.
 
-    Matches ISO-ish strings and common US formats. Falls back to the
-    original value (with a caller-side warning) if nothing parses.
+    Tries formats in order: ISO, verbose month-day-year, verbose
+    day-month-year, US MM/DD/YYYY, European DD.MM.YYYY. Falls back
+    to the original value if nothing parses.
     """
     if value is None or not isinstance(value, str):
         return value
     s = value.strip()
+    # ISO: 2025-01-15
     m = _ISO_DATE_RE.search(s)
     if m:
         y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
         return f"{y}-{mo}-{d}"
+    # Verbose MDY: January 15, 2025 / Jan 15 2025
+    m = _VERBOSE_MDY_RE.search(s)
+    if m:
+        mo = _MONTH_NAMES.get(m.group(1).lower())
+        if mo:
+            return f"{m.group(3)}-{mo:02d}-{int(m.group(2)):02d}"
+    # Verbose DMY: 15 January 2025 / 15 Jan 2025
+    m = _VERBOSE_DMY_RE.search(s)
+    if m:
+        mo = _MONTH_NAMES.get(m.group(2).lower())
+        if mo:
+            return f"{m.group(3)}-{mo:02d}-{int(m.group(1)):02d}"
+    # US: MM/DD/YYYY or MM-DD-YYYY
     m = _US_DATE_RE.search(s)
     if m:
         mo, d, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
+        if len(y) == 2:
+            y = ("20" + y) if int(y) < 70 else ("19" + y)
+        return f"{y}-{mo}-{d}"
+    # European: DD.MM.YYYY
+    m = _EU_DATE_RE.search(s)
+    if m:
+        d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
         if len(y) == 2:
             y = ("20" + y) if int(y) < 70 else ("19" + y)
         return f"{y}-{mo}-{d}"
@@ -159,6 +218,86 @@ def _e164(value):
     if len(digits) == 11 and digits.startswith("1"):
         return "+" + digits
     return "+" + digits
+
+
+# ── State-from-address derivation ──────────────────────────────────
+
+_US_STATES = {
+    "alabama": "AL",
+    "alaska": "AK",
+    "arizona": "AZ",
+    "arkansas": "AR",
+    "california": "CA",
+    "colorado": "CO",
+    "connecticut": "CT",
+    "delaware": "DE",
+    "florida": "FL",
+    "georgia": "GA",
+    "hawaii": "HI",
+    "idaho": "ID",
+    "illinois": "IL",
+    "indiana": "IN",
+    "iowa": "IA",
+    "kansas": "KS",
+    "kentucky": "KY",
+    "louisiana": "LA",
+    "maine": "ME",
+    "maryland": "MD",
+    "massachusetts": "MA",
+    "michigan": "MI",
+    "minnesota": "MN",
+    "mississippi": "MS",
+    "missouri": "MO",
+    "montana": "MT",
+    "nebraska": "NE",
+    "nevada": "NV",
+    "new hampshire": "NH",
+    "new jersey": "NJ",
+    "new mexico": "NM",
+    "new york": "NY",
+    "north carolina": "NC",
+    "north dakota": "ND",
+    "ohio": "OH",
+    "oklahoma": "OK",
+    "oregon": "OR",
+    "pennsylvania": "PA",
+    "rhode island": "RI",
+    "south carolina": "SC",
+    "south dakota": "SD",
+    "tennessee": "TN",
+    "texas": "TX",
+    "utah": "UT",
+    "vermont": "VT",
+    "virginia": "VA",
+    "washington": "WA",
+    "west virginia": "WV",
+    "wisconsin": "WI",
+    "wyoming": "WY",
+    "district of columbia": "DC",
+}
+_STATE_ABBREVS = set(_US_STATES.values())
+# Regex: two-letter state code preceded by comma+space or standalone, followed
+# by a ZIP code or end of string. Catches "Albany, NY 12207" and "Charlotte, NC".
+_STATE_ABBREV_RE = re.compile(
+    r"(?:,\s*|\b)(" + "|".join(_STATE_ABBREVS) + r")\b\s*(?:\d{5}|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_state_from_text(text: str) -> str | None:
+    """Find a US state abbreviation in address-like text."""
+    if not text:
+        return None
+    # Try abbreviation pattern first (most reliable)
+    m = _STATE_ABBREV_RE.search(text)
+    if m:
+        return m.group(1).upper()
+    # Try full state names
+    text_lower = text.lower()
+    for name, abbrev in _US_STATES.items():
+        if name in text_lower:
+            return abbrev
+    return None
 
 
 TRANSFORMS = {
@@ -266,6 +405,41 @@ def normalize_extracted(
                     value = best_opt
 
         result[field_name] = value
+
+    # Derived fields: populate fields whose values can be computed from
+    # other extracted fields. Runs after all transforms so source fields
+    # are in their final form.
+    for field_name, spec in fields_spec.items():
+        if not isinstance(spec, dict):
+            continue
+        derived = spec.get("derived_from")
+        if not isinstance(derived, dict):
+            continue
+        source_field = derived.get("field")
+        transform = derived.get("transform")
+        if not source_field or not transform:
+            continue
+        # Only derive if the field is empty/missing and the source exists
+        current = result.get(field_name)
+        if current is not None and str(current).strip():
+            continue
+        source_value = result.get(source_field)
+        if not isinstance(source_value, str) or not source_value:
+            # Try scanning ALL string fields for the state if no specific source
+            if transform == "state_from_address":
+                for v in result.values():
+                    if isinstance(v, str) and len(v) > 10:
+                        derived_val = _extract_state_from_text(v)
+                        if derived_val:
+                            result[field_name] = derived_val
+                            report.applied.append(f"{field_name}: derived state '{derived_val}' from text")
+                            break
+            continue
+        if transform == "state_from_address":
+            derived_val = _extract_state_from_text(source_value)
+            if derived_val:
+                result[field_name] = derived_val
+                report.applied.append(f"{field_name}: derived state '{derived_val}' from {source_field}")
 
     return result, report
 
