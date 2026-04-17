@@ -19,6 +19,7 @@ NAV_ORDER = [
     "architecture.md",
     "cli.md",
     "api-reference.md",
+    "trace-format.md",
 ]
 
 

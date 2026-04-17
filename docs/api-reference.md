@@ -179,9 +179,12 @@ With schema (parse + extract):
   "schema": "invoice",
   "elapsed_ms": 2340,
   "tool_calls": 3,
-  "rounds": 1
+  "rounds": 1,
+  "trace": { "version": 1, "trace_id": "trc_8f3a91c2", "status": "complete", "stages": [/* ... */] }
 }
 ```
+
+The `trace` object describes the pipeline run — its shape is locked and documented in [Trace Format](trace-format.md). Every stage maps 1:1 onto the `trace_stages` table so downstream consumers can persist it directly.
 
 #### Async response `202 Accepted`
 
@@ -246,9 +249,12 @@ Extract structured data from markdown using a schema. No file upload -- operates
   "schema": "invoice",
   "elapsed_ms": 1200,
   "tool_calls": 3,
-  "rounds": 1
+  "rounds": 1,
+  "trace": { "version": 1, "trace_id": "trc_8f3a91c2", "status": "complete", "stages": [/* ... */] }
 }
 ```
+
+The `trace` object is the locked pipeline-observability envelope. See [Trace Format](trace-format.md) for the full schema, stage catalog, and per-stage `summary_json` contents.
 
 #### Async response `202 Accepted`
 
