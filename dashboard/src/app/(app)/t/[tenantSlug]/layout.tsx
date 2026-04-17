@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { TopBar } from "@/components/shell/TopBar";
 import { Sidebar } from "@/components/shell/Sidebar";
 
@@ -9,6 +10,10 @@ export default async function TenantLayout({
   params: Promise<{ tenantSlug: string }>;
 }) {
   const { tenantSlug } = await params;
+
+  if (!tenantSlug || tenantSlug === "undefined") {
+    redirect("/");
+  }
 
   return (
     <>
