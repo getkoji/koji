@@ -244,6 +244,36 @@ def _check_field_sum(params: Any, data: dict, report: ValidationReport) -> None:
         )
 
 
+def _check_min_words(params: Any, data: dict, report: ValidationReport) -> None:
+    """Null out string fields shorter than a minimum word count.
+
+    Schema config:
+        - min_words: { field: description_of_loss, min: 5 }
+
+    When the extracted value has fewer words than `min`, it's likely a
+    classification code ("Fall/Slip", "Caught in/between") rather than
+    the narrative the schema author wanted. Nulls the field so the
+    code doesn't masquerade as a real description.
+    """
+    if not isinstance(params, dict):
+        return
+    fname = params.get("field")
+    min_count = int(params.get("min", 5))
+    if not fname:
+        return
+    value = data.get(fname)
+    if not isinstance(value, str):
+        return
+    word_count = len(value.split())
+    if word_count < min_count:
+        report.fail(
+            "min_words",
+            fname,
+            f"nulled: {word_count} words (min {min_count}) — likely a classification code, not a narrative",
+        )
+        data[fname] = None
+
+
 RULES = {
     "required": _check_required,
     "not_empty": _check_not_empty,
@@ -251,6 +281,7 @@ RULES = {
     "date_order": _check_date_order,
     "sum_equals": _check_sum_equals,
     "field_sum": _check_field_sum,
+    "min_words": _check_min_words,
     "regex": _check_regex,
 }
 

@@ -243,6 +243,43 @@ def normalize_extracted(
         if transforms:
             value = _apply_transforms(value, transforms, field_name, report)
 
+        # Enum snapping: if the field has options and the value isn't in
+        # the list, snap to the closest match via edit distance. Catches
+        # the common case where the model returns a plausible synonym
+        # ("Loss Report" → "Loss Run", "First Report of Injury" →
+        # "Employer's First Report") without requiring explicit mappings.
+        options = spec.get("options") or spec.get("enum")
+        if isinstance(value, str) and isinstance(options, list) and options:
+            value_lower = value.strip().lower()
+            if not any(value_lower == str(o).strip().lower() for o in options):
+                best_opt = None
+                best_dist = float("inf")
+                for opt in options:
+                    opt_str = str(opt).strip().lower()
+                    dist = _levenshtein_distance(value_lower, opt_str)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_opt = opt
+                max_len = max(len(value_lower), 1)
+                if best_opt is not None and best_dist / max_len < 0.5:
+                    report.applied.append(f"{field_name}: enum snap {value!r} → {best_opt!r}")
+                    value = best_opt
+
         result[field_name] = value
 
     return result, report
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Pure-Python Levenshtein edit distance."""
+    if len(a) < len(b):
+        return _levenshtein_distance(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
