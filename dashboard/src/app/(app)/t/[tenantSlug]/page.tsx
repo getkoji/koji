@@ -5,6 +5,13 @@ export default async function OverviewPage({
 }) {
   const { tenantSlug } = await params;
 
+  // Convert slug to display name: "acme-invoices" → "Acme Invoices"
+  // In production this comes from the tenants table; for now, derive from slug
+  const displayName = tenantSlug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+
   return (
     <div className="px-10 py-8 pb-16">
       {/* Page header */}
@@ -19,7 +26,7 @@ export default async function OverviewPage({
             className="font-display text-[34px] font-medium leading-[1.05] tracking-tight text-ink m-0"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
           >
-            {tenantSlug}.
+            {displayName}.
             <br />
             <em
               className="text-vermillion-2 italic"

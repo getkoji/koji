@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Search, Bell } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
 
-export function TopBar({ tenantSlug }: { tenantSlug?: string }) {
+export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) {
+  const pathname = usePathname();
+  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
   return (
     <header
       className="grid items-center h-[60px] px-5 bg-cream border-b border-border sticky top-0 z-10"
