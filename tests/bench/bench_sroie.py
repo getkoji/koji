@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import re
 import sys
 import time
@@ -26,9 +25,8 @@ from pathlib import Path
 # Add repo root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from services.extract.vision import VisionBypassConfig, vision_extract
 from services.extract.providers import create_provider
-
+from services.extract.vision import vision_extract
 
 SROIE_DIR = Path(__file__).parent / "sroie" / "sroie-repo" / "data"
 SCHEMA_PATH = Path(__file__).parent / "receipt_schema.yaml"
@@ -50,6 +48,7 @@ def normalize_value(v: str) -> str:
 def normalize_date(v: str) -> str | None:
     """Parse a date string into YYYY-MM-DD for comparison."""
     import re
+
     v = str(v).strip()
 
     # DD/MM/YYYY or DD-MM-YYYY
@@ -111,6 +110,7 @@ def score_field(field_name: str, expected: str, actual: str | None) -> tuple[boo
 def _image_to_base64(file_path: str) -> list[str]:
     """Read an image file as base64 — inline to avoid docling import."""
     import base64
+
     with open(file_path, "rb") as f:
         return [base64.b64encode(f.read()).decode("ascii")]
 
@@ -127,12 +127,14 @@ async def run_text_extract(image_path: str, schema_def: dict) -> dict:
     """Run text extraction (OCR → markdown → LLM)."""
     import asyncio
     import functools
+
     from services.parse.main import _convert_sync
 
     # Parse to markdown
     try:
         parse_result = await asyncio.get_event_loop().run_in_executor(
-            None, functools.partial(_convert_sync, image_path),
+            None,
+            functools.partial(_convert_sync, image_path),
         )
         markdown = parse_result.get("markdown", "")
     except Exception:
@@ -143,6 +145,7 @@ async def run_text_extract(image_path: str, schema_def: dict) -> dict:
 
     try:
         from services.extract.pipeline import intelligent_extract
+
         result = await intelligent_extract(markdown, schema_def, model="openai/gpt-4o-mini")
         return result.get("extracted", {})
     except Exception as e:
@@ -162,7 +165,7 @@ async def benchmark(n: int = 20, run_vision: bool = True, run_text: bool = True)
 
     # Get first n images that have ground truth
     samples = []
-    for img_file in sorted(img_dir.glob("*.jpg"))[:n * 2]:
+    for img_file in sorted(img_dir.glob("*.jpg"))[: n * 2]:
         key_file = key_dir / f"{img_file.stem}.json"
         if key_file.exists():
             samples.append((img_file, key_file))
@@ -176,15 +179,17 @@ async def benchmark(n: int = 20, run_vision: bool = True, run_text: bool = True)
 
     for i, (img_path, key_path) in enumerate(samples):
         gt = load_ground_truth(key_path)
-        print(f"\n[{i+1}/{len(samples)}] {img_path.name}")
-        print(f"  GT: company={gt.get('company','')[:30]}, total={gt.get('total')}")
+        print(f"\n[{i + 1}/{len(samples)}] {img_path.name}")
+        print(f"  GT: company={gt.get('company', '')[:30]}, total={gt.get('total')}")
 
         if run_vision:
             t0 = time.time()
             try:
                 vision_result = await run_vision_extract(str(img_path), schema_def)
                 elapsed = round(time.time() - t0, 1)
-                print(f"  Vision ({elapsed}s): company={str(vision_result.get('company',''))[:30]}, total={vision_result.get('total')}")
+                print(
+                    f"  Vision ({elapsed}s): company={str(vision_result.get('company', ''))[:30]}, total={vision_result.get('total')}"
+                )
             except Exception as e:
                 vision_result = {}
                 elapsed = round(time.time() - t0, 1)
@@ -195,19 +200,23 @@ async def benchmark(n: int = 20, run_vision: bool = True, run_text: bool = True)
                 if field in gt:
                     match, score = score_field(field, gt[field], str(vision_result.get(field, "")))
                     field_scores[field] = score
-            results["vision"].append({
-                "file": img_path.name,
-                "scores": field_scores,
-                "avg": sum(field_scores.values()) / max(len(field_scores), 1),
-                "elapsed": elapsed,
-            })
+            results["vision"].append(
+                {
+                    "file": img_path.name,
+                    "scores": field_scores,
+                    "avg": sum(field_scores.values()) / max(len(field_scores), 1),
+                    "elapsed": elapsed,
+                }
+            )
 
         if run_text:
             t0 = time.time()
             try:
                 text_result = await run_text_extract(str(img_path), schema_def)
                 elapsed = round(time.time() - t0, 1)
-                print(f"  Text  ({elapsed}s): company={str(text_result.get('company',''))[:30]}, total={text_result.get('total')}")
+                print(
+                    f"  Text  ({elapsed}s): company={str(text_result.get('company', ''))[:30]}, total={text_result.get('total')}"
+                )
             except Exception as e:
                 text_result = {}
                 elapsed = round(time.time() - t0, 1)
@@ -218,12 +227,14 @@ async def benchmark(n: int = 20, run_vision: bool = True, run_text: bool = True)
                 if field in gt:
                     match, score = score_field(field, gt[field], str(text_result.get(field, "")))
                     field_scores[field] = score
-            results["text"].append({
-                "file": img_path.name,
-                "scores": field_scores,
-                "avg": sum(field_scores.values()) / max(len(field_scores), 1),
-                "elapsed": elapsed,
-            })
+            results["text"].append(
+                {
+                    "file": img_path.name,
+                    "scores": field_scores,
+                    "avg": sum(field_scores.values()) / max(len(field_scores), 1),
+                    "elapsed": elapsed,
+                }
+            )
 
     # Print summary
     print("\n" + "=" * 60)
@@ -263,8 +274,10 @@ if __name__ == "__main__":
     parser.add_argument("--text-only", action="store_true")
     args = parser.parse_args()
 
-    asyncio.run(benchmark(
-        n=args.n,
-        run_vision=not args.text_only,
-        run_text=not args.vision_only,
-    ))
+    asyncio.run(
+        benchmark(
+            n=args.n,
+            run_vision=not args.text_only,
+            run_text=not args.vision_only,
+        )
+    )

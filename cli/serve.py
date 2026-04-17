@@ -152,7 +152,12 @@ async def extract(
 
     try:
         return await _route_and_extract(
-            tmp_path, filename, content_type, content, schema_def, start,
+            tmp_path,
+            filename,
+            content_type,
+            content,
+            schema_def,
+            start,
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -167,14 +172,14 @@ async def _route_and_extract(
     start: float,
 ) -> JSONResponse | dict:
     """Classify input and route to the correct extraction path."""
-    from services.parse.main import classify_input, get_page_images
+    from services.extract.providers import create_provider
     from services.extract.vision import (
         VisionBypassConfig,
         estimate_ocr_confidence,
         should_bypass,
         vision_extract,
     )
-    from services.extract.providers import create_provider
+    from services.parse.main import classify_input, get_page_images
 
     # Step 1: Classify the input
     input_type = classify_input(tmp_path, content_type)
@@ -197,7 +202,8 @@ async def _route_and_extract(
             # Vision not enabled — try to OCR the image via parse
             parse_result = await _parse_document(content, filename)
             ocr_confidence = estimate_ocr_confidence(
-                parse_result.get("markdown", ""), parse_result.get("pages", 1),
+                parse_result.get("markdown", ""),
+                parse_result.get("pages", 1),
             )
 
     elif input_type == "scanned_pdf":
@@ -210,7 +216,10 @@ async def _route_and_extract(
             ocr_confidence = estimate_ocr_confidence(markdown, page_count)
 
             do_bypass, reason = should_bypass(
-                page_count, ocr_confidence, schema_def, bypass_config,
+                page_count,
+                ocr_confidence,
+                schema_def,
+                bypass_config,
             )
             if do_bypass:
                 use_vision = True
@@ -236,11 +245,13 @@ async def _route_and_extract(
     trace_stages: list[dict] = []
 
     if parse_result:
-        trace_stages.append({
-            "name": "parse",
-            "duration_ms": round((parse_result.get("elapsed_seconds", 0)) * 1000),
-            "input_type": input_type,
-        })
+        trace_stages.append(
+            {
+                "name": "parse",
+                "duration_ms": round((parse_result.get("elapsed_seconds", 0)) * 1000),
+                "input_type": input_type,
+            }
+        )
 
     if use_vision:
         # Vision extraction
@@ -255,18 +266,19 @@ async def _route_and_extract(
             extract_result = await vision_extract(page_images, schema_def, provider)
         except Exception as e:
             return JSONResponse(
-                {"error": "Vision extraction failed", "detail": str(e),
-                 "traceback": traceback.format_exc()},
+                {"error": "Vision extraction failed", "detail": str(e), "traceback": traceback.format_exc()},
                 status_code=500,
             )
 
-        trace_stages.append({
-            "name": "vision_extract",
-            "duration_ms": extract_result.get("elapsed_ms", 0),
-            "ocr_skipped": "vision_bypass",
-            "bypass_reason": bypass_reason,
-            "input_type": input_type,
-        })
+        trace_stages.append(
+            {
+                "name": "vision_extract",
+                "duration_ms": extract_result.get("elapsed_ms", 0),
+                "ocr_skipped": "vision_bypass",
+                "bypass_reason": bypass_reason,
+                "input_type": input_type,
+            }
+        )
     else:
         # Text extraction (standard pipeline)
         markdown = (parse_result or {}).get("markdown", "")
@@ -280,23 +292,27 @@ async def _route_and_extract(
             from services.extract.pipeline import intelligent_extract
 
             extract_result = await intelligent_extract(
-                markdown, schema_def, model=None,
+                markdown,
+                schema_def,
+                model=None,
             )
         except Exception as e:
             return JSONResponse(
-                {"error": "Extraction failed", "detail": str(e),
-                 "traceback": traceback.format_exc()},
+                {"error": "Extraction failed", "detail": str(e), "traceback": traceback.format_exc()},
                 status_code=500,
             )
 
-        trace_stages.append({
-            "name": "extract",
-            "duration_ms": extract_result.get("elapsed_ms", 0),
-        })
+        trace_stages.append(
+            {
+                "name": "extract",
+                "duration_ms": extract_result.get("elapsed_ms", 0),
+            }
+        )
 
     # Post-processing (normalize + validate)
     try:
         from services.extract.main import _apply_post_extract
+
         _apply_post_extract(extract_result, schema_def)
     except Exception:
         pass

@@ -11,7 +11,6 @@ docs, and other cases where OCR degrades the source signal.
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import time
@@ -158,8 +157,8 @@ def _build_vision_prompt(schema_def: dict) -> str:
 
     return f"""Extract structured data from this document image.
 
-Schema: {schema_def.get('name', 'document')}
-{schema_def.get('description', '')}
+Schema: {schema_def.get("name", "document")}
+{schema_def.get("description", "")}
 
 Fields to extract:
 {chr(10).join(field_descriptions)}
@@ -197,10 +196,12 @@ async def vision_extract(
     # Build multimodal message with text + images
     content: list[dict] = [{"type": "text", "text": prompt}]
     for img_b64 in page_images:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+            }
+        )
 
     messages = [{"role": "user", "content": content}]
 

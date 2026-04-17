@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
-import io
 import tempfile
 import time
 import traceback
@@ -51,7 +50,11 @@ def _convert_sync(file_path: str) -> dict:
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 IMAGE_MIMETYPES = {
-    "image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "image/bmp",
+    "image/webp",
 }
 
 
