@@ -366,7 +366,13 @@ def build_group_prompt(
 
     cfg = schema_config or {}
     extra_instructions = []
-    date_locale = cfg.get("date_locale")
+
+    # Locale: unified block or legacy standalone keys
+    locale = cfg.get("locale") or {}
+    locale_fallback = locale.get("fallback") or {}
+    date_locale = locale_fallback.get("date_format") or cfg.get("date_locale")
+    default_currency = locale_fallback.get("currency") or cfg.get("default_currency")
+
     if date_locale:
         extra_instructions.append(
             f"Dates in this document use {date_locale} format. "
@@ -374,7 +380,6 @@ def build_group_prompt(
             f"interpret it according to {date_locale} ordering. "
             f"Output all dates as YYYY-MM-DD regardless of input format."
         )
-    default_currency = cfg.get("default_currency")
     if default_currency:
         extra_instructions.append(f"When no explicit currency code is present, assume {default_currency}.")
     if cfg.get("blank_form_aware"):

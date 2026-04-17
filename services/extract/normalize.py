@@ -118,12 +118,16 @@ _VERBOSE_DMY_RE = re.compile(
 )
 
 
-def _iso8601(value):
+def _iso8601(value, dayfirst: bool = False):
     """Best-effort date normalization to YYYY-MM-DD.
 
     Tries formats in order: ISO, verbose month-day-year, verbose
-    day-month-year, US MM/DD/YYYY, European DD.MM.YYYY. Falls back
-    to the original value if nothing parses.
+    day-month-year, ambiguous numeric (locale-aware), European
+    DD.MM.YYYY. Falls back to the original value if nothing parses.
+
+    When `dayfirst` is True, ambiguous numeric dates like 04/06/2025
+    are interpreted as DD/MM (April 6 → June 4). Default is MM/DD
+    (US convention).
     """
     if value is None or not isinstance(value, str):
         return value
@@ -145,14 +149,18 @@ def _iso8601(value):
         mo = _MONTH_NAMES.get(m.group(2).lower())
         if mo:
             return f"{m.group(3)}-{mo:02d}-{int(m.group(1)):02d}"
-    # US: MM/DD/YYYY or MM-DD-YYYY
+    # Numeric with / or - separator: locale-aware
     m = _US_DATE_RE.search(s)
     if m:
-        mo, d, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
+        a, b, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
         if len(y) == 2:
             y = ("20" + y) if int(y) < 70 else ("19" + y)
+        if dayfirst:
+            d, mo = a, b
+        else:
+            mo, d = a, b
         return f"{y}-{mo}-{d}"
-    # European: DD.MM.YYYY
+    # European: DD.MM.YYYY (dot separator is always DD.MM)
     m = _EU_DATE_RE.search(s)
     if m:
         d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
@@ -317,6 +325,80 @@ DERIVATION_METHODS: dict[str, callable] = {
 }
 
 
+# ── Locale inference ───────────────────────────────────────────────
+
+# Maps country/region signals found in document text to locale properties.
+# The engine scans extracted fields for these signals and infers locale
+# when the schema doesn't declare one explicitly.
+_LOCALE_SIGNALS = {
+    # Currency symbols → (currency_code, date_format, decimal_separator)
+    "RM": ("MYR", "DD/MM/YYYY", "."),
+    "S$": ("SGD", "DD/MM/YYYY", "."),
+    "C$": ("CAD", "DD/MM/YYYY", "."),
+    "CA$": ("CAD", "DD/MM/YYYY", "."),
+    "A$": ("AUD", "DD/MM/YYYY", "."),
+    "AU$": ("AUD", "DD/MM/YYYY", "."),
+    "€": ("EUR", "DD/MM/YYYY", ","),
+    "£": ("GBP", "DD/MM/YYYY", "."),
+    "¥": ("JPY", "YYYY/MM/DD", "."),
+    "₹": ("INR", "DD/MM/YYYY", "."),
+}
+
+_COUNTRY_LOCALES = {
+    "malaysia": ("MYR", "DD/MM/YYYY", "."),
+    "singapore": ("SGD", "DD/MM/YYYY", "."),
+    "canada": ("CAD", "DD/MM/YYYY", "."),
+    "australia": ("AUD", "DD/MM/YYYY", "."),
+    "united kingdom": ("GBP", "DD/MM/YYYY", "."),
+    "uk": ("GBP", "DD/MM/YYYY", "."),
+    "germany": ("EUR", "DD.MM.YYYY", ","),
+    "france": ("EUR", "DD/MM/YYYY", ","),
+    "japan": ("JPY", "YYYY/MM/DD", "."),
+    "india": ("INR", "DD/MM/YYYY", "."),
+    "new zealand": ("NZD", "DD/MM/YYYY", "."),
+    "brazil": ("BRL", "DD/MM/YYYY", ","),
+    "mexico": ("MXN", "DD/MM/YYYY", "."),
+}
+
+# US state abbreviations → US locale (already have the full list above)
+_US_LOCALE = ("USD", "MM/DD/YYYY", ".")
+
+
+def infer_locale(extracted: dict, scan_fields: list[str] | None = None) -> dict:
+    """Infer locale properties from extracted field values.
+
+    Scans the named fields (or all string fields if none specified) for
+    currency symbols, country names, and US state abbreviations. Returns
+    a dict with keys: currency, date_format, decimal_separator. Missing
+    keys mean no signal was found for that property.
+    """
+    if scan_fields:
+        texts = [str(extracted.get(f, "")) for f in scan_fields if extracted.get(f)]
+    else:
+        texts = [str(v) for v in extracted.values() if isinstance(v, str) and len(v) > 3]
+
+    combined = " ".join(texts)
+    if not combined.strip():
+        return {}
+
+    # Check currency symbols first (most specific)
+    for symbol, (currency, date_fmt, dec_sep) in _LOCALE_SIGNALS.items():
+        if symbol in combined:
+            return {"currency": currency, "date_format": date_fmt, "decimal_separator": dec_sep}
+
+    # Check country names
+    combined_lower = combined.lower()
+    for country, (currency, date_fmt, dec_sep) in _COUNTRY_LOCALES.items():
+        if country in combined_lower:
+            return {"currency": currency, "date_format": date_fmt, "decimal_separator": dec_sep}
+
+    # Check for US state abbreviations → US locale
+    if _STATE_ABBREV_RE.search(combined):
+        return {"currency": "USD", "date_format": "MM/DD/YYYY", "decimal_separator": "."}
+
+    return {}
+
+
 TRANSFORMS = {
     "trim": _trim,
     "lowercase": _lowercase,
@@ -341,14 +423,22 @@ def _as_transform_list(directive) -> list[str]:
     return []
 
 
-def _apply_transforms(value, transforms: list[str], field_name: str, report: NormalizationReport):
+def _apply_transforms(
+    value, transforms: list[str], field_name: str, report: NormalizationReport, locale: dict | None = None
+):
+    dayfirst = False
+    if locale and locale.get("date_format", "").startswith("DD"):
+        dayfirst = True
     for name in transforms:
         fn = TRANSFORMS.get(name)
         if fn is None:
             report.warn(f"{field_name}: unknown normalize transform '{name}' — skipped")
             continue
         before = value
-        value = fn(value)
+        if name == "iso8601" and dayfirst:
+            value = fn(value, dayfirst=True)
+        else:
+            value = fn(value)
         if value != before:
             report.note(field_name, name)
     return value
@@ -371,6 +461,20 @@ def normalize_extracted(
 
     fields_spec = (schema_def or {}).get("fields", {}) or {}
     result: dict = dict(extracted)
+
+    # Locale inference: scan extracted fields for location/currency signals
+    # and use them to guide date/currency normalization. Schema declares:
+    #   locale:
+    #     infer_from: [vendor_address, merchant_name]
+    #     fallback: { date_format: MM/DD/YYYY, currency: USD }
+    locale_config = (schema_def or {}).get("locale") or {}
+    scan_fields = locale_config.get("infer_from")
+    fallback = locale_config.get("fallback") or {}
+    inferred = infer_locale(result, scan_fields) if locale_config else {}
+    # Merge: inferred wins over fallback, explicit schema keys win over both
+    effective_locale = {**fallback, **inferred}
+    if effective_locale:
+        report.applied.append(f"locale: inferred {effective_locale}")
 
     for field_name, spec in fields_spec.items():
         if field_name not in result:
@@ -397,7 +501,7 @@ def normalize_extracted(
             value = new_rows
 
         if transforms:
-            value = _apply_transforms(value, transforms, field_name, report)
+            value = _apply_transforms(value, transforms, field_name, report, locale=effective_locale)
 
         # Enum snapping: if the field has options and the value isn't in
         # the list, snap to the closest match via edit distance. Catches
