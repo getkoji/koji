@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 from rich.console import Console
 
-from server.config import KojiConfig, load_config
+from cli.config import KojiConfig, load_config
 
 from .compose import write_compose
 from .doctor import _port_available
@@ -92,7 +92,7 @@ def find_available_base_port(current_base: int) -> int | None:
     Returns the first base_port where all 5 derived ports are available,
     or None if nothing found within a reasonable range.
     """
-    from server.config import ClusterConfig
+    from cli.config import ClusterConfig
 
     # Start at the next multiple of 100 above current
     candidate = ((current_base // 100) + 1) * 100

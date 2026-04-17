@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import yaml
 
-from server.config import (
+from cli.config import (
     ClusterConfig,
     KojiConfig,
     PipelineStep,

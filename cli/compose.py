@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import yaml
 
-from server.config import KojiConfig
+from cli.config import KojiConfig
 
 # Registry for pre-built Koji images. Override the tag via cluster.version.
 GHCR_NAMESPACE = "ghcr.io/getkoji"

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from server.config import KojiConfig, load_config
+from cli.config import KojiConfig, load_config
 
 Status = Literal["pass", "warn", "fail"]
 

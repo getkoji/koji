@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cli.compose import generate_compose
-from server.config import KojiConfig, ServicesConfig
+from cli.config import KojiConfig, ServicesConfig
 
 
 class TestGenerateCompose:
@@ -155,7 +155,7 @@ class TestBothDisabled:
 # Default (pull) mode references pre-built images on ghcr.io/getkoji.
 # Dev mode preserves the old build-from-source behavior for contributors.
 
-from server.config import ClusterConfig  # noqa: E402
+from cli.config import ClusterConfig  # noqa: E402
 
 
 class TestPullModeDefault:
