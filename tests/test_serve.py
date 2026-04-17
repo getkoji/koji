@@ -16,9 +16,9 @@ def test_health():
 
 
 def test_compile_valid_schema():
-    resp = client.post("/schemas/compile", json={
-        "content": "name: invoice\nfields:\n  total:\n    type: number\n    required: true\n"
-    })
+    resp = client.post(
+        "/schemas/compile", json={"content": "name: invoice\nfields:\n  total:\n    type: number\n    required: true\n"}
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is True
@@ -28,16 +28,12 @@ def test_compile_valid_schema():
 
 
 def test_compile_invalid_yaml():
-    resp = client.post("/schemas/compile", json={
-        "content": "not: valid: yaml: {{{"
-    })
+    resp = client.post("/schemas/compile", json={"content": "not: valid: yaml: {{{"})
     assert resp.status_code == 422
     assert "error" in resp.json()
 
 
 def test_compile_non_mapping():
-    resp = client.post("/schemas/compile", json={
-        "content": "- just\n- a\n- list\n"
-    })
+    resp = client.post("/schemas/compile", json={"content": "- just\n- a\n- list\n"})
     assert resp.status_code == 422
     assert "error" in resp.json()
