@@ -2,15 +2,29 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { ReactNode } from "react";
+import {
+  LayoutDashboard,
+  Workflow,
+  Play,
+  MessageSquare,
+  ArrowDownToLine,
+  FileCode,
+  ShieldCheck,
+  Database,
+  Target,
+  Settings,
+  Sparkles,
+} from "lucide-react";
 
 interface NavItemProps {
   href: string;
-  glyph: string;
+  icon: ReactNode;
   label: string;
   count?: number;
 }
 
-function NavItem({ href, glyph, label, count }: NavItemProps) {
+function NavItem({ href, icon, label, count }: NavItemProps) {
   const pathname = usePathname();
   const active = pathname === href || pathname.startsWith(href + "/");
 
@@ -24,11 +38,11 @@ function NavItem({ href, glyph, label, count }: NavItemProps) {
       }`}
     >
       <span
-        className={`font-mono text-[13px] w-4 text-center shrink-0 ${
+        className={`w-4 shrink-0 flex items-center justify-center ${
           active ? "text-vermillion-2" : "text-ink-4"
         }`}
       >
-        {glyph}
+        {icon}
       </span>
       <span>{label}</span>
       {count !== undefined && (
@@ -41,6 +55,8 @@ function NavItem({ href, glyph, label, count }: NavItemProps) {
   );
 }
 
+const ICON_SIZE = "w-[15px] h-[15px]";
+
 export function Sidebar({ tenantSlug, schemaSlug }: { tenantSlug: string; schemaSlug?: string }) {
   const base = `/t/${tenantSlug}`;
 
@@ -51,7 +67,7 @@ export function Sidebar({ tenantSlug, schemaSlug }: { tenantSlug: string; schema
         href={`${base}/playground`}
         className="flex items-center gap-2 px-3 py-2.5 bg-ink text-cream rounded-sm text-[13px] font-medium hover:bg-vermillion-2 transition-colors"
       >
-        <span className="font-mono text-vermillion-3 text-sm">✦</span>
+        <Sparkles className="w-3.5 h-3.5 text-vermillion-3" />
         <span>Playground</span>
         <span className="flex-1" />
         <kbd className="font-mono text-[10px] text-cream-3 px-1.5 py-0.5 border border-cream/15 rounded-sm">
@@ -64,11 +80,11 @@ export function Sidebar({ tenantSlug, schemaSlug }: { tenantSlug: string; schema
         <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2">
           Project
         </div>
-        <NavItem href={base} glyph="◉" label="Overview" />
-        <NavItem href={`${base}/pipelines`} glyph="→" label="Pipelines" count={5} />
-        <NavItem href={`${base}/jobs`} glyph="◌" label="Jobs" count={238} />
-        <NavItem href={`${base}/review`} glyph="◇" label="Review" count={8} />
-        <NavItem href={`${base}/sources`} glyph="⇲" label="Sources" count={5} />
+        <NavItem href={base} icon={<LayoutDashboard className={ICON_SIZE} />} label="Overview" />
+        <NavItem href={`${base}/pipelines`} icon={<Workflow className={ICON_SIZE} />} label="Pipelines" count={5} />
+        <NavItem href={`${base}/jobs`} icon={<Play className={ICON_SIZE} />} label="Jobs" count={238} />
+        <NavItem href={`${base}/review`} icon={<MessageSquare className={ICON_SIZE} />} label="Review" count={8} />
+        <NavItem href={`${base}/sources`} icon={<ArrowDownToLine className={ICON_SIZE} />} label="Sources" count={5} />
       </nav>
 
       {/* Schema section */}
@@ -81,15 +97,15 @@ export function Sidebar({ tenantSlug, schemaSlug }: { tenantSlug: string; schema
           </span>
           <span className="w-1 h-1 rounded-full bg-vermillion-2 shadow-[0_0_0_2px_rgba(153,39,24,0.14)] ml-0.5" />
         </div>
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/build`} glyph="≡" label="Build" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/validate`} glyph="▦" label="Validate" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/corpus`} glyph="▤" label="Corpus" count={38} />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/benchmarks`} glyph="⊙" label="Benchmarks" />
+        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
+        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
+        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" count={38} />
+        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
       </nav>
 
       {/* Footer */}
       <div className="mt-auto pt-4 border-t border-border flex flex-col gap-0.5">
-        <NavItem href={`${base}/settings`} glyph="◈" label="Settings" />
+        <NavItem href={`${base}/settings`} icon={<Settings className={ICON_SIZE} />} label="Settings" />
       </div>
     </aside>
   );
