@@ -13,9 +13,9 @@ cluster:
   # either by passing `koji start --dev` or by setting dev: true below.
   # dev: false
 
-# services:
-#   parse: true     # Set to false to skip the parse service (e.g., extracting from pre-parsed markdown)
-#   ollama: true    # Set to false to skip ollama (e.g., using OpenAI only)
+services:
+  parse: false
+  ollama: false
 
 pipeline:
   - step: parse
