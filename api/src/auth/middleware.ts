@@ -58,6 +58,12 @@ export function authMiddleware(adapter: AuthAdapter) {
       return;
     }
 
+    // Source webhook inbound — public, verified by HMAC, not user auth
+    if (path.match(/^\/api\/sources\/[^/]+\/webhook$/)) {
+      await next();
+      return;
+    }
+
     // --- Stage 1: Identify ---
     const cookieToken = getCookie(c, SESSION_COOKIE);
     const bearerToken = c.req.header("Authorization")?.replace("Bearer ", "");

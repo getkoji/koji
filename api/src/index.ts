@@ -24,6 +24,7 @@ import { cliAuth } from "./routes/cli-auth";
 import { modelProviders } from "./routes/model-providers";
 import { modelCatalog } from "./routes/model-catalog";
 import { webhookTargets } from "./routes/webhook-targets";
+import { sources } from "./routes/sources";
 import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
 import { initEmitter } from "./webhooks/emit";
@@ -72,6 +73,7 @@ app.route("/api/cli", cliAuth);
 app.route("/api/model-providers", modelProviders);
 app.route("/api/model-catalog", modelCatalog);
 app.route("/api/webhook-targets", webhookTargets);
+app.route("/api/sources", sources);
 
 // Export the adapter so setup.ts can create sessions
 export { adapter };
