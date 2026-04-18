@@ -36,7 +36,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
 
   return (
     <header
-      className="grid items-center h-[60px] px-5 bg-cream border-b border-border sticky top-0 z-10"
+      className="grid items-center h-[60px] px-5 bg-cream border-b border-border sticky top-0 z-30"
       style={{ gridTemplateColumns: "256px 1fr auto" }}
     >
       {/* Brand + project switcher */}
