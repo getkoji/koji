@@ -18,14 +18,46 @@ interface WebhookTarget {
   createdAt: string;
 }
 
-const EVENT_OPTIONS = [
-  { value: "job.succeeded", label: "Job succeeded" },
-  { value: "job.failed", label: "Job failed" },
-  { value: "document.delivered", label: "Document delivered" },
-  { value: "document.failed", label: "Document failed" },
-  { value: "schema.deployed", label: "Schema deployed" },
-  { value: "*", label: "All events" },
+const EVENT_GROUPS = [
+  {
+    label: "Pipeline",
+    events: [
+      { value: "job.succeeded", label: "Job succeeded" },
+      { value: "job.failed", label: "Job failed" },
+      { value: "job.created", label: "Job created" },
+      { value: "job.cancelled", label: "Job cancelled" },
+    ],
+  },
+  {
+    label: "Documents",
+    events: [
+      { value: "document.delivered", label: "Document delivered" },
+      { value: "document.failed", label: "Document failed" },
+      { value: "document.review_requested", label: "Review requested" },
+    ],
+  },
+  {
+    label: "Schemas",
+    events: [
+      { value: "schema.version_committed", label: "Version committed" },
+      { value: "schema.deployed", label: "Schema deployed" },
+    ],
+  },
+  {
+    label: "Quality",
+    events: [
+      { value: "validate.run_completed", label: "Validate completed" },
+      { value: "benchmark.run_completed", label: "Benchmark completed" },
+    ],
+  },
 ];
+
+const DEFAULT_EVENTS = new Set([
+  "job.succeeded",
+  "job.failed",
+  "document.delivered",
+  "document.failed",
+]);
 
 function timeAgo(dateStr: string | null): string {
   if (!dateStr) return "never";
@@ -193,7 +225,7 @@ export default function WebhooksPage() {
 function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (secret: string) => void }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const [events, setEvents] = useState<Set<string>>(new Set());
+  const [events, setEvents] = useState<Set<string>>(new Set(DEFAULT_EVENTS));
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -238,24 +270,37 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Name</label>
             <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Slack notifications" autoFocus
+              data-1p-ignore autoComplete="off"
               className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
           </div>
 
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">URL</label>
             <input required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..."
+              data-1p-ignore autoComplete="off"
               className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-3">
             <label className="text-[12.5px] font-medium text-ink">Events</label>
-            <div className="grid grid-cols-2 gap-2">
-              {EVENT_OPTIONS.map((opt) => (
-                <label key={opt.value} className="flex items-center gap-2 text-[12.5px] text-ink-3 cursor-pointer">
-                  <input type="checkbox" checked={events.has(opt.value)} onChange={() => toggleEvent(opt.value)} className="rounded border-border" />
-                  {opt.label}
-                </label>
-              ))}
+            {EVENT_GROUPS.map((group) => (
+              <div key={group.label}>
+                <div className="font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4 mb-1.5">{group.label}</div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {group.events.map((opt) => (
+                    <label key={opt.value} className="flex items-center gap-2 text-[12.5px] text-ink-3 cursor-pointer">
+                      <input type="checkbox" checked={events.has(opt.value)} onChange={() => toggleEvent(opt.value)} className="rounded border-border" />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="border-t border-border pt-2">
+              <label className="flex items-center gap-2 text-[12.5px] text-ink-3 cursor-pointer">
+                <input type="checkbox" checked={events.has("*")} onChange={() => toggleEvent("*")} className="rounded border-border" />
+                All events
+              </label>
             </div>
           </div>
 
