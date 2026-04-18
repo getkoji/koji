@@ -3,43 +3,54 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
-import { me as meApi, type UserProfile } from "@/lib/api";
+import { me as meApi, tenants as tenantsApi, type TenantRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) {
   const pathname = usePathname();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
+  const router = useRouter();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const tenantMenuRef = useRef<HTMLDivElement>(null);
   const { data: user } = useApi(useCallback(() => meApi.get(), []));
+  const { data: tenantList } = useApi(useCallback(() => tenantsApi.list(), []));
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "";
   const userInitials = userName.split(" ").map(n => n[0]).join("").toUpperCase() || "?";
 
-  // Close on click outside
+  // Close dropdowns on click outside or escape
   useEffect(() => {
-    if (!userMenuOpen) return;
+    if (!userMenuOpen && !tenantMenuOpen) return;
     function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (userMenuOpen && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setUserMenuOpen(false);
+      }
+      if (tenantMenuOpen && tenantMenuRef.current && !tenantMenuRef.current.contains(e.target as Node)) {
+        setTenantMenuOpen(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setUserMenuOpen(false);
+        setTenantMenuOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [userMenuOpen]);
-
-  // Close on escape
-  useEffect(() => {
-    if (!userMenuOpen) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setUserMenuOpen(false);
-    }
     document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [userMenuOpen]);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [userMenuOpen, tenantMenuOpen]);
+
+  const currentTenant = tenantList?.find((t) => t.slug === tenantSlug);
+  const currentTenantName = currentTenant?.displayName ?? tenantSlug ?? "—";
 
   return (
     <header
@@ -58,13 +69,59 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
         {tenantSlug && (
           <>
             <span className="text-cream-4 text-[22px] font-light px-1">/</span>
-            <button
-              className="inline-flex items-center gap-1.5 font-mono text-xs text-ink-2 px-2 py-1.5 rounded-sm hover:bg-cream-2 transition-colors"
-              type="button"
-            >
-              <span>{tenantSlug}</span>
-              <span className="text-ink-4 text-[10px]">▾</span>
-            </button>
+            <div className="relative" ref={tenantMenuRef}>
+              <button
+                onClick={() => setTenantMenuOpen(!tenantMenuOpen)}
+                className={`inline-flex items-center gap-1.5 font-mono text-xs text-ink-2 px-2 py-1.5 rounded-sm transition-colors ${tenantMenuOpen ? "bg-cream-2" : "hover:bg-cream-2"}`}
+                type="button"
+              >
+                <span>{currentTenantName}</span>
+                <ChevronsUpDown className="w-3 h-3 text-ink-4" />
+              </button>
+
+              {tenantMenuOpen && (
+                <div className="absolute left-0 top-[34px] w-[240px] bg-white border border-border-strong rounded-sm shadow-lg overflow-hidden z-50">
+                  <div className="px-3 py-2 border-b border-border">
+                    <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Workspaces</span>
+                  </div>
+                  <div className="py-1">
+                    {tenantList?.map((t) => (
+                      <button
+                        key={t.slug}
+                        onClick={() => {
+                          setTenantMenuOpen(false);
+                          router.push(`/t/${t.slug}`);
+                        }}
+                        className={`flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] transition-colors ${
+                          t.slug === tenantSlug
+                            ? "bg-cream-2 text-ink font-medium"
+                            : "text-ink-2 hover:bg-cream-2 hover:text-ink"
+                        }`}
+                      >
+                        <span className={`w-5 h-5 rounded-sm text-[9px] font-mono font-medium inline-flex items-center justify-center shrink-0 ${
+                          t.slug === tenantSlug ? "bg-vermillion-2 text-cream" : "bg-cream-3 text-ink-3"
+                        }`}>
+                          {t.displayName[0]?.toUpperCase() ?? "?"}
+                        </span>
+                        <div className="flex flex-col items-start min-w-0">
+                          <span className="truncate w-full">{t.displayName}</span>
+                          <span className="font-mono text-[10px] text-ink-4">{t.plan}</span>
+                        </div>
+                        {t.slug === tenantSlug && (
+                          <span className="ml-auto text-vermillion-2 text-[11px]">✓</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-t border-border py-1">
+                    <button className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors">
+                      <Plus className="w-3.5 h-3.5 text-ink-4" />
+                      <span>New workspace</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>

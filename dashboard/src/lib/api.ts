@@ -98,6 +98,19 @@ export const jobs = {
   get: (slug: string) => api.get<JobRow>(`/api/jobs/${slug}`),
 };
 
+export interface TenantRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  plan: string;
+}
+
+export const tenants = {
+  list: () => api.get<{ data: TenantRow[] }>("/api/tenants").then((r) => r.data),
+  update: (slug: string, body: { display_name?: string }) =>
+    api.patch<TenantRow>(`/api/tenants/${slug}`, body),
+};
+
 export interface UserProfile {
   id: string;
   name: string | null;
