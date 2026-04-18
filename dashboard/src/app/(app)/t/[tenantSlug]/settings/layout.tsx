@@ -7,6 +7,7 @@ import { useSettingsExtensions } from "@/components/shell/SettingsExtensions";
 const TITLES: Record<string, string> = {
   general: "General",
   members: "Members",
+  "model-catalog": "Model Catalog",
 };
 
 export default function TenantSettingsLayout({ children }: { children: React.ReactNode }) {

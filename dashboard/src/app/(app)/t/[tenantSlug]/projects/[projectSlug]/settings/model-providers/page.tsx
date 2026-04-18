@@ -153,6 +153,13 @@ export default function ModelProvidersPage() {
   );
 }
 
+interface CatalogModel {
+  id: string;
+  provider: string;
+  modelId: string;
+  displayName: string;
+}
+
 function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [providerType, setProviderType] = useState("openai");
@@ -162,8 +169,17 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Fetch models from catalog filtered by provider
+  const { data: catalogModels } = useApi(
+    useCallback(
+      () => api.get<{ data: CatalogModel[] }>(`/api/model-catalog?provider=${providerType}`).then((r) => r.data),
+      [providerType],
+    ),
+  );
+
   function handleProviderChange(value: string) {
     setProviderType(value);
+    setModel(""); // reset model when switching providers
     const pt = PROVIDER_TYPES.find((p) => p.value === value);
     if (pt?.defaultUrl) setBaseUrl(pt.defaultUrl);
     else setBaseUrl("");
@@ -213,8 +229,23 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
             </div>
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Default model</label>
-              <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o"
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+              {(catalogModels ?? []).length > 0 ? (
+                <select required value={model} onChange={(e) => setModel(e.target.value)}
+                  className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
+                  <option value="">Select a model...</option>
+                  {(catalogModels ?? []).map((m) => (
+                    <option key={m.modelId} value={m.modelId}>{m.displayName}</option>
+                  ))}
+                </select>
+              ) : (
+                <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+              )}
+              {(catalogModels ?? []).length === 0 && (
+                <p className="text-[11px] text-ink-4">
+                  No models in catalog for this provider. <a href="" onClick={(e) => { e.preventDefault(); }} className="text-vermillion-2">Add models</a> in Organization → Model Catalog first, or type a model ID directly.
+                </p>
+              )}
             </div>
           </div>
 

@@ -22,6 +22,7 @@ import {
   Webhook,
   Users,
   Info,
+  BookOpen,
 } from "lucide-react";
 
 interface NavItemProps {
@@ -167,6 +168,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
             >
               <NavItem href={`${base}/settings/general`} icon={<Info className={ICON_SIZE} />} label="General" />
               <NavItem href={`${base}/settings/members`} icon={<Users className={ICON_SIZE} />} label="Members" />
+              <NavItem href={`${base}/settings/model-catalog`} icon={<BookOpen className={ICON_SIZE} />} label="Model Catalog" />
               {/* Commercial extensions injected by platform/ */}
               {settingsExtensions.navItems.map((item) => (
                 <NavItem key={item.href} href={`${base}${item.href}`} icon={item.icon} label={item.label} />
