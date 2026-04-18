@@ -23,6 +23,11 @@ import { apiKeys } from "./routes/api-keys";
 import { cliAuth } from "./routes/cli-auth";
 import { modelProviders } from "./routes/model-providers";
 import { modelCatalog } from "./routes/model-catalog";
+import { webhookTargets } from "./routes/webhook-targets";
+import { PostgresQueue } from "./queue/postgres";
+import { startWorker } from "./queue/worker";
+import { initEmitter } from "./webhooks/emit";
+import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
 import type { Env } from "./env";
 
 const DATABASE_URL =
@@ -33,7 +38,6 @@ const AUTH_ADAPTER = process.env.KOJI_AUTH_ADAPTER ?? "local";
 const db = createDb(DATABASE_URL);
 
 // Create the auth adapter based on config
-// TODO: add ClerkAuthAdapter, OIDCAuthAdapter
 const adapter = new LocalAuthAdapter(db);
 
 const app = new Hono<Env>();
@@ -67,6 +71,7 @@ app.route("/api/api-keys", apiKeys);
 app.route("/api/cli", cliAuth);
 app.route("/api/model-providers", modelProviders);
 app.route("/api/model-catalog", modelCatalog);
+app.route("/api/webhook-targets", webhookTargets);
 
 // Export the adapter so setup.ts can create sessions
 export { adapter };
@@ -76,6 +81,16 @@ async function start() {
   console.log(`[koji-api] Starting on port ${PORT}`);
   console.log(`[koji-api] Auth adapter: ${AUTH_ADAPTER}`);
   console.log(`[koji-api] Database: ${DATABASE_URL.replace(/:[^@]+@/, ":***@")}`);
+
+  // Initialize queue + webhook system
+  const queue = new PostgresQueue(db);
+  initEmitter(queue, db);
+  initDeliveryHandler(db);
+
+  // Start background worker
+  startWorker(queue, {
+    "webhook.deliver": handleWebhookDeliver,
+  });
 
   serve({ fetch: app.fetch, port: PORT });
   console.log(`[koji-api] Ready`);
