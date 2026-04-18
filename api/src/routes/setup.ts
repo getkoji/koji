@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import { setCookie } from "hono/cookie";
 import { sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../index";
+import { adapter } from "../index";
 import { clearContextCache } from "../context";
 
 export const setup = new Hono<Env>();
@@ -100,6 +102,16 @@ setup.post("/", async (c) => {
     displayName: tenantName,
     createdBy: user!.id,
   }).returning();
+
+  // Create a session so the user is logged in immediately
+  const session = await adapter.createSession(user!.id);
+  setCookie(c, "koji_session", session.token, {
+    httpOnly: true,
+    secure: false, // TODO: true in production
+    sameSite: "Lax",
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60,
+  });
 
   // Clear cached IDs so /api/me and other routes pick up the new user/tenant
   clearContextCache();

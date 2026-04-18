@@ -209,7 +209,15 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                 <UserMenuItem
                   icon={<LogOut className="w-3.5 h-3.5" />}
                   label="Sign out"
-                  onClick={() => {/* TODO: auth sign out */}}
+                  onClick={async () => {
+                    try {
+                      await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/auth/session`, {
+                        method: "DELETE",
+                        credentials: "include",
+                      });
+                    } catch {}
+                    window.location.href = "/login";
+                  }}
                   danger
                 />
               </div>

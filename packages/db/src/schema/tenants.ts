@@ -103,6 +103,24 @@ export const memberships = pgTable(
   }),
 );
 
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex("sessions_token_hash_idx").on(t.tokenHash),
+    userIdx: index("sessions_user_idx").on(t.userId),
+    expiresIdx: index("sessions_expires_idx").on(t.expiresAt),
+  }),
+);
+
 export const apiKeys = pgTable(
   "api_keys",
   {

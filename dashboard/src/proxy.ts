@@ -3,15 +3,23 @@ import type { NextRequest } from "next/server";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
 
+// Routes that don't require auth
+const PUBLIC_PATHS = ["/setup", "/login", "/new-project"];
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Allow /setup and static assets through without checks
-  if (pathname === "/setup" || pathname.startsWith("/_next") || pathname.startsWith("/favicon")) {
+  // Static assets pass through
+  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon")) {
     return NextResponse.next();
   }
 
-  // For all app routes, check if setup is needed
+  // Public routes pass through
+  if (PUBLIC_PATHS.some((p) => pathname === p)) {
+    return NextResponse.next();
+  }
+
+  // Check if setup is needed (empty DB)
   if (pathname === "/" || pathname.startsWith("/t/")) {
     try {
       const res = await fetch(`${API_BASE}/api/setup/status`, {
@@ -24,7 +32,15 @@ export async function proxy(request: NextRequest) {
         }
       }
     } catch {
-      // API unreachable — let the page render (it'll show its own error)
+      // API unreachable — let the page render
+    }
+  }
+
+  // Check if the user has a valid session
+  if (pathname.startsWith("/t/") || pathname === "/") {
+    const sessionCookie = request.cookies.get("koji_session")?.value;
+    if (!sessionCookie) {
+      return NextResponse.redirect(new URL("/login", request.url));
     }
   }
 
