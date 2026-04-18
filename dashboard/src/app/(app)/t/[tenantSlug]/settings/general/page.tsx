@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { emit } from "@/lib/events";
 import { Pencil } from "lucide-react";
 import { SectionHeader } from "@/components/shared/SettingsComponents";
 
@@ -59,6 +60,7 @@ export default function GeneralPage() {
     setSaving(true);
     try {
       await api.patch(`/api/tenants/${tenantSlug}`, { display_name: displayName });
+      emit("tenants:updated");
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } finally {

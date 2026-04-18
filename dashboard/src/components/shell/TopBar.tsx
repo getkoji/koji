@@ -8,6 +8,7 @@ import { Bell, User, Settings, LogOut, HelpCircle, ExternalLink, ChevronsUpDown,
 import { KojiLogo } from "./KojiLogo";
 import { me as meApi, projectsApi, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { on } from "@/lib/events";
 
 export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) {
   const pathname = usePathname();
@@ -18,7 +19,10 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const menuRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const { data: user, loading: userLoading } = useApi(useCallback(() => meApi.get(), []));
-  const { data: projectList, loading: projectsLoading } = useApi(useCallback(() => projectsApi.list(), []));
+  const { data: projectList, loading: projectsLoading, refetch: refetchProjects } = useApi(useCallback(() => projectsApi.list(), []));
+
+  // Refetch when a project is updated elsewhere
+  useEffect(() => on("projects:updated", refetchProjects), [refetchProjects]);
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "";

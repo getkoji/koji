@@ -525,6 +525,211 @@ def _get_db_url() -> str | None:
 
 
 @app.command()
+def login(
+    server_url: str = typer.Argument(
+        None,
+        help="Server URL (e.g. https://koji.acme.internal or http://localhost:9401)",
+    ),
+    api_key: str | None = typer.Option(
+        None, "--api-key", "-k", help="API key for headless/CI auth (skip browser flow)",
+    ),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Profile name (default: derived from server URL)",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Default project slug for this profile",
+    ),
+):
+    """Authenticate the CLI with a Koji server.
+
+    Opens your browser to approve API key creation. For CI/headless
+    environments, pass --api-key directly.
+    """
+    from .credentials import Credentials, Profile, load_credentials
+
+    if api_key:
+        # Direct key — headless mode
+        url = server_url or "http://localhost:9401"
+        name = profile or _derive_profile_name(url)
+
+        creds = load_credentials()
+        creds.profiles[name] = Profile(url=url, api_key=api_key, project=project)
+        creds.current = name
+        creds.save()
+
+        console.print(f"\n[green]✓[/green] Authenticated as profile [bold]{name}[/bold]")
+        console.print(f"  Server: {url}")
+        if project:
+            console.print(f"  Project: {project}")
+        console.print()
+        return
+
+    # Browser flow
+    if not server_url:
+        console.print("[red]Server URL is required. Usage: koji login https://koji.example.com[/red]")
+        raise SystemExit(1)
+
+    url = server_url.rstrip("/")
+    name = profile or _derive_profile_name(url)
+
+    import http.server
+    import json
+    import secrets
+    import socket
+    import threading
+    import webbrowser
+
+    # Find a free port for the callback
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        callback_port = s.getsockname()[1]
+
+    state = secrets.token_urlsafe(32)
+    received_key: list[str] = []
+    server_done = threading.Event()
+
+    class CallbackHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+
+            if qs.get("state", [None])[0] != state:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Invalid state parameter")
+                return
+
+            key = qs.get("key", [None])[0]
+            if not key:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"No API key received")
+                return
+
+            received_key.append(key)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""
+                <html><body style="font-family:system-ui;text-align:center;padding:60px;">
+                <h2>Authenticated!</h2>
+                <p>You can close this window and return to the terminal.</p>
+                </body></html>
+            """)
+            server_done.set()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass  # suppress noisy logs
+
+    callback_url = f"http://127.0.0.1:{callback_port}/callback"
+    authorize_url = f"{url}/cli/authorize?callback={callback_url}&state={state}"
+
+    console.print(f"\n  Opening browser to authorize CLI...\n")
+    console.print(f"  [dim]{authorize_url}[/dim]\n")
+    webbrowser.open(authorize_url)
+
+    httpd = http.server.HTTPServer(("127.0.0.1", callback_port), CallbackHandler)
+    httpd.timeout = 120
+
+    # Wait for callback
+    thread = threading.Thread(target=lambda: httpd.handle_request(), daemon=True)
+    thread.start()
+
+    with console.status("Waiting for browser authorization...", spinner="dots"):
+        server_done.wait(timeout=120)
+
+    if not received_key:
+        console.print("[red]Timed out waiting for authorization.[/red]")
+        raise SystemExit(1)
+
+    creds = load_credentials()
+    creds.profiles[name] = Profile(url=url, api_key=received_key[0], project=project)
+    creds.current = name
+    creds.save()
+
+    console.print(f"[green]✓[/green] Authenticated as profile [bold]{name}[/bold]")
+    console.print(f"  Server: {url}")
+    console.print(f"  Key: {received_key[0][:12]}...{received_key[0][-4:]}")
+    console.print()
+
+
+@app.command()
+def use(
+    profile_name: str = typer.Argument(help="Profile name to switch to"),
+):
+    """Switch the active CLI profile."""
+    from .credentials import load_credentials
+
+    creds = load_credentials()
+    if profile_name not in creds.profiles:
+        console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+        names = ", ".join(creds.profiles.keys()) or "(none)"
+        console.print(f"  Available: {names}")
+        raise SystemExit(1)
+
+    creds.current = profile_name
+    creds.save()
+
+    p = creds.profiles[profile_name]
+    console.print(f"\n[green]✓[/green] Switched to profile [bold]{profile_name}[/bold]")
+    console.print(f"  Server: {p.url}")
+    if p.project:
+        console.print(f"  Project: {p.project}")
+    console.print()
+
+
+@app.command()
+def whoami():
+    """Show the current CLI profile and server."""
+    from .credentials import load_credentials
+
+    creds = load_credentials()
+    p = creds.active_profile()
+
+    if not p:
+        console.print("[yellow]Not logged in. Run [bold]koji login <url>[/bold] first.[/yellow]")
+        raise SystemExit(1)
+
+    console.print(f"\n  Profile: [bold]{creds.current}[/bold]")
+    console.print(f"  Server:  {p.url}")
+    console.print(f"  Key:     {p.api_key[:12]}...{p.api_key[-4:]}")
+    if p.project:
+        console.print(f"  Project: {p.project}")
+    console.print()
+
+
+@app.command()
+def profiles():
+    """List all saved CLI profiles."""
+    from .credentials import load_credentials
+
+    creds = load_credentials()
+    if not creds.profiles:
+        console.print("[yellow]No profiles saved. Run [bold]koji login <url>[/bold] first.[/yellow]")
+        return
+
+    console.print()
+    for name, p in creds.profiles.items():
+        marker = "[green]●[/green]" if name == creds.current else " "
+        console.print(f"  {marker} [bold]{name}[/bold]  {p.url}  {p.api_key[:12]}...")
+    console.print()
+
+
+def _derive_profile_name(url: str) -> str:
+    """Derive a profile name from a server URL."""
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or "default"
+    # localhost → "local", koji.acme.internal → "acme"
+    if host in ("localhost", "127.0.0.1"):
+        return "local"
+    parts = host.split(".")
+    if len(parts) >= 2:
+        return parts[-2] if parts[-1] in ("com", "dev", "io", "internal", "local") else parts[0]
+    return parts[0]
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print("koji 0.1.0")

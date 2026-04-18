@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { on } from "@/lib/events";
 
 interface TenantInfo {
   id: string;
@@ -16,9 +17,11 @@ export default function OverviewPage() {
   const pathname = usePathname();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
-  const { data: tenants } = useApi(
+  const { data: tenants, refetch: refetchTenants } = useApi(
     useCallback(() => api.get<{ data: TenantInfo[] }>("/api/tenants").then((r) => r.data), []),
   );
+
+  useEffect(() => on("tenants:updated", refetchTenants), [refetchTenants]);
 
   const tenant = tenants?.find((t) => t.slug === tenantSlug);
   const displayName = tenant?.displayName ?? tenantSlug;

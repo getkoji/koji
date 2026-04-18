@@ -6,6 +6,7 @@ import { Pencil } from "lucide-react";
 import { api, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { emit } from "@/lib/events";
 import { SectionHeader } from "@/components/shared/SettingsComponents";
 
 function CopyButton({ value }: { value: string }) {
@@ -56,6 +57,7 @@ export default function ProjectGeneralPage() {
     setSaving(true);
     try {
       await api.patch(`/api/projects/${projectSlug}`, { display_name: displayName });
+      emit("projects:updated");
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } finally {

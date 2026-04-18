@@ -1,13 +1,30 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 
 export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-cream flex items-center justify-center">
+          <div className="animate-pulse font-mono text-[11px] text-ink-4">Loading...</div>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnUrl = searchParams.get("return");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -23,7 +40,8 @@ export default function LoginPage() {
         email,
         password,
       });
-      router.push(result.redirect);
+      // If we have a return URL (e.g. from CLI auth), go there instead
+      router.push(returnUrl ?? result.redirect);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login failed.");
       setSubmitting(false);
