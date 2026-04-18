@@ -24,7 +24,12 @@ export function createAuthRoutes(adapter: AuthAdapter) {
 
     // Find the user by email
     const [user] = await db
-      .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email })
+      .select({
+        id: schema.users.id,
+        name: schema.users.name,
+        email: schema.users.email,
+        passwordHash: schema.users.passwordHash,
+      })
       .from(schema.users)
       .where(eq(schema.users.email, body.email))
       .limit(1);
@@ -33,10 +38,16 @@ export function createAuthRoutes(adapter: AuthAdapter) {
       return c.json({ error: "Invalid email or password" }, 401);
     }
 
-    // TODO: verify password hash (bcrypt) when password hashing is wired
-    // For now, any password works against a valid email — this is the
-    // self-hosted local auth MVP. Real password verification comes with
-    // the password hashing implementation.
+    // Verify password
+    if (!user.passwordHash) {
+      return c.json({ error: "This account has no password set (external auth provider)" }, 401);
+    }
+
+    const { verifyPassword } = await import("../auth/password");
+    const valid = await verifyPassword(body.password, user.passwordHash);
+    if (!valid) {
+      return c.json({ error: "Invalid email or password" }, 401);
+    }
 
     const session = await adapter.createSession(user.id);
 

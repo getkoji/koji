@@ -71,11 +71,14 @@ setup.post("/", async (c) => {
     return c.json({ error: "Workspace URL must be lowercase letters, numbers, and hyphens (2-64 chars)" }, 400);
   }
 
-  // Create user
-  // TODO: hash password with bcrypt when local auth is fully wired
+  // Create user with hashed password
+  const { hashPassword } = await import("../auth/password");
+  const passwordHash = await hashPassword(body.password);
+
   const [user] = await db.insert(schema.users).values({
     email: body.email,
     name: body.name,
+    passwordHash,
     authProvider: "local",
     authProviderId: `local-${body.email}`,
   }).returning();

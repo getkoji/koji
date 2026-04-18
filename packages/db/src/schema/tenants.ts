@@ -45,6 +45,7 @@ export const users = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     name: varchar("name", { length: 255 }),
     avatarUrl: varchar("avatar_url", { length: 2048 }),
+    passwordHash: varchar("password_hash", { length: 255 }),
     authProvider: varchar("auth_provider", { length: 32 }).notNull(),
     authProviderId: varchar("auth_provider_id", { length: 255 }).notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true, mode: "date" }),
