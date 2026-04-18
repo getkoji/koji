@@ -54,6 +54,7 @@ setup.post("/", async (c) => {
     email: string;
     password: string;
     workspace_name?: string;
+    workspace_slug: string;
   }>();
 
   if (!body.name || !body.email || !body.password) {
@@ -62,6 +63,10 @@ setup.post("/", async (c) => {
 
   if (body.password.length < 8) {
     return c.json({ error: "Password must be at least 8 characters" }, 400);
+  }
+
+  if (!body.workspace_slug || !/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(body.workspace_slug)) {
+    return c.json({ error: "Workspace URL must be lowercase letters, numbers, and hyphens (2-64 chars)" }, 400);
   }
 
   // Create user
@@ -73,15 +78,10 @@ setup.post("/", async (c) => {
     authProviderId: `local-${body.email}`,
   }).returning();
 
-  // Create tenant with a slug derived from the workspace name
-  const tenantName = body.workspace_name || "My Workspace";
-  const slug = tenantName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    || "workspace";
+  // Create tenant
+  const tenantName = body.workspace_name || body.workspace_slug;
   const [tenant] = await db.insert(schema.tenants).values({
-    slug,
+    slug: body.workspace_slug,
     displayName: tenantName,
     plan: "pro",
   }).returning();

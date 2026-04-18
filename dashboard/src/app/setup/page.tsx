@@ -17,13 +17,26 @@ export default function SetupPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceSlug, setWorkspaceSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Auto-generate slug from workspace name until the user edits it manually
+  useEffect(() => {
+    if (!slugTouched && workspaceName) {
+      const auto = workspaceName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+      setWorkspaceSlug(auto);
+    }
+  }, [workspaceName, slugTouched]);
 
   // Redirect away if setup isn't needed
   useEffect(() => {
     if (status && !status.needed) {
-      router.replace("/t/default");
+      router.replace("/");
     }
   }, [status, router]);
 
@@ -39,6 +52,10 @@ export default function SetupPage() {
       setError("Password must be at least 8 characters.");
       return;
     }
+    if (!workspaceSlug || workspaceSlug.length < 2) {
+      setError("Workspace URL is required (at least 2 characters).");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -46,7 +63,8 @@ export default function SetupPage() {
         name,
         email,
         password,
-        workspace_name: workspaceName || undefined,
+        workspace_name: workspaceName || workspaceSlug,
+        workspace_slug: workspaceSlug,
       });
       router.push(result.redirect);
     } catch (err: unknown) {
@@ -128,16 +146,36 @@ export default function SetupPage() {
             />
           </div>
 
-          <div className="border-t border-border pt-4 mt-2">
+          <div className="border-t border-border pt-4 mt-2 space-y-4">
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Workspace name</label>
               <input
+                required
                 value={workspaceName}
                 onChange={(e) => setWorkspaceName(e.target.value)}
-                placeholder="My Workspace"
+                placeholder="Acme Insurance"
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
-              <p className="text-[11px] text-ink-4">Optional. You can change this later in Settings.</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">Workspace URL</label>
+              <div className="flex items-center gap-0">
+                <span className="h-[30px] inline-flex items-center px-2.5 bg-cream-2 border border-r-0 border-input rounded-l-sm text-[12px] text-ink-4 font-mono shrink-0">
+                  koji /
+                </span>
+                <input
+                  required
+                  value={workspaceSlug}
+                  onChange={(e) => {
+                    setSlugTouched(true);
+                    setWorkspaceSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+                  }}
+                  placeholder="acme-insurance"
+                  className="flex-1 h-[30px] rounded-r-sm rounded-l-none border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+              </div>
+              <p className="text-[11px] text-ink-4">Lowercase letters, numbers, and hyphens. This appears in your URL.</p>
             </div>
           </div>
 
