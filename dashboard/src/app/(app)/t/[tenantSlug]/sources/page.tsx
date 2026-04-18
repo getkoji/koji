@@ -214,7 +214,7 @@ export default function SourcesPage() {
 
       {/* Delete confirmation */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div className="absolute inset-0 bg-ink/20" onClick={() => setDeleteTarget(null)} />
           <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
             <h2 className="text-[15px] font-medium text-ink mb-1">Delete source</h2>
@@ -268,7 +268,7 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const selectedType = SOURCE_TYPES.find((t) => t.value === sourceType);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add source</h2>
@@ -340,7 +340,7 @@ function SourceDetailDialog({ source, onClose }: { source: Source; onClose: () =
     : "";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[640px] p-6 max-h-[80vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-1">

@@ -199,7 +199,7 @@ function CreatePipelineDialog({ onClose, onCreated }: { onClose: () => void; onC
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Create pipeline</h2>

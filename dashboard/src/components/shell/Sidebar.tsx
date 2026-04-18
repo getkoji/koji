@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useSettingsExtensions } from "./SettingsExtensions";
 import { useAuth } from "@/lib/auth-context";
 import { api } from "@/lib/api";
@@ -241,15 +242,16 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
         )}
       </nav>
 
-      {/* Create schema dialog */}
-      {showCreateSchema && (
+      {/* Create schema dialog — rendered via portal to escape sidebar overflow */}
+      {showCreateSchema && typeof document !== "undefined" && createPortal(
         <CreateSchemaDialog
           onClose={() => setShowCreateSchema(false)}
           onCreated={(slug) => {
             setShowCreateSchema(false);
             router.push(`${base}/schemas/${slug}/build`);
           }}
-        />
+        />,
+        document.body,
       )}
 
       {/* Organization settings — admin+ only */}
@@ -319,7 +321,7 @@ function CreateSchemaDialog({ onClose, onCreated }: { onClose: () => void; onCre
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Create schema</h2>

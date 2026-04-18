@@ -141,7 +141,7 @@ export default function ModelCatalogPage() {
       )}
 
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div className="absolute inset-0 bg-ink/20" onClick={() => setDeleteTarget(null)} />
           <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
             <h2 className="text-[15px] font-medium text-ink mb-1">Remove model</h2>
@@ -258,7 +258,7 @@ function AddModelsDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[520px] p-6 max-h-[80vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-4">Add models to catalog</h2>

@@ -211,7 +211,7 @@ export default function WebhooksPage() {
       )}
 
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div className="absolute inset-0 bg-ink/20" onClick={() => setDeleteTarget(null)} />
           <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
             <h2 className="text-[15px] font-medium text-ink mb-1">Delete webhook</h2>
@@ -267,7 +267,7 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add webhook</h2>
@@ -347,7 +347,7 @@ function DeliveryLogDialog({ target, onClose }: { target: WebhookTarget; onClose
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[640px] p-6 max-h-[80vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-1">
