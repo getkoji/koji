@@ -18,6 +18,8 @@ const PUBLIC_PATHS = new Set([
   "/api/setup/status",
   "/api/setup",
   "/api/auth/login",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
 ]);
 
 export function authMiddleware(adapter: AuthAdapter) {

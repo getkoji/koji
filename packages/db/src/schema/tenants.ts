@@ -104,6 +104,23 @@ export const memberships = pgTable(
   }),
 );
 
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex("password_resets_token_hash_idx").on(t.tokenHash),
+  }),
+);
+
 export const sessions = pgTable(
   "sessions",
   {

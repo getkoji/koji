@@ -10,6 +10,7 @@ import type { Principal } from "./auth/adapter";
 import { LocalAuthAdapter } from "./auth/local";
 import { authMiddleware } from "./auth/middleware";
 import { createAuthRoutes } from "./routes/auth";
+import { passwordReset } from "./routes/password-reset";
 import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
 import { jobs } from "./routes/jobs";
@@ -49,6 +50,7 @@ app.use("*", authMiddleware(adapter));
 // Routes
 app.route("/health", health);
 app.route("/api/auth", createAuthRoutes(adapter));
+app.route("/api/auth", passwordReset);
 app.route("/api/schemas", schemas);
 app.route("/api/jobs", jobs);
 app.route("/api", extract);

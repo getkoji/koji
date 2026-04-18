@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
 
 // Routes that don't require auth
-const PUBLIC_PATHS = ["/setup", "/login", "/new-project"];
+const PUBLIC_PATHS = ["/setup", "/login", "/new-project", "/forgot-password", "/reset-password"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

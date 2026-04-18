@@ -166,6 +166,23 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
 
     services["koji-extract"] = extract_svc
 
+    # ── Mailpit (email catcher for dev / self-hosted) ──
+    services["koji-mailpit"] = {
+        "image": "axllent/mailpit:latest",
+        "container_name": f"koji-{project}-mailpit",
+        "ports": [
+            f"127.0.0.1:{cluster.mailpit_ui_port}:8025",
+            f"127.0.0.1:{cluster.mailpit_smtp_port}:1025",
+        ],
+        "restart": "unless-stopped",
+        "networks": [net],
+    }
+
+    # Wire SMTP into the API server
+    services["koji-api"]["environment"]["SMTP_HOST"] = f"koji-{project}-mailpit"
+    services["koji-api"]["environment"]["SMTP_PORT"] = "1025"
+    services["koji-api"]["environment"]["SMTP_FROM"] = "koji@localhost"
+
     # ── Ollama (optional) ──
     if svc_cfg.ollama:
         services["ollama"] = {

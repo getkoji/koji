@@ -38,6 +38,14 @@ class ClusterConfig(BaseModel):
         return self.base_port + 11
 
     @property
+    def mailpit_ui_port(self) -> int:
+        return self.base_port + 13
+
+    @property
+    def mailpit_smtp_port(self) -> int:
+        return self.base_port + 14
+
+    @property
     def extract_port(self) -> int:
         return self.base_port + 12
 

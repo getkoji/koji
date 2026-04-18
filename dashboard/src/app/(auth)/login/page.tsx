@@ -90,6 +90,12 @@ export default function LoginPage() {
             )}
           </button>
         </form>
+
+        <div className="text-center mt-4">
+          <a href="/forgot-password" className="text-[12px] text-ink-3 hover:text-vermillion-2 transition-colors">
+            Forgot your password?
+          </a>
+        </div>
       </div>
     </div>
   );
