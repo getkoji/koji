@@ -1,7 +1,43 @@
 "use client";
 
 import { WorkbenchLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
-import { MOCK_SCHEMA_LINES, MOCK_EXTRACTION } from "@/lib/mock-schema";
+import type { SchemaLine, ExtractionField } from "@/lib/types";
+
+const SCHEMA_LINES: SchemaLine[] = [
+  { num: 1, content: '<span class="text-ink-4">---</span>' },
+  { num: 2, content: '<span class="text-vermillion-2">name</span>: <span class="text-ink">invoice</span>' },
+  { num: 3, content: '<span class="text-vermillion-2">version</span>: <span class="text-ink">12</span>' },
+  { num: 4, content: '<span class="text-vermillion-2">description</span>: <span class="text-ink">Commercial invoice extraction</span>' },
+  { num: 5, content: "" },
+  { num: 6, content: '<span class="text-vermillion-2">fields</span>:' },
+  { num: 7, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">invoice_number</span>' },
+  { num: 8, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 9, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">invoice_date</span>' },
+  { num: 10, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">date</span>' },
+  { num: 11, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">vendor</span>' },
+  { num: 12, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 13, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">bill_to</span>' },
+  { num: 14, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 15, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">line_items</span>' },
+  { num: 16, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">array</span>' },
+  { num: 17, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">subtotal</span>' },
+  { num: 18, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+  { num: 19, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">tax</span>' },
+  { num: 20, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+  { num: 21, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">total_amount</span>' },
+  { num: 22, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+];
+
+const EXTRACTION: ExtractionField[] = [
+  { name: "invoice_number", value: '"INV-2026-0042"', confidence: 0.99 },
+  { name: "invoice_date", value: '"2026-03-15"', confidence: 0.99 },
+  { name: "vendor", value: '"Acme Consulting LLC"', confidence: 0.98 },
+  { name: "bill_to", value: '"Prudential Financial"', confidence: 0.97 },
+  { name: "line_items", value: "2 items", confidence: 0.95 },
+  { name: "subtotal", value: "3950.00", confidence: 0.99 },
+  { name: "tax", value: "300.00", confidence: 0.99 },
+  { name: "total_amount", value: "4250.00", confidence: 0.99 },
+];
 
 export default function PlaygroundPage() {
   const header = (
@@ -64,7 +100,7 @@ export default function PlaygroundPage() {
             </div>
           </div>
           <div className="flex-1 py-3 font-mono text-[11.5px] leading-[1.7] overflow-y-auto">
-            {MOCK_SCHEMA_LINES.filter(l => !l.added).map((line) => (
+            {SCHEMA_LINES.filter(l => !l.added).map((line) => (
               <div key={line.num} className="flex px-4 whitespace-pre">
                 <span className="text-cream-4 min-w-[1.9rem] text-right pr-3 select-none">{line.num}</span>
                 <span className="flex-1" dangerouslySetInnerHTML={{ __html: line.content || "&nbsp;" }} />
@@ -157,7 +193,7 @@ export default function PlaygroundPage() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {MOCK_EXTRACTION.map((f) => (
+            {EXTRACTION.map((f) => (
               <div
                 key={f.name}
                 className={`px-4 py-3 border-b border-dotted border-border ${f.name === "total_amount" ? "bg-vermillion-3/50 border-l-[3px] border-l-vermillion-2 pl-[calc(1rem-3px)]" : ""}`}

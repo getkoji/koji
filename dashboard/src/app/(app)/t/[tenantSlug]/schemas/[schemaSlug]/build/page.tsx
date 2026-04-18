@@ -6,17 +6,52 @@ import { WorkbenchLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { Switch, Label } from "@koji/ui";
 import { schemas as schemasApi } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
-import { MOCK_SCHEMA_LINES, MOCK_EXTRACTION } from "@/lib/mock-schema";
+import type { SchemaLine, ExtractionField } from "@/lib/types";
+
+const SCHEMA_LINES: SchemaLine[] = [
+  { num: 1, content: '<span class="text-ink-4">---</span>' },
+  { num: 2, content: '<span class="text-vermillion-2">name</span>: <span class="text-ink">invoice</span>' },
+  { num: 3, content: '<span class="text-vermillion-2">version</span>: <span class="text-ink">12</span>' },
+  { num: 4, content: '<span class="text-vermillion-2">description</span>: <span class="text-ink">Commercial invoice extraction</span>' },
+  { num: 5, content: "" },
+  { num: 6, content: '<span class="text-vermillion-2">fields</span>:' },
+  { num: 7, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">invoice_number</span>' },
+  { num: 8, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 9, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">invoice_date</span>' },
+  { num: 10, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">date</span>' },
+  { num: 11, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">vendor</span>' },
+  { num: 12, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 13, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">bill_to</span>' },
+  { num: 14, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">string</span>' },
+  { num: 15, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">line_items</span>' },
+  { num: 16, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">array</span>' },
+  { num: 17, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">subtotal</span>' },
+  { num: 18, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+  { num: 19, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">tax</span>' },
+  { num: 20, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+  { num: 21, content: '  - <span class="text-vermillion-2">name</span>: <span class="text-ink">total_amount</span>' },
+  { num: 22, content: '    <span class="text-vermillion-2">type</span>: <span class="text-ink">number</span>' },
+  { num: 23, content: '    <span class="text-vermillion-2">aliases</span>:', added: true },
+  { num: 24, content: '      - <span class="text-ink">BALANCE DUE</span>', added: true },
+];
+
+const EXTRACTION: ExtractionField[] = [
+  { name: "invoice_number", value: '"2026-087"', confidence: 0.99 },
+  { name: "invoice_date", value: '"2026-03-28"', confidence: 0.99 },
+  { name: "vendor", value: '"Brighton & Co. Contractors"', confidence: 0.97 },
+  { name: "bill_to", value: '"Vantage Capital"', confidence: 0.96 },
+  { name: "line_items", value: "2 items", confidence: 0.94 },
+  { name: "subtotal", value: "3950.00", confidence: 0.99 },
+  { name: "tax", value: "300.00", confidence: 0.99 },
+  { name: "total_amount", value: "4250.00", confidence: 0.99 },
+];
 
 export default function BuildModePage() {
   const [autoRun, setAutoRun] = useState(true);
   const params = useParams<{ schemaSlug: string }>();
   const schemaSlug = params.schemaSlug ?? "invoice";
 
-  const { data: schemaData, live } = useApi(
-    () => schemasApi.get(schemaSlug),
-    { slug: schemaSlug, displayName: schemaSlug, description: null, createdAt: "", draftYaml: null },
-  );
+  const { data: schemaData } = useApi(() => schemasApi.get(schemaSlug));
 
   const header = (
     <>
@@ -133,7 +168,7 @@ export default function BuildModePage() {
             </div>
           </div>
           <div className="flex-1 py-3.5 font-mono text-[12px] leading-[1.75] overflow-y-auto">
-            {MOCK_SCHEMA_LINES.map((line) => (
+            {SCHEMA_LINES.map((line) => (
               <div
                 key={line.num}
                 className={`flex px-4 whitespace-pre ${line.added ? "bg-green/[0.08]" : ""}`}
@@ -275,7 +310,7 @@ export default function BuildModePage() {
                 <span className="font-mono text-[10px] text-ink-3">8 / 8</span>
               </div>
               <div className="flex-1 overflow-y-auto">
-                {MOCK_EXTRACTION.map((f) => (
+                {EXTRACTION.map((f) => (
                   <div
                     key={f.name}
                     className="grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px]"

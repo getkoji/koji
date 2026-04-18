@@ -1,7 +1,6 @@
 "use client";
 
-import type { TraceField, TraceStage } from "@/lib/mock-trace";
-import { MOCK_FIELDS } from "@/lib/mock-trace";
+import type { TraceField, TraceStage } from "@/lib/types";
 
 export function StageDetail({
   stage,
@@ -9,12 +8,14 @@ export function StageDetail({
   totalStages,
   onPrev,
   onNext,
+  fields,
 }: {
   stage: TraceStage;
   stageIndex: number;
   totalStages: number;
   onPrev: () => void;
   onNext: () => void;
+  fields: TraceField[];
 }) {
   const isExtract = stage.name === "Extract";
 
@@ -82,7 +83,7 @@ export function StageDetail({
       )}
 
       {/* Body */}
-      {isExtract ? <ExtractBody /> : <GenericBody stage={stage} />}
+      {isExtract ? <ExtractBody fields={fields} /> : <GenericBody stage={stage} />}
 
       {/* Raw I/O */}
       {isExtract && (
@@ -107,7 +108,7 @@ export function StageDetail({
   );
 }
 
-function ExtractBody() {
+function ExtractBody({ fields }: { fields: TraceField[] }) {
   return (
     <div className="flex-1 grid grid-cols-[0.75fr_1fr] gap-px bg-border min-h-[420px]">
       {/* Chunks panel */}
@@ -178,7 +179,7 @@ function ExtractBody() {
           <span className="font-mono text-[10px] text-ink-3">8 / 8</span>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {MOCK_FIELDS.map((f) => (
+          {fields.map((f) => (
             <FieldRow key={f.name} field={f} />
           ))}
         </div>

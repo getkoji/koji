@@ -3,21 +3,16 @@
 import { useState, useEffect } from "react";
 
 /**
- * Simple data fetching hook with mock fallback.
- *
- * Tries the real API first. If the API is unreachable (server not
- * running), falls back to the mock data. This lets every page work
- * both in dev (with `pnpm --filter @koji/api dev` running) and in
- * standalone mode (mock data only).
+ * Data fetching hook. No mock fallback — shows loading skeleton while
+ * fetching, empty state if the result is empty, error state if the
+ * API is unreachable.
  */
 export function useApi<T>(
   fetcher: () => Promise<T>,
-  mockData: T,
-): { data: T; loading: boolean; error: string | null; live: boolean } {
-  const [data, setData] = useState<T>(mockData);
+): { data: T | null; loading: boolean; error: string | null } {
+  const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,15 +21,12 @@ export function useApi<T>(
       .then((result) => {
         if (!cancelled) {
           setData(result);
-          setLive(true);
           setLoading(false);
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          // API unreachable — use mock data silently
-          setError(err.message);
-          setLive(false);
+          setError(err.message ?? "API unreachable");
           setLoading(false);
         }
       });
@@ -44,5 +36,5 @@ export function useApi<T>(
     };
   }, []);
 
-  return { data, loading, error, live };
+  return { data, loading, error };
 }
