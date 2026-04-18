@@ -25,7 +25,7 @@ export default function Home() {
           router.replace("/new-project");
         }
       } catch {
-        router.replace("/setup");
+        router.replace("/login");
       }
     }
     resolve();

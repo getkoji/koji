@@ -37,7 +37,7 @@ export default function SetupPage() {
   // Redirect away if setup isn't needed
   useEffect(() => {
     if (status && !status.needed) {
-      router.replace("/");
+      router.replace("/login");
     }
   }, [status, router]);
 
