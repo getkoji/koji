@@ -44,6 +44,11 @@ function timeAgo(dateStr: string | null): string {
 const SOURCE_TYPE_LABELS: Record<string, string> = {
   dashboard_upload: "Upload",
   webhook: "Webhook",
+  s3: "S3",
+  sftp: "SFTP",
+  gcs: "GCS",
+  azure_blob: "Azure Blob",
+  email: "Email",
 };
 
 export default function SourcesPage() {
@@ -229,7 +234,17 @@ export default function SourcesPage() {
   );
 }
 
+const SOURCE_TYPES = [
+  { value: "webhook", label: "Webhook", description: "External systems POST documents to a unique URL", available: true },
+  { value: "s3", label: "S3 Bucket", description: "Poll an Amazon S3 bucket for new documents", available: false },
+  { value: "sftp", label: "SFTP", description: "Poll an SFTP server for new files", available: false },
+  { value: "gcs", label: "Google Cloud Storage", description: "Poll a GCS bucket for new documents", available: false },
+  { value: "azure_blob", label: "Azure Blob Storage", description: "Poll an Azure Blob container", available: false },
+  { value: "email", label: "Email (IMAP)", description: "Monitor a mailbox for document attachments", available: false },
+];
+
 function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (result: { id: string; webhookSecret?: string }) => void }) {
+  const [sourceType, setSourceType] = useState("webhook");
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -241,7 +256,7 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     try {
       const result = await api.post<{ id: string; webhookSecret?: string }>("/api/sources", {
-        name, slug, source_type: "webhook",
+        name, slug, source_type: sourceType,
       });
       onCreated(result);
     } catch (err: unknown) {
@@ -250,16 +265,46 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     }
   }
 
+  const selectedType = SOURCE_TYPES.find((t) => t.value === sourceType);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Add webhook source</h2>
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
+        <h2 className="text-[15px] font-medium text-ink mb-1">Add source</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Create an inbound webhook endpoint. External systems POST documents to this URL for processing.
+          Configure how documents enter the pipeline.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Source type picker */}
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Source type</label>
+            <div className="grid grid-cols-2 gap-2">
+              {SOURCE_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  disabled={!t.available}
+                  onClick={() => t.available && setSourceType(t.value)}
+                  className={`text-left px-3 py-2.5 rounded-sm border transition-colors ${
+                    sourceType === t.value
+                      ? "border-ink bg-ink/[0.03]"
+                      : t.available
+                        ? "border-border hover:border-ink/30"
+                        : "border-border opacity-40 cursor-not-allowed"
+                  }`}
+                >
+                  <div className="text-[12.5px] font-medium text-ink flex items-center gap-1.5">
+                    {t.label}
+                    {!t.available && <span className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase">soon</span>}
+                  </div>
+                  <div className="text-[11px] text-ink-3 mt-0.5">{t.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Name</label>
             <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Partner API inbound" autoFocus
