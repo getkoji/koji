@@ -4,6 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@koji/db";
 import { sendEmail } from "../email";
 import { hashPassword } from "../auth/password";
+import { passwordResetEmail } from "../email-templates";
 import type { Env } from "../index";
 
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
@@ -48,18 +49,13 @@ passwordReset.post("/forgot-password", async (c) => {
     });
 
     const resetUrl = `${APP_URL}/reset-password?token=${token}`;
+    const email = passwordResetEmail(user.name ?? "", resetUrl);
 
     await sendEmail({
       to: user.email,
-      subject: "Reset your Koji password",
-      text: `Hi ${user.name ?? "there"},\n\nYou (or someone) requested a password reset for your Koji account.\n\nClick this link to set a new password:\n${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.\n\n— Koji`,
-      html: `
-        <p>Hi ${user.name ?? "there"},</p>
-        <p>You (or someone) requested a password reset for your Koji account.</p>
-        <p><a href="${resetUrl}" style="display:inline-block;padding:8px 16px;background:#171410;color:#F4EEE2;border-radius:3px;text-decoration:none;font-family:sans-serif;font-size:13px;">Reset password</a></p>
-        <p style="font-size:12px;color:#665C4B;">This link expires in 1 hour. If you didn't request this, ignore this email.</p>
-        <p>— Koji</p>
-      `,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
     });
   }
 

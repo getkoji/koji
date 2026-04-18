@@ -45,7 +45,7 @@ export default function ForgotPasswordPage() {
           <div className="border border-border rounded-sm bg-cream p-6 text-center">
             <div className="text-[13px] text-ink mb-2">Check your email</div>
             <p className="text-[12px] text-ink-3 mb-4">
-              If an account with <span className="font-mono text-ink">{email}</span> exists, we've sent a password reset link. Check your inbox (or Mailpit at <span className="font-mono text-ink">localhost:8025</span> in dev).
+              If an account with <span className="font-mono text-ink">{email}</span> exists, we've sent a password reset link. Check your inbox.
             </p>
             <a href="/login" className="text-[12px] text-vermillion-2 hover:text-ink transition-colors">
               ← Back to sign in
