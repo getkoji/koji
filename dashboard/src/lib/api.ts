@@ -102,7 +102,6 @@ export interface TenantRow {
   id: string;
   slug: string;
   displayName: string;
-  plan: string;
 }
 
 export const tenants = {

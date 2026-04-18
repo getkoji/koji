@@ -22,7 +22,6 @@ tenants.get("/", async (c) => {
       id: schema.tenants.id,
       slug: schema.tenants.slug,
       displayName: schema.tenants.displayName,
-      plan: schema.tenants.plan,
     })
     .from(schema.tenants)
     .innerJoin(schema.memberships, eq(schema.memberships.tenantId, schema.tenants.id))
@@ -50,7 +49,6 @@ tenants.patch("/:slug", async (c) => {
       id: schema.tenants.id,
       slug: schema.tenants.slug,
       displayName: schema.tenants.displayName,
-      plan: schema.tenants.plan,
     });
 
   if (rows.length === 0) {

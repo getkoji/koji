@@ -17,8 +17,8 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const tenantMenuRef = useRef<HTMLDivElement>(null);
-  const { data: user } = useApi(useCallback(() => meApi.get(), []));
-  const { data: tenantList } = useApi(useCallback(() => tenantsApi.list(), []));
+  const { data: user, loading: userLoading } = useApi(useCallback(() => meApi.get(), []));
+  const { data: tenantList, loading: tenantsLoading } = useApi(useCallback(() => tenantsApi.list(), []));
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "";
@@ -50,7 +50,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   }, [userMenuOpen, tenantMenuOpen]);
 
   const currentTenant = tenantList?.find((t) => t.slug === tenantSlug);
-  const currentTenantName = currentTenant?.displayName ?? tenantSlug ?? "—";
+  const currentTenantName = currentTenant?.displayName;
 
   return (
     <header
@@ -71,11 +71,15 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
             <span className="text-cream-4 text-[22px] font-light px-1">/</span>
             <div className="relative" ref={tenantMenuRef}>
               <button
-                onClick={() => setTenantMenuOpen(!tenantMenuOpen)}
+                onClick={() => !tenantsLoading && setTenantMenuOpen(!tenantMenuOpen)}
                 className={`inline-flex items-center gap-1.5 font-mono text-xs text-ink-2 px-2 py-1.5 rounded-sm transition-colors ${tenantMenuOpen ? "bg-cream-2" : "hover:bg-cream-2"}`}
                 type="button"
               >
-                <span>{currentTenantName}</span>
+                {tenantsLoading ? (
+                  <span className="inline-block w-20 h-3 bg-cream-3 rounded-sm animate-pulse" />
+                ) : (
+                  <span>{currentTenantName}</span>
+                )}
                 <ChevronsUpDown className="w-3 h-3 text-ink-4" />
               </button>
 
@@ -103,10 +107,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                         }`}>
                           {t.displayName[0]?.toUpperCase() ?? "?"}
                         </span>
-                        <div className="flex flex-col items-start min-w-0">
-                          <span className="truncate w-full">{t.displayName}</span>
-                          <span className="font-mono text-[10px] text-ink-4">{t.plan}</span>
-                        </div>
+                        <span className="truncate min-w-0">{t.displayName}</span>
                         {t.slug === tenantSlug && (
                           <span className="ml-auto text-vermillion-2 text-[11px]">✓</span>
                         )}
@@ -151,12 +152,14 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
         {/* User menu */}
         <div className="relative" ref={menuRef}>
           <button
-            onClick={() => setUserMenuOpen(!userMenuOpen)}
-            className={`w-[30px] h-[30px] rounded-full bg-vermillion-2 text-cream font-mono text-[11px] font-medium inline-flex items-center justify-center transition-opacity ${userMenuOpen ? "opacity-80" : "hover:opacity-90"}`}
+            onClick={() => !userLoading && setUserMenuOpen(!userMenuOpen)}
+            className={`w-[30px] h-[30px] rounded-full font-mono text-[11px] font-medium inline-flex items-center justify-center transition-opacity ${
+              userLoading ? "bg-cream-3 animate-pulse" : "bg-vermillion-2 text-cream"
+            } ${userMenuOpen ? "opacity-80" : "hover:opacity-90"}`}
             aria-label="User menu"
             aria-expanded={userMenuOpen}
           >
-            {userInitials}
+            {userLoading ? "" : userInitials}
           </button>
 
           {userMenuOpen && (
