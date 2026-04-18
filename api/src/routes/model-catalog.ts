@@ -103,6 +103,68 @@ modelCatalog.delete("/:id", requires("endpoint:write"), async (c) => {
 });
 
 /**
+ * POST /api/model-catalog/fetch — query a provider's API for available
+ * models using inline credentials. The key is used for the fetch only
+ * and is never stored. Returns the model list for the UI to present
+ * as checkboxes — nothing is inserted until the user confirms via /bulk.
+ */
+modelCatalog.post("/fetch", requires("endpoint:write"), async (c) => {
+  const body = await c.req.json<{
+    provider: string;
+    api_key?: string;
+    base_url?: string;
+  }>();
+
+  if (!body.provider) {
+    return c.json({ error: "provider is required" }, 400);
+  }
+
+  const provider = body.provider;
+  const apiKey = body.api_key ?? "";
+
+  let models: Array<{ id: string; name: string; context?: number }> = [];
+
+  try {
+    if (provider === "openai" || provider === "azure-openai") {
+      if (!apiKey) {
+        return c.json({ error: "API key is required for OpenAI" }, 400);
+      }
+      const baseUrl = body.base_url ?? "https://api.openai.com/v1";
+      const resp = await fetch(`${baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) {
+        return c.json({ error: `Provider returned ${resp.status}` }, 502);
+      }
+      const data = await resp.json() as { data: Array<{ id: string }> };
+      models = data.data
+        .filter((m) => m.id.startsWith("gpt-") || m.id.startsWith("o") || m.id.includes("embed"))
+        .map((m) => ({ id: m.id, name: m.id }));
+    } else if (provider === "anthropic") {
+      models = [
+        { id: "claude-opus-4-20250514", name: "Claude Opus 4", context: 200000 },
+        { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", context: 200000 },
+        { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", context: 200000 },
+      ];
+    } else if (provider === "ollama") {
+      const baseUrl = body.base_url ?? "http://localhost:11434";
+      const resp = await fetch(`${baseUrl}/api/tags`);
+      if (!resp.ok) {
+        return c.json({ error: `Ollama returned ${resp.status}` }, 502);
+      }
+      const data = await resp.json() as { models: Array<{ name: string }> };
+      models = (data.models ?? []).map((m) => ({ id: m.name, name: m.name }));
+    } else {
+      return c.json({ error: `Automatic model fetching is not supported for "${provider}". Add models manually.` }, 400);
+    }
+  } catch (err: unknown) {
+    return c.json({ error: `Failed to fetch: ${err instanceof Error ? err.message : "unknown error"}` }, 502);
+  }
+
+  return c.json({ data: models, provider });
+});
+
+/**
  * POST /api/model-catalog/bulk — add multiple models at once.
  * Used after fetching from a provider — the UI sends the selected models.
  */

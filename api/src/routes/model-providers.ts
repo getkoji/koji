@@ -80,8 +80,8 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     credentials?: string | Record<string, string>;
   }>();
 
-  if (!body.name || !body.slug || !body.provider || !body.model) {
-    return c.json({ error: "name, slug, provider, and model are required" }, 400);
+  if (!body.name || !body.slug || !body.provider) {
+    return c.json({ error: "name, slug, and provider are required" }, 400);
   }
 
   const configJson: Record<string, unknown> = {};
@@ -110,7 +110,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
-        model: body.model,
+        model: body.model || "",
         configJson,
         authJson,
         createdBy: principal.userId,

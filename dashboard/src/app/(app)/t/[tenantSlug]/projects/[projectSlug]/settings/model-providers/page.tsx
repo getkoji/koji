@@ -45,7 +45,6 @@ function timeAgo(dateStr: string | null): string {
 export default function ModelProvidersPage() {
   const { hasPermission } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
-  const [fetchTarget, setFetchTarget] = useState<ModelProvider | null>(null);
   const [rotateTarget, setRotateTarget] = useState<ModelProvider | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelProvider | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -101,9 +100,6 @@ export default function ModelProvidersPage() {
                   <Badge variant={p.status === "active" ? "active" : "neutral"}>{p.status}</Badge>
                   {hasPermission("endpoint:write") && (
                     <>
-                      <button onClick={() => setFetchTarget(p)} className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors">
-                        fetch models
-                      </button>
                       <button onClick={() => setRotateTarget(p)} className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors">
                         rotate key
                       </button>
@@ -128,7 +124,7 @@ export default function ModelProvidersPage() {
           onClose={() => setShowAdd(false)}
           onCreated={() => {
             setShowAdd(false);
-            setSuccessMessage("Provider added. Your API key has been encrypted and stored. It cannot be retrieved — only rotated.");
+            setSuccessMessage("Provider added. Your API key has been encrypted and stored. Click \"fetch models\" to populate the model catalog from this provider.");
             refetch();
           }}
         />
@@ -142,17 +138,6 @@ export default function ModelProvidersPage() {
             setRotateTarget(null);
             setSuccessMessage("Credentials rotated successfully.");
             refetch();
-          }}
-        />
-      )}
-
-      {fetchTarget && (
-        <FetchModelsDialog
-          provider={fetchTarget}
-          onClose={() => setFetchTarget(null)}
-          onFetched={(count) => {
-            setFetchTarget(null);
-            setSuccessMessage(`Added ${count} model${count !== 1 ? "s" : ""} to the catalog.`);
           }}
         />
       )}
@@ -244,16 +229,16 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
             </div>
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Default model</label>
-              <select required value={model} onChange={(e) => setModel(e.target.value)}
+              <select value={model} onChange={(e) => setModel(e.target.value)}
                 className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
-                <option value="">Select a model...</option>
+                <option value="">{(catalogModels ?? []).length === 0 ? "No models yet — fetch after adding" : "Select a model..."}</option>
                 {(catalogModels ?? []).map((m) => (
                   <option key={m.modelId} value={m.modelId}>{m.displayName}</option>
                 ))}
               </select>
               {(catalogModels ?? []).length === 0 && (
-                <p className="text-[11px] text-vermillion-2">
-                  No models in catalog for this provider. Add models in Organization → Model Catalog first.
+                <p className="text-[11px] text-ink-4">
+                  Add the provider first, then use "Fetch models" to populate the catalog.
                 </p>
               )}
             </div>
@@ -326,148 +311,6 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
             </button>
           </div>
         </form>
-      </div>
-    </div>
-  );
-}
-
-interface FetchedModel {
-  id: string;
-  name: string;
-  context?: number;
-}
-
-function FetchModelsDialog({
-  provider,
-  onClose,
-  onFetched,
-}: {
-  provider: ModelProvider;
-  onClose: () => void;
-  onFetched: (count: number) => void;
-}) {
-  const [fetching, setFetching] = useState(false);
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[] | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [adding, setAdding] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleFetch() {
-    setError(null);
-    setFetching(true);
-    try {
-      const result = await api.post<{ data: FetchedModel[] }>(`/api/model-providers/${provider.id}/fetch-models`, {});
-      setFetchedModels(result.data);
-      setSelected(new Set(result.data.map((m) => m.id)));
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to fetch models");
-    } finally {
-      setFetching(false);
-    }
-  }
-
-  async function handleAdd() {
-    if (!fetchedModels || selected.size === 0) return;
-    setAdding(true);
-    setError(null);
-    try {
-      const models = fetchedModels.filter((m) => selected.has(m.id));
-      await api.post("/api/model-catalog/bulk", { provider: provider.provider, models });
-      onFetched(selected.size);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to add models");
-      setAdding(false);
-    }
-  }
-
-  function toggleModel(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleAll() {
-    if (!fetchedModels) return;
-    if (selected.size === fetchedModels.length) setSelected(new Set());
-    else setSelected(new Set(fetchedModels.map((m) => m.id)));
-  }
-
-  // Auto-fetch on mount
-  if (!fetchedModels && !fetching && !error) {
-    handleFetch();
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[520px] p-6 max-h-[80vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">
-          Fetch models from {provider.displayName}
-        </h2>
-        <p className="text-[12.5px] text-ink-3 mb-5">
-          Using your stored credentials to query available models. Select which to add to the catalog.
-        </p>
-
-        {fetching && (
-          <div className="py-8 text-center">
-            <div className="animate-pulse font-mono text-[11px] text-ink-4">Fetching models...</div>
-          </div>
-        )}
-
-        {error && !fetchedModels && (
-          <div className="space-y-4">
-            <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>
-            <div className="flex items-center justify-end gap-2">
-              <button onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-              <button onClick={handleFetch} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
-                Retry
-              </button>
-            </div>
-          </div>
-        )}
-
-        {fetchedModels && (
-          <>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[12.5px] text-ink-3">
-                {fetchedModels.length} model{fetchedModels.length !== 1 ? "s" : ""} found.
-              </p>
-              <button onClick={toggleAll} className="text-[11px] text-vermillion-2 hover:text-ink transition-colors font-mono">
-                {selected.size === fetchedModels.length ? "deselect all" : "select all"}
-              </button>
-            </div>
-
-            <div className="border border-border rounded-sm max-h-[300px] overflow-y-auto divide-y divide-dotted divide-border">
-              {fetchedModels.map((m) => (
-                <label key={m.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-cream-2 cursor-pointer">
-                  <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleModel(m.id)} className="rounded border-border" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] text-ink font-medium truncate">{m.name}</div>
-                    <div className="font-mono text-[10px] text-ink-4 truncate">{m.id}</div>
-                  </div>
-                  {m.context && <span className="font-mono text-[10px] text-ink-4 shrink-0">{(m.context / 1000).toFixed(0)}k</span>}
-                </label>
-              ))}
-            </div>
-
-            {fetchedModels.length === 0 && (
-              <div className="py-4 text-center text-[12.5px] text-ink-3">No models found from this provider.</div>
-            )}
-
-            {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mt-3">{error}</div>}
-
-            <div className="flex items-center justify-end gap-2 pt-4">
-              <button onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-              <button onClick={handleAdd} disabled={selected.size === 0 || adding}
-                className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
-                {adding ? "Adding..." : `Add ${selected.size} model${selected.size !== 1 ? "s" : ""} to catalog`}
-              </button>
-            </div>
-          </>
-        )}
       </div>
     </div>
   );
