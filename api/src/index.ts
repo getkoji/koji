@@ -11,6 +11,7 @@ import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
 import { jobs } from "./routes/jobs";
 import { extract } from "./routes/extract";
+import { me } from "./routes/me";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
@@ -36,6 +37,7 @@ app.route("/health", health);
 app.route("/api/schemas", schemas);
 app.route("/api/jobs", jobs);
 app.route("/api", extract);
+app.route("/api/me", me);
 
 // Start
 async function start() {

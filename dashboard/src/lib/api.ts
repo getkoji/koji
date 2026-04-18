@@ -97,3 +97,19 @@ export const jobs = {
   },
   get: (slug: string) => api.get<JobRow>(`/api/jobs/${slug}`),
 };
+
+export interface UserProfile {
+  id: string;
+  name: string | null;
+  email: string;
+  avatarUrl: string | null;
+  authProvider: string;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+export const me = {
+  get: () => api.get<UserProfile>("/api/me"),
+  update: (body: { name?: string; email?: string }) =>
+    api.patch<UserProfile>("/api/me", body),
+};

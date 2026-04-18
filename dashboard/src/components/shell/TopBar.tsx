@@ -1,16 +1,23 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Search, Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
+import { me as meApi, type UserProfile } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 
 export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) {
   const pathname = usePathname();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const { data: user } = useApi(useCallback(() => meApi.get(), []));
+
+  const userName = user?.name ?? "User";
+  const userEmail = user?.email ?? "";
+  const userInitials = userName.split(" ").map(n => n[0]).join("").toUpperCase() || "?";
 
   // Close on click outside
   useEffect(() => {
@@ -98,15 +105,15 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
             aria-label="User menu"
             aria-expanded={userMenuOpen}
           >
-            FT
+            {userInitials}
           </button>
 
           {userMenuOpen && (
             <div className="absolute right-0 top-[38px] w-[220px] bg-white border border-border-strong rounded-sm shadow-lg overflow-hidden z-50">
               {/* User info */}
               <div className="px-3.5 py-3 border-b border-border">
-                <div className="text-[13px] font-medium text-ink">Frank Thomas</div>
-                <div className="font-mono text-[11px] text-ink-3 mt-0.5">admin@localhost</div>
+                <div className="text-[13px] font-medium text-ink">{userName}</div>
+                <div className="font-mono text-[11px] text-ink-3 mt-0.5">{userEmail}</div>
               </div>
 
               {/* Menu items */}
