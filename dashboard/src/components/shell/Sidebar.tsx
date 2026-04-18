@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { useSettingsExtensions } from "./SettingsExtensions";
 import { useAuth } from "@/lib/auth-context";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 import {
   LayoutDashboard,
   Workflow,
@@ -83,6 +85,27 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
 
   const isAdmin = hasPermission("tenant:admin");
 
+  // Schema picker
+  const router = useRouter();
+  const [schemaPickerOpen, setSchemaPickerOpen] = useState(false);
+  const schemaPickerRef = useRef<HTMLDivElement>(null);
+  const currentSchemaSlug = schemaSlug ?? pathname.match(/\/schemas\/([^/]+)/)?.[1];
+  const schemaSubPage = pathname.match(/\/schemas\/[^/]+\/([^/]+)/)?.[1] ?? "build";
+
+  const { data: schemasList } = useApi(
+    useCallback(() => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/schemas").then((r) => r.data), []),
+  );
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (schemaPickerRef.current && !schemaPickerRef.current.contains(e.target as Node)) {
+        setSchemaPickerOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   return (
     <aside className="border-r border-border px-3.5 pt-5 pb-8 bg-cream flex flex-col gap-5 sticky top-[60px] h-[calc(100vh-60px)] overflow-y-auto w-[256px] shrink-0">
       {/* Playground button */}
@@ -132,20 +155,61 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
       </nav>
 
       {/* Schema section */}
-      <nav className="flex flex-col gap-0.5">
-        <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2 flex items-baseline gap-1.5">
-          <span>Schema</span>
-          <span className="text-cream-4 font-normal">·</span>
-          <span className="normal-case italic text-ink-3 tracking-[0.02em] text-[10.5px]">
-            {schemaSlug ?? "invoice"}
-          </span>
-          <span className="w-1 h-1 rounded-full bg-vermillion-2 shadow-[0_0_0_2px_rgba(153,39,24,0.14)] ml-0.5" />
-        </div>
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
-      </nav>
+      {currentSchemaSlug && (
+        <nav className="flex flex-col gap-0.5">
+          <div className="relative" ref={schemaPickerRef}>
+            <button
+              onClick={() => setSchemaPickerOpen(!schemaPickerOpen)}
+              className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2 flex items-baseline gap-1.5 hover:text-ink-3 transition-colors w-full text-left"
+            >
+              <span>Schema</span>
+              <span className="text-cream-4 font-normal">·</span>
+              <span className="normal-case italic text-ink-3 tracking-[0.02em] text-[10.5px]">
+                {currentSchemaSlug}
+              </span>
+            </button>
+
+            {schemaPickerOpen && (
+              <div className="absolute left-2 top-full mt-1 w-52 bg-white border border-border rounded-sm shadow-md z-20 overflow-hidden">
+                <div className="px-3 py-2 border-b border-border font-mono text-[9.5px] font-medium tracking-[0.1em] uppercase text-ink-4">
+                  Schemas
+                </div>
+                <div className="max-h-[200px] overflow-y-auto">
+                  {(schemasList ?? []).map((s) => (
+                    <button
+                      key={s.slug}
+                      onClick={() => {
+                        router.push(`${base}/schemas/${s.slug}/${schemaSubPage}`);
+                        setSchemaPickerOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-[12.5px] hover:bg-cream-2 transition-colors flex items-center justify-between ${
+                        s.slug === currentSchemaSlug ? "text-ink font-medium" : "text-ink-3"
+                      }`}
+                    >
+                      <span>{s.displayName}</span>
+                      {s.slug === currentSchemaSlug && <span className="text-vermillion-2 text-[11px]">✓</span>}
+                    </button>
+                  ))}
+                </div>
+                <div className="border-t border-border">
+                  <Link
+                    href={`${base}/schemas/${currentSchemaSlug}/build`}
+                    onClick={() => setSchemaPickerOpen(false)}
+                    className="w-full text-left px-3 py-2 text-[12px] text-ink-3 hover:text-ink hover:bg-cream-2 transition-colors flex items-center gap-1.5 block"
+                  >
+                    <span className="text-[14px] leading-none">+</span> New schema
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <NavItem href={`${base}/schemas/${currentSchemaSlug}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
+          <NavItem href={`${base}/schemas/${currentSchemaSlug}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
+          <NavItem href={`${base}/schemas/${currentSchemaSlug}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" />
+          <NavItem href={`${base}/schemas/${currentSchemaSlug}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
+        </nav>
+      )}
 
       {/* Organization settings — admin+ only */}
       {isAdmin && (() => {

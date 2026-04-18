@@ -35,6 +35,9 @@ importers:
       postgres:
         specifier: ^3.4.4
         version: 3.4.9
+      yaml:
+        specifier: ^2.8.3
+        version: 2.8.3
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -69,6 +72,9 @@ importers:
       react-dom:
         specifier: 19.2.4
         version: 19.2.4(react@19.2.4)
+      yaml:
+        specifier: ^2.8.3
+        version: 2.8.3
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
