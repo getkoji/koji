@@ -149,8 +149,10 @@ export default function BuildPage() {
     return (
       <WorkbenchLayout
         header={<><Breadcrumbs items={[{ label: "Schema" }, { label: "Build" }]} /><PageHeader title="Build" /></>}
-        left={<div className="animate-pulse font-mono text-[11px] text-ink-4 p-4">Loading...</div>}
-        right={<div />}
+        panes={[
+          <div key="left" className="animate-pulse font-mono text-[11px] text-ink-4 p-4">Loading...</div>,
+          <div key="right" />,
+        ]}
       />
     );
   }
@@ -186,8 +188,8 @@ export default function BuildPage() {
           />
         </>
       }
-      left={
-        <div className="h-full flex flex-col">
+      panes={[
+        <div key="editor" className="h-full flex flex-col">
           {/* YAML Editor */}
           <textarea
             value={yaml}
@@ -233,10 +235,8 @@ export default function BuildPage() {
               ))}
             </div>
           )}
-        </div>
-      }
-      right={
-        <div className="p-4 overflow-y-auto h-full">
+        </div>,
+        <div key="fields" className="p-4 overflow-y-auto h-full">
           <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-3">
             Fields ({fields.length})
           </div>
@@ -273,8 +273,8 @@ export default function BuildPage() {
               ))}
             </div>
           )}
-        </div>
-      }
+        </div>,
+      ]}
     />
 
     {/* Commit dialog */}

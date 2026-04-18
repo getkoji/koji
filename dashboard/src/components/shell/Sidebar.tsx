@@ -87,19 +87,54 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
 
   const isAdmin = hasPermission("tenant:admin");
 
-  // Schema picker
+  // Schema picker — persists selection in localStorage
   const router = useRouter();
   const [schemaPickerOpen, setSchemaPickerOpen] = useState(false);
   const [showCreateSchema, setShowCreateSchema] = useState(false);
   const schemaPickerRef = useRef<HTMLDivElement>(null);
-  const currentSchemaSlug = schemaSlug ?? pathname.match(/\/schemas\/([^/]+)/)?.[1];
   const schemaSubPage = pathname.match(/\/schemas\/[^/]+\/([^/]+)/)?.[1] ?? "build";
 
-  const { data: schemasList, refetch: refetchSchemas } = useApi(
+  const { data: schemasList, loading: schemasLoading, refetch: refetchSchemas } = useApi(
     useCallback(() => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/schemas").then((r) => r.data), []),
   );
 
   useEffect(() => on("schemas:updated", refetchSchemas), [refetchSchemas]);
+
+  // Resolve current schema: URL > localStorage > first in list
+  const storageKey = `koji:schema:${tenantSlug}`;
+  const urlSchemaSlug = schemaSlug ?? pathname.match(/\/schemas\/([^/]+)/)?.[1];
+  const [storedSchemaSlug, setStoredSchemaSlug] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(storageKey);
+  });
+
+  // If URL has a schema, persist it
+  useEffect(() => {
+    if (urlSchemaSlug && typeof window !== "undefined") {
+      localStorage.setItem(storageKey, urlSchemaSlug);
+      setStoredSchemaSlug(urlSchemaSlug);
+    }
+  }, [urlSchemaSlug, storageKey]);
+
+  // Auto-select first schema if nothing is stored and schemas exist
+  useEffect(() => {
+    if (!storedSchemaSlug && schemasList && schemasList.length > 0 && typeof window !== "undefined") {
+      const first = schemasList[0]!.slug;
+      localStorage.setItem(storageKey, first);
+      setStoredSchemaSlug(first);
+    }
+  }, [storedSchemaSlug, schemasList, storageKey]);
+
+  const currentSchemaSlug = urlSchemaSlug ?? storedSchemaSlug;
+
+  function selectSchema(slug: string) {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(storageKey, slug);
+    }
+    setStoredSchemaSlug(slug);
+    setSchemaPickerOpen(false);
+    router.push(`${base}/schemas/${slug}/${schemaSubPage}`);
+  }
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -161,7 +196,19 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
 
       {/* Schema section */}
       <nav className="flex flex-col gap-0.5">
-        {(schemasList ?? []).length === 0 ? (
+        {schemasLoading ? (
+          /* Loading skeleton */
+          <>
+            <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2">
+              Schema
+            </div>
+            <div className="mx-2.5 space-y-2">
+              <div className="h-[30px] bg-cream-2 rounded-sm animate-pulse" />
+              <div className="h-[30px] bg-cream-2 rounded-sm animate-pulse w-3/4" />
+              <div className="h-[30px] bg-cream-2 rounded-sm animate-pulse w-1/2" />
+            </div>
+          </>
+        ) : (schemasList ?? []).length === 0 ? (
           /* Empty state — no schemas exist */
           <>
             <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2">
@@ -205,10 +252,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
                     {(schemasList ?? []).map((s) => (
                       <button
                         key={s.slug}
-                        onClick={() => {
-                          router.push(`${base}/schemas/${s.slug}/${schemaSubPage}`);
-                          setSchemaPickerOpen(false);
-                        }}
+                        onClick={() => selectSchema(s.slug)}
                         className={`w-full text-left px-3 py-2 text-[12.5px] hover:bg-cream-2 transition-colors flex items-center justify-between ${
                           s.slug === currentSchemaSlug ? "text-ink font-medium" : "text-ink-3"
                         }`}
