@@ -115,7 +115,13 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                     ))}
                   </div>
                   <div className="border-t border-border py-1">
-                    <button className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors">
+                    <button
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        router.push("/new-project");
+                      }}
+                      className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
+                    >
                       <Plus className="w-3.5 h-3.5 text-ink-4" />
                       <span>New project</span>
                     </button>
