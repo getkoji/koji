@@ -21,6 +21,7 @@ import { invites } from "./routes/invites";
 import { members } from "./routes/members";
 import { apiKeys } from "./routes/api-keys";
 import { cliAuth } from "./routes/cli-auth";
+import { modelProviders } from "./routes/model-providers";
 import type { Env } from "./env";
 
 const DATABASE_URL =
@@ -63,6 +64,7 @@ app.route("/api/invites", invites);
 app.route("/api/members", members);
 app.route("/api/api-keys", apiKeys);
 app.route("/api/cli", cliAuth);
+app.route("/api/model-providers", modelProviders);
 
 // Export the adapter so setup.ts can create sessions
 export { adapter };

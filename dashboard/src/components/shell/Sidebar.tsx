@@ -125,7 +125,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
         >
           <NavItem href={`${projectSettingsBase}/general`} icon={<Info className={ICON_SIZE} />} label="General" />
           <NavItem href={`${projectSettingsBase}/api-keys`} icon={<Key className={ICON_SIZE} />} label="API Keys" />
-          <NavItem href={`${projectSettingsBase}/endpoints`} icon={<Radio className={ICON_SIZE} />} label="Endpoints" />
+          <NavItem href={`${projectSettingsBase}/model-providers`} icon={<Radio className={ICON_SIZE} />} label="Model Providers" />
           <NavItem href={`${projectSettingsBase}/webhooks`} icon={<Webhook className={ICON_SIZE} />} label="Webhooks" />
         </div>
       </nav>
