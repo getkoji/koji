@@ -74,6 +74,7 @@ function timeAgo(dateStr: string | null): string {
 export default function WebhooksPage() {
   const { hasPermission } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
+  const [viewTarget, setViewTarget] = useState<WebhookTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WebhookTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -171,6 +172,10 @@ export default function WebhooksPage() {
                 <div className="flex items-center gap-4">
                   <Meta>last: {timeAgo(t.lastDeliveredAt)}</Meta>
                   <Badge variant={t.status === "active" ? "active" : "neutral"}>{t.status}</Badge>
+                  <button onClick={() => setViewTarget(t)}
+                    className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors">
+                    logs
+                  </button>
                   {hasPermission("webhook:write") && (
                     <>
                       <button onClick={() => handleTest(t)} disabled={testingId === t.id}
@@ -193,6 +198,10 @@ export default function WebhooksPage() {
           </div>
         )}
       </section>
+
+      {viewTarget && (
+        <DeliveryLogDialog target={viewTarget} onClose={() => setViewTarget(null)} />
+      )}
 
       {showAdd && (
         <AddWebhookDialog
@@ -314,6 +323,74 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+interface Delivery {
+  id: string;
+  eventType: string;
+  status: string;
+  attemptCount: number;
+  httpStatus: number | null;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+function DeliveryLogDialog({ target, onClose }: { target: WebhookTarget; onClose: () => void }) {
+  const { data: deliveries, loading } = useApi(
+    useCallback(
+      () => api.get<{ data: Delivery[] }>(`/api/webhook-targets/${target.id}/deliveries`).then((r) => r.data),
+      [target.id],
+    ),
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[640px] p-6 max-h-[80vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-[15px] font-medium text-ink">Delivery log</h2>
+          <button onClick={onClose} className="text-ink-4 hover:text-ink transition-colors text-[18px] leading-none">&times;</button>
+        </div>
+        <p className="text-[12.5px] text-ink-3 mb-5">
+          Recent deliveries for <strong className="text-ink">{target.displayName}</strong>
+        </p>
+
+        {loading ? (
+          <div className="animate-pulse font-mono text-[11px] text-ink-4 py-8 text-center">Loading...</div>
+        ) : (deliveries ?? []).length === 0 ? (
+          <div className="border border-border rounded-sm py-6 text-center text-[12.5px] text-ink-3">
+            No deliveries yet. Send a test event or wait for a real event to fire.
+          </div>
+        ) : (
+          <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
+            {/* Header */}
+            <div className="grid grid-cols-[1fr_80px_60px_60px_100px] gap-3 px-4 py-2 text-[10px] font-mono font-medium tracking-[0.08em] uppercase text-ink-4">
+              <span>Event</span>
+              <span>Status</span>
+              <span>HTTP</span>
+              <span>Attempt</span>
+              <span>Time</span>
+            </div>
+            {(deliveries ?? []).map((d) => (
+              <div key={d.id} className="grid grid-cols-[1fr_80px_60px_60px_100px] gap-3 px-4 py-2.5 items-center">
+                <span className="font-mono text-[11px] text-ink truncate">{d.eventType}</span>
+                <span>
+                  <span className={`font-mono text-[10px] font-medium px-1.5 py-0.5 rounded-sm ${
+                    d.status === "succeeded" ? "bg-green/10 text-green" : "bg-vermillion-3/50 text-vermillion-2"
+                  }`}>
+                    {d.status}
+                  </span>
+                </span>
+                <span className="font-mono text-[11px] text-ink-3">{d.httpStatus ?? "—"}</span>
+                <span className="font-mono text-[11px] text-ink-4">{d.attemptCount}</span>
+                <span className="font-mono text-[10px] text-ink-4">{timeAgo(d.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
