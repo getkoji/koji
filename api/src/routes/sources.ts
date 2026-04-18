@@ -291,6 +291,25 @@ sources.post("/:id/webhook", async (c) => {
     return [k, v.join("=")];
   }));
 
+  if (!parts.t || !parts.v1) {
+    return c.json({ error: "Invalid signature format" }, 401);
+  }
+
+  // Verify HMAC — sign the timestamp with the secret and compare
+  const expectedSig = createHmac("sha256", secret)
+    .update(`${parts.t}.${sourceId}`)
+    .digest("hex");
+
+  if (parts.v1 !== expectedSig) {
+    return c.json({ error: "Invalid signature" }, 401);
+  }
+
+  // Check timestamp is within 5 minutes to prevent replay attacks
+  const sigAge = Math.abs(Date.now() / 1000 - parseInt(parts.t, 10));
+  if (sigAge > 300) {
+    return c.json({ error: "Signature expired" }, 401);
+  }
+
   const body = await c.req.parseBody();
 
   // For now, create ingestions for uploaded files

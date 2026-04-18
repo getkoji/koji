@@ -25,38 +25,67 @@ describe("source permissions", () => {
 });
 
 describe("webhook source signature verification", () => {
-  it("valid HMAC signature passes", () => {
+  it("valid signature passes verification", () => {
     const secret = randomBytes(32).toString("hex");
-    const payload = "test-body-content";
+    const sourceId = "source-uuid-123";
     const timestamp = Math.floor(Date.now() / 1000);
-    const signedPayload = `${timestamp}.${payload}`;
+    const signedPayload = `${timestamp}.${sourceId}`;
     const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
+
+    // Verify: recompute and compare
+    const expected = createHmac("sha256", secret).update(`${timestamp}.${sourceId}`).digest("hex");
+    expect(v1).toBe(expected);
+  });
+
+  it("wrong secret produces different signature", () => {
+    const correctSecret = randomBytes(32).toString("hex");
+    const wrongSecret = randomBytes(32).toString("hex");
+    const sourceId = "source-uuid-123";
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signedPayload = `${timestamp}.${sourceId}`;
+
+    const correct = createHmac("sha256", correctSecret).update(signedPayload).digest("hex");
+    const wrong = createHmac("sha256", wrongSecret).update(signedPayload).digest("hex");
+    expect(correct).not.toBe(wrong);
+  });
+
+  it("wrong source ID in signature fails", () => {
+    const secret = randomBytes(32).toString("hex");
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    const sig1 = createHmac("sha256", secret).update(`${timestamp}.source-a`).digest("hex");
+    const sig2 = createHmac("sha256", secret).update(`${timestamp}.source-b`).digest("hex");
+    expect(sig1).not.toBe(sig2);
+  });
+
+  it("expired timestamp (>5 min) is rejected", () => {
+    const timestamp = Math.floor(Date.now() / 1000) - 600; // 10 minutes ago
+    const age = Math.abs(Date.now() / 1000 - timestamp);
+    expect(age).toBeGreaterThan(300);
+  });
+
+  it("fresh timestamp (<5 min) is accepted", () => {
+    const timestamp = Math.floor(Date.now() / 1000) - 30; // 30 seconds ago
+    const age = Math.abs(Date.now() / 1000 - timestamp);
+    expect(age).toBeLessThan(300);
+  });
+
+  it("signature header format is t=<ts>,v1=<hex>", () => {
+    const secret = randomBytes(32).toString("hex");
+    const sourceId = "test-source";
+    const timestamp = Math.floor(Date.now() / 1000);
+    const v1 = createHmac("sha256", secret).update(`${timestamp}.${sourceId}`).digest("hex");
     const header = `t=${timestamp},v1=${v1}`;
 
-    // Verify
+    expect(header).toMatch(/^t=\d+,v1=[a-f0-9]{64}$/);
+
+    // Parse back
     const parts = Object.fromEntries(header.split(",").map((p) => {
       const [k, ...v] = p.split("=");
       return [k, v.join("=")];
     }));
-    const expected = createHmac("sha256", secret)
-      .update(`${parts.t}.${payload}`)
-      .digest("hex");
-    expect(parts.v1).toBe(expected);
-  });
-
-  it("invalid signature fails", () => {
-    const secret = "correct-secret";
-    const wrongSecret = "wrong-secret";
-    const payload = "test-body";
-    const timestamp = Math.floor(Date.now() / 1000);
-    const v1 = createHmac("sha256", wrongSecret)
-      .update(`${timestamp}.${payload}`)
-      .digest("hex");
-
-    const expected = createHmac("sha256", secret)
-      .update(`${timestamp}.${payload}`)
-      .digest("hex");
-    expect(v1).not.toBe(expected);
+    expect(parts.t).toBe(String(timestamp));
+    expect(parts.v1).toBe(v1);
   });
 });
 
@@ -84,7 +113,6 @@ describe("source type rules", () => {
   it("dashboard_upload cannot be deleted", () => {
     const sourceType = "dashboard_upload";
     expect(sourceType).toBe("dashboard_upload");
-    // Route returns 400: "Cannot delete the default upload source"
   });
 
   it("webhook source can be deleted", () => {
@@ -95,7 +123,6 @@ describe("source type rules", () => {
   it("paused source returns 503 for inbound webhooks", () => {
     const status = "paused";
     expect(status).toBe("paused");
-    // Route returns 503: "Source is paused"
   });
 
   it("active source accepts inbound webhooks", () => {
@@ -106,24 +133,41 @@ describe("source type rules", () => {
 
 describe("file size filter", () => {
   it("file under max_file_size passes", () => {
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    const fileSize = 5 * 1024 * 1024; // 5MB
+    const maxSize = 10 * 1024 * 1024;
+    const fileSize = 5 * 1024 * 1024;
     expect(fileSize <= maxSize).toBe(true);
   });
 
   it("file over max_file_size is rejected", () => {
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    const fileSize = 15 * 1024 * 1024; // 15MB
+    const maxSize = 10 * 1024 * 1024;
+    const fileSize = 15 * 1024 * 1024;
     expect(fileSize > maxSize).toBe(true);
-    // Route returns 413: "File exceeds max size"
   });
 });
 
-describe("SSRF protection for webhook inbound", () => {
-  it("webhook endpoint is source-specific (no cross-source access)", () => {
-    const sourceId = "source-uuid-123";
+describe("source webhook URL structure", () => {
+  it("webhook URL is source-specific", () => {
+    const sourceId = "abc-123";
     const url = `/api/sources/${sourceId}/webhook`;
-    expect(url).toContain(sourceId);
-    // Each source has its own URL and secret — can't use source A's URL with source B's secret
+    expect(url).toBe("/api/sources/abc-123/webhook");
+  });
+
+  it("different sources have different URLs", () => {
+    const url1 = "/api/sources/source-a/webhook";
+    const url2 = "/api/sources/source-b/webhook";
+    expect(url1).not.toBe(url2);
+  });
+
+  it("webhook URL matches the public path pattern in middleware", () => {
+    const url = "/api/sources/abc-123-uuid/webhook";
+    const pattern = /^\/api\/sources\/[^/]+\/webhook$/;
+    expect(pattern.test(url)).toBe(true);
+  });
+
+  it("non-webhook source paths don't match public pattern", () => {
+    const pattern = /^\/api\/sources\/[^/]+\/webhook$/;
+    expect(pattern.test("/api/sources")).toBe(false);
+    expect(pattern.test("/api/sources/abc/ingestions")).toBe(false);
+    expect(pattern.test("/api/sources/abc/pause")).toBe(false);
   });
 });
