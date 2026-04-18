@@ -1,5 +1,5 @@
 {
-  "id": "af742b90-9dce-45e2-b104-df5c8d9a06dc",
+  "id": "68e5984d-f90e-4f6d-ad32-71f33fb32d99",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -878,6 +878,12 @@
         "avatar_url": {
           "name": "avatar_url",
           "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
         },

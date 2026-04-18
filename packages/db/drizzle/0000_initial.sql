@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS "users" (
 	"email" varchar(255) NOT NULL,
 	"name" varchar(255),
 	"avatar_url" varchar(2048),
+	"password_hash" varchar(255),
 	"auth_provider" varchar(32) NOT NULL,
 	"auth_provider_id" varchar(255) NOT NULL,
 	"last_login_at" timestamp with time zone,

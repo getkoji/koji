@@ -128,4 +128,6 @@ export const me = {
   get: () => api.get<UserProfile>("/api/me"),
   update: (body: { name?: string; email?: string }) =>
     api.patch<UserProfile>("/api/me", body),
+  updatePassword: (body: { current_password: string; new_password: string }) =>
+    api.post<{ ok: boolean }>("/api/me/password", body),
 };

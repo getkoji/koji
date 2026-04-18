@@ -122,30 +122,7 @@ export default function AccountPage() {
             </section>
 
             {/* Password */}
-            <section className="mb-10">
-              <h3 className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-4">
-                Password
-              </h3>
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-[12.5px] font-medium text-ink">Current password</label>
-                  <input
-                    type="password"
-                    className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[12.5px] font-medium text-ink">New password</label>
-                  <input
-                    type="password"
-                    className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
-                  />
-                </div>
-                <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">
-                  Update password
-                </button>
-              </div>
-            </section>
+            <PasswordSection />
 
             {/* Danger zone */}
             <section>
@@ -166,5 +143,95 @@ export default function AccountPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function PasswordSection() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [changingPw, setChangingPw] = useState(false);
+  const [pwSaved, setPwSaved] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  async function handlePasswordChange() {
+    setPwError(null);
+    if (newPassword.length < 8) {
+      setPwError("New password must be at least 8 characters.");
+      return;
+    }
+    setChangingPw(true);
+    setPwSaved(false);
+    try {
+      await meApi.updatePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPwSaved(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setTimeout(() => setPwSaved(false), 2000);
+    } catch (err: unknown) {
+      setPwError(err instanceof Error ? err.message : "Failed to update password.");
+    } finally {
+      setChangingPw(false);
+    }
+  }
+
+  return (
+    <section className="mb-10">
+      <h3 className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-4">
+        Password
+      </h3>
+      <div className="space-y-4">
+        <div className="space-y-1.5">
+          <label className="text-[12.5px] font-medium text-ink">Current password</label>
+          <input
+            type="password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[12.5px] font-medium text-ink">New password</label>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="At least 8 characters"
+            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+          />
+        </div>
+        {pwError && (
+          <div className="text-[12.5px] text-vermillion-2 bg-vermillion-3/50 px-3 py-2 rounded-sm">
+            {pwError}
+          </div>
+        )}
+        <button
+          onClick={handlePasswordChange}
+          disabled={changingPw || !currentPassword || !newPassword}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors disabled:opacity-50 min-w-[150px] justify-center"
+        >
+          {changingPw ? (
+            <>
+              <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Updating...
+            </>
+          ) : pwSaved ? (
+            <>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Updated
+            </>
+          ) : (
+            "Update password"
+          )}
+        </button>
+      </div>
+    </section>
   );
 }
