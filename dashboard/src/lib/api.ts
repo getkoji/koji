@@ -130,4 +130,6 @@ export const me = {
     api.patch<UserProfile>("/api/me", body),
   updatePassword: (body: { current_password: string; new_password: string }) =>
     api.post<{ ok: boolean }>("/api/me/password", body),
+  canDelete: () => api.get<{ canDelete: boolean; reason?: string }>("/api/me/can-delete"),
+  delete: () => api.delete("/api/me"),
 };

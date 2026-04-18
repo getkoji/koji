@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
+import { deleteCookie } from "hono/cookie";
 import { schema } from "@koji/db";
 import type { Env } from "../index";
 import { getPrincipal } from "../auth/middleware";
@@ -101,4 +102,85 @@ me.patch("/", async (c) => {
   }
 
   return c.json(user);
+});
+
+/**
+ * GET /api/me/can-delete — check if the user can delete their account.
+ */
+me.get("/can-delete", async (c) => {
+  const db = c.get("db");
+  const principal = getPrincipal(c);
+
+  const ownedTenants = await db
+    .select({ tenantId: schema.memberships.tenantId })
+    .from(schema.memberships)
+    .where(
+      and(
+        eq(schema.memberships.userId, principal.userId),
+        sql`'tenant-owner' = ANY(roles)`,
+      ),
+    );
+
+  for (const { tenantId } of ownedTenants) {
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.memberships)
+      .where(
+        and(
+          eq(schema.memberships.tenantId, tenantId),
+          sql`'tenant-owner' = ANY(roles)`,
+        ),
+      );
+
+    if ((result?.count ?? 0) <= 1) {
+      return c.json({
+        canDelete: false,
+        reason: "You're the only owner of this organization. Transfer ownership or invite another owner before deleting your account.",
+      });
+    }
+  }
+
+  return c.json({ canDelete: true });
+});
+
+/**
+ * DELETE /api/me — delete the current user's account.
+ */
+me.delete("/", async (c) => {
+  const db = c.get("db");
+  const principal = getPrincipal(c);
+
+  // Re-check sole owner guard
+  const ownedTenants = await db
+    .select({ tenantId: schema.memberships.tenantId })
+    .from(schema.memberships)
+    .where(
+      and(
+        eq(schema.memberships.userId, principal.userId),
+        sql`'tenant-owner' = ANY(roles)`,
+      ),
+    );
+
+  for (const { tenantId } of ownedTenants) {
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.memberships)
+      .where(
+        and(
+          eq(schema.memberships.tenantId, tenantId),
+          sql`'tenant-owner' = ANY(roles)`,
+        ),
+      );
+
+    if ((result?.count ?? 0) <= 1) {
+      return c.json({ error: "Cannot delete: you're the sole owner of an organization" }, 403);
+    }
+  }
+
+  await db.delete(schema.memberships).where(eq(schema.memberships.userId, principal.userId));
+  await db.delete(schema.sessions).where(eq(schema.sessions.userId, principal.userId));
+  await db.delete(schema.users).where(eq(schema.users.id, principal.userId));
+
+  deleteCookie(c, "koji_session", { path: "/" });
+  return c.json({ ok: true, redirect: "/login" });
 });

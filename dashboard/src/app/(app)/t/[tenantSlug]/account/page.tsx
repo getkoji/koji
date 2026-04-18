@@ -125,20 +125,7 @@ export default function AccountPage() {
             <PasswordSection />
 
             {/* Danger zone */}
-            <section>
-              <h3 className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-vermillion-2 mb-4">
-                Danger zone
-              </h3>
-              <div className="border border-vermillion-2/25 rounded-sm p-4 bg-vermillion-3/30">
-                <div className="text-[13px] font-medium text-ink mb-1">Delete account</div>
-                <p className="text-[12px] text-ink-3 mb-3">
-                  Permanently remove your account and all associated data. This cannot be undone.
-                </p>
-                <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors">
-                  Delete account
-                </button>
-              </div>
-            </section>
+            <DangerZone />
           </>
         )}
       </div>
@@ -231,6 +218,73 @@ function PasswordSection() {
             "Update password"
           )}
         </button>
+      </div>
+    </section>
+  );
+}
+
+function DangerZone() {
+  const { data: status, loading } = useApi(useCallback(() => meApi.canDelete(), []));
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const canDelete = status?.canDelete ?? false;
+  const reason = status?.reason;
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await meApi.delete();
+      window.location.href = "/login";
+    } catch {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <section>
+      <h3 className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-vermillion-2 mb-4">
+        Danger zone
+      </h3>
+      <div className="border border-vermillion-2/25 rounded-sm p-4 bg-vermillion-3/30">
+        <div className="text-[13px] font-medium text-ink mb-1">Delete account</div>
+        {loading ? (
+          <div className="h-4 w-48 bg-cream-3 rounded-sm animate-pulse mt-2" />
+        ) : canDelete ? (
+          <>
+            <p className="text-[12px] text-ink-3 mb-3">
+              Permanently remove your account and all associated data. This cannot be undone.
+            </p>
+            {!confirming ? (
+              <button
+                onClick={() => setConfirming(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors"
+              >
+                Delete account
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-50"
+                >
+                  {deleting ? "Deleting..." : "Yes, delete my account"}
+                </button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  className="px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="text-[12px] text-ink-3">
+            {reason}
+          </p>
+        )}
       </div>
     </section>
   );
