@@ -3,7 +3,7 @@ import { eq, and, sql, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { encrypt, getMasterKey, keyHint } from "../crypto/envelope";
+import { encrypt, decrypt, getMasterKey, keyHint } from "../crypto/envelope";
 
 function requireMasterKey(): string {
   const key = getMasterKey();
@@ -272,4 +272,89 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
   }
 
   return c.json({ ok: true, keyHint: hint });
+});
+
+/**
+ * POST /api/model-providers/:id/fetch-models — fetch available models
+ * from this provider using its stored (encrypted) credentials.
+ *
+ * Returns the list of models found. Does NOT auto-add to catalog —
+ * the client sends the selected models to POST /api/model-catalog/bulk.
+ */
+modelProviders.post("/:id/fetch-models", requires("endpoint:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const endpointId = c.req.param("id")!;
+  const masterKey = requireMasterKey();
+
+  const [endpoint] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        provider: schema.modelEndpoints.provider,
+        authJson: schema.modelEndpoints.authJson,
+        configJson: schema.modelEndpoints.configJson,
+      })
+      .from(schema.modelEndpoints)
+      .where(eq(schema.modelEndpoints.id, endpointId))
+      .limit(1)
+  );
+
+  if (!endpoint) {
+    return c.json({ error: "Provider not found" }, 404);
+  }
+
+  const auth = endpoint.authJson as { encrypted_key?: string } | null;
+  if (!auth?.encrypted_key) {
+    return c.json({ error: "Provider has no credentials configured" }, 400);
+  }
+
+  const credStr = decrypt(auth.encrypted_key, masterKey, tenantId);
+  let apiKey: string;
+  try {
+    const parsed = JSON.parse(credStr);
+    apiKey = parsed.api_key ?? parsed.apiKey ?? credStr;
+  } catch {
+    apiKey = credStr;
+  }
+
+  const config = endpoint.configJson as { base_url?: string } | null;
+  const provider = endpoint.provider;
+
+  let models: Array<{ id: string; name: string; context?: number }> = [];
+
+  try {
+    if (provider === "openai" || provider === "azure-openai") {
+      const baseUrl = config?.base_url ?? "https://api.openai.com/v1";
+      const resp = await fetch(`${baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) {
+        return c.json({ error: `Provider returned ${resp.status}` }, 502);
+      }
+      const data = await resp.json() as { data: Array<{ id: string }> };
+      models = data.data
+        .filter((m) => m.id.startsWith("gpt-") || m.id.startsWith("o") || m.id.includes("embed"))
+        .map((m) => ({ id: m.id, name: m.id }));
+    } else if (provider === "anthropic") {
+      models = [
+        { id: "claude-opus-4-20250514", name: "Claude Opus 4", context: 200000 },
+        { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", context: 200000 },
+        { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", context: 200000 },
+      ];
+    } else if (provider === "ollama") {
+      const baseUrl = config?.base_url ?? "http://localhost:11434";
+      const resp = await fetch(`${baseUrl}/api/tags`);
+      if (!resp.ok) {
+        return c.json({ error: `Ollama returned ${resp.status}` }, 502);
+      }
+      const data = await resp.json() as { models: Array<{ name: string }> };
+      models = (data.models ?? []).map((m) => ({ id: m.name, name: m.name }));
+    } else {
+      return c.json({ error: `Automatic model fetching is not supported for "${provider}". Add models manually in the catalog.` }, 400);
+    }
+  } catch (err: unknown) {
+    return c.json({ error: `Failed to fetch: ${err instanceof Error ? err.message : "unknown error"}` }, 502);
+  }
+
+  return c.json({ data: models, provider });
 });

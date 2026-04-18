@@ -3,7 +3,8 @@ import { eq, and, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
-import { decrypt, getMasterKey } from "../crypto/envelope";
+// No encryption needed here — credentials are passed inline for fetch
+// and never stored by this route
 
 export const modelCatalog = new Hono<Env>();
 
@@ -102,106 +103,30 @@ modelCatalog.delete("/:id", requires("endpoint:write"), async (c) => {
 });
 
 /**
- * POST /api/model-catalog/fetch — fetch available models from a
- * provider's API using stored credentials from a model endpoint.
- *
- * Currently supports OpenAI and Anthropic.
+ * POST /api/model-catalog/bulk — add multiple models at once.
+ * Used after fetching from a provider — the UI sends the selected models.
  */
-modelCatalog.post("/fetch", requires("endpoint:write"), async (c) => {
+modelCatalog.post("/bulk", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const body = await c.req.json<{ endpoint_id: string }>();
-  if (!body.endpoint_id) {
-    return c.json({ error: "endpoint_id is required" }, 400);
+  const body = await c.req.json<{
+    provider: string;
+    models: Array<{ id: string; name: string; context?: number }>;
+  }>();
+
+  if (!body.provider || !body.models?.length) {
+    return c.json({ error: "provider and models are required" }, 400);
   }
 
-  // Load the endpoint to get credentials
-  const [endpoint] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        provider: schema.modelEndpoints.provider,
-        authJson: schema.modelEndpoints.authJson,
-        configJson: schema.modelEndpoints.configJson,
-      })
-      .from(schema.modelEndpoints)
-      .where(eq(schema.modelEndpoints.id, body.endpoint_id))
-      .limit(1)
-  );
-
-  if (!endpoint) {
-    return c.json({ error: "Endpoint not found" }, 404);
-  }
-
-  const auth = endpoint.authJson as { encrypted_key?: string } | null;
-  if (!auth?.encrypted_key) {
-    return c.json({ error: "Endpoint has no credentials configured" }, 400);
-  }
-
-  const masterKey = getMasterKey();
-  if (!masterKey) {
-    return c.json({ error: "KOJI_MASTER_KEY is not set" }, 500);
-  }
-
-  const credStr = decrypt(auth.encrypted_key, masterKey, tenantId);
-  // Credentials can be a plain string (API key) or JSON object
-  let apiKey: string;
-  try {
-    const parsed = JSON.parse(credStr);
-    apiKey = parsed.api_key ?? parsed.apiKey ?? credStr;
-  } catch {
-    apiKey = credStr;
-  }
-
-  const config = endpoint.configJson as { base_url?: string } | null;
-  const provider = endpoint.provider;
-
-  let models: Array<{ id: string; name: string; context?: number }> = [];
-
-  try {
-    if (provider === "openai" || provider === "azure-openai") {
-      const baseUrl = config?.base_url ?? "https://api.openai.com/v1";
-      const resp = await fetch(`${baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (!resp.ok) {
-        return c.json({ error: `Provider returned ${resp.status}: ${await resp.text()}` }, 502);
-      }
-      const data = await resp.json() as { data: Array<{ id: string }> };
-      models = data.data
-        .filter((m) => m.id.startsWith("gpt-") || m.id.startsWith("o") || m.id.includes("embed"))
-        .map((m) => ({ id: m.id, name: m.id }));
-    } else if (provider === "anthropic") {
-      // Anthropic doesn't have a /models endpoint — use known models
-      models = [
-        { id: "claude-opus-4-20250514", name: "Claude Opus 4", context: 200000 },
-        { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", context: 200000 },
-        { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", context: 200000 },
-      ];
-    } else if (provider === "ollama") {
-      const baseUrl = config?.base_url ?? "http://localhost:11434";
-      const resp = await fetch(`${baseUrl}/api/tags`);
-      if (!resp.ok) {
-        return c.json({ error: `Ollama returned ${resp.status}` }, 502);
-      }
-      const data = await resp.json() as { models: Array<{ name: string }> };
-      models = (data.models ?? []).map((m) => ({ id: m.name, name: m.name }));
-    } else {
-      return c.json({ error: `Automatic model fetching is not supported for provider "${provider}". Add models manually.` }, 400);
-    }
-  } catch (err: unknown) {
-    return c.json({ error: `Failed to fetch models: ${err instanceof Error ? err.message : "unknown error"}` }, 502);
-  }
-
-  // Upsert into catalog
   let added = 0;
-  for (const m of models) {
+  for (const m of body.models) {
     await withRLS(db, tenantId, (tx) =>
       tx
         .insert(schema.modelCatalog)
         .values({
           tenantId,
-          provider,
+          provider: body.provider,
           modelId: m.id,
           displayName: m.name,
           contextWindow: m.context ?? null,
@@ -212,5 +137,5 @@ modelCatalog.post("/fetch", requires("endpoint:write"), async (c) => {
     added++;
   }
 
-  return c.json({ ok: true, fetched: models.length, provider });
+  return c.json({ ok: true, added });
 });
