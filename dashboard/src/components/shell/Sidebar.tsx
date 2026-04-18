@@ -7,6 +7,7 @@ import { useSettingsExtensions } from "./SettingsExtensions";
 import { useAuth } from "@/lib/auth-context";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { on, emit } from "@/lib/events";
 import {
   LayoutDashboard,
   Workflow,
@@ -88,13 +89,16 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
   // Schema picker
   const router = useRouter();
   const [schemaPickerOpen, setSchemaPickerOpen] = useState(false);
+  const [showCreateSchema, setShowCreateSchema] = useState(false);
   const schemaPickerRef = useRef<HTMLDivElement>(null);
   const currentSchemaSlug = schemaSlug ?? pathname.match(/\/schemas\/([^/]+)/)?.[1];
   const schemaSubPage = pathname.match(/\/schemas\/[^/]+\/([^/]+)/)?.[1] ?? "build";
 
-  const { data: schemasList } = useApi(
+  const { data: schemasList, refetch: refetchSchemas } = useApi(
     useCallback(() => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/schemas").then((r) => r.data), []),
   );
+
+  useEffect(() => on("schemas:updated", refetchSchemas), [refetchSchemas]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -155,60 +159,97 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
       </nav>
 
       {/* Schema section */}
-      {currentSchemaSlug && (
-        <nav className="flex flex-col gap-0.5">
-          <div className="relative" ref={schemaPickerRef}>
-            <button
-              onClick={() => setSchemaPickerOpen(!schemaPickerOpen)}
-              className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2 flex items-baseline gap-1.5 hover:text-ink-3 transition-colors w-full text-left"
-            >
-              <span>Schema</span>
-              <span className="text-cream-4 font-normal">·</span>
-              <span className="normal-case italic text-ink-3 tracking-[0.02em] text-[10.5px]">
-                {currentSchemaSlug}
-              </span>
-            </button>
+      <nav className="flex flex-col gap-0.5">
+        {(schemasList ?? []).length === 0 ? (
+          /* Empty state — no schemas exist */
+          <>
+            <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2">
+              Schema
+            </div>
+            <div className="mx-2.5 border border-border rounded-sm p-3 text-center">
+              <div className="text-[12px] text-ink-3 mb-2">No schemas yet</div>
+              <button
+                onClick={() => setShowCreateSchema(true)}
+                className="inline-flex items-center gap-1 text-[12px] text-vermillion-2 hover:text-ink transition-colors font-medium"
+              >
+                <span className="text-[14px] leading-none">+</span> Create your first
+              </button>
+            </div>
+          </>
+        ) : (
+          /* Schemas exist — show picker + nav */
+          <>
+            <div className="relative" ref={schemaPickerRef}>
+              <button
+                onClick={() => setSchemaPickerOpen(!schemaPickerOpen)}
+                className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2 flex items-baseline gap-1.5 hover:text-ink-3 transition-colors w-full text-left"
+              >
+                <span>Schema</span>
+                {currentSchemaSlug && (
+                  <>
+                    <span className="text-cream-4 font-normal">·</span>
+                    <span className="normal-case italic text-ink-3 tracking-[0.02em] text-[10.5px]">
+                      {currentSchemaSlug}
+                    </span>
+                  </>
+                )}
+              </button>
 
-            {schemaPickerOpen && (
-              <div className="absolute left-2 top-full mt-1 w-52 bg-white border border-border rounded-sm shadow-md z-20 overflow-hidden">
-                <div className="px-3 py-2 border-b border-border font-mono text-[9.5px] font-medium tracking-[0.1em] uppercase text-ink-4">
-                  Schemas
-                </div>
-                <div className="max-h-[200px] overflow-y-auto">
-                  {(schemasList ?? []).map((s) => (
+              {schemaPickerOpen && (
+                <div className="absolute left-2 top-full mt-1 w-52 bg-white border border-border rounded-sm shadow-md z-20 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border font-mono text-[9.5px] font-medium tracking-[0.1em] uppercase text-ink-4">
+                    Schemas
+                  </div>
+                  <div className="max-h-[200px] overflow-y-auto">
+                    {(schemasList ?? []).map((s) => (
+                      <button
+                        key={s.slug}
+                        onClick={() => {
+                          router.push(`${base}/schemas/${s.slug}/${schemaSubPage}`);
+                          setSchemaPickerOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-[12.5px] hover:bg-cream-2 transition-colors flex items-center justify-between ${
+                          s.slug === currentSchemaSlug ? "text-ink font-medium" : "text-ink-3"
+                        }`}
+                      >
+                        <span>{s.displayName}</span>
+                        {s.slug === currentSchemaSlug && <span className="text-vermillion-2 text-[11px]">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-t border-border">
                     <button
-                      key={s.slug}
-                      onClick={() => {
-                        router.push(`${base}/schemas/${s.slug}/${schemaSubPage}`);
-                        setSchemaPickerOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 text-[12.5px] hover:bg-cream-2 transition-colors flex items-center justify-between ${
-                        s.slug === currentSchemaSlug ? "text-ink font-medium" : "text-ink-3"
-                      }`}
+                      onClick={() => { setSchemaPickerOpen(false); setShowCreateSchema(true); }}
+                      className="w-full text-left px-3 py-2 text-[12px] text-ink-3 hover:text-ink hover:bg-cream-2 transition-colors flex items-center gap-1.5"
                     >
-                      <span>{s.displayName}</span>
-                      {s.slug === currentSchemaSlug && <span className="text-vermillion-2 text-[11px]">✓</span>}
+                      <span className="text-[14px] leading-none">+</span> New schema
                     </button>
-                  ))}
+                  </div>
                 </div>
-                <div className="border-t border-border">
-                  <Link
-                    href={`${base}/schemas/${currentSchemaSlug}/build`}
-                    onClick={() => setSchemaPickerOpen(false)}
-                    className="w-full text-left px-3 py-2 text-[12px] text-ink-3 hover:text-ink hover:bg-cream-2 transition-colors flex items-center gap-1.5 block"
-                  >
-                    <span className="text-[14px] leading-none">+</span> New schema
-                  </Link>
-                </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
 
-          <NavItem href={`${base}/schemas/${currentSchemaSlug}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
-          <NavItem href={`${base}/schemas/${currentSchemaSlug}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
-          <NavItem href={`${base}/schemas/${currentSchemaSlug}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" />
-          <NavItem href={`${base}/schemas/${currentSchemaSlug}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
-        </nav>
+            {currentSchemaSlug && (
+              <>
+                <NavItem href={`${base}/schemas/${currentSchemaSlug}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
+                <NavItem href={`${base}/schemas/${currentSchemaSlug}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
+                <NavItem href={`${base}/schemas/${currentSchemaSlug}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" />
+                <NavItem href={`${base}/schemas/${currentSchemaSlug}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
+              </>
+            )}
+          </>
+        )}
+      </nav>
+
+      {/* Create schema dialog */}
+      {showCreateSchema && (
+        <CreateSchemaDialog
+          onClose={() => setShowCreateSchema(false)}
+          onCreated={(slug) => {
+            setShowCreateSchema(false);
+            router.push(`${base}/schemas/${slug}/build`);
+          }}
+        />
       )}
 
       {/* Organization settings — admin+ only */}
@@ -242,5 +283,85 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
         );
       })()}
     </aside>
+  );
+}
+
+function CreateSchemaDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (slug: string) => void }) {
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [description, setDescription] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Auto-slug
+  if (!slugTouched && name) {
+    const auto = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").replace(/-+/g, "_");
+    if (auto !== slug) setSlug(auto);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setCreating(true);
+    try {
+      await api.post("/api/schemas", {
+        slug,
+        display_name: name,
+        description: description || undefined,
+      });
+      emit("schemas:updated");
+      onCreated(slug);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create schema");
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+        <h2 className="text-[15px] font-medium text-ink mb-1">Create schema</h2>
+        <p className="text-[12.5px] text-ink-3 mb-5">
+          Define a new extraction schema. You'll edit the YAML in build mode.
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Name</label>
+            <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Insurance Claim" autoFocus
+              data-1p-ignore autoComplete="off"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Slug</label>
+            <input required value={slug}
+              onChange={(e) => { setSlugTouched(true); setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "")); }}
+              data-1p-ignore autoComplete="off"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+            <p className="text-[11px] text-ink-4">Used in the URL and API. Lowercase, underscores.</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Description <span className="text-ink-4 font-normal">(optional)</span></label>
+            <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What does this schema extract?"
+              data-1p-ignore autoComplete="off"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+          </div>
+
+          {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
+            <button type="submit" disabled={creating}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
+              {creating ? "Creating..." : "Create schema"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
