@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react";
 
 /**
- * Data fetching hook. No mock fallback — shows loading skeleton while
- * fetching, empty state if the result is empty, error state if the
- * API is unreachable.
+ * Data fetching hook. Re-fetches when the fetcher reference changes
+ * (wrap in useCallback with deps to control when).
+ *
+ * Shows loading state on initial fetch and on refetch.
  */
 export function useApi<T>(
   fetcher: () => Promise<T>,
@@ -16,6 +17,8 @@ export function useApi<T>(
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
 
     fetcher()
       .then((result) => {
@@ -34,7 +37,7 @@ export function useApi<T>(
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetcher]);
 
   return { data, loading, error };
 }

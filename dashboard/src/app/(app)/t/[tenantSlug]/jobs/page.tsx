@@ -1,11 +1,15 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { Play } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { jobs as jobsApi, type JobRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { TableSkeleton } from "@/components/shared/TableSkeleton";
 import { EmptyState } from "@/components/shared/EmptyState";
+
+const FILTERS = ["all", "running", "complete", "failed", "canceled"] as const;
+type Filter = (typeof FILTERS)[number];
 
 function formatRow(j: JobRow) {
   return {
@@ -19,7 +23,10 @@ function formatRow(j: JobRow) {
 }
 
 export default function JobsPage() {
-  const { data: rawJobs, loading, error } = useApi(() => jobsApi.list());
+  const [filter, setFilter] = useState<Filter>("all");
+  const { data: rawJobs, loading, error } = useApi(
+    useCallback(() => jobsApi.list(filter === "all" ? undefined : { status: filter }), [filter]),
+  );
   const rows = rawJobs?.map(formatRow) ?? [];
 
   return (
@@ -39,8 +46,16 @@ export default function JobsPage() {
       }
       filterBar={
         <div className="flex items-center gap-2">
-          {["All", "Running", "Complete", "Failed"].map(s => (
-            <button key={s} className={`font-mono text-[10px] px-2.5 py-1 rounded-sm transition-colors ${s === "All" ? "bg-ink text-cream" : "text-ink-3 hover:bg-cream-2 hover:text-ink"}`}>{s}</button>
+          {FILTERS.map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`font-mono text-[10px] px-2.5 py-1 rounded-sm transition-colors capitalize ${
+                f === filter ? "bg-ink text-cream" : "text-ink-3 hover:bg-cream-2 hover:text-ink"
+              }`}
+            >
+              {f}
+            </button>
           ))}
           <span className="flex-1" />
           {!loading && <span className="font-mono text-[10px] text-ink-4">{rows.length} total</span>}
@@ -57,13 +72,23 @@ export default function JobsPage() {
       ) : rows.length === 0 ? (
         <EmptyState
           icon={<Play className="w-8 h-8" />}
-          title="No jobs yet"
-          description="Run a pipeline to process documents. Jobs will appear here as they execute."
-          action={
+          title={filter === "all" ? "No jobs yet" : `No ${filter} jobs`}
+          description={filter === "all"
+            ? "Run a pipeline to process documents. Jobs will appear here as they execute."
+            : `No jobs with status "${filter}" right now.`
+          }
+          action={filter === "all" ? (
             <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
               Run pipeline
             </button>
-          }
+          ) : (
+            <button
+              onClick={() => setFilter("all")}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors"
+            >
+              Show all jobs
+            </button>
+          )}
         />
       ) : (
         <table className="w-full">
