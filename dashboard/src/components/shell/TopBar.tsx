@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
-import { Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
+import { Bell, User, Settings, LogOut, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
 import { me as meApi, projectsApi, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -187,11 +187,6 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                   icon={<Settings className="w-3.5 h-3.5" />}
                   label="Settings"
                   href={tenantSlug ? `/t/${tenantSlug}/settings` : "/settings"}
-                />
-                <UserMenuItem
-                  icon={<Moon className="w-3.5 h-3.5" />}
-                  label="Appearance"
-                  onClick={() => {/* TODO: theme toggle */}}
                 />
               </div>
 
