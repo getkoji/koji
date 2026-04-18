@@ -27,6 +27,7 @@ import {
   Users,
   Info,
   BookOpen,
+  ChevronsUpDown,
 } from "lucide-react";
 
 interface NavItemProps {
@@ -230,17 +231,18 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
             <div className="relative" ref={schemaPickerRef}>
               <button
                 onClick={() => setSchemaPickerOpen(!schemaPickerOpen)}
-                className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 pb-2 flex items-baseline gap-1.5 hover:text-ink-3 transition-colors w-full text-left"
+                className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2.5 py-1.5 mb-1 -mx-0.5 rounded-sm flex items-center gap-1.5 hover:bg-cream-2 hover:text-ink-2 transition-colors w-[calc(100%+4px)] text-left group"
               >
                 <span>Schema</span>
                 {currentSchemaSlug && (
                   <>
                     <span className="text-cream-4 font-normal">·</span>
-                    <span className="normal-case italic text-ink-3 tracking-[0.02em] text-[10.5px]">
+                    <span className="normal-case italic text-ink-3 group-hover:text-ink tracking-[0.02em] text-[10.5px] transition-colors">
                       {currentSchemaSlug}
                     </span>
                   </>
                 )}
+                <ChevronsUpDown className="w-3 h-3 ml-auto text-ink-4 group-hover:text-ink-3 transition-colors shrink-0" />
               </button>
 
               {schemaPickerOpen && (
