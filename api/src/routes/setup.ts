@@ -73,10 +73,15 @@ setup.post("/", async (c) => {
     authProviderId: `local-${body.email}`,
   }).returning();
 
-  // Create default tenant
+  // Create tenant with a slug derived from the workspace name
   const tenantName = body.workspace_name || "My Workspace";
+  const slug = tenantName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    || "workspace";
   const [tenant] = await db.insert(schema.tenants).values({
-    slug: "default",
+    slug,
     displayName: tenantName,
     plan: "pro",
   }).returning();

@@ -2,25 +2,29 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, tenants as tenantsApi } from "@/lib/api";
 
 export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    api
-      .get<{ needed: boolean }>("/api/setup/status")
-      .then((status) => {
+    async function resolve() {
+      try {
+        const status = await api.get<{ needed: boolean }>("/api/setup/status");
         if (status.needed) {
           router.replace("/setup");
-        } else {
-          router.replace("/t/default");
+          return;
         }
-      })
-      .catch(() => {
-        // API unreachable — go to setup (it will show its own error)
-        router.replace("/t/default");
-      });
+
+        // Redirect to the user's first tenant
+        const tenantList = await tenantsApi.list();
+        const slug = tenantList[0]?.slug ?? "default";
+        router.replace(`/t/${slug}`);
+      } catch {
+        router.replace("/setup");
+      }
+    }
+    resolve();
   }, [router]);
 
   return (
