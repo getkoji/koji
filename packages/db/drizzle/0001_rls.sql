@@ -28,6 +28,12 @@ CREATE POLICY tenants_self_isolation ON tenants FOR ALL
 
 -- Tenant-scoped tables: every row carries a `tenant_id` column and the
 -- policy filters on it directly.
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects FORCE ROW LEVEL SECURITY;
+CREATE POLICY projects_tenant_isolation ON projects FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE api_keys FORCE ROW LEVEL SECURITY;
 CREATE POLICY api_keys_tenant_isolation ON api_keys FOR ALL

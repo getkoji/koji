@@ -58,6 +58,29 @@ export const users = pgTable(
   }),
 );
 
+export const projects = pgTable(
+  "projects",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 64 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    description: text("description"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    tenantSlugIdx: uniqueIndex("projects_tenant_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    tenantIdx: index("projects_tenant_idx").on(t.tenantId).where(sql`deleted_at IS NULL`),
+  }),
+);
+
 export const memberships = pgTable(
   "memberships",
   {

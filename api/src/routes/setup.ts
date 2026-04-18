@@ -93,12 +93,21 @@ setup.post("/", async (c) => {
     roles: ["tenant-owner", "project-admin", "schema-write", "pipeline-write", "review-write", "endpoint-write"],
   });
 
+  // Create a default project within the tenant
+  const [project] = await db.insert(schema.projects).values({
+    tenantId: tenant!.id,
+    slug: body.workspace_slug,
+    displayName: tenantName,
+    createdBy: user!.id,
+  }).returning();
+
   // Clear cached IDs so /api/me and other routes pick up the new user/tenant
   clearContextCache();
 
   return c.json({
     user: { id: user!.id, name: user!.name, email: user!.email },
     tenant: { id: tenant!.id, slug: tenant!.slug, displayName: tenant!.displayName },
-    redirect: `/t/${tenant!.slug}`,
+    project: { id: project!.id, slug: project!.slug, displayName: project!.displayName },
+    redirect: `/t/${project!.slug}`,
   }, 201);
 });

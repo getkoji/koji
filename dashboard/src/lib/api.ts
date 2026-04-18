@@ -98,16 +98,19 @@ export const jobs = {
   get: (slug: string) => api.get<JobRow>(`/api/jobs/${slug}`),
 };
 
-export interface TenantRow {
+export interface ProjectRow {
   id: string;
   slug: string;
   displayName: string;
+  description: string | null;
+  createdAt: string;
 }
 
-export const tenants = {
-  list: () => api.get<{ data: TenantRow[] }>("/api/tenants").then((r) => r.data),
-  update: (slug: string, body: { display_name?: string }) =>
-    api.patch<TenantRow>(`/api/tenants/${slug}`, body),
+export const projectsApi = {
+  list: () => api.get<{ data: ProjectRow[] }>("/api/projects").then((r) => r.data),
+  get: (slug: string) => api.get<ProjectRow>(`/api/projects/${slug}`),
+  create: (body: { slug: string; display_name: string; description?: string }) =>
+    api.post<ProjectRow>("/api/projects", body),
 };
 
 export interface UserProfile {

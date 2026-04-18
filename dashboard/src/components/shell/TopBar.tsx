@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
-import { me as meApi, tenants as tenantsApi, type TenantRow } from "@/lib/api";
+import { me as meApi, projectsApi, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) {
@@ -14,11 +14,11 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
   const router = useRouter();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const tenantMenuRef = useRef<HTMLDivElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
   const { data: user, loading: userLoading } = useApi(useCallback(() => meApi.get(), []));
-  const { data: tenantList, loading: tenantsLoading } = useApi(useCallback(() => tenantsApi.list(), []));
+  const { data: projectList, loading: projectsLoading } = useApi(useCallback(() => projectsApi.list(), []));
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "";
@@ -26,19 +26,19 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
 
   // Close dropdowns on click outside or escape
   useEffect(() => {
-    if (!userMenuOpen && !tenantMenuOpen) return;
+    if (!userMenuOpen && !projectMenuOpen) return;
     function handleClick(e: MouseEvent) {
       if (userMenuOpen && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setUserMenuOpen(false);
       }
-      if (tenantMenuOpen && tenantMenuRef.current && !tenantMenuRef.current.contains(e.target as Node)) {
-        setTenantMenuOpen(false);
+      if (projectMenuOpen && projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
       }
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         setUserMenuOpen(false);
-        setTenantMenuOpen(false);
+        setProjectMenuOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -47,10 +47,10 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
     };
-  }, [userMenuOpen, tenantMenuOpen]);
+  }, [userMenuOpen, projectMenuOpen]);
 
-  const currentTenant = tenantList?.find((t) => t.slug === tenantSlug);
-  const currentTenantName = currentTenant?.displayName;
+  const currentProject = projectList?.find((t) => t.slug === tenantSlug);
+  const currentProjectName = currentProject?.displayName;
 
   return (
     <header
@@ -69,31 +69,31 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
         {tenantSlug && (
           <>
             <span className="text-cream-4 text-[22px] font-light px-1">/</span>
-            <div className="relative" ref={tenantMenuRef}>
+            <div className="relative" ref={projectMenuRef}>
               <button
-                onClick={() => !tenantsLoading && setTenantMenuOpen(!tenantMenuOpen)}
-                className={`inline-flex items-center gap-1.5 font-mono text-xs text-ink-2 px-2 py-1.5 rounded-sm transition-colors ${tenantMenuOpen ? "bg-cream-2" : "hover:bg-cream-2"}`}
+                onClick={() => !projectsLoading && setProjectMenuOpen(!projectMenuOpen)}
+                className={`inline-flex items-center gap-1.5 font-mono text-xs text-ink-2 px-2 py-1.5 rounded-sm transition-colors ${projectMenuOpen ? "bg-cream-2" : "hover:bg-cream-2"}`}
                 type="button"
               >
-                {tenantsLoading ? (
+                {projectsLoading ? (
                   <span className="inline-block w-20 h-3 bg-cream-3 rounded-sm animate-pulse" />
                 ) : (
-                  <span>{currentTenantName}</span>
+                  <span>{currentProjectName}</span>
                 )}
                 <ChevronsUpDown className="w-3 h-3 text-ink-4" />
               </button>
 
-              {tenantMenuOpen && (
+              {projectMenuOpen && (
                 <div className="absolute left-0 top-[34px] w-[240px] bg-white border border-border-strong rounded-sm shadow-lg overflow-hidden z-50">
                   <div className="px-3 py-2 border-b border-border">
-                    <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Workspaces</span>
+                    <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Projects</span>
                   </div>
                   <div className="py-1">
-                    {tenantList?.map((t) => (
+                    {projectList?.map((t) => (
                       <button
                         key={t.slug}
                         onClick={() => {
-                          setTenantMenuOpen(false);
+                          setProjectMenuOpen(false);
                           router.push(`/t/${t.slug}`);
                         }}
                         className={`flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] transition-colors ${
@@ -117,7 +117,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                   <div className="border-t border-border py-1">
                     <button className="flex items-center gap-2.5 w-full px-3 py-2 text-[12.5px] text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors">
                       <Plus className="w-3.5 h-3.5 text-ink-4" />
-                      <span>New workspace</span>
+                      <span>New project</span>
                     </button>
                   </div>
                 </div>

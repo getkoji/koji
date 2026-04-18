@@ -13,6 +13,7 @@ import { extract } from "./routes/extract";
 import { me } from "./routes/me";
 import { setup } from "./routes/setup";
 import { tenants } from "./routes/tenants";
+import { projects } from "./routes/projects";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
@@ -41,6 +42,7 @@ app.route("/api", extract);
 app.route("/api/me", me);
 app.route("/api/setup", setup);
 app.route("/api/tenants", tenants);
+app.route("/api/projects", projects);
 
 // Start
 async function start() {
