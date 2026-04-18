@@ -1,14 +1,14 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
-import type { Env } from "../index";
-import { getTenantId, getUserId } from "../context";
+import type { Env } from "../env";
+import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 
 export const projects = new Hono<Env>();
 
-projects.get("/", async (c) => {
+projects.get("/", requires("tenant:read"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
+  const tenantId = getTenantId(c);
 
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
@@ -25,10 +25,10 @@ projects.get("/", async (c) => {
   return c.json({ data: rows });
 });
 
-projects.get("/:slug", async (c) => {
+projects.get("/:slug", requires("tenant:read"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
-  const slug = c.req.param("slug");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
 
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
@@ -43,10 +43,10 @@ projects.get("/:slug", async (c) => {
   return c.json(rows[0]);
 });
 
-projects.post("/", async (c) => {
+projects.post("/", requires("tenant:admin"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
-  const userId = await getUserId(db);
+  const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
   const body = await c.req.json<{
     slug: string;
     display_name: string;
@@ -60,7 +60,6 @@ projects.post("/", async (c) => {
     return c.json({ error: "Display name is required" }, 400);
   }
 
-  // Check for slug collision within this tenant
   const existing = await withRLS(db, tenantId, (tx) =>
     tx
       .select({ id: schema.projects.id })
@@ -80,17 +79,17 @@ projects.post("/", async (c) => {
         slug: body.slug,
         displayName: body.display_name,
         description: body.description ?? null,
-        createdBy: userId,
+        createdBy: principal.userId,
       })
       .returning()
   );
   return c.json(rows[0], 201);
 });
 
-projects.patch("/:slug", async (c) => {
+projects.patch("/:slug", requires("tenant:admin"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
-  const slug = c.req.param("slug");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
   const body = await c.req.json<{ display_name?: string; description?: string }>();
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -110,10 +109,10 @@ projects.patch("/:slug", async (c) => {
   return c.json(rows[0]);
 });
 
-projects.delete("/:slug", async (c) => {
+projects.delete("/:slug", requires("tenant:admin"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
-  const slug = c.req.param("slug");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
 
   await withRLS(db, tenantId, (tx) =>
     tx

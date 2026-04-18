@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
+import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -116,6 +117,7 @@ export default function SetupPage() {
             <input
               required
               type="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="jane@example.com"
@@ -125,24 +127,24 @@ export default function SetupPage() {
 
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Password</label>
-            <input
+            <PasswordInput
               required
-              type="password"
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="At least 8 characters"
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
             />
           </div>
 
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Confirm password</label>
-            <input
+            <PasswordInput
               required
-              type="password"
+              autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
             />
           </div>
 

@@ -445,6 +445,85 @@ def bench(
         raise SystemExit(1)
 
 
+@app.command(name="db:reset")
+def db_reset(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Drop and recreate the database, then re-apply the schema."""
+    import subprocess as sp
+
+    if not force:
+        confirm = typer.confirm("This will destroy all data. Continue?")
+        if not confirm:
+            raise SystemExit(0)
+
+    db_url = _get_db_url()
+    if not db_url:
+        console.print("[red]DATABASE_URL not set. Export it or add it to .env.[/red]")
+        raise SystemExit(1)
+
+    # Parse connection info from DATABASE_URL
+    # Format: postgres://user:pass@host:port/dbname
+    import re
+    m = re.match(r"postgres(?:ql)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", db_url)
+    if not m:
+        console.print(f"[red]Could not parse DATABASE_URL: {db_url}[/red]")
+        raise SystemExit(1)
+
+    user, password, host, port, dbname = m.groups()
+    env = {**__import__("os").environ, "PGPASSWORD": password}
+    psql = ["psql", "-h", host, "-p", port, "-U", user]
+
+    console.print(f"  Dropping [bold]{dbname}[/bold]...")
+    sp.run(
+        [*psql, "-d", "postgres", "-c", f'DROP DATABASE IF EXISTS "{dbname}";'],
+        env=env, capture_output=True,
+    )
+
+    console.print(f"  Creating [bold]{dbname}[/bold]...")
+    result = sp.run(
+        [*psql, "-d", "postgres", "-c", f'CREATE DATABASE "{dbname}";'],
+        env=env, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Failed to create database: {result.stderr.strip()}[/red]")
+        raise SystemExit(1)
+
+    console.print("  Pushing schema...")
+    # Find the db package relative to the CLI
+    db_pkg = Path(__file__).resolve().parent.parent / "packages" / "db"
+    if not db_pkg.exists():
+        console.print("[yellow]Could not find packages/db — skipping schema push.[/yellow]")
+        console.print("[dim]Run drizzle-kit push manually.[/dim]")
+    else:
+        result = sp.run(
+            ["npx", "drizzle-kit", "push", "--force"],
+            cwd=str(db_pkg), env=env, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Schema push failed: {result.stderr.strip()}[/red]")
+            raise SystemExit(1)
+
+    console.print("\n[green]✓[/green] Database reset. Visit /setup to create a new account.\n")
+
+
+def _get_db_url() -> str | None:
+    """Read DATABASE_URL from environment or .env file."""
+    import os
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+
+    # Try loading from .env at repo root
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("DATABASE_URL="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
+
 @app.command()
 def version():
     """Show Koji version."""

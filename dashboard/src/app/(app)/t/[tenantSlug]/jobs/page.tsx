@@ -67,7 +67,7 @@ export default function JobsPage() {
       ) : error ? (
         <EmptyState
           title="Cannot reach API"
-          description={`${error}. Start the server with: pnpm --filter @koji/api dev`}
+          description={`${error.message}. Start the server with: pnpm --filter @koji/api dev`}
         />
       ) : rows.length === 0 ? (
         <EmptyState

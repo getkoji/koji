@@ -1,14 +1,16 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
-import type { Env } from "../index";
-import { getTenantId, getUserId } from "../context";
+import type { Env } from "../env";
+import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 
 export const schemas = new Hono<Env>();
 
-schemas.get("/", async (c) => {
+schemas.get("/", requires("schema:read"), async (c) => {
   const db = c.get("db");
-  const rows = await withRLS(db, await getTenantId(db), (tx) =>
+  const tenantId = getTenantId(c);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
         slug: schema.schemas.slug,
@@ -22,10 +24,12 @@ schemas.get("/", async (c) => {
   return c.json({ data: rows });
 });
 
-schemas.get("/:slug", async (c) => {
+schemas.get("/:slug", requires("schema:read"), async (c) => {
   const db = c.get("db");
-  const slug = c.req.param("slug");
-  const rows = await withRLS(db, await getTenantId(db), (tx) =>
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .select()
       .from(schema.schemas)
@@ -38,10 +42,10 @@ schemas.get("/:slug", async (c) => {
   return c.json(rows[0]);
 });
 
-schemas.post("/", async (c) => {
+schemas.post("/", requires("schema:write"), async (c) => {
   const db = c.get("db");
-  const tenantId = await getTenantId(db);
-  const userId = await getUserId(db);
+  const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
   const body = await c.req.json<{
     slug: string;
     display_name: string;
@@ -58,16 +62,17 @@ schemas.post("/", async (c) => {
         displayName: body.display_name,
         description: body.description ?? null,
         draftYaml: body.initial_yaml ?? null,
-        createdBy: userId,
+        createdBy: principal.userId,
       })
       .returning()
   );
   return c.json(rows[0], 201);
 });
 
-schemas.patch("/:slug", async (c) => {
+schemas.patch("/:slug", requires("schema:write"), async (c) => {
   const db = c.get("db");
-  const slug = c.req.param("slug");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
   const body = await c.req.json<{
     display_name?: string;
     description?: string;
@@ -82,7 +87,7 @@ schemas.patch("/:slug", async (c) => {
     updates.draftUpdatedAt = new Date();
   }
 
-  const rows = await withRLS(db, await getTenantId(db), (tx) =>
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.schemas)
       .set(updates)
@@ -95,11 +100,12 @@ schemas.patch("/:slug", async (c) => {
   return c.json(rows[0]);
 });
 
-schemas.delete("/:slug", async (c) => {
+schemas.delete("/:slug", requires("schema:write"), async (c) => {
   const db = c.get("db");
-  const slug = c.req.param("slug");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
 
-  await withRLS(db, await getTenantId(db), (tx) =>
+  await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.schemas)
       .set({ deletedAt: new Date() })

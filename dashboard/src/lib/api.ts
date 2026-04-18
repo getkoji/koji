@@ -20,15 +20,34 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Extract tenant slug from the current browser URL path (/t/<slug>/...).
+ * Returns undefined for non-tenant routes (login, setup, etc.).
+ */
+function getCurrentTenantSlug(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const match = window.location.pathname.match(/^\/t\/([^/]+)/);
+  return match?.[1];
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const tenantSlug = getCurrentTenantSlug();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+
+  // Add tenant header for tenant-scoped API calls
+  if (tenantSlug) {
+    headers["x-koji-tenant"] = tenantSlug;
+  }
+
   const res = await fetch(url, {
     ...options,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers,
   });
 
   if (!res.ok) {

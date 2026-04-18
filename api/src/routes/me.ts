@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, sql } from "drizzle-orm";
 import { deleteCookie } from "hono/cookie";
 import { schema } from "@koji/db";
-import type { Env } from "../index";
+import type { Env } from "../env";
 import { getPrincipal } from "../auth/middleware";
 
 export const me = new Hono<Env>();
@@ -33,6 +33,54 @@ me.get("/", async (c) => {
   }
 
   return c.json(user);
+});
+
+/**
+ * GET /api/me/grants?tenant=<slug> — returns the user's roles and
+ * resolved permissions for a specific tenant. Used by the dashboard
+ * to gate UI elements.
+ */
+me.get("/grants", async (c) => {
+  const db = c.get("db");
+  const principal = getPrincipal(c);
+  const tenantSlug = c.req.query("tenant");
+
+  if (!tenantSlug) {
+    return c.json({ error: "tenant query param is required" }, 400);
+  }
+
+  const [tenant] = await db
+    .select({ id: schema.tenants.id })
+    .from(schema.tenants)
+    .where(eq(schema.tenants.slug, tenantSlug))
+    .limit(1);
+
+  if (!tenant) {
+    return c.json({ error: "Tenant not found" }, 404);
+  }
+
+  const [membership] = await db
+    .select({ roles: schema.memberships.roles })
+    .from(schema.memberships)
+    .where(
+      and(
+        eq(schema.memberships.userId, principal.userId),
+        eq(schema.memberships.tenantId, tenant.id),
+      ),
+    )
+    .limit(1);
+
+  if (!membership) {
+    return c.json({ error: "Not a member of this workspace" }, 403);
+  }
+
+  const { resolvePermissions } = await import("../auth/roles");
+  const permissions = resolvePermissions(membership.roles);
+
+  return c.json({
+    roles: membership.roles,
+    permissions: [...permissions],
+  });
 });
 
 me.post("/password", async (c) => {
@@ -117,7 +165,7 @@ me.get("/can-delete", async (c) => {
     .where(
       and(
         eq(schema.memberships.userId, principal.userId),
-        sql`'tenant-owner' = ANY(roles)`,
+        sql`'owner' = ANY(roles)`,
       ),
     );
 
@@ -128,7 +176,7 @@ me.get("/can-delete", async (c) => {
       .where(
         and(
           eq(schema.memberships.tenantId, tenantId),
-          sql`'tenant-owner' = ANY(roles)`,
+          sql`'owner' = ANY(roles)`,
         ),
       );
 
@@ -157,7 +205,7 @@ me.delete("/", async (c) => {
     .where(
       and(
         eq(schema.memberships.userId, principal.userId),
-        sql`'tenant-owner' = ANY(roles)`,
+        sql`'owner' = ANY(roles)`,
       ),
     );
 
@@ -168,7 +216,7 @@ me.delete("/", async (c) => {
       .where(
         and(
           eq(schema.memberships.tenantId, tenantId),
-          sql`'tenant-owner' = ANY(roles)`,
+          sql`'owner' = ANY(roles)`,
         ),
       );
 

@@ -1,16 +1,27 @@
-export default async function OverviewPage({
-  params,
-}: {
-  params: Promise<{ tenantSlug: string }>;
-}) {
-  const { tenantSlug } = await params;
+"use client";
 
-  // Convert slug to display name: "acme-invoices" → "Acme Invoices"
-  // In production this comes from the tenants table; for now, derive from slug
-  const displayName = tenantSlug
-    .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+import { useCallback } from "react";
+import { usePathname } from "next/navigation";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
+
+interface TenantInfo {
+  id: string;
+  slug: string;
+  displayName: string;
+  roles: string[];
+}
+
+export default function OverviewPage() {
+  const pathname = usePathname();
+  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
+
+  const { data: tenants } = useApi(
+    useCallback(() => api.get<{ data: TenantInfo[] }>("/api/tenants").then((r) => r.data), []),
+  );
+
+  const tenant = tenants?.find((t) => t.slug === tenantSlug);
+  const displayName = tenant?.displayName ?? tenantSlug;
 
   return (
     <div className="px-10 py-8 pb-16">

@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeader, SettingsTable, SettingsRow, Badge, Meta } from "../_components";
+import { SectionHeader, SettingsTable, SettingsRow, Badge, Meta } from "@/components/shared/SettingsComponents";
 
 const WEBHOOKS = [
   { url: "https://hooks.slack.com/triggers/T02.../A06...", events: "job.complete, job.failed", status: "active" },

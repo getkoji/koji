@@ -1,11 +1,14 @@
 "use client";
 
-export function SectionHeader({ title, action }: { title: string; action?: { label: string } }) {
+export function SectionHeader({ title, action }: { title: string; action?: { label: string; onClick?: () => void } }) {
   return (
     <div className="flex items-center justify-between mb-3">
       <span className="font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase text-ink-4">{title}</span>
       {action && (
-        <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">
+        <button
+          onClick={action.onClick}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors"
+        >
           {action.label}
         </button>
       )}

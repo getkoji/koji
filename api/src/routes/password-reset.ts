@@ -5,13 +5,25 @@ import { schema } from "@koji/db";
 import { sendEmail } from "../email";
 import { hashPassword } from "../auth/password";
 import { passwordResetEmail } from "../email-templates";
-import type { Env } from "../index";
+import { createRateLimiter } from "../rate-limit";
+import type { Env } from "../env";
 
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
 
+// 5 forgot-password requests per IP per 15 minutes
+const forgotLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 5 });
+// 10 reset attempts per IP per 15 minutes
+const resetLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function getClientIp(c: { req: { header: (name: string) => string | undefined } }): string {
+  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? c.req.header("x-real-ip")
+    ?? "unknown";
 }
 
 export const passwordReset = new Hono<Env>();
@@ -23,6 +35,10 @@ export const passwordReset = new Hono<Env>();
  * enumeration). If the user exists, sends a reset link via email.
  */
 passwordReset.post("/forgot-password", async (c) => {
+  if (!forgotLimiter.check(getClientIp(c))) {
+    return c.json({ error: "Too many requests. Try again in a few minutes." }, 429);
+  }
+
   const db = c.get("db");
   const body = await c.req.json<{ email: string }>();
 
@@ -66,6 +82,10 @@ passwordReset.post("/forgot-password", async (c) => {
  * POST /api/auth/reset-password — set a new password using a reset token.
  */
 passwordReset.post("/reset-password", async (c) => {
+  if (!resetLimiter.check(getClientIp(c))) {
+    return c.json({ error: "Too many attempts. Try again in a few minutes." }, 429);
+  }
+
   const db = c.get("db");
   const body = await c.req.json<{ token: string; new_password: string }>();
 

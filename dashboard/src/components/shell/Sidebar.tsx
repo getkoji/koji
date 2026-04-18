@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useSettingsExtensions } from "./SettingsExtensions";
+import { useAuth } from "@/lib/auth-context";
 import {
   LayoutDashboard,
   Workflow,
@@ -16,11 +17,12 @@ import {
   Target,
   Settings,
   Sparkles,
-  Users,
   Key,
   Radio,
   Webhook,
-
+  Users,
+  CreditCard,
+  Info,
 } from "lucide-react";
 
 interface NavItemProps {
@@ -68,13 +70,18 @@ const ICON_SIZE = "w-[15px] h-[15px]";
 
 export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug: string; schemaSlug?: string }) {
   const pathname = usePathname();
-  // Derive tenant slug from the URL as the primary source, prop as fallback.
-  // This avoids hydration mismatches when Next.js re-renders the client component
-  // before the async server layout resolves params on client-side navigation.
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? tenantSlugProp;
   const base = `/t/${tenantSlug}`;
-  const inSettings = pathname.startsWith(`${base}/settings`);
+  const { hasPermission } = useAuth();
   const settingsExtensions = useSettingsExtensions();
+
+  // Derive current project slug from URL if on a project settings page
+  // For now, use the tenant slug as the default project (setup creates project with same slug)
+  const projectSlug = pathname.match(/\/projects\/([^/]+)/)?.[1] ?? tenantSlug;
+  const projectSettingsBase = `${base}/projects/${projectSlug}/settings`;
+  const inProjectSettings = pathname.startsWith(projectSettingsBase);
+
+  const isAdmin = hasPermission("tenant:admin");
 
   return (
     <aside className="border-r border-border px-3.5 pt-5 pb-8 bg-cream flex flex-col gap-5 sticky top-[60px] h-[calc(100vh-60px)] overflow-y-auto w-[256px] shrink-0">
@@ -97,10 +104,31 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
           Project
         </div>
         <NavItem href={base} icon={<LayoutDashboard className={ICON_SIZE} />} label="Overview" exact />
-        <NavItem href={`${base}/pipelines`} icon={<Workflow className={ICON_SIZE} />} label="Pipelines" count={5} />
-        <NavItem href={`${base}/jobs`} icon={<Play className={ICON_SIZE} />} label="Jobs" count={238} />
-        <NavItem href={`${base}/review`} icon={<MessageSquare className={ICON_SIZE} />} label="Review" count={8} />
-        <NavItem href={`${base}/sources`} icon={<ArrowDownToLine className={ICON_SIZE} />} label="Sources" count={5} />
+        <NavItem href={`${base}/pipelines`} icon={<Workflow className={ICON_SIZE} />} label="Pipelines" />
+        <NavItem href={`${base}/jobs`} icon={<Play className={ICON_SIZE} />} label="Jobs" />
+        <NavItem href={`${base}/review`} icon={<MessageSquare className={ICON_SIZE} />} label="Review" />
+        <NavItem href={`${base}/sources`} icon={<ArrowDownToLine className={ICON_SIZE} />} label="Sources" />
+
+        {/* Project settings — expands when active */}
+        <NavItem
+          href={projectSettingsBase}
+          icon={<Settings className={ICON_SIZE} />}
+          label="Settings"
+          exact={!inProjectSettings}
+        />
+        <div
+          className="ml-4 pl-2 border-l border-border flex flex-col gap-0.5 overflow-hidden transition-all duration-200 ease-out"
+          style={{
+            maxHeight: inProjectSettings ? "200px" : "0px",
+            opacity: inProjectSettings ? 1 : 0,
+            marginTop: inProjectSettings ? "2px" : "0px",
+          }}
+        >
+          <NavItem href={`${projectSettingsBase}/general`} icon={<Info className={ICON_SIZE} />} label="General" />
+          <NavItem href={`${projectSettingsBase}/api-keys`} icon={<Key className={ICON_SIZE} />} label="API Keys" />
+          <NavItem href={`${projectSettingsBase}/endpoints`} icon={<Radio className={ICON_SIZE} />} label="Endpoints" />
+          <NavItem href={`${projectSettingsBase}/webhooks`} icon={<Webhook className={ICON_SIZE} />} label="Webhooks" />
+        </div>
       </nav>
 
       {/* Schema section */}
@@ -115,31 +143,40 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug }: { tenantSlug
         </div>
         <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" />
         <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" />
-        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" count={38} />
+        <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" />
         <NavItem href={`${base}/schemas/${schemaSlug ?? "invoice"}/benchmarks`} icon={<Target className={ICON_SIZE} />} label="Benchmarks" />
       </nav>
 
-      {/* Settings — expands to show sub-items when active */}
-      <div className="mt-auto pt-4 border-t border-border flex flex-col gap-0.5">
-        <NavItem href={`${base}/settings`} icon={<Settings className={ICON_SIZE} />} label="Settings" exact={!inSettings} />
-        <div
-          className="ml-4 pl-2 border-l border-border flex flex-col gap-0.5 overflow-hidden transition-all duration-200 ease-out"
-          style={{
-            maxHeight: inSettings ? "200px" : "0px",
-            opacity: inSettings ? 1 : 0,
-            marginTop: inSettings ? "2px" : "0px",
-          }}
-        >
-          <NavItem href={`${base}/settings/members`} icon={<Users className={ICON_SIZE} />} label="Members" />
-          <NavItem href={`${base}/settings/api-keys`} icon={<Key className={ICON_SIZE} />} label="API Keys" />
-          <NavItem href={`${base}/settings/endpoints`} icon={<Radio className={ICON_SIZE} />} label="Endpoints" />
-          <NavItem href={`${base}/settings/webhooks`} icon={<Webhook className={ICON_SIZE} />} label="Webhooks" />
-          {/* Commercial extensions injected by platform/ via SettingsExtensionsProvider */}
-          {settingsExtensions.navItems.map((item) => (
-            <NavItem key={item.href} href={`${base}${item.href}`} icon={item.icon} label={item.label} />
-          ))}
-        </div>
-      </div>
+      {/* Organization settings — admin+ only */}
+      {isAdmin && (() => {
+        const inOrgSettings = pathname.startsWith(`${base}/settings`);
+        return (
+          <div className="mt-auto pt-4 border-t border-border flex flex-col gap-0.5">
+            <NavItem
+              href={`${base}/settings`}
+              icon={<Settings className={ICON_SIZE} />}
+              label="Organization"
+              exact={!inOrgSettings}
+            />
+            <div
+              className="ml-4 pl-2 border-l border-border flex flex-col gap-0.5 overflow-hidden transition-all duration-200 ease-out"
+              style={{
+                maxHeight: inOrgSettings ? "200px" : "0px",
+                opacity: inOrgSettings ? 1 : 0,
+                marginTop: inOrgSettings ? "2px" : "0px",
+              }}
+            >
+              <NavItem href={`${base}/settings/general`} icon={<Info className={ICON_SIZE} />} label="General" />
+              <NavItem href={`${base}/settings/members`} icon={<Users className={ICON_SIZE} />} label="Members" />
+              <NavItem href={`${base}/settings/billing`} icon={<CreditCard className={ICON_SIZE} />} label="Billing" />
+              {/* Commercial extensions injected by platform/ */}
+              {settingsExtensions.navItems.map((item) => (
+                <NavItem key={item.href} href={`${base}${item.href}`} icon={item.icon} label={item.label} />
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </aside>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { StickyHeader, Breadcrumbs, PageHeader } from "@/components/layouts";
+import { PasswordInput } from "@/components/shared/PasswordInput";
 import { me as meApi } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { TableSkeleton } from "@/components/shared/TableSkeleton";
@@ -51,7 +52,7 @@ export default function AccountPage() {
         {loading ? (
           <TableSkeleton columns={2} rows={4} />
         ) : error ? (
-          <div className="text-[13px] text-vermillion-2">{error}</div>
+          <div className="text-[13px] text-vermillion-2">{error.message}</div>
         ) : (
           <>
             {/* Profile */}
@@ -172,21 +173,19 @@ function PasswordSection() {
       <div className="space-y-4">
         <div className="space-y-1.5">
           <label className="text-[12.5px] font-medium text-ink">Current password</label>
-          <input
-            type="password"
+          <PasswordInput
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
-            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
           />
         </div>
         <div className="space-y-1.5">
           <label className="text-[12.5px] font-medium text-ink">New password</label>
-          <input
-            type="password"
+          <PasswordInput
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             placeholder="At least 8 characters"
-            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+            className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
           />
         </div>
         {pwError && (

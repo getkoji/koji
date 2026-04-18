@@ -1,17 +1,18 @@
 import { Hono } from "hono";
-import { eq, sql, desc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
-import type { Env } from "../index";
-import { getTenantId } from "../context";
+import type { Env } from "../env";
+import { requires, getTenantId } from "../auth/middleware";
 
 export const jobs = new Hono<Env>();
 
-jobs.get("/", async (c) => {
+jobs.get("/", requires("job:read"), async (c) => {
   const db = c.get("db");
+  const tenantId = getTenantId(c);
   const limit = parseInt(c.req.query("limit") ?? "50", 10);
   const status = c.req.query("status");
 
-  const rows = await withRLS(db, await getTenantId(db), (tx) => {
+  const rows = await withRLS(db, tenantId, (tx) => {
     let q = tx
       .select({
         slug: schema.jobs.slug,
@@ -39,10 +40,12 @@ jobs.get("/", async (c) => {
   return c.json({ data: rows });
 });
 
-jobs.get("/:slug", async (c) => {
+jobs.get("/:slug", requires("job:read"), async (c) => {
   const db = c.get("db");
-  const slug = c.req.param("slug");
-  const rows = await withRLS(db, await getTenantId(db), (tx) =>
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .select()
       .from(schema.jobs)

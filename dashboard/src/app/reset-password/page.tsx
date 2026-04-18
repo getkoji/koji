@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
+import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 
 export default function ResetPasswordPage() {
@@ -97,25 +98,25 @@ function ResetPasswordForm() {
           <form onSubmit={handleSubmit} className="border border-border rounded-sm bg-cream p-6 space-y-4">
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">New password</label>
-              <input
+              <PasswordInput
                 required
-                type="password"
+                autoComplete="new-password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="At least 8 characters"
                 autoFocus
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
             </div>
 
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Confirm new password</label>
-              <input
+              <PasswordInput
                 required
-                type="password"
+                autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
               />
             </div>
 

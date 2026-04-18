@@ -2,20 +2,15 @@ import { Hono } from "hono";
 import { setCookie } from "hono/cookie";
 import { sql } from "drizzle-orm";
 import { schema } from "@koji/db";
-import type { Env } from "../index";
+import type { Env } from "../env";
 import { adapter } from "../index";
-import { clearContextCache } from "../context";
 
 export const setup = new Hono<Env>();
 
 /**
  * GET /api/setup/status — check whether first-run setup is needed.
- *
- * Returns { needed: true } when the users table is empty (fresh install).
- * Returns { needed: false } after the first user exists.
  */
 setup.get("/status", async (c) => {
-  // Skip setup entirely when using an external auth adapter (Clerk, OIDC)
   const authAdapter = process.env.KOJI_AUTH_ADAPTER ?? "local";
   if (authAdapter !== "local") {
     return c.json({ needed: false, reason: "external_auth" });
@@ -32,8 +27,6 @@ setup.get("/status", async (c) => {
 
 /**
  * POST /api/setup — create the first user + default tenant.
- *
- * One-shot: returns 404 if any user already exists.
  */
 setup.post("/", async (c) => {
   const authAdapter = process.env.KOJI_AUTH_ADAPTER ?? "local";
@@ -43,7 +36,6 @@ setup.post("/", async (c) => {
 
   const db = c.get("db");
 
-  // Guard: refuse if any user exists
   const rows = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(schema.users);
@@ -62,16 +54,13 @@ setup.post("/", async (c) => {
   if (!body.name || !body.email || !body.password) {
     return c.json({ error: "name, email, and password are required" }, 400);
   }
-
   if (body.password.length < 8) {
     return c.json({ error: "Password must be at least 8 characters" }, 400);
   }
-
   if (!body.workspace_slug || !/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(body.workspace_slug)) {
     return c.json({ error: "Workspace URL must be lowercase letters, numbers, and hyphens (2-64 chars)" }, 400);
   }
 
-  // Create user with hashed password
   const { hashPassword } = await import("../auth/password");
   const passwordHash = await hashPassword(body.password);
 
@@ -83,7 +72,6 @@ setup.post("/", async (c) => {
     authProviderId: `local-${body.email}`,
   }).returning();
 
-  // Create tenant
   const tenantName = body.workspace_name || body.workspace_slug;
   const [tenant] = await db.insert(schema.tenants).values({
     slug: body.workspace_slug,
@@ -91,14 +79,13 @@ setup.post("/", async (c) => {
     plan: "pro",
   }).returning();
 
-  // Create membership with owner role
+  // First user is always owner
   await db.insert(schema.memberships).values({
     userId: user!.id,
     tenantId: tenant!.id,
-    roles: ["tenant-owner", "project-admin", "schema-write", "pipeline-write", "review-write", "endpoint-write"],
+    roles: ["owner"],
   });
 
-  // Create a default project within the tenant
   const [project] = await db.insert(schema.projects).values({
     tenantId: tenant!.id,
     slug: body.workspace_slug,
@@ -106,18 +93,14 @@ setup.post("/", async (c) => {
     createdBy: user!.id,
   }).returning();
 
-  // Create a session so the user is logged in immediately
   const session = await adapter.createSession(user!.id);
   setCookie(c, "koji_session", session.token, {
     httpOnly: true,
-    secure: false, // TODO: true in production
+    secure: false,
     sameSite: "Lax",
     path: "/",
     maxAge: 30 * 24 * 60 * 60,
   });
-
-  // Clear cached IDs so /api/me and other routes pick up the new user/tenant
-  clearContextCache();
 
   return c.json({
     user: { id: user!.id, name: user!.name, email: user!.email },

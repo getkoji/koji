@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 /**
  * Data fetching hook. Re-fetches when the fetcher reference changes
@@ -10,17 +10,19 @@ import { useState, useEffect } from "react";
  */
 export function useApi<T>(
   fetcher: () => Promise<T>,
-): { data: T | null; loading: boolean; error: string | null } {
+): { data: T | null; loading: boolean; error: { message: string } | null; refetch: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string } | null>(null);
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
 
-  useEffect(() => {
+  const doFetch = useCallback(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetcher()
+    fetcherRef.current()
       .then((result) => {
         if (!cancelled) {
           setData(result);
@@ -29,15 +31,21 @@ export function useApi<T>(
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err.message ?? "API unreachable");
+          setError({ message: err.message ?? "API unreachable" });
           setLoading(false);
         }
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [fetcher]);
+    return () => { cancelled = true; };
+  }, []);
 
-  return { data, loading, error };
+  useEffect(() => {
+    return doFetch();
+  }, [fetcher, doFetch]);
+
+  const refetch = useCallback(() => {
+    doFetch();
+  }, [doFetch]);
+
+  return { data, loading, error, refetch };
 }

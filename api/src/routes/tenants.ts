@@ -1,42 +1,74 @@
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { schema } from "@koji/db";
-import type { Env } from "../index";
-import { getUserId } from "../context";
+import type { Env } from "../env";
+import { getPrincipal } from "../auth/middleware";
 
 export const tenants = new Hono<Env>();
 
 /**
- * GET /api/tenants — list tenants the current user has access to.
+ * GET /api/tenants — list tenants the current user belongs to.
  *
- * Returns tenants via the memberships join. Until auth is wired,
- * this returns all tenants the first user belongs to (typically just
- * the default tenant created during setup).
+ * This is a no-tenant route (doesn't need x-koji-tenant header).
+ * Used by the project switcher and onboarding.
  */
 tenants.get("/", async (c) => {
   const db = c.get("db");
-  const userId = await getUserId(db);
+  const principal = getPrincipal(c);
 
   const rows = await db
     .select({
       id: schema.tenants.id,
       slug: schema.tenants.slug,
       displayName: schema.tenants.displayName,
+      roles: schema.memberships.roles,
     })
     .from(schema.tenants)
     .innerJoin(schema.memberships, eq(schema.memberships.tenantId, schema.tenants.id))
-    .where(eq(schema.memberships.userId, userId));
+    .where(eq(schema.memberships.userId, principal.userId));
 
   return c.json({ data: rows });
 });
 
 /**
  * PATCH /api/tenants/:slug — update tenant display name.
+ * Requires tenant-admin role (enforced via x-koji-tenant + requires()).
+ * But since tenants route is mounted as no-tenant, we check membership inline.
  */
 tenants.patch("/:slug", async (c) => {
   const db = c.get("db");
+  const principal = getPrincipal(c);
   const slug = c.req.param("slug");
   const body = await c.req.json<{ display_name?: string }>();
+
+  // Find tenant + verify membership with admin role
+  const [tenant] = await db
+    .select({ id: schema.tenants.id })
+    .from(schema.tenants)
+    .where(eq(schema.tenants.slug, slug))
+    .limit(1);
+
+  if (!tenant) {
+    return c.json({ error: "Tenant not found" }, 404);
+  }
+
+  const [membership] = await db
+    .select({ roles: schema.memberships.roles })
+    .from(schema.memberships)
+    .where(
+      eq(schema.memberships.userId, principal.userId),
+    )
+    .limit(1);
+
+  if (!membership) {
+    return c.json({ error: "Not a member of this workspace" }, 403);
+  }
+
+  const { resolvePermissions } = await import("../auth/roles");
+  const grants = resolvePermissions(membership.roles);
+  if (!grants.has("tenant:admin")) {
+    return c.json({ code: "forbidden", message: "Missing permission: tenant:admin" }, 403);
+  }
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.display_name) updates.displayName = body.display_name;
@@ -51,18 +83,16 @@ tenants.patch("/:slug", async (c) => {
       displayName: schema.tenants.displayName,
     });
 
-  if (rows.length === 0) {
-    return c.json({ error: "Tenant not found" }, 404);
-  }
   return c.json(rows[0]);
 });
 
 /**
  * POST /api/tenants — create a new workspace.
+ * Any authenticated user can create a workspace. They become the owner.
  */
 tenants.post("/", async (c) => {
   const db = c.get("db");
-  const userId = await getUserId(db);
+  const principal = getPrincipal(c);
   const body = await c.req.json<{
     slug: string;
     display_name: string;
@@ -75,7 +105,6 @@ tenants.post("/", async (c) => {
     return c.json({ error: "Display name is required" }, 400);
   }
 
-  // Check for slug collision
   const existing = await db
     .select({ id: schema.tenants.id })
     .from(schema.tenants)
@@ -92,11 +121,11 @@ tenants.post("/", async (c) => {
     plan: "pro",
   }).returning();
 
-  // Add the current user as owner
+  // Creator becomes owner
   await db.insert(schema.memberships).values({
-    userId,
+    userId: principal.userId,
     tenantId: tenant!.id,
-    roles: ["tenant-owner", "project-admin", "schema-write", "pipeline-write", "review-write", "endpoint-write"],
+    roles: ["owner"],
   });
 
   return c.json({

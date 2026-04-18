@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeader, SettingsTable, SettingsRow, Meta } from "../_components";
+import { SectionHeader, SettingsTable, SettingsRow, Meta } from "@/components/shared/SettingsComponents";
 
 const API_KEYS = [
   { name: "Production key", prefix: "koji_live_...a8f2", created: "2026-03-01", lastUsed: "2 min ago" },

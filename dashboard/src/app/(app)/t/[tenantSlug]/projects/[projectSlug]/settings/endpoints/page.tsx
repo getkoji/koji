@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeader, SettingsTable, SettingsRow, Badge } from "../_components";
+import { SectionHeader, SettingsTable, SettingsRow, Badge } from "@/components/shared/SettingsComponents";
 
 const ENDPOINTS = [
   { url: "https://api.acme-invoices.getkoji.dev/extract", env: "production", status: "active" },

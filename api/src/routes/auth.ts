@@ -2,11 +2,21 @@ import { Hono } from "hono";
 import { setCookie, deleteCookie } from "hono/cookie";
 import { eq } from "drizzle-orm";
 import { schema } from "@koji/db";
-import type { Env } from "../index";
+import { createRateLimiter } from "../rate-limit";
+import type { Env } from "../env";
 import type { AuthAdapter } from "../auth/adapter";
 
 const SESSION_COOKIE = "koji_session";
 const COOKIE_MAX_AGE = 30 * 24 * 60 * 60; // 30 days in seconds
+
+// 5 failed login attempts per IP per 15 minutes
+const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 5 });
+
+function getClientIp(c: { req: { header: (name: string) => string | undefined } }): string {
+  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? c.req.header("x-real-ip")
+    ?? "unknown";
+}
 
 export function createAuthRoutes(adapter: AuthAdapter) {
   const auth = new Hono<Env>();
@@ -15,6 +25,10 @@ export function createAuthRoutes(adapter: AuthAdapter) {
    * POST /api/auth/login — email + password → session cookie.
    */
   auth.post("/login", async (c) => {
+    if (!loginLimiter.check(getClientIp(c))) {
+      return c.json({ error: "Too many login attempts. Try again in a few minutes." }, 429);
+    }
+
     const db = c.get("db");
     const body = await c.req.json<{ email: string; password: string }>();
 
