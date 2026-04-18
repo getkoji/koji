@@ -10,6 +10,7 @@ import { bootstrap } from "./bootstrap";
 import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
 import { jobs } from "./routes/jobs";
+import { extract } from "./routes/extract";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
@@ -34,6 +35,7 @@ app.use("*", async (c, next) => {
 app.route("/health", health);
 app.route("/api/schemas", schemas);
 app.route("/api/jobs", jobs);
+app.route("/api", extract);
 
 // Start
 async function start() {
