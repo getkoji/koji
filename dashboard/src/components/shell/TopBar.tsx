@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Search, Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink } from "lucide-react";
+import { Bell, User, Settings, LogOut, Moon, HelpCircle, ExternalLink } from "lucide-react";
 import { KojiLogo } from "./KojiLogo";
 import { me as meApi, type UserProfile } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -86,12 +86,6 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
       <div className="flex items-center gap-1.5">
         <button
           className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
-          aria-label="Search"
-        >
-          <Search className="w-4 h-4" />
-        </button>
-        <button
-          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
           aria-label="Notifications"
         >
           <Bell className="w-4 h-4" />
@@ -139,13 +133,13 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                 <UserMenuItem
                   icon={<HelpCircle className="w-3.5 h-3.5" />}
                   label="Documentation"
-                  href="https://getkoji.dev/docs"
+                  href="https://docs.getkoji.dev"
                   external
                 />
                 <UserMenuItem
                   icon={<ExternalLink className="w-3.5 h-3.5" />}
                   label="API reference"
-                  href="https://getkoji.dev/docs/reference/api"
+                  href="https://docs.getkoji.dev/reference/api"
                   external
                 />
               </div>

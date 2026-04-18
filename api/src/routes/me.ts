@@ -1,13 +1,17 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../index";
-import { DEFAULT_TENANT_ID } from "../bootstrap";
-
-const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 export const me = new Hono<Env>();
 
+/**
+ * Get the current user.
+ *
+ * Until real auth is wired, this returns the first user in the DB
+ * (the owner created during setup). When auth lands, this will
+ * resolve the user from the session token instead.
+ */
 me.get("/", async (c) => {
   const db = c.get("db");
   const rows = await db
@@ -21,11 +25,11 @@ me.get("/", async (c) => {
       createdAt: schema.users.createdAt,
     })
     .from(schema.users)
-    .where(eq(schema.users.id, DEFAULT_USER_ID))
+    .orderBy(schema.users.createdAt)
     .limit(1);
 
   if (rows.length === 0) {
-    return c.json({ error: "User not found" }, 404);
+    return c.json({ error: "No users exist. Complete setup at /setup first." }, 404);
   }
 
   return c.json(rows[0]);
@@ -38,6 +42,17 @@ me.patch("/", async (c) => {
     email?: string;
   }>();
 
+  // Find the current user (first user, until auth is wired)
+  const [currentUser] = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .orderBy(schema.users.createdAt)
+    .limit(1);
+
+  if (!currentUser) {
+    return c.json({ error: "No users exist" }, 404);
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name !== undefined) updates.name = body.name;
   if (body.email !== undefined) updates.email = body.email;
@@ -45,7 +60,7 @@ me.patch("/", async (c) => {
   const rows = await db
     .update(schema.users)
     .set(updates)
-    .where(eq(schema.users.id, DEFAULT_USER_ID))
+    .where(eq(schema.users.id, currentUser.id))
     .returning({
       id: schema.users.id,
       name: schema.users.name,
@@ -53,10 +68,6 @@ me.patch("/", async (c) => {
       avatarUrl: schema.users.avatarUrl,
       createdAt: schema.users.createdAt,
     });
-
-  if (rows.length === 0) {
-    return c.json({ error: "User not found" }, 404);
-  }
 
   return c.json(rows[0]);
 });

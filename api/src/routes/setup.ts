@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../index";
+import { clearContextCache } from "../context";
 
 export const setup = new Hono<Env>();
 
@@ -86,6 +87,9 @@ setup.post("/", async (c) => {
     tenantId: tenant!.id,
     roles: ["tenant-owner", "project-admin", "schema-write", "pipeline-write", "review-write", "endpoint-write"],
   });
+
+  // Clear cached IDs so /api/me and other routes pick up the new user/tenant
+  clearContextCache();
 
   return c.json({
     user: { id: user!.id, name: user!.name, email: user!.email },

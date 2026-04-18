@@ -2,8 +2,7 @@ import { Hono } from "hono";
 import { eq, sql, desc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../index";
-
-const DEFAULT_TENANT = process.env.KOJI_TENANT_ID ?? "00000000-0000-0000-0000-000000000000";
+import { getTenantId } from "../context";
 
 export const jobs = new Hono<Env>();
 
@@ -12,7 +11,7 @@ jobs.get("/", async (c) => {
   const limit = parseInt(c.req.query("limit") ?? "50", 10);
   const status = c.req.query("status");
 
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) => {
+  const rows = await withRLS(db, await getTenantId(db), (tx) => {
     let q = tx
       .select({
         slug: schema.jobs.slug,
@@ -43,7 +42,7 @@ jobs.get("/", async (c) => {
 jobs.get("/:slug", async (c) => {
   const db = c.get("db");
   const slug = c.req.param("slug");
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) =>
+  const rows = await withRLS(db, await getTenantId(db), (tx) =>
     tx
       .select()
       .from(schema.jobs)

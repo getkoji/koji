@@ -2,16 +2,13 @@ import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../index";
-
-// Default tenant ID — created on first boot. Eventually replaced by
-// real tenant resolution from auth.
-const DEFAULT_TENANT = process.env.KOJI_TENANT_ID ?? "00000000-0000-0000-0000-000000000000";
+import { getTenantId, getUserId } from "../context";
 
 export const schemas = new Hono<Env>();
 
 schemas.get("/", async (c) => {
   const db = c.get("db");
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) =>
+  const rows = await withRLS(db, await getTenantId(db), (tx) =>
     tx
       .select({
         slug: schema.schemas.slug,
@@ -28,7 +25,7 @@ schemas.get("/", async (c) => {
 schemas.get("/:slug", async (c) => {
   const db = c.get("db");
   const slug = c.req.param("slug");
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) =>
+  const rows = await withRLS(db, await getTenantId(db), (tx) =>
     tx
       .select()
       .from(schema.schemas)
@@ -43,6 +40,8 @@ schemas.get("/:slug", async (c) => {
 
 schemas.post("/", async (c) => {
   const db = c.get("db");
+  const tenantId = await getTenantId(db);
+  const userId = await getUserId(db);
   const body = await c.req.json<{
     slug: string;
     display_name: string;
@@ -50,16 +49,16 @@ schemas.post("/", async (c) => {
     initial_yaml?: string;
   }>();
 
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) =>
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .insert(schema.schemas)
       .values({
-        tenantId: DEFAULT_TENANT,
+        tenantId,
         slug: body.slug,
         displayName: body.display_name,
         description: body.description ?? null,
         draftYaml: body.initial_yaml ?? null,
-        createdBy: DEFAULT_TENANT, // placeholder until auth
+        createdBy: userId,
       })
       .returning()
   );
@@ -83,7 +82,7 @@ schemas.patch("/:slug", async (c) => {
     updates.draftUpdatedAt = new Date();
   }
 
-  const rows = await withRLS(db, DEFAULT_TENANT, (tx) =>
+  const rows = await withRLS(db, await getTenantId(db), (tx) =>
     tx
       .update(schema.schemas)
       .set(updates)
@@ -100,7 +99,7 @@ schemas.delete("/:slug", async (c) => {
   const db = c.get("db");
   const slug = c.req.param("slug");
 
-  await withRLS(db, DEFAULT_TENANT, (tx) =>
+  await withRLS(db, await getTenantId(db), (tx) =>
     tx
       .update(schema.schemas)
       .set({ deletedAt: new Date() })
