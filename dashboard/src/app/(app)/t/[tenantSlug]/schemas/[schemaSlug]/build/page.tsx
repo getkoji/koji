@@ -164,6 +164,13 @@ export default function BuildPage() {
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
 
+  // Auto-select first corpus entry
+  useEffect(() => {
+    if (!selectedDocId && (corpusEntries ?? []).length > 0) {
+      setSelectedDocId(corpusEntries![0]!.id);
+    }
+  }, [corpusEntries, selectedDocId]);
+
   const selectedDoc = (corpusEntries ?? []).find((e) => e.id === selectedDocId) ?? null;
 
   // Initialize editor
