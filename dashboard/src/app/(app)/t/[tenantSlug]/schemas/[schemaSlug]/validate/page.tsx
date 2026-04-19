@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database } from "lucide-react";
@@ -100,6 +100,7 @@ export default function ValidatePage() {
   const [expandedField, setExpandedField] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [loadedFromDb, setLoadedFromDb] = useState(false);
 
   const { data: corpusEntries } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
@@ -112,7 +113,31 @@ export default function ValidatePage() {
 
   const runHistory = (perfData?.runs ?? []).slice().reverse();
 
+  // Auto-load latest run results on page load
+  useEffect(() => {
+    if (loadedFromDb || !perfData || perfData.runs.length === 0) return;
+    const latest = perfData.runs[perfData.runs.length - 1]!;
+    const prev = perfData.runs.length >= 2 ? perfData.runs[perfData.runs.length - 2] : null;
+    const acc = latest.accuracy ? parseFloat(latest.accuracy) * 100 : 0;
+    const prevAcc = prev?.accuracy ? parseFloat(prev.accuracy) * 100 : null;
+
+    // Build result from the DB run — use mock field details since
+    // corpus_version_results aren't populated yet
+    setResult({
+      ...MOCK_RESULT,
+      overallAccuracy: acc,
+      prevAccuracy: prevAcc,
+      docsTotal: latest.docsTotal,
+      docsPassed: latest.docsPassed,
+      schemaVersion: latest.versionNumber ?? 0,
+      ranAt: latest.completedAt ?? latest.createdAt,
+      passed: acc >= 95,
+    });
+    setLoadedFromDb(true);
+  }, [perfData, loadedFromDb]);
+
   const hasCorpus = (corpusEntries ?? []).length > 0;
+  const hasRuns = runHistory.length > 0;
 
   function handleRun() {
     setRunning(true);
