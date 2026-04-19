@@ -1,17 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
-import { useParams } from "next/navigation";
-import { WorkbenchLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
-import { Badge } from "@/components/shared/SettingsComponents";
+import { useParams, usePathname } from "next/navigation";
+import Link from "next/link";
+import { Pencil, History, RotateCcw, Play, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+
+// ── Types ──
 
 interface SchemaDetail {
   id: string;
   slug: string;
   displayName: string;
+  description: string | null;
   draftYaml: string | null;
   latestVersion: {
     versionNumber: number;
@@ -38,13 +41,12 @@ interface ParsedField {
   extraction_guidance?: string;
 }
 
+// ── Helpers ──
+
 function parseFields(yamlText: string): { fields: ParsedField[]; error: string | null } {
   try {
     const doc = parseYaml(yamlText);
-    if (!doc?.fields || typeof doc.fields !== "object") {
-      return { fields: [], error: null };
-    }
-
+    if (!doc?.fields || typeof doc.fields !== "object") return { fields: [], error: null };
     const fields: ParsedField[] = [];
     for (const [name, def] of Object.entries(doc.fields)) {
       if (!def || typeof def !== "object") continue;
@@ -74,64 +76,103 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function countChangedLines(a: string, b: string): number {
+  const linesA = a.split("\n");
+  const linesB = b.split("\n");
+  let changes = 0;
+  const max = Math.max(linesA.length, linesB.length);
+  for (let i = 0; i < max; i++) {
+    if ((linesA[i] ?? "") !== (linesB[i] ?? "")) changes++;
+  }
+  return changes;
+}
+
+// ── Page ──
+
 export default function BuildPage() {
   const params = useParams();
+  const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
+  // Data
   const { data: schemaDetail, refetch } = useApi(
     useCallback(() => api.get<SchemaDetail>(`/api/schemas/${schemaSlug}`), [schemaSlug]),
   );
-
   const { data: versions, refetch: refetchVersions } = useApi(
     useCallback(() => api.get<{ data: SchemaVersion[] }>(`/api/schemas/${schemaSlug}/versions`).then((r) => r.data), [schemaSlug]),
   );
 
+  // Editor state
   const [yaml, setYaml] = useState("");
   const [initialized, setInitialized] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // UI state
   const [showCommit, setShowCommit] = useState(false);
-  const [showVersions, setShowVersions] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
+  const historyRef = useRef<HTMLDivElement>(null);
 
-  // Initialize editor with latest version YAML
+  // Initialize editor
   useEffect(() => {
     if (schemaDetail && !initialized) {
-      const initialYaml = schemaDetail.latestVersion?.yamlSource ?? schemaDetail.draftYaml ?? "";
-      setYaml(initialYaml);
+      setYaml(schemaDetail.latestVersion?.yamlSource ?? schemaDetail.draftYaml ?? "");
       setInitialized(true);
     }
   }, [schemaDetail, initialized]);
 
-  // Parse fields for preview (debounced via useMemo)
+  // Close history on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) setShowHistory(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        if (hasChanges) setShowCommit(true);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  });
+
+  // Derived
+  const committedYaml = schemaDetail?.latestVersion?.yamlSource ?? "";
+  const hasChanges = yaml !== committedYaml && initialized;
+  const changedLines = hasChanges ? countChangedLines(committedYaml, yaml) : 0;
+  const currentVersion = schemaDetail?.latestVersion?.versionNumber ?? 0;
+  const nextVersion = currentVersion + 1;
   const { fields, error: parseError } = useMemo(() => parseFields(yaml), [yaml]);
 
-  const hasChanges = schemaDetail?.latestVersion?.yamlSource !== yaml;
-
+  // Actions
   async function handleCommit() {
     setCommitError(null);
     setCommitErrors([]);
     setCommitting(true);
     try {
-      await api.post(`/api/schemas/${schemaSlug}/versions`, {
-        yaml,
-        commit_message: commitMessage || undefined,
-      });
+      await api.post(`/api/schemas/${schemaSlug}/versions`, { yaml, commit_message: commitMessage || undefined });
       setShowCommit(false);
       setCommitMessage("");
+      setCommitting(false);
       refetch();
       refetchVersions();
     } catch (err: unknown) {
       if (err instanceof Error) {
-        // Try to parse validation errors from the response
         try {
-          const body = JSON.parse(err.message.replace("API error 422: ", "").replace(/^[^{]*/, ""));
-          if (body.details) {
-            setCommitErrors(body.details);
-            setCommitting(false);
-            return;
-          }
+          const body = JSON.parse(err.message.replace(/^[^{]*/, ""));
+          if (body.details) { setCommitErrors(body.details); setCommitting(false); return; }
         } catch { /* not JSON */ }
         setCommitError(err.message);
       }
@@ -139,177 +180,303 @@ export default function BuildPage() {
     }
   }
 
-  function handleLoadVersion(version: SchemaVersion) {
-    // Fetch the version's YAML and load it
-    api.get<{ yamlSource: string }>(`/api/schemas/${schemaSlug}/versions/${version.versionNumber}`)
-      .then((v) => { setYaml(v.yamlSource); setShowVersions(false); });
+  function handleDiscard() {
+    setYaml(committedYaml);
+    setCommitErrors([]);
   }
 
+  function handleLoadVersion(v: SchemaVersion) {
+    api.get<{ yamlSource: string }>(`/api/schemas/${schemaSlug}/versions/${v.versionNumber}`)
+      .then((data) => { setYaml(data.yamlSource); setShowHistory(false); });
+  }
+
+  async function handleSaveDescription() {
+    await api.patch(`/api/schemas/${schemaSlug}`, { description: descriptionDraft });
+    setEditingDescription(false);
+    refetch();
+  }
+
+  // Loading
   if (!schemaDetail) {
     return (
-      <WorkbenchLayout
-        header={<><Breadcrumbs items={[{ label: "Schema" }, { label: "Build" }]} /><PageHeader title="Build" /></>}
-        panes={[
-          <div key="left" className="animate-pulse font-mono text-[11px] text-ink-4 p-4">Loading...</div>,
-          <div key="right" />,
-        ]}
-      />
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="p-10 animate-pulse">
+          <div className="h-4 w-32 bg-cream-2 rounded mb-4" />
+          <div className="h-8 w-48 bg-cream-2 rounded mb-2" />
+          <div className="h-3 w-64 bg-cream-2 rounded" />
+        </div>
+      </div>
     );
   }
 
   return (
     <>
-    <WorkbenchLayout
-      header={
-        <>
-          <Breadcrumbs items={[{ label: schemaDetail.displayName }, { label: "Build" }]} />
-          <PageHeader
-            title="Build"
-            meta={
-              <span className="flex items-center gap-2">
-                {schemaDetail.latestVersion && (
-                  <span className="font-mono text-[11px] text-ink-4">v{schemaDetail.latestVersion.versionNumber}</span>
-                )}
-                {hasChanges && <Badge>unsaved changes</Badge>}
-              </span>
-            }
-            actions={
-              <div className="flex items-center gap-2">
-                <button onClick={() => setShowVersions(!showVersions)}
-                  className="inline-flex items-center px-3 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink transition-colors">
-                  History
-                </button>
-                <button onClick={() => setShowCommit(true)} disabled={!hasChanges}
-                  className="inline-flex items-center px-3.5 py-1.5 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40">
-                  Commit
-                </button>
-              </div>
-            }
-          />
-        </>
-      }
-      panes={[
-        <div key="editor" className="h-full flex flex-col">
-          {/* YAML Editor */}
-          <textarea
-            value={yaml}
-            onChange={(e) => setYaml(e.target.value)}
-            spellCheck={false}
-            className="flex-1 w-full p-4 font-mono text-[12px] leading-[1.6] text-ink bg-transparent resize-none outline-none border-none"
-            style={{ tabSize: 2 }}
-          />
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        {/* ── 1. Breadcrumb ── */}
+        <div className="px-10 pt-5 pb-0 shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
+            <span className="text-ink-3">{tenantSlug}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink-3">Schemas</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">{schemaDetail.displayName}</span>
+          </nav>
+        </div>
 
-          {/* Validation errors */}
-          {commitErrors.length > 0 && (
-            <div className="border-t border-vermillion-2/30 bg-vermillion-3/20 p-3 max-h-[200px] overflow-y-auto">
-              <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-vermillion-2 mb-1.5">
-                Validation errors
-              </div>
-              {commitErrors.map((e, i) => (
-                <div key={i} className="text-[11px] text-vermillion-2 font-mono py-0.5">
-                  {e.field ? `${e.field}: ` : ""}{e.message}
+        {/* ── 2. Heading area ── */}
+        <div className="px-10 pb-4 shrink-0 flex items-start justify-between gap-8">
+          <div>
+            {/* Schema name + badges */}
+            <div className="flex items-baseline gap-3 mb-1">
+              <h1
+                className="font-display text-[30px] font-medium leading-none tracking-tight text-ink"
+                style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
+              >
+                {schemaDetail.displayName}
+              </h1>
+              {currentVersion > 0 && (
+                <span className="font-mono text-[11px] text-ink-4 border border-border rounded-sm px-1.5 py-0.5">
+                  v{currentVersion}
+                </span>
+              )}
+              {hasChanges && (
+                <span className="font-mono text-[10px] font-medium text-cream bg-vermillion-2 rounded-sm px-1.5 py-0.5 uppercase tracking-[0.06em]">
+                  {changedLines} unsaved
+                </span>
+              )}
+            </div>
+
+            {/* Description */}
+            <div className="flex items-center gap-1.5 mt-1">
+              {editingDescription ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    value={descriptionDraft}
+                    onChange={(e) => setDescriptionDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveDescription();
+                      if (e.key === "Escape") setEditingDescription(false);
+                    }}
+                    className="text-[13px] text-ink-3 bg-transparent border-b border-border outline-none py-0.5 w-80 focus:border-ring"
+                  />
+                  <button onClick={handleSaveDescription} className="text-[11px] text-green font-mono">save</button>
+                  <button onClick={() => setEditingDescription(false)} className="text-[11px] text-ink-4 font-mono">cancel</button>
                 </div>
-              ))}
+              ) : (
+                <>
+                  <span className="text-[13px] text-ink-3">
+                    {schemaDetail.description || "Add a description..."}
+                  </span>
+                  <button
+                    onClick={() => { setDescriptionDraft(schemaDetail.description ?? ""); setEditingDescription(true); }}
+                    className="text-ink-4 hover:text-ink transition-colors p-0.5"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
             </div>
-          )}
-
-          {/* Version history drawer */}
-          {showVersions && (
-            <div className="border-t border-border bg-cream-2/50 p-3 max-h-[250px] overflow-y-auto">
-              <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2">
-                Version history
-              </div>
-              {(versions ?? []).map((v) => (
-                <button key={v.id} onClick={() => handleLoadVersion(v)}
-                  className="w-full text-left px-2 py-1.5 hover:bg-cream-2 rounded-sm transition-colors flex items-center justify-between group">
-                  <div>
-                    <span className="font-mono text-[11px] text-ink font-medium">v{v.versionNumber}</span>
-                    {v.commitMessage && <span className="text-[11px] text-ink-3 ml-2">{v.commitMessage}</span>}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-ink-4">{v.committedByName}</span>
-                    <span className="text-[10px] text-ink-4">{timeAgo(v.createdAt)}</span>
-                    <span className="text-[10px] text-vermillion-2 opacity-0 group-hover:opacity-100 transition-opacity">load</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>,
-        <div key="fields" className="p-4 overflow-y-auto h-full">
-          <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-3">
-            Fields ({fields.length})
           </div>
 
-          {parseError ? (
-            <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
-              {parseError}
-            </div>
-          ) : fields.length === 0 ? (
-            <div className="text-[12px] text-ink-4 text-center py-8">
-              No fields defined yet
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {fields.map((f) => (
-                <div key={f.name} className="border border-border rounded-sm p-2.5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-mono text-[12px] text-ink font-medium">{f.name}</span>
-                    <Badge>{f.type}</Badge>
-                    {f.required && <span className="font-mono text-[9px] text-vermillion-2 uppercase">req</span>}
-                    {f.nullable && <span className="font-mono text-[9px] text-ink-4 uppercase">null</span>}
-                  </div>
-                  {f.validate && Object.keys(f.validate).length > 0 && (
-                    <div className="font-mono text-[10px] text-ink-4">
-                      {Object.entries(f.validate).map(([k, v]) => `${k}: ${v}`).join(", ")}
-                    </div>
-                  )}
-                  {f.extraction_guidance && (
-                    <div className="text-[10.5px] text-ink-3 mt-1 line-clamp-2">
-                      {f.extraction_guidance}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>,
-      ]}
-    />
-
-    {/* Commit dialog */}
-    {showCommit && (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center">
-        <div className="absolute inset-0 bg-ink/20" onClick={() => setShowCommit(false)} />
-        <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
-          <h2 className="text-[15px] font-medium text-ink mb-1">Commit version</h2>
-          <p className="text-[12.5px] text-ink-3 mb-5">
-            This will validate the schema and create version {(schemaDetail.latestVersion?.versionNumber ?? 0) + 1}.
-          </p>
-
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-[12.5px] font-medium text-ink">Commit message</label>
-              <input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} autoFocus
-                placeholder="e.g. Add line_items array field"
-                data-1p-ignore autoComplete="off"
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
-            </div>
-
-            {commitError && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{commitError}</div>}
-
-            <div className="flex items-center justify-end gap-2">
-              <button onClick={() => { setShowCommit(false); setCommitError(null); setCommitErrors([]); }}
-                className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-              <button onClick={handleCommit} disabled={committing}
-                className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
-                {committing ? "Committing..." : "Commit"}
+          {/* Right: action buttons */}
+          <div className="flex items-center gap-2 shrink-0 pt-1">
+            <div className="relative" ref={historyRef}>
+              <button onClick={() => setShowHistory(!showHistory)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
+                <History className="w-3.5 h-3.5" />
+                History
               </button>
+
+              {/* Version history dropdown */}
+              {showHistory && (
+                <div className="absolute right-0 top-full mt-1 w-[320px] bg-white border border-border rounded-sm shadow-lg z-30 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border font-mono text-[9.5px] font-medium tracking-[0.1em] uppercase text-ink-4">
+                    Version history
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {(versions ?? []).map((v) => (
+                      <button key={v.id} onClick={() => handleLoadVersion(v)}
+                        className="w-full text-left px-3 py-2.5 hover:bg-cream-2 transition-colors flex items-center justify-between group border-b border-dotted border-border last:border-none">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-[11px] text-ink font-medium">v{v.versionNumber}</span>
+                            <span className="text-[10px] text-ink-4">{v.committedByName}</span>
+                            <span className="text-[10px] text-ink-4">{timeAgo(v.createdAt)}</span>
+                          </div>
+                          {v.commitMessage && (
+                            <div className="text-[11px] text-ink-3 truncate mt-0.5">{v.commitMessage}</div>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-vermillion-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2">
+                          load
+                        </span>
+                      </button>
+                    ))}
+                    {(versions ?? []).length === 0 && (
+                      <div className="px-3 py-4 text-[12px] text-ink-4 text-center">No versions yet</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button onClick={handleDiscard} disabled={!hasChanges}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+              <RotateCcw className="w-3.5 h-3.5" />
+              Discard
+            </button>
+
+            <button onClick={() => setShowCommit(true)} disabled={!hasChanges}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+              Save v{nextVersion}
+            </button>
+          </div>
+        </div>
+
+        {/* ── 3. Control strip ── */}
+        <div className="px-10 py-2.5 border-y border-border shrink-0 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Mode</span>
+            <div className="flex gap-1 border border-border rounded-sm p-0.5">
+              <span className="px-2.5 py-1 rounded-sm text-[12px] font-medium bg-ink text-cream">
+                Build
+              </span>
+              <Link
+                href={pathname.replace("/build", "/validate")}
+                className="px-2.5 py-1 rounded-sm text-[12px] text-ink-3 hover:text-ink transition-colors"
+              >
+                Validate
+              </Link>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Sample</span>
+            <select
+              className="h-[28px] rounded-sm border border-input bg-white px-2 text-[12px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 min-w-[180px]"
+            >
+              <option value="">Select a document...</option>
+              <option value="__upload">↑ Upload a test document</option>
+            </select>
+            <button disabled
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-40">
+              <Play className="w-3 h-3" />
+              Run
+              <kbd className="font-mono text-[9px] text-cream/50 ml-1">⌘↵</kbd>
+            </button>
+          </div>
+        </div>
+
+        {/* ── 4. Workbench panels ── */}
+        <div className="flex-1 min-h-0 grid grid-cols-2 gap-px bg-border">
+          {/* LEFT: YAML editor */}
+          <div className="bg-ink overflow-y-auto min-h-0 flex flex-col">
+            <textarea
+              ref={textareaRef}
+              value={yaml}
+              onChange={(e) => setYaml(e.target.value)}
+              spellCheck={false}
+              className="flex-1 w-full p-4 font-mono text-[13px] leading-[1.7] text-cream bg-transparent resize-none outline-none border-none placeholder:text-ink-4"
+              style={{ tabSize: 2, caretColor: "#F4EEE2" }}
+              placeholder="# Start writing your schema YAML here..."
+            />
+
+            {/* Validation errors panel */}
+            {commitErrors.length > 0 && (
+              <div className="border-t border-vermillion-2/30 bg-vermillion-2/10 p-3 max-h-[180px] overflow-y-auto shrink-0">
+                <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-vermillion-2 mb-1.5">
+                  Validation errors
+                </div>
+                {commitErrors.map((e, i) => (
+                  <div key={i} className="text-[11px] text-vermillion-3 font-mono py-0.5">
+                    {e.field ? `${e.field}: ` : ""}{e.message}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* RIGHT: Document preview / extraction results / empty state */}
+          <div className="bg-cream overflow-y-auto min-h-0 p-5">
+            {/* Empty state — no document selected */}
+            <div className="h-full flex flex-col items-center justify-center text-center">
+              <div className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px]">
+                <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
+                <div className="text-[13px] text-ink-3 mb-1">Select a sample document to preview extraction</div>
+                <div className="text-[11px] text-ink-4">
+                  Drag a file here or use the Sample picker above
+                </div>
+              </div>
+
+              {/* Field preview below empty state */}
+              {fields.length > 0 && (
+                <div className="w-full max-w-[360px] mt-6">
+                  <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2 text-left">
+                    Schema fields ({fields.length})
+                  </div>
+                  <div className="space-y-1.5">
+                    {fields.map((f) => (
+                      <div key={f.name} className="flex items-center gap-2 px-2.5 py-1.5 border border-border rounded-sm text-left">
+                        <span className="font-mono text-[11px] text-ink font-medium">{f.name}</span>
+                        <span className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase">{f.type}</span>
+                        {f.required && <span className="font-mono text-[8px] text-vermillion-2 uppercase">req</span>}
+                        <span className="flex-1" />
+                        {f.extraction_guidance && (
+                          <span className="text-[10px] text-ink-4 truncate max-w-[120px]">{f.extraction_guidance}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {parseError && (
+                <div className="w-full max-w-[360px] mt-4 text-left">
+                  <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
+                    YAML parse error: {parseError}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
-    )}
+
+      {/* ── Commit dialog ── */}
+      {showCommit && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+          <div className="absolute inset-0 bg-ink/20" onClick={() => setShowCommit(false)} />
+          <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+            <h2 className="text-[15px] font-medium text-ink mb-1">Save version v{nextVersion}</h2>
+            <p className="text-[12.5px] text-ink-3 mb-5">
+              This will validate the schema YAML and create a new committed version.
+            </p>
+
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Commit message</label>
+                <input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} autoFocus
+                  placeholder="e.g. Add line_items array field"
+                  data-1p-ignore autoComplete="off"
+                  onKeyDown={(e) => { if (e.key === "Enter" && !committing) handleCommit(); }}
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+              </div>
+
+              {commitError && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{commitError}</div>}
+
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={() => { setShowCommit(false); setCommitError(null); setCommitErrors([]); }}
+                  className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
+                <button onClick={handleCommit} disabled={committing}
+                  className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50">
+                  {committing ? "Saving..." : `Save v${nextVersion}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
