@@ -102,12 +102,12 @@ export default function ValidatePage() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loadedFromDb, setLoadedFromDb] = useState(false);
 
-  const { data: corpusEntries } = useApi(
+  const { data: corpusEntries, loading: corpusLoading } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
 
   // Run history from schema_runs
-  const { data: perfData } = useApi(
+  const { data: perfData, loading: perfLoading } = useApi(
     useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
@@ -146,6 +146,32 @@ export default function ValidatePage() {
       setResult(MOCK_RESULT);
       setRunning(false);
     }, 2500);
+  }
+
+  // ── Loading skeleton ──
+  if (corpusLoading || perfLoading) {
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+          <div className="h-3 w-32 bg-cream-2 rounded animate-pulse mb-3" />
+          <div className="h-7 w-48 bg-cream-2 rounded animate-pulse mb-2" />
+          <div className="h-3 w-64 bg-cream-2 rounded animate-pulse" />
+          <div className="flex items-baseline gap-3 mt-4">
+            <div className="h-12 w-28 bg-cream-2 rounded animate-pulse" />
+            <div className="h-4 w-12 bg-cream-2 rounded animate-pulse" />
+          </div>
+        </div>
+        <div className="flex-1 px-8 pt-6">
+          <div className="h-20 bg-cream-2 rounded-sm animate-pulse mb-6 max-w-[900px]" />
+          <div className="h-5 w-40 bg-cream-2 rounded animate-pulse mb-3" />
+          <div className="space-y-1 max-w-[900px]">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-10 bg-cream-2 rounded-sm animate-pulse" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // ── Empty state: no corpus ──
