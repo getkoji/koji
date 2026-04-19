@@ -45,6 +45,7 @@ export const users = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     name: varchar("name", { length: 255 }),
     avatarUrl: varchar("avatar_url", { length: 2048 }),
+    passwordHash: varchar("password_hash", { length: 255 }),
     authProvider: varchar("auth_provider", { length: 32 }).notNull(),
     authProviderId: varchar("auth_provider_id", { length: 255 }).notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true, mode: "date" }),
@@ -55,6 +56,29 @@ export const users = pgTable(
   (t) => ({
     emailIdx: index("users_email_idx").on(t.email).where(sql`deleted_at IS NULL`),
     providerIdx: uniqueIndex("users_auth_provider_idx").on(t.authProvider, t.authProviderId),
+  }),
+);
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 64 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    description: text("description"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    tenantSlugIdx: uniqueIndex("projects_tenant_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    tenantIdx: index("projects_tenant_idx").on(t.tenantId).where(sql`deleted_at IS NULL`),
   }),
 );
 
@@ -77,6 +101,41 @@ export const memberships = pgTable(
     userTenantIdx: uniqueIndex("memberships_user_tenant_idx").on(t.userId, t.tenantId),
     tenantIdx: index("memberships_tenant_idx").on(t.tenantId),
     userIdx: index("memberships_user_idx").on(t.userId),
+  }),
+);
+
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex("password_resets_token_hash_idx").on(t.tokenHash),
+  }),
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex("sessions_token_hash_idx").on(t.tokenHash),
+    userIdx: index("sessions_user_idx").on(t.userId),
+    expiresIdx: index("sessions_expires_idx").on(t.expiresAt),
   }),
 );
 

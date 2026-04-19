@@ -15,6 +15,27 @@ import {
 import { createdAt, deletedAt, primaryKey, tenantId, updatedAt } from "./_shared";
 import { tenants, users } from "./tenants";
 
+export const modelCatalog = pgTable(
+  "model_catalog",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    modelId: varchar("model_id", { length: 128 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    contextWindow: integer("context_window"),
+    supportsVision: varchar("supports_vision", { length: 8 }).default("false"),
+    source: varchar("source", { length: 16 }).notNull().default("manual"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tenantProviderModelIdx: uniqueIndex("model_catalog_tenant_provider_model_idx")
+      .on(t.tenantId, t.provider, t.modelId),
+    tenantProviderIdx: index("model_catalog_tenant_provider_idx")
+      .on(t.tenantId, t.provider),
+  }),
+);
+
 export const modelEndpoints = pgTable(
   "model_endpoints",
   {

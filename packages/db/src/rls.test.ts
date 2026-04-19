@@ -127,6 +127,35 @@ describe("RLS round-trip", () => {
     expect(rows[0]?.display_name).toBe("Invoice");
   });
 
+  test("projects are isolated: tenant B sees zero of tenant A's projects", async () => {
+    await withRLS(db, tenantA, async (tx) => {
+      await tx.insert(schema.projects).values({
+        tenantId: tenantA,
+        slug: "claims-processing",
+        displayName: "Claims Processing",
+        createdBy: userA,
+      });
+    });
+
+    await withRLS(db, tenantB, async (tx) => {
+      await tx.insert(schema.projects).values({
+        tenantId: tenantB,
+        slug: "claims-processing",
+        displayName: "Claims (other tenant)",
+        createdBy: userB,
+      });
+    });
+
+    const seenByA = await withRLS(db, tenantA, (tx) => tx.select().from(schema.projects));
+    const seenByB = await withRLS(db, tenantB, (tx) => tx.select().from(schema.projects));
+
+    expect(seenByA.length).toBe(1);
+    expect(seenByA[0]?.displayName).toBe("Claims Processing");
+
+    expect(seenByB.length).toBe(1);
+    expect(seenByB[0]?.displayName).toBe("Claims (other tenant)");
+  });
+
   test("corpus_entry_ground_truth is isolated: tenant B sees zero of tenant A's ground truth rows", async () => {
     // Seed a schema + corpus entry under tenant A (via superuser for FK deps),
     // then insert ground truth via withRLS(A).
@@ -180,6 +209,7 @@ describe("RLS round-trip", () => {
 
     const expected = [
       "tenants",
+      "projects",
       "api_keys",
       "audit_log",
       "invites",

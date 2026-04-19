@@ -37,6 +37,7 @@ export function createDb(databaseUrl: string, options?: { max?: number }): Db {
  */
 export const RLS_POLICIES: readonly string[] = [
   "tenants",
+  "projects",
   "api_keys",
   "audit_log",
   "invites",
@@ -78,6 +79,8 @@ export const RLS_POLICIES: readonly string[] = [
  */
 export const GLOBAL_TABLES: readonly string[] = [
   "users", // A user can belong to multiple tenants.
+  "sessions", // Auth sessions — user-scoped, not tenant-scoped.
+  "password_resets", // Password reset tokens — user-scoped.
   "memberships", // The user ↔ tenant join; RLS on the tenant column is enforced application-side.
   "playground_sessions", // Anonymous marketing demo.
   "playground_extractions",

@@ -1,27 +1,31 @@
-import { redirect } from "next/navigation";
-import { TopBar } from "@/components/shell/TopBar";
-import { Sidebar } from "@/components/shell/Sidebar";
+"use client";
 
-export default async function TenantLayout({
+import { usePathname } from "next/navigation";
+import { SidebarInset, SidebarProvider } from "@koji/ui";
+import { TopBar } from "@/components/shell/TopBar";
+import { AppSidebar } from "@/components/shell/Sidebar";
+import { AuthProvider } from "@/lib/auth-context";
+
+export default function TenantLayout({
   children,
-  params,
 }: {
   children: React.ReactNode;
   params: Promise<{ tenantSlug: string }>;
 }) {
-  const { tenantSlug } = await params;
+  const pathname = usePathname();
+  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
-  if (!tenantSlug || tenantSlug === "undefined") {
-    redirect("/");
-  }
+  if (!tenantSlug || tenantSlug === "undefined") return null;
 
   return (
-    <>
-      <TopBar tenantSlug={tenantSlug} />
-      <div className="grid min-h-[calc(100vh-60px)]" style={{ gridTemplateColumns: "256px 1fr" }}>
-        <Sidebar tenantSlug={tenantSlug} />
-        <main className="min-w-0">{children}</main>
-      </div>
-    </>
+    <AuthProvider tenantSlug={tenantSlug}>
+      <SidebarProvider>
+        <AppSidebar tenantSlug={tenantSlug} />
+        <SidebarInset className="bg-cream">
+          <TopBar tenantSlug={tenantSlug} />
+          <main className="min-w-0 flex-1">{children}</main>
+        </SidebarInset>
+      </SidebarProvider>
+    </AuthProvider>
   );
 }

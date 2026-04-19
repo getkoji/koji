@@ -1,285 +1,717 @@
 "use client";
 
-import { useState } from "react";
-import { WorkbenchLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
-import { Switch, Label } from "@koji/ui";
-import { MOCK_SCHEMA_LINES, MOCK_EXTRACTION } from "@/lib/mock-schema";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { parse as parseYaml } from "yaml";
+import { useParams, usePathname } from "next/navigation";
+import { Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 
-export default function BuildModePage() {
-  const [autoRun, setAutoRun] = useState(true);
-  const header = (
-    <>
-      <Breadcrumbs
-        items={[
-          { label: "acme-invoices", href: "#" },
-          { label: "Schemas", href: "#" },
-          { label: "invoice" },
-        ]}
-      />
-      <PageHeader
-        title="invoice"
-        badge={
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[11px] font-medium text-ink-3 px-2 py-0.5 border border-border-strong rounded-sm">
-              v12
-            </span>
-            <span className="font-mono text-[10px] font-medium text-vermillion-2 px-2 py-0.5 bg-vermillion-3 rounded-sm uppercase tracking-[0.05em]">
-              2 unsaved
-            </span>
-          </div>
-        }
-        meta={
-          <span className="text-ink-3 text-[13.5px]" style={{ fontFamily: "var(--font-body)" }}>
-            Commercial invoice extraction. 8 fields covering number, dates, parties, line items, and totals.
-          </span>
-        }
-        actions={
-          <>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">
-              History
-            </button>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">
-              Discard
-            </button>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors">
-              Save v13
-            </button>
-          </>
-        }
-      />
-    </>
+// ── Types ──
+
+interface SchemaDetail {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  draftYaml: string | null;
+  latestVersion: {
+    versionNumber: number;
+    yamlSource: string;
+    commitMessage: string | null;
+    createdAt: string;
+  } | null;
+}
+
+interface SchemaVersion {
+  id: string;
+  versionNumber: number;
+  commitMessage: string | null;
+  committedByName: string;
+  createdAt: string;
+}
+
+interface CorpusEntry {
+  id: string;
+  filename: string;
+  fileSize: number;
+  mimeType: string;
+  source: string;
+  createdAt: string;
+}
+
+interface ParsedField {
+  name: string;
+  type: string;
+  required?: boolean;
+  nullable?: boolean;
+  validate?: Record<string, unknown>;
+  extraction_guidance?: string;
+}
+
+// ── Helpers ──
+
+function parseFields(yamlText: string): { fields: ParsedField[]; error: string | null } {
+  try {
+    const doc = parseYaml(yamlText);
+    if (!doc?.fields || typeof doc.fields !== "object") return { fields: [], error: null };
+    const fields: ParsedField[] = [];
+    for (const [name, def] of Object.entries(doc.fields)) {
+      if (!def || typeof def !== "object") continue;
+      const d = def as Record<string, unknown>;
+      fields.push({
+        name,
+        type: (d.type as string) ?? "unknown",
+        required: d.required as boolean | undefined,
+        nullable: d.nullable as boolean | undefined,
+        validate: d.validate as Record<string, unknown> | undefined,
+        extraction_guidance: d.extraction_guidance as string | undefined,
+      });
+    }
+    return { fields, error: null };
+  } catch (err: unknown) {
+    return { fields: [], error: err instanceof Error ? err.message : "Parse error" };
+  }
+}
+
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function highlightYaml(text: string): string {
+  // Escape HTML entities first
+  let html = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // Then apply highlighting
+  html = html
+    .replace(/(#.*)$/gm, '<span style="color:#998E78">$1</span>')
+    .replace(/^(\s*-\s+)([\w][\w.-]*\s*)(:)/gm, '$1<span style="color:#C33520">$2</span><span style="color:#998E78">$3</span>')
+    .replace(/^(\s*)([\w][\w.-]*\s*)(:)/gm, '$1<span style="color:#C33520">$2</span><span style="color:#998E78">$3</span>');
+  return html;
+}
+
+function countChangedLines(a: string, b: string): number {
+  const linesA = a.split("\n");
+  const linesB = b.split("\n");
+  let changes = 0;
+  const max = Math.max(linesA.length, linesB.length);
+  for (let i = 0; i < max; i++) {
+    if ((linesA[i] ?? "") !== (linesB[i] ?? "")) changes++;
+  }
+  return changes;
+}
+
+// ── Page ──
+
+export default function BuildPage() {
+  const params = useParams();
+  const pathname = usePathname();
+  const schemaSlug = params.schemaSlug as string;
+  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
+
+  // Data
+  const { data: tenants } = useApi(
+    useCallback(() => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/tenants").then((r) => r.data), []),
+  );
+  const projectName = tenants?.find((t) => t.slug === tenantSlug)?.displayName ?? tenantSlug;
+
+  const { data: schemaDetail, refetch } = useApi(
+    useCallback(() => api.get<SchemaDetail>(`/api/schemas/${schemaSlug}`), [schemaSlug]),
+  );
+  const { data: versions, refetch: refetchVersions } = useApi(
+    useCallback(() => api.get<{ data: SchemaVersion[] }>(`/api/schemas/${schemaSlug}/versions`).then((r) => r.data), [schemaSlug]),
   );
 
-  const toolbar = (
-    <>
-      <div className="flex items-center gap-3">
-        <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">
-          Mode
-        </span>
-        <div className="inline-flex p-[3px] bg-cream-2 border border-border rounded-sm">
-          <button className="inline-flex items-center gap-1.5 px-3.5 py-[7px] rounded-sm text-[12px] font-medium bg-cream text-ink shadow-[0_1px_0_rgba(23,20,16,0.04)]">
-            <span className="font-mono text-[13px] text-vermillion-2">✦</span>
-            Build
-          </button>
-          <button className="inline-flex items-center gap-1.5 px-3.5 py-[7px] rounded-sm text-[12px] font-medium text-ink-3 hover:text-ink transition-colors">
-            <span className="font-mono text-[13px] text-ink-4">▦</span>
-            Validate
-          </button>
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <button className="inline-flex items-center gap-1.5 px-3 py-[7px] bg-cream-2 border border-border rounded-sm font-mono text-[11px] text-ink-2">
-          <span className="text-ink-4 uppercase tracking-[0.1em] text-[9.5px]">Sample</span>
-          <span className="text-ink">invoice-0042.pdf</span>
-          <span className="text-ink-4 text-[10px]">▾</span>
-        </button>
-        <button className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-vermillion-2 text-cream rounded-sm text-[12px] font-medium hover:bg-ink transition-colors">
-          <span className="text-[11px]">▶</span>
-          Run
-          <kbd className="font-mono text-[9.5px] px-1 py-px border border-cream/25 rounded-sm text-cream-3 ml-1">
-            ⌘↵
-          </kbd>
-        </button>
-        <div className="flex items-center gap-1.5">
-          <Switch
-            id="auto-run"
-            size="sm"
-            checked={autoRun}
-            onCheckedChange={setAutoRun}
-          />
-          <Label htmlFor="auto-run" className="font-mono text-[9.5px] text-ink-4 uppercase tracking-[0.08em] cursor-pointer">
-            Auto
-          </Label>
-        </div>
-      </div>
-    </>
+  // Editor state
+  const [yaml, setYaml] = useState("");
+  const [initialized, setInitialized] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // UI state
+  const [showCommit, setShowCommit] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [commitMessage, setCommitMessage] = useState("");
+  const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
+  const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionResult, setExtractionResult] = useState<{
+    extracted: Record<string, unknown>;
+    confidence: number;
+    confidence_scores?: Record<string, number>;
+    model?: string;
+    elapsed_ms?: number;
+    error?: string;
+  } | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+
+  // Corpus entries for this schema
+  const { data: corpusEntries, refetch: refetchCorpus } = useApi(
+    useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
+
+  // Auto-select first corpus entry
+  useEffect(() => {
+    if (!selectedDocId && (corpusEntries ?? []).length > 0) {
+      setSelectedDocId(corpusEntries![0]!.id);
+    }
+  }, [corpusEntries, selectedDocId]);
+
+  const selectedDoc = (corpusEntries ?? []).find((e) => e.id === selectedDocId) ?? null;
+
+  // Initialize editor
+  useEffect(() => {
+    if (schemaDetail && !initialized) {
+      setYaml(schemaDetail.latestVersion?.yamlSource ?? schemaDetail.draftYaml ?? "");
+      setInitialized(true);
+    }
+  }, [schemaDetail, initialized]);
+
+  // Close history on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) setShowHistory(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        if (hasChanges) setShowCommit(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (selectedDocId && yaml) handleRun();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  });
+
+  // Derived
+  const committedYaml = schemaDetail?.latestVersion?.yamlSource ?? "";
+  const hasChanges = yaml !== committedYaml && initialized;
+  const changedLines = hasChanges ? countChangedLines(committedYaml, yaml) : 0;
+  const currentVersion = schemaDetail?.latestVersion?.versionNumber ?? 0;
+  const nextVersion = currentVersion + 1;
+  const { fields, error: parseError } = useMemo(() => parseFields(yaml), [yaml]);
+
+  // Actions
+  async function handleCommit() {
+    setCommitError(null);
+    setCommitErrors([]);
+    setCommitting(true);
+    try {
+      await api.post(`/api/schemas/${schemaSlug}/versions`, { yaml, commit_message: commitMessage || undefined });
+      setShowCommit(false);
+      setCommitMessage("");
+      setCommitting(false);
+      refetch();
+      refetchVersions();
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        try {
+          const body = JSON.parse(err.message.replace(/^[^{]*/, ""));
+          if (body.details) { setCommitErrors(body.details); setCommitting(false); return; }
+        } catch { /* not JSON */ }
+        setCommitError(err.message);
+      }
+      setCommitting(false);
+    }
+  }
+
+  function handleDiscard() {
+    setYaml(committedYaml);
+    setCommitErrors([]);
+  }
+
+  function handleLoadVersion(v: SchemaVersion) {
+    api.get<{ yamlSource: string }>(`/api/schemas/${schemaSlug}/versions/${v.versionNumber}`)
+      .then((data) => { setYaml(data.yamlSource); setShowHistory(false); });
+  }
+
+  async function handleRun() {
+    if (!selectedDocId || !yaml) return;
+    setExtracting(true);
+    setExtractionResult(null);
+    try {
+      const result = await api.post<{
+        extracted: Record<string, unknown>;
+        confidence: number;
+        confidence_scores?: Record<string, number>;
+        model?: string;
+        elapsed_ms?: number;
+      }>("/api/extract/run", {
+        corpus_entry_id: selectedDocId,
+        schema_yaml: yaml,
+      });
+      setExtractionResult(result);
+    } catch (err: unknown) {
+      setExtractionResult({
+        extracted: {},
+        confidence: 0,
+        error: err instanceof Error ? err.message : "Extraction failed",
+      });
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  async function handleUploadDoc(file: File) {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const result = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/schemas/${schemaSlug}/corpus`,
+        { method: "POST", body: formData, credentials: "include",
+          headers: { "x-koji-tenant": tenantSlug } },
+      );
+      if (!result.ok) throw new Error(`Upload failed: ${result.status}`);
+      const entry = await result.json() as CorpusEntry;
+      refetchCorpus();
+      setSelectedDocId(entry.id);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // Load signed URL when document is selected
+  useEffect(() => {
+    if (!selectedDocId) { setDocPreviewUrl(null); return; }
+    api.get<{ url: string }>(`/api/schemas/${schemaSlug}/corpus/${selectedDocId}/url`)
+      .then((r) => setDocPreviewUrl(r.url))
+      .catch(() => setDocPreviewUrl(null));
+  }, [selectedDocId, schemaSlug]);
+
+  async function handleSaveDescription() {
+    await api.patch(`/api/schemas/${schemaSlug}`, { description: descriptionDraft });
+    setEditingDescription(false);
+    refetch();
+  }
+
+  // Loading
+  if (!schemaDetail) {
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="p-10 animate-pulse">
+          <div className="h-4 w-32 bg-cream-2 rounded mb-4" />
+          <div className="h-8 w-48 bg-cream-2 rounded mb-2" />
+          <div className="h-3 w-64 bg-cream-2 rounded" />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <WorkbenchLayout
-      header={header}
-      toolbar={toolbar}
-      columns="0.6fr 1fr"
-      panes={[
-        /* Left: Schema YAML editor */
-        <div key="schema" className="flex flex-col h-full">
-          <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border">
-            <span className="font-mono text-[9.5px] font-medium tracking-[0.14em] uppercase text-ink-4">
-              Schema
-            </span>
-            <div className="flex items-center gap-0.5">
-              <span className="font-mono text-[11px] text-ink-2">invoice.yaml</span>
-              <span className="text-cream-4 text-[9px] mx-1">●</span>
-              <span className="font-mono text-[11px] text-vermillion-2 font-medium">modified</span>
-              <div className="flex gap-0.5 ml-3">
-                <button className="font-mono text-[10px] text-ink-3 px-2 py-0.5 rounded-sm hover:bg-cream-2 hover:text-ink transition-colors">
-                  fmt
-                </button>
-                <button className="font-mono text-[10px] text-ink-3 px-2 py-0.5 rounded-sm hover:bg-cream-2 hover:text-ink transition-colors">
-                  lint
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 py-3.5 font-mono text-[12px] leading-[1.75] overflow-y-auto">
-            {MOCK_SCHEMA_LINES.map((line) => (
-              <div
-                key={line.num}
-                className={`flex px-4 whitespace-pre ${line.added ? "bg-green/[0.08]" : ""}`}
+    <>
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        {/* ── 1. Breadcrumb ── */}
+        <div className="px-10 pt-5 pb-0 shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
+            <span className="text-ink-3">{projectName}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink-3">Schemas</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">{schemaDetail.displayName}</span>
+          </nav>
+        </div>
+
+        {/* ── 2. Heading area ── */}
+        <div className="px-10 pb-4 shrink-0 flex items-start justify-between gap-8">
+          <div>
+            {/* Schema name + badges */}
+            <div className="flex items-center gap-3 mb-1">
+              <h1
+                className="font-display text-[30px] font-medium leading-none tracking-tight text-ink"
+                style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
               >
-                <span className="text-cream-4 min-w-[1.9rem] text-right pr-3 select-none">
-                  {line.num}
+                {schemaDetail.displayName}
+              </h1>
+              {currentVersion > 0 && (
+                <span className="font-mono text-[11px] text-ink-4 border border-border rounded-sm px-1.5 py-0.5">
+                  v{currentVersion}
                 </span>
-                <span className={`w-2.5 shrink-0 text-center font-medium ${line.added ? "text-green" : ""}`}>
-                  {line.added ? "+" : ""}
+              )}
+              {hasChanges && (
+                <span className="font-mono text-[10px] font-medium text-cream bg-vermillion-2 rounded-sm px-1.5 py-0.5 uppercase tracking-[0.06em]">
+                  {changedLines} unsaved
                 </span>
-                <span
-                  className="flex-1"
-                  dangerouslySetInnerHTML={{ __html: line.content || "&nbsp;" }}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="px-3.5 py-2 border-t border-border font-mono text-[10px] text-ink-4 flex items-center justify-between">
-            <span>
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-green mr-1.5 align-[1px]" />
-              YAML valid · 8 fields declared
-            </span>
-            <span>Ln 24, Col 12</span>
-          </div>
-        </div>,
+              )}
+            </div>
 
-        /* Right: Document preview with extraction results */
-        <div key="doc" className="flex flex-col h-full">
-          {/* Confidence strip */}
-          <div className="flex items-center gap-4 px-4 py-3 border-b border-border">
-            <div className="flex flex-col gap-0.5">
-              <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">
-                Confidence
-              </span>
-              <span
-                className="font-display text-xl font-medium text-green leading-none"
-                style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}
-              >
-                0.97
-              </span>
-            </div>
-            <div className="w-px h-7 bg-border" />
-            <div className="flex flex-col gap-0.5">
-              <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">
-                Duration
-              </span>
-              <span
-                className="font-display text-xl font-medium text-ink leading-none"
-                style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}
-              >
-                2.3<span className="font-body text-[11px] font-normal text-ink-3 ml-0.5">s</span>
-              </span>
-            </div>
-            <div className="w-px h-7 bg-border" />
-            <div className="flex flex-col gap-0.5">
-              <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">
-                Fields
-              </span>
-              <span
-                className="font-display text-xl font-medium text-green leading-none"
-                style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}
-              >
-                8<span className="font-body text-[11px] font-normal text-ink-3 ml-0.5">/ 8</span>
-              </span>
-            </div>
-            <div className="ml-auto font-mono text-[10px] text-ink-4 uppercase tracking-[0.08em] flex items-center gap-2">
-              <span className="w-[7px] h-[7px] rounded-full bg-vermillion-2 animate-pulse" />
-              Last run 3s ago
-            </div>
-          </div>
-
-          {/* Document + field results side by side */}
-          <div className="flex-1 grid grid-cols-[1fr_0.9fr] gap-px bg-border overflow-hidden">
-            {/* Document preview */}
-            <div className="bg-gradient-to-b from-cream-2 to-cream-3 flex justify-center p-6 overflow-auto">
-              <div
-                className="relative w-full max-w-[460px] bg-[#FFFCF4] shadow-[0_1px_0_rgba(23,20,16,0.05),0_8px_24px_rgba(23,20,16,0.12),0_2px_6px_rgba(23,20,16,0.08)] p-7 font-serif text-[10px] text-[#2A2420] leading-[1.4]"
-                style={{ aspectRatio: "8.5 / 11" }}
-              >
-                <div className="flex justify-between pb-3 border-b border-[#D4CDB8] mb-4">
-                  <div>
-                    <div className="text-lg font-medium text-[#1A1612] tracking-tight">Brighton &amp; Co.</div>
-                    <div className="text-[8px] text-[#736755] mt-0.5 uppercase tracking-[0.05em]">Contractors</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[26px] font-normal text-[#1A1612] tracking-[0.04em] leading-none">INVOICE</div>
-                    <div className="text-[8.5px] text-[#736755] mt-1">No. 2026-087 · Mar 28, 2026</div>
-                  </div>
+            {/* Description */}
+            <div className="flex items-center gap-1.5 mt-1">
+              {editingDescription ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    value={descriptionDraft}
+                    onChange={(e) => setDescriptionDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveDescription();
+                      if (e.key === "Escape") setEditingDescription(false);
+                    }}
+                    className="text-[13px] text-ink-3 bg-transparent border-b border-border outline-none py-0.5 w-80 focus:border-ring"
+                  />
+                  <button onClick={handleSaveDescription} className="text-[11px] text-green font-mono">save</button>
+                  <button onClick={() => setEditingDescription(false)} className="text-[11px] text-ink-4 font-mono">cancel</button>
                 </div>
-                <div className="grid grid-cols-2 gap-5 mb-4 text-[9.5px]">
-                  <div>
-                    <div className="text-[7.5px] font-semibold uppercase tracking-[0.08em] text-[#736755] mb-0.5">From</div>
-                    <div><strong>Brighton &amp; Co. Contractors</strong><br />441 Market Street<br />San Francisco, CA 94105</div>
-                  </div>
-                  <div>
-                    <div className="text-[7.5px] font-semibold uppercase tracking-[0.08em] text-[#736755] mb-0.5">Bill to</div>
-                    <div><strong>Vantage Capital</strong><br />220 Battery Street, Suite 300<br />San Francisco, CA 94111</div>
-                  </div>
-                </div>
-                <table className="w-full border-collapse text-[9px] mb-3">
-                  <thead>
-                    <tr>
-                      <th className="text-left text-[7.5px] font-semibold uppercase tracking-[0.08em] text-[#736755] py-1.5 border-b border-[#B0A688]">Description</th>
-                      <th className="text-right text-[7.5px] font-semibold uppercase tracking-[0.08em] text-[#736755] py-1.5 border-b border-[#B0A688]">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr><td className="py-1 border-b border-dotted border-[#D4CDB8]">Foundation inspection</td><td className="text-right py-1 border-b border-dotted border-[#D4CDB8] tabular-nums">$3,750.00</td></tr>
-                    <tr><td className="py-1 border-b border-dotted border-[#D4CDB8]">Materials + labor</td><td className="text-right py-1 border-b border-dotted border-[#D4CDB8] tabular-nums">$500.00</td></tr>
-                  </tbody>
-                </table>
-                <div className="ml-auto w-[45%] text-[9.5px]">
-                  <div className="flex justify-between py-0.5">
-                    <span>Subtotal</span><span className="tabular-nums">$3,950.00</span>
-                  </div>
-                  <div className="flex justify-between py-0.5">
-                    <span>Tax</span><span className="tabular-nums">$300.00</span>
-                  </div>
-                  <div className="flex justify-between pt-1.5 mt-0.5 border-t-2 border-[#1A1612] font-semibold text-[12px]">
-                    <span>TOTAL</span><span className="tabular-nums">$4,250.00</span>
-                  </div>
-                </div>
-
-                {/* Extraction overlays */}
-                <div className="absolute top-[42px] right-8 w-[118px] h-[13px] border-[1.5px] border-vermillion-2 bg-vermillion-2/[0.06] rounded-sm" />
-                <div className="absolute top-[58px] right-8 w-[92px] h-[12px] border-[1.5px] border-vermillion-2 bg-vermillion-2/[0.06] rounded-sm" />
-                <div className="absolute top-[102px] left-8 w-[128px] h-[13px] border-[1.5px] border-vermillion-2 bg-vermillion-2/[0.06] rounded-sm" />
-                <div className="absolute top-[102px] left-[50%] ml-[-20px] w-[108px] h-[13px] border-[1.5px] border-vermillion-2 bg-vermillion-2/[0.06] rounded-sm" />
-                <div className="absolute bottom-[132px] right-8 w-[175px] h-[24px] border-2 border-vermillion-2 bg-vermillion-2/[0.14] rounded-sm shadow-[0_0_0_3px_rgba(153,39,24,0.08)]" />
-              </div>
-            </div>
-
-            {/* Field results */}
-            <div className="flex flex-col bg-cream overflow-auto">
-              <div className="flex items-baseline justify-between px-4 py-3 border-b border-border">
-                <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
-                  Extracted fields
-                </span>
-                <span className="font-mono text-[10px] text-ink-3">8 / 8</span>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {MOCK_EXTRACTION.map((f) => (
-                  <div
-                    key={f.name}
-                    className="grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px]"
-                    style={{ gridTemplateColumns: "auto 1fr auto" }}
+              ) : (
+                <>
+                  <span className="text-[13px] text-ink-3">
+                    {schemaDetail.description || "Add a description..."}
+                  </span>
+                  <button
+                    onClick={() => { setDescriptionDraft(schemaDetail.description ?? ""); setEditingDescription(true); }}
+                    className="text-ink-4 hover:text-ink transition-colors p-0.5"
                   >
-                    <span className="font-mono text-[11px] text-ink font-medium">{f.name}</span>
-                    <span className="font-mono text-[11px] text-ink-2 truncate min-w-0">{f.value}</span>
-                    <span className="font-mono text-[9.5px] text-green">{f.confidence.toFixed(2)}</span>
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Right: action buttons */}
+          <div className="flex items-center gap-2 shrink-0 pt-1">
+            <div className="relative" ref={historyRef}>
+              <button onClick={() => setShowHistory(!showHistory)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
+                <History className="w-3.5 h-3.5" />
+                History
+              </button>
+
+              {/* Version history dropdown */}
+              {showHistory && (
+                <div className="absolute right-0 top-full mt-1 w-[320px] bg-white border border-border rounded-sm shadow-lg z-30 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border font-mono text-[9.5px] font-medium tracking-[0.1em] uppercase text-ink-4">
+                    Version history
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {(versions ?? []).map((v) => (
+                      <button key={v.id} onClick={() => handleLoadVersion(v)}
+                        className="w-full text-left px-3 py-2.5 hover:bg-cream-2 transition-colors flex items-center justify-between group border-b border-dotted border-border last:border-none">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-[11px] text-ink font-medium">v{v.versionNumber}</span>
+                            <span className="text-[10px] text-ink-4">{v.committedByName}</span>
+                            <span className="text-[10px] text-ink-4">{timeAgo(v.createdAt)}</span>
+                          </div>
+                          {v.commitMessage && (
+                            <div className="text-[11px] text-ink-3 truncate mt-0.5">{v.commitMessage}</div>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-vermillion-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2">
+                          load
+                        </span>
+                      </button>
+                    ))}
+                    {(versions ?? []).length === 0 && (
+                      <div className="px-3 py-4 text-[12px] text-ink-4 text-center">No versions yet</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button onClick={handleDiscard} disabled={!hasChanges}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+              <RotateCcw className="w-3.5 h-3.5" />
+              Discard
+            </button>
+
+            <button onClick={() => setShowCommit(true)} disabled={!hasChanges}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+              Save v{nextVersion}
+            </button>
+          </div>
+        </div>
+
+        {/* ── 3. Workbench panels ── */}
+        <div className="flex-1 min-h-0 grid border-t border-border" style={{
+          gridTemplateColumns: focusPanel === "editor" ? "1fr 0px" : focusPanel === "document" ? "0px 1fr" : "1fr 1.6fr",
+          transition: "grid-template-columns 300ms cubic-bezier(0.4,0,0.2,1)",
+        }}>
+          {/* LEFT: YAML editor with line numbers */}
+          <div className="bg-cream-2/50 min-h-0 flex flex-col border-r border-border overflow-hidden">
+            {/* Editor toolbar */}
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 shrink-0">
+              <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">Editor</span>
+              <button
+                onClick={() => setFocusPanel(focusPanel === "editor" ? "split" : "editor")}
+                className="text-ink-4 hover:text-ink transition-colors p-1 rounded-sm hover:bg-cream-2"
+                title={focusPanel === "editor" ? "Split view" : "Expand editor"}
+              >
+                {focusPanel === "editor" ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto relative">
+              <div className="flex min-h-full">
+                {/* Line numbers gutter */}
+                <div
+                  className="shrink-0 pt-4 pb-4 pl-3 pr-2 text-right select-none font-mono text-[13px] leading-[1.7] text-ink-4/30 border-r border-border/50 bg-cream-2/30 sticky left-0"
+                  aria-hidden
+                >
+                  {yaml.split("\n").map((_, i) => (
+                    <div key={i}>{i + 1}</div>
+                  ))}
+                </div>
+                {/* Editor with YAML syntax highlighting */}
+                <div className="flex-1 relative">
+                  {/* Highlighted layer — determines the natural height */}
+                  <pre
+                    className="pt-4 pb-4 pr-4 pl-3 font-mono text-[13px] leading-[1.7] whitespace-pre-wrap break-words m-0 min-h-full"
+                    style={{ tabSize: 2 }}
+                    aria-hidden
+                    dangerouslySetInnerHTML={{ __html: highlightYaml(yaml) || '<span style="color:#998E78"># Start writing your schema YAML here...</span>' }}
+                  />
+                  {/* Transparent textarea on top for editing */}
+                  <textarea
+                    ref={textareaRef}
+                    value={yaml}
+                    onChange={(e) => setYaml(e.target.value)}
+                    spellCheck={false}
+                    className="absolute inset-0 w-full h-full pt-4 pb-4 pr-4 pl-3 font-mono text-[13px] leading-[1.7] text-transparent bg-transparent resize-none outline-none border-none overflow-hidden caret-ink"
+                    style={{ tabSize: 2, caretColor: "#171410" }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Validation errors panel */}
+            {commitErrors.length > 0 && (
+              <div className="border-t border-vermillion-2/30 bg-vermillion-3/30 p-3 max-h-[180px] overflow-y-auto shrink-0">
+                <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-vermillion-2 mb-1.5">
+                  Validation errors
+                </div>
+                {commitErrors.map((e, i) => (
+                  <div key={i} className="text-[11px] text-vermillion-2 font-mono py-0.5">
+                    {e.field ? `${e.field}: ` : ""}{e.message}
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* RIGHT: Document + extraction */}
+          <div className="bg-cream min-h-0 flex flex-col border-l border-border overflow-hidden">
+            {/* Document controls bar */}
+            <div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setFocusPanel(focusPanel === "document" ? "split" : "document")}
+                  className="text-ink-4 hover:text-ink transition-colors p-1 rounded-sm hover:bg-cream-2"
+                  title={focusPanel === "document" ? "Split view" : "Expand document"}
+                >
+                  {focusPanel === "document" ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                </button>
+                <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Document</span>
+                <select
+                  value={selectedDocId ?? ""}
+                  onChange={(e) => setSelectedDocId(e.target.value || null)}
+                  className="h-[26px] rounded-sm border border-input bg-white px-2 text-[12px] outline-none focus:border-ring min-w-[160px]"
+                >
+                  <option value="">Select...</option>
+                  {(corpusEntries ?? []).map((e) => (
+                    <option key={e.id} value={e.id}>{e.filename}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload className="w-3 h-3" />
+                  {uploading ? "Uploading..." : "Upload"}
+                  <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                    onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
+                </label>
+                <button onClick={handleRun} disabled={!selectedDoc || extracting}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
+                  <Play className="w-3 h-3" />
+                  {extracting ? "Running..." : "Run"}
+                  <kbd className="font-mono text-[9px] text-cream/50 ml-0.5">⌘↵</kbd>
+                </button>
+              </div>
+            </div>
+
+            {/* Document content area */}
+            <div className="flex-1 overflow-y-auto">
+              {!selectedDoc ? (
+                /* No document selected */
+                <div className="h-full flex flex-col items-center justify-center text-center p-5">
+                  <label className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px] cursor-pointer hover:border-ink-4 transition-colors">
+                    <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
+                    <div className="text-[13px] text-ink-3 mb-1">
+                      {(corpusEntries ?? []).length === 0 ? "Upload a test document" : "Upload another document"}
+                    </div>
+                    <div className="text-[11px] text-ink-4">
+                      PDF, PNG, JPG, or TIFF — click or drag a file here
+                    </div>
+                    <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                      onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
+                  </label>
+
+                  {/* Field preview */}
+                  {fields.length > 0 && (
+                    <div className="w-full max-w-[360px] mt-6">
+                      <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2 text-left">
+                        Schema fields ({fields.length})
+                      </div>
+                      <div className="space-y-1.5">
+                        {fields.map((f) => (
+                          <div key={f.name} className="flex items-center gap-2 px-2.5 py-1.5 border border-border rounded-sm text-left">
+                            <span className="font-mono text-[11px] text-ink font-medium">{f.name}</span>
+                            <span className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase">{f.type}</span>
+                            {f.required && <span className="font-mono text-[8px] text-vermillion-2 uppercase">req</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {parseError && (
+                    <div className="w-full max-w-[360px] mt-4 text-left">
+                      <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
+                        YAML parse error: {parseError}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Document selected — show preview + results */
+                <div className="p-2 h-full flex flex-col">
+                  {/* Document preview */}
+                  {docPreviewUrl ? (
+                    selectedDoc.mimeType === "application/pdf" ? (
+                      <iframe
+                        src={docPreviewUrl}
+                        className={`w-full border border-border rounded-sm ${extractionResult ? "h-[40%] shrink-0" : "flex-1 min-h-0"}`}
+                        title={selectedDoc.filename}
+                      />
+                    ) : (
+                      <img
+                        src={docPreviewUrl}
+                        alt={selectedDoc.filename}
+                        className="w-full border border-border rounded-sm max-h-[40%] object-contain"
+                      />
+                    )
+                  ) : (
+                    <div className="h-[200px] border border-border rounded-sm flex items-center justify-center shrink-0">
+                      <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
+                    </div>
+                  )}
+
+                  {/* Extraction results */}
+                  {extracting && (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="animate-pulse font-mono text-[11px] text-ink-4">Extracting...</div>
+                    </div>
+                  )}
+
+                  {extractionResult && !extracting && (
+                    <div className="flex-1 min-h-0 overflow-y-auto mt-2">
+                      {extractionResult.error ? (
+                        <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
+                          {extractionResult.error}
+                        </div>
+                      ) : (
+                        <>
+                          {/* Metadata strip */}
+                          <div className="flex items-center gap-3 px-2 py-1.5 mb-2 text-[10px] font-mono text-ink-4">
+                            <span>{Object.keys(extractionResult.extracted).length} fields</span>
+                            {extractionResult.elapsed_ms && <span>{(extractionResult.elapsed_ms / 1000).toFixed(1)}s</span>}
+                            {extractionResult.model && <span>{extractionResult.model}</span>}
+                            {extractionResult.confidence > 0 && (
+                              <span className={extractionResult.confidence >= 0.9 ? "text-green" : "text-vermillion-2"}>
+                                {(extractionResult.confidence * 100).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Results table */}
+                          <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
+                            {Object.entries(extractionResult.extracted).map(([key, value]) => (
+                              <div key={key} className="flex items-start justify-between px-3 py-2 gap-3">
+                                <span className="font-mono text-[11px] text-ink-4 shrink-0">{key}</span>
+                                <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                  {typeof value === "object" ? JSON.stringify(value) : String(value ?? "—")}
+                                </span>
+                                {extractionResult.confidence_scores?.[key] !== undefined && (
+                                  <div className="shrink-0 w-12 h-1.5 bg-cream-2 rounded-full overflow-hidden mt-1.5">
+                                    <div
+                                      className={`h-full rounded-full ${extractionResult.confidence_scores[key]! >= 0.9 ? "bg-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "bg-yellow-500" : "bg-vermillion-2"}`}
+                                      style={{ width: `${(extractionResult.confidence_scores[key]! * 100)}%` }}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        </div>,
-      ]}
-    />
+        </div>
+      </div>
+
+      {/* ── Commit dialog ── */}
+      {showCommit && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+          <div className="absolute inset-0 bg-ink/20" onClick={() => setShowCommit(false)} />
+          <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+            <h2 className="text-[15px] font-medium text-ink mb-1">Save version v{nextVersion}</h2>
+            <p className="text-[12.5px] text-ink-3 mb-5">
+              This will validate the schema YAML and create a new committed version.
+            </p>
+
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Commit message</label>
+                <input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} autoFocus
+                  placeholder="e.g. Add line_items array field"
+                  data-1p-ignore autoComplete="off"
+                  onKeyDown={(e) => { if (e.key === "Enter" && !committing) handleCommit(); }}
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+              </div>
+
+              {commitError && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{commitError}</div>}
+
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={() => { setShowCommit(false); setCommitError(null); setCommitErrors([]); }}
+                  className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
+                <button onClick={handleCommit} disabled={committing}
+                  className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50">
+                  {committing ? "Saving..." : `Save v${nextVersion}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

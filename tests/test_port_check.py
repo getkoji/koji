@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from cli.cluster import _get_port_map, check_port_conflicts, find_available_base_port
-from server.config import KojiConfig
+from cli.config import KojiConfig
 
 
 def _make_config(base_port: int = 9400) -> KojiConfig:

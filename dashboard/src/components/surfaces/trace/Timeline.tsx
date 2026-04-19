@@ -1,6 +1,6 @@
 "use client";
 
-import type { TraceStage } from "@/lib/mock-trace";
+import type { TraceStage } from "@/lib/types";
 
 const dotColor = { ok: "bg-green", warn: "bg-[#B6861A]", fail: "bg-vermillion-2" };
 const dotRing = {

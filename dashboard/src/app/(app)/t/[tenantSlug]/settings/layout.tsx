@@ -4,23 +4,22 @@ import { usePathname } from "next/navigation";
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { useSettingsExtensions } from "@/components/shell/SettingsExtensions";
 
-const CORE_TITLES: Record<string, string> = {
+const TITLES: Record<string, string> = {
+  general: "General",
   members: "Members",
-  "api-keys": "API Keys",
-  endpoints: "Endpoints",
-  webhooks: "Webhooks",
+  "model-catalog": "Model Catalog",
 };
 
-export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+export default function TenantSettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { titleMap: extensionTitles } = useSettingsExtensions();
   const segment = pathname.split("/settings/")[1]?.split("/")[0] ?? "members";
-  const title = CORE_TITLES[segment] ?? extensionTitles[segment] ?? "Settings";
+  const title = TITLES[segment] ?? extensionTitles[segment] ?? "Settings";
 
   return (
     <div className="flex flex-col h-[calc(100vh-60px)]">
       <StickyHeader>
-        <Breadcrumbs items={[{ label: "Settings" }, { label: title }]} />
+        <Breadcrumbs items={[{ label: "Organization" }, { label: title }]} />
         <PageHeader title={title} />
       </StickyHeader>
       <div className="flex-1 overflow-y-auto px-10 pt-6 pb-8">

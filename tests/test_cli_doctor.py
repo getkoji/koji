@@ -16,7 +16,7 @@ from cli.doctor import (
     check_ports_available,
     run_all_checks,
 )
-from server.config import KojiConfig
+from cli.config import KojiConfig
 
 # ── Docker checks ─────────────────────────────────────────────────────
 
