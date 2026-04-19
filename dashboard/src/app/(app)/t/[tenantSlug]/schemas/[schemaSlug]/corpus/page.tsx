@@ -43,6 +43,19 @@ const SUGGESTED_TAGS = [
   "synthetic",
 ];
 
+const TAG_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
+  "production-quality": { bg: "bg-green/15", text: "text-green", dot: "bg-green" },
+  "edge-case":          { bg: "bg-yellow-500/15", text: "text-yellow-600", dot: "bg-yellow-500" },
+  "adversarial":        { bg: "bg-vermillion-3", text: "text-vermillion-2", dot: "bg-vermillion-2" },
+  "hold-out":           { bg: "bg-blue-500/15", text: "text-blue-600", dot: "bg-blue-500" },
+  "regression":         { bg: "bg-orange-500/15", text: "text-orange-600", dot: "bg-orange-500" },
+  "synthetic":          { bg: "bg-purple-500/15", text: "text-purple-600", dot: "bg-purple-500" },
+};
+
+const DEFAULT_TAG_COLOR = { bg: "bg-cream-2", text: "text-ink-3", dot: "bg-ink-4" };
+
+function tagColor(tag: string) { return TAG_COLORS[tag] ?? DEFAULT_TAG_COLOR; }
+
 function parseFields(yaml: string | null): SchemaField[] {
   if (!yaml) return [];
   try {
@@ -216,7 +229,16 @@ export default function CorpusPage() {
                 : filtered.map((e) => (
                   <button key={e.id} onClick={() => setSelectedId(e.id)}
                     className={`w-full text-left px-2 py-2 border-b border-dotted border-border transition-colors ${selectedId === e.id ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
-                    <div className="font-mono text-[10px] text-ink truncate">{e.filename}</div>
+                    <div className="flex items-center gap-1.5">
+                      {e.tags.length > 0 && (
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          {e.tags.map((t) => (
+                            <span key={t} className={`w-2 h-2 rounded-full ${tagColor(t).dot}`} title={t} />
+                          ))}
+                        </div>
+                      )}
+                      <span className="font-mono text-[10px] text-ink truncate">{e.filename}</span>
+                    </div>
                     <div className="flex items-center gap-1 mt-0.5">
                       <span className={`font-mono text-[8px] px-1 py-0.5 rounded-sm uppercase ${e.source === "upload" ? "bg-cream-2 text-ink-4" : "bg-green/10 text-green"}`}>{e.source}</span>
                       <span className="font-mono text-[8px] text-ink-4">{timeAgo(e.createdAt)}</span>
@@ -254,24 +276,30 @@ export default function CorpusPage() {
               <div className="space-y-1.5">
                 {/* Active tags */}
                 <div className="flex items-center gap-1 flex-wrap">
-                  {selected.tags.map((t) => (
-                    <span key={t} className="inline-flex items-center gap-0.5 font-mono text-[9px] font-medium px-1.5 py-0.5 rounded-sm bg-cream-2 text-ink-3 uppercase">
-                      {t}
-                      {hasPermission("corpus:write") && <button onClick={() => handleRemoveTag(t)} className="text-ink-4 hover:text-vermillion-2 ml-0.5"><X className="w-2.5 h-2.5" /></button>}
-                    </span>
-                  ))}
+                  {selected.tags.map((t) => {
+                    const c = tagColor(t);
+                    return (
+                      <span key={t} className={`inline-flex items-center gap-0.5 font-mono text-[9px] font-medium px-1.5 py-0.5 rounded-sm uppercase ${c.bg} ${c.text}`}>
+                        {t}
+                        {hasPermission("corpus:write") && <button onClick={() => handleRemoveTag(t)} className="opacity-60 hover:opacity-100 ml-0.5"><X className="w-2.5 h-2.5" /></button>}
+                      </span>
+                    );
+                  })}
                 </div>
                 {/* Suggested + freeform */}
                 {hasPermission("corpus:write") && (
                   <div className="flex items-center gap-1 flex-wrap">
-                    {SUGGESTED_TAGS.filter((t) => !selected.tags.includes(t)).map((t) => (
-                      <button key={t} onClick={async () => {
-                        await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: [...selected.tags, t] });
-                        refetch();
-                      }} className="font-mono text-[8px] text-ink-4 hover:text-ink px-1.5 py-0.5 rounded-sm border border-dashed border-border hover:border-ink/30 transition-colors uppercase">
-                        + {t}
-                      </button>
-                    ))}
+                    {SUGGESTED_TAGS.filter((t) => !selected.tags.includes(t)).map((t) => {
+                      const c = tagColor(t);
+                      return (
+                        <button key={t} onClick={async () => {
+                          await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: [...selected.tags, t] });
+                          refetch();
+                        }} className={`font-mono text-[8px] px-1.5 py-0.5 rounded-sm border border-dashed transition-colors uppercase ${c.text} border-current/30 hover:${c.bg} opacity-50 hover:opacity-100`}>
+                          + {t}
+                        </button>
+                      );
+                    })}
                     {showTagInput ? (
                       <form onSubmit={(e) => { e.preventDefault(); handleAddTag(); }} className="inline-flex">
                         <input value={newTag} onChange={(e) => setNewTag(e.target.value)} autoFocus placeholder="custom tag" data-1p-ignore autoComplete="off"
