@@ -133,6 +133,15 @@ export default function BuildPage() {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionResult, setExtractionResult] = useState<{
+    extracted: Record<string, unknown>;
+    confidence: number;
+    confidence_scores?: Record<string, number>;
+    model?: string;
+    elapsed_ms?: number;
+    error?: string;
+  } | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
 
   // Corpus entries for this schema
@@ -165,6 +174,10 @@ export default function BuildPage() {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         if (hasChanges) setShowCommit(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (selectedDocId && yaml) handleRun();
       }
     }
     document.addEventListener("keydown", handleKeyDown);
@@ -211,6 +224,33 @@ export default function BuildPage() {
   function handleLoadVersion(v: SchemaVersion) {
     api.get<{ yamlSource: string }>(`/api/schemas/${schemaSlug}/versions/${v.versionNumber}`)
       .then((data) => { setYaml(data.yamlSource); setShowHistory(false); });
+  }
+
+  async function handleRun() {
+    if (!selectedDocId || !yaml) return;
+    setExtracting(true);
+    setExtractionResult(null);
+    try {
+      const result = await api.post<{
+        extracted: Record<string, unknown>;
+        confidence: number;
+        confidence_scores?: Record<string, number>;
+        model?: string;
+        elapsed_ms?: number;
+      }>("/api/extract/run", {
+        corpus_entry_id: selectedDocId,
+        schema_yaml: yaml,
+      });
+      setExtractionResult(result);
+    } catch (err: unknown) {
+      setExtractionResult({
+        extracted: {},
+        confidence: 0,
+        error: err instanceof Error ? err.message : "Extraction failed",
+      });
+    } finally {
+      setExtracting(false);
+    }
   }
 
   async function handleUploadDoc(file: File) {
@@ -453,10 +493,10 @@ export default function BuildPage() {
                   <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
                     onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                 </label>
-                <button disabled={!selectedDoc}
+                <button onClick={handleRun} disabled={!selectedDoc || extracting}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
                   <Play className="w-3 h-3" />
-                  Run
+                  {extracting ? "Running..." : "Run"}
                   <kbd className="font-mono text-[9px] text-cream/50 ml-0.5">⌘↵</kbd>
                 </button>
               </div>
@@ -506,29 +546,79 @@ export default function BuildPage() {
                   )}
                 </div>
               ) : (
-                /* Document selected — show preview */
+                /* Document selected — show preview + results */
                 <div className="p-2 h-full flex flex-col">
                   {/* Document preview */}
                   {docPreviewUrl ? (
                     selectedDoc.mimeType === "application/pdf" ? (
                       <iframe
                         src={docPreviewUrl}
-                        className="w-full flex-1 min-h-0 border border-border rounded-sm"
+                        className={`w-full border border-border rounded-sm ${extractionResult ? "h-[40%] shrink-0" : "flex-1 min-h-0"}`}
                         title={selectedDoc.filename}
                       />
                     ) : (
                       <img
                         src={docPreviewUrl}
                         alt={selectedDoc.filename}
-                        className="w-full border border-border rounded-sm"
+                        className="w-full border border-border rounded-sm max-h-[40%] object-contain"
                       />
                     )
                   ) : (
-                    <div className="h-[300px] border border-border rounded-sm flex items-center justify-center">
+                    <div className="h-[200px] border border-border rounded-sm flex items-center justify-center shrink-0">
                       <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
                     </div>
                   )}
 
+                  {/* Extraction results */}
+                  {extracting && (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="animate-pulse font-mono text-[11px] text-ink-4">Extracting...</div>
+                    </div>
+                  )}
+
+                  {extractionResult && !extracting && (
+                    <div className="flex-1 min-h-0 overflow-y-auto mt-2">
+                      {extractionResult.error ? (
+                        <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
+                          {extractionResult.error}
+                        </div>
+                      ) : (
+                        <>
+                          {/* Metadata strip */}
+                          <div className="flex items-center gap-3 px-2 py-1.5 mb-2 text-[10px] font-mono text-ink-4">
+                            <span>{Object.keys(extractionResult.extracted).length} fields</span>
+                            {extractionResult.elapsed_ms && <span>{(extractionResult.elapsed_ms / 1000).toFixed(1)}s</span>}
+                            {extractionResult.model && <span>{extractionResult.model}</span>}
+                            {extractionResult.confidence > 0 && (
+                              <span className={extractionResult.confidence >= 0.9 ? "text-green" : "text-vermillion-2"}>
+                                {(extractionResult.confidence * 100).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Results table */}
+                          <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
+                            {Object.entries(extractionResult.extracted).map(([key, value]) => (
+                              <div key={key} className="flex items-start justify-between px-3 py-2 gap-3">
+                                <span className="font-mono text-[11px] text-ink-4 shrink-0">{key}</span>
+                                <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                  {typeof value === "object" ? JSON.stringify(value) : String(value ?? "—")}
+                                </span>
+                                {extractionResult.confidence_scores?.[key] !== undefined && (
+                                  <div className="shrink-0 w-12 h-1.5 bg-cream-2 rounded-full overflow-hidden mt-1.5">
+                                    <div
+                                      className={`h-full rounded-full ${extractionResult.confidence_scores[key]! >= 0.9 ? "bg-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "bg-yellow-500" : "bg-vermillion-2"}`}
+                                      style={{ width: `${(extractionResult.confidence_scores[key]! * 100)}%` }}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
