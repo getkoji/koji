@@ -260,3 +260,110 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
 
   return c.json(newVersion, 201);
 });
+
+// ── Corpus (documents for testing/validation) ──
+
+/**
+ * GET /api/schemas/:slug/corpus — list corpus entries for this schema.
+ */
+schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.corpusEntries.id,
+      filename: schema.corpusEntries.filename,
+      fileSize: schema.corpusEntries.fileSize,
+      mimeType: schema.corpusEntries.mimeType,
+      source: schema.corpusEntries.source,
+      tags: schema.corpusEntries.tags,
+      createdAt: schema.corpusEntries.createdAt,
+    }).from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .orderBy(desc(schema.corpusEntries.createdAt))
+  );
+
+  return c.json({ data: rows });
+});
+
+/**
+ * POST /api/schemas/:slug/corpus — upload a document to the corpus.
+ * Creates a corpus entry with source='upload' and empty ground truth.
+ * File is stored via the storage provider (S3/MinIO).
+ */
+schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const storage = c.get("storage");
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+
+  if (!(file instanceof File)) {
+    return c.json({ error: "file is required (multipart form with 'file' field)" }, 400);
+  }
+
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+  const { createHash } = await import("node:crypto");
+  const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
+
+  // Store to S3
+  const storageKey = `corpus/${tenantId}/${s.id}/${Date.now()}-${file.name}`;
+  await storage.put(storageKey, fileBuffer, {
+    contentType: file.type || "application/octet-stream",
+  });
+
+  const [row] = await withRLS(db, tenantId, (tx) =>
+    tx.insert(schema.corpusEntries).values({
+      tenantId,
+      schemaId: s.id,
+      filename: file.name,
+      storageKey,
+      fileSize: file.size,
+      mimeType: file.type || "application/octet-stream",
+      contentHash,
+      source: "upload",
+      groundTruthJson: {}, // empty until promoted
+      addedBy: principal.userId,
+    }).returning()
+  );
+
+  return c.json(row, 201);
+});
+
+/**
+ * GET /api/schemas/:slug/corpus/:entryId/url — get a signed URL for the file.
+ * The browser fetches directly from S3/MinIO using this URL.
+ */
+schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const storage = c.get("storage");
+  const entryId = c.req.param("entryId")!;
+
+  const [entry] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ storageKey: schema.corpusEntries.storageKey })
+      .from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.id, entryId))
+      .limit(1)
+  );
+
+  if (!entry) return c.json({ error: "Corpus entry not found" }, 404);
+
+  const url = await storage.getSignedUrl(entry.storageKey, 3600);
+  return c.json({ url });
+});

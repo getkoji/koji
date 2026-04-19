@@ -49,6 +49,14 @@ class ClusterConfig(BaseModel):
     def extract_port(self) -> int:
         return self.base_port + 12
 
+    @property
+    def minio_port(self) -> int:
+        return self.base_port + 15
+
+    @property
+    def minio_console_port(self) -> int:
+        return self.base_port + 16
+
 
 class ClassifyTypeConfig(BaseModel):
     """A document type the classifier can emit for a section."""
@@ -90,6 +98,17 @@ class OutputConfig(BaseModel):
     raw_markdown: str | None = None
 
 
+class StorageConfig(BaseModel):
+    """Object storage configuration. Defaults to MinIO in the local cluster."""
+    provider: str = "s3"  # only 's3' for now (covers MinIO, AWS, R2)
+    endpoint: str | None = None  # auto-set to MinIO container in cluster mode
+    bucket: str = "koji"
+    access_key: str = "koji"
+    secret_key: str = "kojisecret"
+    region: str = "us-east-1"
+    force_path_style: bool = True  # required for MinIO, not for AWS/R2
+
+
 class ServicesConfig(BaseModel):
     parse: bool = True
     ollama: bool = True
@@ -104,6 +123,7 @@ class WebhookConfig(BaseModel):
 class KojiConfig(BaseModel):
     project: str = "koji"
     cluster: ClusterConfig = Field(default_factory=ClusterConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     services: ServicesConfig = Field(default_factory=ServicesConfig)
     pipeline: list[PipelineStep] = Field(default_factory=list)
     models: ModelsConfig = Field(default_factory=ModelsConfig)

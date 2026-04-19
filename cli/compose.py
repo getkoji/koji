@@ -166,6 +166,57 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
 
     services["koji-extract"] = extract_svc
 
+    # ── MinIO (S3-compatible object storage) ──
+    minio_secret = config.storage.secret_key
+    services["koji-minio"] = {
+        "image": "minio/minio:latest",
+        "container_name": f"koji-{project}-minio",
+        "command": "server /data --console-address :9001",
+        "ports": [
+            f"127.0.0.1:{cluster.minio_port}:9000",
+            f"127.0.0.1:{cluster.minio_console_port}:9001",
+        ],
+        "environment": {
+            "MINIO_ROOT_USER": config.storage.access_key,
+            "MINIO_ROOT_PASSWORD": minio_secret,
+        },
+        "volumes": [
+            f"koji-{project}-minio-data:/data",
+        ],
+        "healthcheck": {
+            "test": ["CMD", "mc", "ready", "local"],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 5,
+        },
+        "restart": "unless-stopped",
+        "networks": [net],
+    }
+
+    # MinIO init — create the default bucket on first boot
+    services["koji-minio-init"] = {
+        "image": "minio/mc:latest",
+        "container_name": f"koji-{project}-minio-init",
+        "depends_on": {
+            "koji-minio": {"condition": "service_healthy"},
+        },
+        "entrypoint": "/bin/sh -c",
+        "command": [
+            f"mc alias set koji http://koji-{project}-minio:9000 {config.storage.access_key} {minio_secret} && "
+            f"mc mb koji/{config.storage.bucket} --ignore-existing"
+        ],
+        "networks": [net],
+    }
+
+    # Wire S3 env vars into the API server
+    services["koji-api"]["environment"]["KOJI_S3_ENDPOINT"] = f"http://koji-{project}-minio:9000"
+    services["koji-api"]["environment"]["KOJI_S3_BUCKET"] = config.storage.bucket
+    services["koji-api"]["environment"]["KOJI_S3_ACCESS_KEY"] = config.storage.access_key
+    services["koji-api"]["environment"]["KOJI_S3_SECRET_KEY"] = minio_secret
+    services["koji-api"]["environment"]["KOJI_S3_REGION"] = config.storage.region
+    services["koji-api"]["environment"]["KOJI_S3_FORCE_PATH_STYLE"] = str(config.storage.force_path_style).lower()
+    services["koji-api"]["depends_on"]["koji-minio"] = {"condition": "service_healthy"}
+
     # ── Mailpit (email catcher for dev / self-hosted) ──
     services["koji-mailpit"] = {
         "image": "axllent/mailpit:latest",
@@ -205,6 +256,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
     # ── Volumes ──
     volumes: dict = {
         f"koji-{project}-pgdata": {},
+        f"koji-{project}-minio-data": {},
     }
     if svc_cfg.ollama:
         volumes[f"koji-{project}-ollama-data"] = {}

@@ -31,6 +31,15 @@ interface SchemaVersion {
   createdAt: string;
 }
 
+interface CorpusEntry {
+  id: string;
+  filename: string;
+  fileSize: number;
+  mimeType: string;
+  source: string;
+  createdAt: string;
+}
+
 interface ParsedField {
   name: string;
   type: string;
@@ -121,8 +130,17 @@ export default function BuildPage() {
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
-  const [sampleFile, setSampleFile] = useState<File | null>(null);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
+
+  // Corpus entries for this schema
+  const { data: corpusEntries, refetch: refetchCorpus } = useApi(
+    useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
+  );
+
+  const selectedDoc = (corpusEntries ?? []).find((e) => e.id === selectedDocId) ?? null;
 
   // Initialize editor
   useEffect(() => {
@@ -195,6 +213,35 @@ export default function BuildPage() {
       .then((data) => { setYaml(data.yamlSource); setShowHistory(false); });
   }
 
+  async function handleUploadDoc(file: File) {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const result = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/schemas/${schemaSlug}/corpus`,
+        { method: "POST", body: formData, credentials: "include",
+          headers: { "x-koji-tenant": tenantSlug } },
+      );
+      if (!result.ok) throw new Error(`Upload failed: ${result.status}`);
+      const entry = await result.json() as CorpusEntry;
+      refetchCorpus();
+      setSelectedDocId(entry.id);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // Load signed URL when document is selected
+  useEffect(() => {
+    if (!selectedDocId) { setDocPreviewUrl(null); return; }
+    api.get<{ url: string }>(`/api/schemas/${schemaSlug}/corpus/${selectedDocId}/url`)
+      .then((r) => setDocPreviewUrl(r.url))
+      .catch(() => setDocPreviewUrl(null));
+  }, [selectedDocId, schemaSlug]);
+
   async function handleSaveDescription() {
     await api.patch(`/api/schemas/${schemaSlug}`, { description: descriptionDraft });
     setEditingDescription(false);
@@ -232,7 +279,7 @@ export default function BuildPage() {
         <div className="px-10 pb-4 shrink-0 flex items-start justify-between gap-8">
           <div>
             {/* Schema name + badges */}
-            <div className="flex items-baseline gap-3 mb-1">
+            <div className="flex items-center gap-3 mb-1">
               <h1
                 className="font-display text-[30px] font-medium leading-none tracking-tight text-ink"
                 style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
@@ -340,18 +387,32 @@ export default function BuildPage() {
         </div>
 
         {/* ── 3. Workbench panels ── */}
-        <div className="flex-1 min-h-0 grid grid-cols-2 border-t border-border">
-          {/* LEFT: YAML editor */}
-          <div className="bg-ink overflow-y-auto min-h-0 flex flex-col">
-            <textarea
-              ref={textareaRef}
-              value={yaml}
-              onChange={(e) => setYaml(e.target.value)}
-              spellCheck={false}
-              className="flex-1 w-full p-4 font-mono text-[13px] leading-[1.7] text-cream bg-transparent resize-none outline-none border-none placeholder:text-ink-4"
-              style={{ tabSize: 2, caretColor: "#F4EEE2" }}
-              placeholder="# Start writing your schema YAML here..."
-            />
+        <div className="flex-1 min-h-0 grid border-t border-border" style={{ gridTemplateColumns: "1fr 1.6fr" }}>
+          {/* LEFT: YAML editor with line numbers */}
+          <div className="bg-ink min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 overflow-y-auto relative">
+              <div className="flex min-h-full">
+                {/* Line numbers gutter */}
+                <div
+                  className="shrink-0 pt-4 pb-4 pl-4 pr-2 text-right select-none font-mono text-[13px] leading-[1.7] text-ink-4/40 sticky left-0"
+                  aria-hidden
+                >
+                  {yaml.split("\n").map((_, i) => (
+                    <div key={i}>{i + 1}</div>
+                  ))}
+                </div>
+                {/* Editor — overflow hidden so the parent scrolls */}
+                <textarea
+                  ref={textareaRef}
+                  value={yaml}
+                  onChange={(e) => setYaml(e.target.value)}
+                  spellCheck={false}
+                  className="flex-1 w-full pt-4 pb-4 pr-4 pl-2 font-mono text-[13px] leading-[1.7] text-cream bg-transparent resize-none outline-none border-none placeholder:text-ink-4 overflow-hidden"
+                  style={{ tabSize: 2, caretColor: "#F4EEE2", height: `${Math.max(yaml.split("\n").length + 1, 20) * 1.7 * 13}px` }}
+                  placeholder="# Start writing your schema YAML here..."
+                />
+              </div>
+            </div>
 
             {/* Validation errors panel */}
             {commitErrors.length > 0 && (
@@ -374,20 +435,25 @@ export default function BuildPage() {
             <div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Document</span>
-                {sampleFile ? (
-                  <span className="text-[12px] text-ink font-medium truncate max-w-[200px]">{sampleFile.name}</span>
-                ) : (
-                  <span className="text-[12px] text-ink-4">None selected</span>
-                )}
+                <select
+                  value={selectedDocId ?? ""}
+                  onChange={(e) => setSelectedDocId(e.target.value || null)}
+                  className="h-[26px] rounded-sm border border-input bg-white px-2 text-[12px] outline-none focus:border-ring min-w-[160px]"
+                >
+                  <option value="">Select...</option>
+                  {(corpusEntries ?? []).map((e) => (
+                    <option key={e.id} value={e.id}>{e.filename}</option>
+                  ))}
+                </select>
               </div>
               <div className="flex items-center gap-2">
-                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer">
+                <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
                   <Upload className="w-3 h-3" />
-                  Upload
+                  {uploading ? "Uploading..." : "Upload"}
                   <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
-                    onChange={(e) => { if (e.target.files?.[0]) setSampleFile(e.target.files[0]); }} />
+                    onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                 </label>
-                <button disabled={!sampleFile}
+                <button disabled={!selectedDoc}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
                   <Play className="w-3 h-3" />
                   Run
@@ -397,17 +463,20 @@ export default function BuildPage() {
             </div>
 
             {/* Document content area */}
-            <div className="flex-1 overflow-y-auto p-5">
-              {!sampleFile ? (
-                <div className="h-full flex flex-col items-center justify-center text-center">
+            <div className="flex-1 overflow-y-auto">
+              {!selectedDoc ? (
+                /* No document selected */
+                <div className="h-full flex flex-col items-center justify-center text-center p-5">
                   <label className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px] cursor-pointer hover:border-ink-4 transition-colors">
                     <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
-                    <div className="text-[13px] text-ink-3 mb-1">Upload a sample document</div>
+                    <div className="text-[13px] text-ink-3 mb-1">
+                      {(corpusEntries ?? []).length === 0 ? "Upload a test document" : "Upload another document"}
+                    </div>
                     <div className="text-[11px] text-ink-4">
                       PDF, PNG, JPG, or TIFF — click or drag a file here
                     </div>
                     <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
-                      onChange={(e) => { if (e.target.files?.[0]) setSampleFile(e.target.files[0]); }} />
+                      onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                   </label>
 
                   {/* Field preview */}
@@ -437,12 +506,29 @@ export default function BuildPage() {
                   )}
                 </div>
               ) : (
-                /* Document uploaded — ready to run */
-                <div className="text-center py-12">
-                  <div className="font-mono text-[11px] text-ink-4 mb-2">{sampleFile.name}</div>
-                  <div className="text-[13px] text-ink-3">
-                    Click <strong className="text-ink">Run</strong> to extract with the current schema
-                  </div>
+                /* Document selected — show preview */
+                <div className="p-2 h-full flex flex-col">
+                  {/* Document preview */}
+                  {docPreviewUrl ? (
+                    selectedDoc.mimeType === "application/pdf" ? (
+                      <iframe
+                        src={docPreviewUrl}
+                        className="w-full flex-1 min-h-0 border border-border rounded-sm"
+                        title={selectedDoc.filename}
+                      />
+                    ) : (
+                      <img
+                        src={docPreviewUrl}
+                        alt={selectedDoc.filename}
+                        className="w-full border border-border rounded-sm"
+                      />
+                    )
+                  ) : (
+                    <div className="h-[300px] border border-border rounded-sm flex items-center justify-center">
+                      <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>

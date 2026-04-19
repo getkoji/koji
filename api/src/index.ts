@@ -26,6 +26,7 @@ import { modelCatalog } from "./routes/model-catalog";
 import { webhookTargets } from "./routes/webhook-targets";
 import { sources } from "./routes/sources";
 import { pipelinesRouter } from "./routes/pipelines";
+import { S3Storage } from "./storage/s3";
 import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
 import { initEmitter } from "./webhooks/emit";
@@ -47,9 +48,20 @@ const app = new Hono<Env>();
 app.use("*", logger());
 app.use("*", cors({ origin: (origin) => origin || "*", credentials: true }));
 
-// Inject DB into every request
+// Create storage provider
+const storage = new S3Storage({
+  endpoint: process.env.KOJI_S3_ENDPOINT,
+  bucket: process.env.KOJI_S3_BUCKET ?? "koji",
+  accessKey: process.env.KOJI_S3_ACCESS_KEY,
+  secretKey: process.env.KOJI_S3_SECRET_KEY,
+  region: process.env.KOJI_S3_REGION,
+  forcePathStyle: process.env.KOJI_S3_FORCE_PATH_STYLE === "true",
+});
+
+// Inject DB + storage into every request
 app.use("*", async (c, next) => {
   c.set("db", db);
+  c.set("storage", storage);
   await next();
 });
 
