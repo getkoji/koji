@@ -336,11 +336,19 @@ modelProviders.post("/:id/fetch-models", requires("endpoint:write"), async (c) =
         .filter((m) => m.id.startsWith("gpt-") || m.id.startsWith("o") || m.id.includes("embed"))
         .map((m) => ({ id: m.id, name: m.id }));
     } else if (provider === "anthropic") {
-      models = [
-        { id: "claude-opus-4-20250514", name: "Claude Opus 4", context: 200000 },
-        { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", context: 200000 },
-        { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", context: 200000 },
-      ];
+      const resp = await fetch("https://api.anthropic.com/v1/models", {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+      });
+      if (!resp.ok) {
+        return c.json({ error: `Anthropic returned ${resp.status}` }, 502);
+      }
+      const data = await resp.json() as { data: Array<{ id: string; display_name: string; type: string }> };
+      models = (data.data ?? [])
+        .filter((m) => m.type === "model")
+        .map((m) => ({ id: m.id, name: m.display_name ?? m.id }));
     } else if (provider === "ollama") {
       const baseUrl = config?.base_url ?? "http://localhost:11434";
       const resp = await fetch(`${baseUrl}/api/tags`);

@@ -189,7 +189,7 @@ function AddModelsDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (
 
   const [error, setError] = useState<string | null>(null);
 
-  const needsApiKey = fetchProvider === "openai" || fetchProvider === "azure-openai";
+  const needsApiKey = fetchProvider === "openai" || fetchProvider === "azure-openai" || fetchProvider === "anthropic";
   const needsBaseUrl = fetchProvider === "ollama" || fetchProvider === "azure-openai" || fetchProvider === "custom";
 
   async function handleFetch() {
@@ -306,10 +306,6 @@ function AddModelsDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (
                       placeholder={fetchProvider === "ollama" ? "http://localhost:11434" : "https://..."}
                       className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
                   </div>
-                )}
-
-                {fetchProvider === "anthropic" && (
-                  <p className="text-[12px] text-ink-4">Anthropic doesn't have a public models API. Known current models will be added.</p>
                 )}
 
                 {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
