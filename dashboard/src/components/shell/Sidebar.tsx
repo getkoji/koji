@@ -231,7 +231,7 @@ export function AppSidebar({
               {/* Project settings — expands with sub-items when on a settings route */}
               <Collapsible asChild open={inProjectSettings}>
                 <SidebarMenuItem>
-                  {!inProjectSettings && pathname === projectSettingsBase && (
+                  {inProjectSettings && (
                     <span
                       aria-hidden
                       className="absolute left-0 top-[14px] -translate-y-1/2 w-[3px] h-4 bg-vermillion-2 rounded-r-sm z-10 group-data-[collapsible=icon]:hidden"
@@ -239,10 +239,10 @@ export function AppSidebar({
                   )}
                   <SidebarMenuButton
                     asChild
-                    isActive={pathname === projectSettingsBase}
+                    isActive={inProjectSettings}
                     tooltip="Settings"
                   >
-                    <Link href={projectSettingsBase}>
+                    <Link href={`${projectSettingsBase}/general`}>
                       <span
                         className={`flex items-center justify-center ${
                           inProjectSettings ? "text-vermillion-2" : "text-ink-4"
@@ -423,7 +423,7 @@ export function AppSidebar({
           <SidebarMenu>
             <Collapsible asChild open={inOrgSettings}>
               <SidebarMenuItem>
-                {!inOrgSettings && pathname === `${base}/settings` && (
+                {inOrgSettings && (
                   <span
                     aria-hidden
                     className="absolute left-0 top-[14px] -translate-y-1/2 w-[3px] h-4 bg-vermillion-2 rounded-r-sm z-10 group-data-[collapsible=icon]:hidden"
@@ -431,10 +431,10 @@ export function AppSidebar({
                 )}
                 <SidebarMenuButton
                   asChild
-                  isActive={pathname === `${base}/settings`}
+                  isActive={inOrgSettings}
                   tooltip="Organization"
                 >
-                  <Link href={`${base}/settings`}>
+                  <Link href={`${base}/settings/general`}>
                     <span
                       className={`flex items-center justify-center ${
                         inOrgSettings ? "text-vermillion-2" : "text-ink-4"
