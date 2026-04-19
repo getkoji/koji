@@ -16,7 +16,7 @@ interface CorpusEntry {
 
 interface SchemaField {
   name: string; type: string; required?: boolean; nullable?: boolean;
-  values?: string[]; validate?: Record<string, unknown>;
+  values?: string[]; options?: string[]; validate?: Record<string, unknown>;
 }
 
 function timeAgo(d: string): string {
@@ -65,6 +65,7 @@ function parseFields(yaml: string | null): SchemaField[] {
       const d = (def ?? {}) as Record<string, unknown>;
       return { name, type: (d.type as string) ?? "string", required: d.required as boolean | undefined,
         nullable: d.nullable as boolean | undefined, values: d.values as string[] | undefined,
+        options: d.options as string[] | undefined,
         validate: d.validate as Record<string, unknown> | undefined };
     });
   } catch { return []; }
@@ -188,7 +189,7 @@ export default function CorpusPage() {
 
       {/* Three-panel body */}
       <div className="flex-1 min-h-0 grid" style={{
-        gridTemplateColumns: listCollapsed ? "48px 1fr 1fr" : "220px 1fr 1fr",
+        gridTemplateColumns: listCollapsed ? "48px 1.5fr 1fr" : "220px 1.5fr 1fr",
         transition: "grid-template-columns 300ms cubic-bezier(0.4,0,0.2,1)",
       }}>
 
@@ -230,20 +231,23 @@ export default function CorpusPage() {
                 : filtered.map((e) => (
                   <button key={e.id} onClick={() => setSelectedId(e.id)}
                     className={`w-full text-left px-2 py-2 border-b border-dotted border-border transition-colors ${selectedId === e.id ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
-                    <div className="flex items-center gap-1.5">
-                      {e.tags.length > 0 && (
-                        <div className="flex items-center gap-0.5 shrink-0">
-                          {e.tags.map((t) => (
-                            <span key={t} className={`w-2 h-2 rounded-full ${tagColor(t).dot}`} title={t} />
-                          ))}
-                        </div>
-                      )}
-                      <span className="font-mono text-[10px] text-ink truncate">{e.filename}</span>
-                    </div>
+                    <div className="font-mono text-[10px] text-ink truncate">{e.filename}</div>
                     <div className="flex items-center gap-1 mt-0.5">
                       <span className={`font-mono text-[8px] px-1 py-0.5 rounded-sm uppercase ${e.source === "upload" ? "bg-cream-2 text-ink-4" : "bg-green/10 text-green"}`}>{e.source}</span>
                       <span className="font-mono text-[8px] text-ink-4">{timeAgo(e.createdAt)}</span>
                     </div>
+                    {e.tags.length > 0 && (
+                      <div className="flex items-center gap-0.5 mt-1 flex-wrap">
+                        {e.tags.map((t) => {
+                          const c = tagColor(t);
+                          return (
+                            <span key={t} className={`font-mono text-[7px] font-medium px-1 py-0.5 rounded-sm uppercase ${c.bg} ${c.text}`} title={t}>
+                              {t.slice(0, 4)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </button>
                 ))}
               </div>
@@ -391,22 +395,28 @@ export default function CorpusPage() {
                         <span className="font-mono text-[10px] font-medium text-vermillion-2">{f.name}</span>
                         {f.required && <span className="font-mono text-[7px] text-vermillion-2 uppercase">req</span>}
                       </label>
-                      {f.type === "enum" && f.values ? (
-                        <select value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
-                          className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring">
-                          <option value="">—</option>
-                          {f.values.map((v) => <option key={v} value={v}>{v}</option>)}
-                        </select>
-                      ) : f.type === "number" ? (
-                        <input type="number" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
-                          className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] font-mono outline-none focus:border-ring placeholder:text-ink-4" />
-                      ) : f.type === "date" ? (
-                        <input type="date" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
-                          className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] font-mono outline-none focus:border-ring" />
-                      ) : (
-                        <input type="text" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
-                          className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4" />
-                      )}
+                      {(() => {
+                        const choices = f.values ?? f.options;
+                        if ((f.type === "enum" || choices) && choices && choices.length > 0) {
+                          return (
+                            <select value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
+                              className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring">
+                              <option value="">—</option>
+                              {choices.map((v) => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                          );
+                        }
+                        if (f.type === "number") {
+                          return <input type="number" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
+                            className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] font-mono outline-none focus:border-ring placeholder:text-ink-4" />;
+                        }
+                        if (f.type === "date") {
+                          return <input type="date" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
+                            className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] font-mono outline-none focus:border-ring" />;
+                        }
+                        return <input type="text" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
+                          className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4" />;
+                      })()}
                     </div>
                   ))}
                 </div>
