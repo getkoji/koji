@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import { useParams, usePathname } from "next/navigation";
-import { Pencil, History, RotateCcw, Play, Upload } from "lucide-react";
+import { Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -84,6 +84,20 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function highlightYaml(text: string): string {
+  // Escape HTML entities first
+  let html = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // Then apply highlighting
+  html = html
+    .replace(/(#.*)$/gm, '<span style="color:#998E78">$1</span>')
+    .replace(/^(\s*-\s+)([\w][\w.-]*\s*)(:)/gm, '$1<span style="color:#C33520">$2</span><span style="color:#998E78">$3</span>')
+    .replace(/^(\s*)([\w][\w.-]*\s*)(:)/gm, '$1<span style="color:#C33520">$2</span><span style="color:#998E78">$3</span>');
+  return html;
+}
+
 function countChangedLines(a: string, b: string): number {
   const linesA = a.split("\n");
   const linesB = b.split("\n");
@@ -130,6 +144,7 @@ export default function BuildPage() {
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
+  const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -427,41 +442,64 @@ export default function BuildPage() {
         </div>
 
         {/* ── 3. Workbench panels ── */}
-        <div className="flex-1 min-h-0 grid border-t border-border" style={{ gridTemplateColumns: "1fr 1.6fr" }}>
+        <div className="flex-1 min-h-0 grid border-t border-border" style={{
+          gridTemplateColumns: focusPanel === "editor" ? "1fr 0px" : focusPanel === "document" ? "0px 1fr" : "1fr 1.6fr",
+          transition: "grid-template-columns 300ms cubic-bezier(0.4,0,0.2,1)",
+        }}>
           {/* LEFT: YAML editor with line numbers */}
-          <div className="bg-ink min-h-0 flex flex-col">
+          <div className="bg-cream-2/50 min-h-0 flex flex-col border-r border-border overflow-hidden">
+            {/* Editor toolbar */}
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 shrink-0">
+              <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">Editor</span>
+              <button
+                onClick={() => setFocusPanel(focusPanel === "editor" ? "split" : "editor")}
+                className="text-ink-4 hover:text-ink transition-colors p-1 rounded-sm hover:bg-cream-2"
+                title={focusPanel === "editor" ? "Split view" : "Expand editor"}
+              >
+                {focusPanel === "editor" ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
             <div className="flex-1 min-h-0 overflow-y-auto relative">
               <div className="flex min-h-full">
                 {/* Line numbers gutter */}
                 <div
-                  className="shrink-0 pt-4 pb-4 pl-4 pr-2 text-right select-none font-mono text-[13px] leading-[1.7] text-ink-4/40 sticky left-0"
+                  className="shrink-0 pt-4 pb-4 pl-3 pr-2 text-right select-none font-mono text-[13px] leading-[1.7] text-ink-4/30 border-r border-border/50 bg-cream-2/30 sticky left-0"
                   aria-hidden
                 >
                   {yaml.split("\n").map((_, i) => (
                     <div key={i}>{i + 1}</div>
                   ))}
                 </div>
-                {/* Editor — overflow hidden so the parent scrolls */}
-                <textarea
-                  ref={textareaRef}
-                  value={yaml}
-                  onChange={(e) => setYaml(e.target.value)}
-                  spellCheck={false}
-                  className="flex-1 w-full pt-4 pb-4 pr-4 pl-2 font-mono text-[13px] leading-[1.7] text-cream bg-transparent resize-none outline-none border-none placeholder:text-ink-4 overflow-hidden"
-                  style={{ tabSize: 2, caretColor: "#F4EEE2", height: `${Math.max(yaml.split("\n").length + 1, 20) * 1.7 * 13}px` }}
-                  placeholder="# Start writing your schema YAML here..."
-                />
+                {/* Editor with YAML syntax highlighting */}
+                <div className="flex-1 relative">
+                  {/* Highlighted layer — determines the natural height */}
+                  <pre
+                    className="pt-4 pb-4 pr-4 pl-3 font-mono text-[13px] leading-[1.7] whitespace-pre-wrap break-words m-0 min-h-full"
+                    style={{ tabSize: 2 }}
+                    aria-hidden
+                    dangerouslySetInnerHTML={{ __html: highlightYaml(yaml) || '<span style="color:#998E78"># Start writing your schema YAML here...</span>' }}
+                  />
+                  {/* Transparent textarea on top for editing */}
+                  <textarea
+                    ref={textareaRef}
+                    value={yaml}
+                    onChange={(e) => setYaml(e.target.value)}
+                    spellCheck={false}
+                    className="absolute inset-0 w-full h-full pt-4 pb-4 pr-4 pl-3 font-mono text-[13px] leading-[1.7] text-transparent bg-transparent resize-none outline-none border-none overflow-hidden caret-ink"
+                    style={{ tabSize: 2, caretColor: "#171410" }}
+                  />
+                </div>
               </div>
             </div>
 
             {/* Validation errors panel */}
             {commitErrors.length > 0 && (
-              <div className="border-t border-vermillion-2/30 bg-vermillion-2/10 p-3 max-h-[180px] overflow-y-auto shrink-0">
+              <div className="border-t border-vermillion-2/30 bg-vermillion-3/30 p-3 max-h-[180px] overflow-y-auto shrink-0">
                 <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-vermillion-2 mb-1.5">
                   Validation errors
                 </div>
                 {commitErrors.map((e, i) => (
-                  <div key={i} className="text-[11px] text-vermillion-3 font-mono py-0.5">
+                  <div key={i} className="text-[11px] text-vermillion-2 font-mono py-0.5">
                     {e.field ? `${e.field}: ` : ""}{e.message}
                   </div>
                 ))}
@@ -470,10 +508,17 @@ export default function BuildPage() {
           </div>
 
           {/* RIGHT: Document + extraction */}
-          <div className="bg-cream overflow-y-auto min-h-0 flex flex-col border-l border-border">
+          <div className="bg-cream min-h-0 flex flex-col border-l border-border overflow-hidden">
             {/* Document controls bar */}
             <div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setFocusPanel(focusPanel === "document" ? "split" : "document")}
+                  className="text-ink-4 hover:text-ink transition-colors p-1 rounded-sm hover:bg-cream-2"
+                  title={focusPanel === "document" ? "Split view" : "Expand document"}
+                >
+                  {focusPanel === "document" ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                </button>
                 <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Document</span>
                 <select
                   value={selectedDocId ?? ""}
