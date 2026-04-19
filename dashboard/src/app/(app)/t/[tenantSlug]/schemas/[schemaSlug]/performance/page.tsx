@@ -176,21 +176,25 @@ export default function PerformancePage() {
   }));
 
   return (
-    <div className="overflow-y-auto h-[calc(100vh-60px)]">
-      <div className="px-8 pt-6 pb-12 max-w-[1100px]">
-        <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
+    <div className="flex flex-col h-[calc(100vh-60px)]">
+      {/* ── Fixed header ── */}
+      <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+        <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-2">
           <span className="text-ink-3">{schemaSlug}</span>
           <span className="text-cream-4">/</span>
           <span className="text-ink font-medium">Performance</span>
         </nav>
 
-        <h1 className="font-display text-[28px] font-medium leading-none tracking-tight text-ink mb-6"
+        <h1 className="font-display text-[28px] font-medium leading-none tracking-tight text-ink"
           style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>
           Performance
         </h1>
+        <p className="text-[13px] text-ink-3 mt-1.5 max-w-[60ch]">
+          Schema health over time — accuracy trends, per-field heatmap, and regression detection across validate runs.
+        </p>
 
-        {/* ── 1. Metrics strip ── */}
-        <div className="grid grid-cols-5 gap-px bg-border border border-border rounded-sm mb-8">
+        {/* Metrics strip */}
+        <div className="grid grid-cols-5 gap-px bg-border border border-border rounded-sm mt-4">
           {[
             { label: "Accuracy", value: current ? `${current.accuracy.toFixed(1)}%` : "—", delta: prev ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}` : null, up: !regressed },
             { label: "Corpus", value: String(corpusCount), delta: null, up: true },
@@ -208,6 +212,11 @@ export default function PerformancePage() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* ── Scrollable content ── */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-8 pt-6 pb-12 max-w-[1100px]">
 
         {/* ── 2. Accuracy over time ── */}
         <div className="mb-8">
@@ -313,6 +322,7 @@ export default function PerformancePage() {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
