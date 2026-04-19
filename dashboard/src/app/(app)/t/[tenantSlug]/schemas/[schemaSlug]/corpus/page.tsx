@@ -34,6 +34,15 @@ function fmtSize(b: number): string {
   return `${(b / 1048576).toFixed(1)} MB`;
 }
 
+const SUGGESTED_TAGS = [
+  "production-quality",
+  "edge-case",
+  "adversarial",
+  "hold-out",
+  "regression",
+  "synthetic",
+];
+
 function parseFields(yaml: string | null): SchemaField[] {
   if (!yaml) return [];
   try {
@@ -141,14 +150,18 @@ export default function CorpusPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-60px)]">
       {/* Header */}
-      <div className="px-6 pt-4 pb-3 border-b border-border shrink-0 flex items-center justify-between">
+      <div className="px-6 pt-4 pb-3 border-b border-border shrink-0 flex items-start justify-between">
         <div>
           <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-1">
             <span className="text-ink-3">{schemaSlug}</span><span className="text-cream-4">/</span><span className="text-ink font-medium">Corpus</span>
           </nav>
-          <div className="flex items-center gap-3">
-            <h1 className="font-display text-[22px] font-medium leading-none tracking-tight text-ink" style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>Corpus</h1>
-            <span className="font-mono text-[11px] text-ink-4">{(entries ?? []).length} entries</span>
+          <h1 className="font-display text-[22px] font-medium leading-none tracking-tight text-ink" style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>Corpus</h1>
+          <div className="flex items-center gap-3 mt-1.5 font-mono text-[10px] text-ink-4">
+            <span>{(entries ?? []).length} entries</span>
+            <span>·</span>
+            <span>{(entries ?? []).filter((e) => e.tags.includes("hold-out")).length} hold-out</span>
+            <span>·</span>
+            <span>{(entries ?? []).filter((e) => e.tags.includes("adversarial")).length} adversarial</span>
           </div>
         </div>
         {hasPermission("corpus:write") && (
@@ -238,26 +251,40 @@ export default function CorpusPage() {
               </div>
 
               {/* Tags */}
-              <div className="flex items-center gap-1 flex-wrap">
-                {selected.tags.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-0.5 font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm bg-cream-2 text-ink-3 uppercase">
-                    {t}
-                    {hasPermission("corpus:write") && <button onClick={() => handleRemoveTag(t)} className="text-ink-4 hover:text-vermillion-2"><X className="w-2 h-2" /></button>}
-                  </span>
-                ))}
+              <div className="space-y-1.5">
+                {/* Active tags */}
+                <div className="flex items-center gap-1 flex-wrap">
+                  {selected.tags.map((t) => (
+                    <span key={t} className="inline-flex items-center gap-0.5 font-mono text-[9px] font-medium px-1.5 py-0.5 rounded-sm bg-cream-2 text-ink-3 uppercase">
+                      {t}
+                      {hasPermission("corpus:write") && <button onClick={() => handleRemoveTag(t)} className="text-ink-4 hover:text-vermillion-2 ml-0.5"><X className="w-2.5 h-2.5" /></button>}
+                    </span>
+                  ))}
+                </div>
+                {/* Suggested + freeform */}
                 {hasPermission("corpus:write") && (
-                  showTagInput ? (
-                    <form onSubmit={(e) => { e.preventDefault(); handleAddTag(); }} className="inline-flex">
-                      <input value={newTag} onChange={(e) => setNewTag(e.target.value)} autoFocus placeholder="tag" data-1p-ignore autoComplete="off"
-                        onBlur={() => { if (!newTag.trim()) setShowTagInput(false); }}
-                        onKeyDown={(e) => { if (e.key === "Escape") { setShowTagInput(false); setNewTag(""); } }}
-                        className="w-14 h-[18px] rounded-sm border border-input bg-transparent px-1 text-[8px] font-mono outline-none focus:border-ring placeholder:text-ink-4" />
-                    </form>
-                  ) : (
-                    <button onClick={() => setShowTagInput(true)} className="inline-flex items-center gap-0.5 font-mono text-[8px] text-ink-4 hover:text-ink px-1 py-0.5 rounded-sm hover:bg-cream-2">
-                      <Plus className="w-2.5 h-2.5" /> tag
-                    </button>
-                  )
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {SUGGESTED_TAGS.filter((t) => !selected.tags.includes(t)).map((t) => (
+                      <button key={t} onClick={async () => {
+                        await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: [...selected.tags, t] });
+                        refetch();
+                      }} className="font-mono text-[8px] text-ink-4 hover:text-ink px-1.5 py-0.5 rounded-sm border border-dashed border-border hover:border-ink/30 transition-colors uppercase">
+                        + {t}
+                      </button>
+                    ))}
+                    {showTagInput ? (
+                      <form onSubmit={(e) => { e.preventDefault(); handleAddTag(); }} className="inline-flex">
+                        <input value={newTag} onChange={(e) => setNewTag(e.target.value)} autoFocus placeholder="custom tag" data-1p-ignore autoComplete="off"
+                          onBlur={() => { if (!newTag.trim()) setShowTagInput(false); }}
+                          onKeyDown={(e) => { if (e.key === "Escape") { setShowTagInput(false); setNewTag(""); } }}
+                          className="w-20 h-[20px] rounded-sm border border-input bg-transparent px-1 text-[9px] font-mono outline-none focus:border-ring placeholder:text-ink-4" />
+                      </form>
+                    ) : (
+                      <button onClick={() => setShowTagInput(true)} className="font-mono text-[8px] text-ink-4 hover:text-ink px-1.5 py-0.5 rounded-sm border border-dashed border-border hover:border-ink/30 transition-colors">
+                        + custom
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
