@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { TopBar } from "@/components/shell/TopBar";
-import { Sidebar } from "@/components/shell/Sidebar";
 import { AuthProvider } from "@/lib/auth-context";
+import { SidebarProvider } from "@/lib/sidebar-context";
+import { SidebarShell } from "@/components/shell/SidebarShell";
 
 export default async function TenantLayout({
   children,
@@ -18,11 +19,12 @@ export default async function TenantLayout({
 
   return (
     <AuthProvider tenantSlug={tenantSlug}>
-      <TopBar tenantSlug={tenantSlug} />
-      <div className="grid min-h-[calc(100vh-60px)]" style={{ gridTemplateColumns: "256px 1fr" }}>
-        <Sidebar tenantSlug={tenantSlug} />
-        <main className="min-w-0">{children}</main>
-      </div>
+      <SidebarProvider>
+        <TopBar tenantSlug={tenantSlug} />
+        <SidebarShell tenantSlug={tenantSlug}>
+          {children}
+        </SidebarShell>
+      </SidebarProvider>
     </AuthProvider>
   );
 }
