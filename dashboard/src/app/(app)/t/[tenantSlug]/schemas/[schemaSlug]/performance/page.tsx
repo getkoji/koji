@@ -180,6 +180,8 @@ export default function PerformancePage() {
     useCallback(() => api.get<PerformanceData>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
+  const [accMode, setAccMode] = useState<"field" | "doc" | "composite">("field");
+
   const runs = data?.runs ?? [];
   const corpusCount = data?.corpusCount ?? 0;
 
@@ -210,8 +212,6 @@ export default function PerformancePage() {
       </div>
     );
   }
-
-  const [accMode, setAccMode] = useState<"field" | "doc" | "composite">("field");
 
   // ── Build chart data from runs ──
   const fieldData = runs
