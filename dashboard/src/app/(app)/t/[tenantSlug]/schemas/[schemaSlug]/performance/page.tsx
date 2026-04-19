@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { BarChart3 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -37,6 +37,14 @@ const MOCK_FIELDS = [
   { name: "general_aggregate",     scores: [87.0, 90.4, 93.1, 96.8, 94.3] },
 ];
 
+// Doc accuracy = % of docs where ALL fields pass. Lower than field avg.
+const MOCK_DOC_ACCURACY = [78.9, 84.2, 89.5, 94.7, 92.1];
+// Composite = weighted blend (0.6 * field + 0.4 * doc)
+const MOCK_COMPOSITE = MOCK_FIELDS[0]!.scores.map((_, i) => {
+  const fieldAvg = MOCK_FIELDS.reduce((sum, f) => sum + f.scores[i]!, 0) / MOCK_FIELDS.length;
+  return fieldAvg * 0.6 + MOCK_DOC_ACCURACY[i]! * 0.4;
+});
+
 const MOCK_MODELS = [
   { name: "gpt-4o", accuracy: 97.8, latency: "2.3s", cost: "$0.032", active: true },
   { name: "claude-sonnet-4-20250514", accuracy: 98.2, latency: "2.8s", cost: "$0.028", active: false },
@@ -60,25 +68,27 @@ function timeAgo(d: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-// ── SVG Chart ──
+// ── SVG Chart with hover ──
 
-function TrendChart({ data }: { data: Array<{ version: number; accuracy: number }> }) {
+function TrendChart({ data }: { data: Array<{ version: number; accuracy: number; date?: string }> }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
   if (data.length === 0) return null;
 
-  const w = 600, h = 200, px = 50, py = 20;
-  const plotW = w - px * 2, plotH = h - py * 2;
-  const minY = Math.min(90, ...data.map((d) => d.accuracy)) - 1;
-  const maxY = Math.max(100, ...data.map((d) => d.accuracy)) + 0.5;
+  const w = 600, h = 220, px = 50, py = 24;
+  const plotW = w - px * 2, plotH = h - py * 2 - 20;
+  const minY = Math.floor(Math.min(90, ...data.map((d) => d.accuracy))) - 1;
+  const maxY = Math.ceil(Math.max(100, ...data.map((d) => d.accuracy))) + 0.5;
 
   function x(i: number) { return px + (data.length === 1 ? plotW / 2 : (i / (data.length - 1)) * plotW); }
   function y(v: number) { return py + plotH - ((v - minY) / (maxY - minY)) * plotH; }
 
   if (data.length === 1) {
     return (
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 240 }}>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 260 }}>
         <circle cx={x(0)} cy={y(data[0]!.accuracy)} r={6} fill="#C33520" stroke="#F4EEE2" strokeWidth="2" />
         <text x={x(0)} y={h - 4} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 10, fontFamily: "var(--font-mono)" }}>v{data[0]!.version}</text>
-        <text x={x(0)} y={y(data[0]!.accuracy) - 12} textAnchor="middle" className="fill-ink" style={{ fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 600 }}>{data[0]!.accuracy.toFixed(1)}%</text>
+        <text x={x(0)} y={y(data[0]!.accuracy) - 14} textAnchor="middle" className="fill-ink" style={{ fontSize: 13, fontFamily: "var(--font-mono)", fontWeight: 600 }}>{data[0]!.accuracy.toFixed(1)}%</text>
         <text x={w / 2} y={h / 2 + 30} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 11 }}>Run validate again to see trends</text>
       </svg>
     );
@@ -87,31 +97,76 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number 
   const linePath = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(d.accuracy)}`).join(" ");
   const areaPath = `${linePath} L ${x(data.length - 1)} ${y(minY)} L ${x(0)} ${y(minY)} Z`;
 
+  const gridLines = [];
+  for (let v = Math.ceil(minY); v <= maxY; v += 2) gridLines.push(v);
+
+  const hovered = hoverIdx !== null ? data[hoverIdx] : null;
+  const hoveredPrev = hoverIdx !== null && hoverIdx > 0 ? data[hoverIdx - 1] : null;
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 240 }}>
-      <defs>
-        <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#C33520" stopOpacity="0.15" />
-          <stop offset="100%" stopColor="#C33520" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {[Math.ceil(minY), Math.ceil(minY) + 2, Math.ceil(minY) + 4, Math.ceil(minY) + 6, Math.ceil(minY) + 8].filter((v) => v <= maxY).map((v) => (
-        <g key={v}>
-          <line x1={px} y1={y(v)} x2={w - px} y2={y(v)} stroke="#ECE3D0" strokeWidth="1" />
-          <text x={px - 8} y={y(v) + 4} textAnchor="end" className="fill-ink-4" style={{ fontSize: 10, fontFamily: "var(--font-mono)" }}>{v}%</text>
-        </g>
-      ))}
-      <line x1={px} y1={y(95)} x2={w - px} y2={y(95)} stroke="#998E78" strokeWidth="1" strokeDasharray="4 3" />
-      <text x={w - px + 6} y={y(95) + 4} className="fill-ink-4" style={{ fontSize: 9, fontFamily: "var(--font-mono)" }}>95%</text>
-      <path d={areaPath} fill="url(#areaGrad)" />
-      <path d={linePath} fill="none" stroke="#C33520" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      {data.map((d, i) => (
-        <g key={d.version}>
-          <circle cx={x(i)} cy={y(d.accuracy)} r={i === data.length - 1 ? 5 : 3} fill="#C33520" stroke="#F4EEE2" strokeWidth="2" />
-          <text x={x(i)} y={h - 4} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 10, fontFamily: "var(--font-mono)" }}>v{d.version}</text>
-        </g>
-      ))}
-    </svg>
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 260 }}
+        onMouseLeave={() => setHoverIdx(null)}>
+        <defs>
+          <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#C33520" stopOpacity="0.15" />
+            <stop offset="100%" stopColor="#C33520" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {/* Grid */}
+        {gridLines.map((v) => (
+          <g key={v}>
+            <line x1={px} y1={y(v)} x2={w - px} y2={y(v)} stroke="#ECE3D0" strokeWidth="1" />
+            <text x={px - 8} y={y(v) + 4} textAnchor="end" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: "#998E78" }}>{v}%</text>
+          </g>
+        ))}
+
+        {/* 95% baseline */}
+        <line x1={px} y1={y(95)} x2={w - px} y2={y(95)} stroke="#998E78" strokeWidth="1" strokeDasharray="4 3" />
+        <text x={w - px + 6} y={y(95) + 4} style={{ fontSize: 9, fontFamily: "var(--font-mono)", fill: "#998E78" }}>95%</text>
+
+        {/* Area + line */}
+        <path d={areaPath} fill="url(#areaGrad)" />
+        <path d={linePath} fill="none" stroke="#C33520" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Hover crosshair */}
+        {hoverIdx !== null && (
+          <line x1={x(hoverIdx)} y1={py} x2={x(hoverIdx)} y2={py + plotH} stroke="#C33520" strokeWidth="1" strokeDasharray="3 3" opacity="0.4" />
+        )}
+
+        {/* Dots */}
+        {data.map((d, i) => (
+          <g key={d.version}>
+            <circle cx={x(i)} cy={y(d.accuracy)}
+              r={hoverIdx === i ? 6 : i === data.length - 1 ? 5 : 3}
+              fill={hoverIdx === i ? "#C33520" : "#C33520"}
+              stroke="#F4EEE2" strokeWidth="2"
+              style={{ transition: "r 150ms" }} />
+            <text x={x(i)} y={h - 4} textAnchor="middle" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: hoverIdx === i ? "#171410" : "#998E78" }}>v{d.version}</text>
+            {/* Invisible hover target */}
+            <rect x={x(i) - 25} y={py} width={50} height={plotH + 20} fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)} />
+          </g>
+        ))}
+      </svg>
+
+      {/* Hover tooltip */}
+      {hovered && hoverIdx !== null && (
+        <div className="absolute pointer-events-none bg-ink text-cream rounded-sm px-3 py-2 shadow-lg"
+          style={{ left: `${(x(hoverIdx) / w) * 100}%`, top: 8, transform: "translateX(-50%)" }}>
+          <div className="font-mono text-[12px] font-medium">{hovered.accuracy.toFixed(1)}%</div>
+          <div className="font-mono text-[10px] text-cream/60">
+            v{hovered.version}
+            {hoveredPrev && (
+              <span className={hoveredPrev.accuracy < hovered.accuracy ? " text-green" : " text-vermillion-3"}>
+                {" "}{hovered.accuracy > hoveredPrev.accuracy ? "+" : ""}{(hovered.accuracy - hoveredPrev.accuracy).toFixed(1)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -156,10 +211,26 @@ export default function PerformancePage() {
     );
   }
 
+  const [accMode, setAccMode] = useState<"field" | "doc" | "composite">("field");
+
   // ── Build chart data from runs ──
-  const chartData = runs
+  const fieldData = runs
     .filter((r) => r.versionNumber !== null && r.accuracy !== null)
-    .map((r) => ({ version: r.versionNumber!, accuracy: parseFloat(r.accuracy!) * 100 }));
+    .map((r, i) => ({ version: r.versionNumber!, accuracy: parseFloat(r.accuracy!) * 100 }));
+
+  // Doc accuracy (% of docs passing all fields) — uses mock until real per-doc data exists
+  const docData = fieldData.map((d, i) => ({
+    version: d.version,
+    accuracy: i < MOCK_DOC_ACCURACY.length ? MOCK_DOC_ACCURACY[i]! : d.accuracy * 0.92,
+  }));
+
+  // Composite = 60% field + 40% doc
+  const compositeData = fieldData.map((d, i) => ({
+    version: d.version,
+    accuracy: i < MOCK_COMPOSITE.length ? MOCK_COMPOSITE[i]! : d.accuracy * 0.96,
+  }));
+
+  const chartData = accMode === "field" ? fieldData : accMode === "doc" ? docData : compositeData;
 
   const current = chartData[chartData.length - 1];
   const prev = chartData.length >= 2 ? chartData[chartData.length - 2] : null;
@@ -226,8 +297,9 @@ export default function PerformancePage() {
             </h2>
             {chartData.length >= 2 && (
               <div className="flex gap-1 border border-border rounded-sm p-0.5">
-                {["Field", "Doc", "Composite"].map((t, i) => (
-                  <button key={t} className={`px-2.5 py-1 rounded-sm text-[11px] font-medium transition-colors ${i === 0 ? "bg-ink text-cream" : "text-ink-3 hover:text-ink"}`}>{t}</button>
+                {([["field", "Field"], ["doc", "Doc"], ["composite", "Composite"]] as const).map(([key, label]) => (
+                  <button key={key} onClick={() => setAccMode(key)}
+                    className={`px-2.5 py-1 rounded-sm text-[11px] font-medium transition-colors ${accMode === key ? "bg-ink text-cream" : "text-ink-3 hover:text-ink"}`}>{label}</button>
                 ))}
               </div>
             )}
