@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import { useParams, usePathname } from "next/navigation";
-import Link from "next/link";
 import { Pencil, History, RotateCcw, Play, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -96,6 +95,11 @@ export default function BuildPage() {
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
   // Data
+  const { data: tenants } = useApi(
+    useCallback(() => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/tenants").then((r) => r.data), []),
+  );
+  const projectName = tenants?.find((t) => t.slug === tenantSlug)?.displayName ?? tenantSlug;
+
   const { data: schemaDetail, refetch } = useApi(
     useCallback(() => api.get<SchemaDetail>(`/api/schemas/${schemaSlug}`), [schemaSlug]),
   );
@@ -117,6 +121,7 @@ export default function BuildPage() {
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
+  const [sampleFile, setSampleFile] = useState<File | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
 
   // Initialize editor
@@ -215,7 +220,7 @@ export default function BuildPage() {
         {/* ── 1. Breadcrumb ── */}
         <div className="px-10 pt-5 pb-0 shrink-0">
           <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
-            <span className="text-ink-3">{tenantSlug}</span>
+            <span className="text-ink-3">{projectName}</span>
             <span className="text-cream-4">/</span>
             <span className="text-ink-3">Schemas</span>
             <span className="text-cream-4">/</span>
@@ -334,42 +339,8 @@ export default function BuildPage() {
           </div>
         </div>
 
-        {/* ── 3. Control strip ── */}
-        <div className="px-10 py-2.5 border-y border-border shrink-0 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Mode</span>
-            <div className="flex gap-1 border border-border rounded-sm p-0.5">
-              <span className="px-2.5 py-1 rounded-sm text-[12px] font-medium bg-ink text-cream">
-                Build
-              </span>
-              <Link
-                href={pathname.replace("/build", "/validate")}
-                className="px-2.5 py-1 rounded-sm text-[12px] text-ink-3 hover:text-ink transition-colors"
-              >
-                Validate
-              </Link>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Sample</span>
-            <select
-              className="h-[28px] rounded-sm border border-input bg-white px-2 text-[12px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 min-w-[180px]"
-            >
-              <option value="">Select a document...</option>
-              <option value="__upload">↑ Upload a test document</option>
-            </select>
-            <button disabled
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-40">
-              <Play className="w-3 h-3" />
-              Run
-              <kbd className="font-mono text-[9px] text-cream/50 ml-1">⌘↵</kbd>
-            </button>
-          </div>
-        </div>
-
-        {/* ── 4. Workbench panels ── */}
-        <div className="flex-1 min-h-0 grid grid-cols-2 gap-px bg-border">
+        {/* ── 3. Workbench panels ── */}
+        <div className="flex-1 min-h-0 grid grid-cols-2 border-t border-border">
           {/* LEFT: YAML editor */}
           <div className="bg-ink overflow-y-auto min-h-0 flex flex-col">
             <textarea
@@ -397,44 +368,80 @@ export default function BuildPage() {
             )}
           </div>
 
-          {/* RIGHT: Document preview / extraction results / empty state */}
-          <div className="bg-cream overflow-y-auto min-h-0 p-5">
-            {/* Empty state — no document selected */}
-            <div className="h-full flex flex-col items-center justify-center text-center">
-              <div className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px]">
-                <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
-                <div className="text-[13px] text-ink-3 mb-1">Select a sample document to preview extraction</div>
-                <div className="text-[11px] text-ink-4">
-                  Drag a file here or use the Sample picker above
-                </div>
+          {/* RIGHT: Document + extraction */}
+          <div className="bg-cream overflow-y-auto min-h-0 flex flex-col border-l border-border">
+            {/* Document controls bar */}
+            <div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Document</span>
+                {sampleFile ? (
+                  <span className="text-[12px] text-ink font-medium truncate max-w-[200px]">{sampleFile.name}</span>
+                ) : (
+                  <span className="text-[12px] text-ink-4">None selected</span>
+                )}
               </div>
+              <div className="flex items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer">
+                  <Upload className="w-3 h-3" />
+                  Upload
+                  <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                    onChange={(e) => { if (e.target.files?.[0]) setSampleFile(e.target.files[0]); }} />
+                </label>
+                <button disabled={!sampleFile}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
+                  <Play className="w-3 h-3" />
+                  Run
+                  <kbd className="font-mono text-[9px] text-cream/50 ml-0.5">⌘↵</kbd>
+                </button>
+              </div>
+            </div>
 
-              {/* Field preview below empty state */}
-              {fields.length > 0 && (
-                <div className="w-full max-w-[360px] mt-6">
-                  <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2 text-left">
-                    Schema fields ({fields.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {fields.map((f) => (
-                      <div key={f.name} className="flex items-center gap-2 px-2.5 py-1.5 border border-border rounded-sm text-left">
-                        <span className="font-mono text-[11px] text-ink font-medium">{f.name}</span>
-                        <span className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase">{f.type}</span>
-                        {f.required && <span className="font-mono text-[8px] text-vermillion-2 uppercase">req</span>}
-                        <span className="flex-1" />
-                        {f.extraction_guidance && (
-                          <span className="text-[10px] text-ink-4 truncate max-w-[120px]">{f.extraction_guidance}</span>
-                        )}
+            {/* Document content area */}
+            <div className="flex-1 overflow-y-auto p-5">
+              {!sampleFile ? (
+                <div className="h-full flex flex-col items-center justify-center text-center">
+                  <label className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px] cursor-pointer hover:border-ink-4 transition-colors">
+                    <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
+                    <div className="text-[13px] text-ink-3 mb-1">Upload a sample document</div>
+                    <div className="text-[11px] text-ink-4">
+                      PDF, PNG, JPG, or TIFF — click or drag a file here
+                    </div>
+                    <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                      onChange={(e) => { if (e.target.files?.[0]) setSampleFile(e.target.files[0]); }} />
+                  </label>
+
+                  {/* Field preview */}
+                  {fields.length > 0 && (
+                    <div className="w-full max-w-[360px] mt-6">
+                      <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2 text-left">
+                        Schema fields ({fields.length})
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                      <div className="space-y-1.5">
+                        {fields.map((f) => (
+                          <div key={f.name} className="flex items-center gap-2 px-2.5 py-1.5 border border-border rounded-sm text-left">
+                            <span className="font-mono text-[11px] text-ink font-medium">{f.name}</span>
+                            <span className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase">{f.type}</span>
+                            {f.required && <span className="font-mono text-[8px] text-vermillion-2 uppercase">req</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-              {parseError && (
-                <div className="w-full max-w-[360px] mt-4 text-left">
-                  <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
-                    YAML parse error: {parseError}
+                  {parseError && (
+                    <div className="w-full max-w-[360px] mt-4 text-left">
+                      <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
+                        YAML parse error: {parseError}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Document uploaded — ready to run */
+                <div className="text-center py-12">
+                  <div className="font-mono text-[11px] text-ink-4 mb-2">{sampleFile.name}</div>
+                  <div className="text-[13px] text-ink-3">
+                    Click <strong className="text-ink">Run</strong> to extract with the current schema
                   </div>
                 </div>
               )}
