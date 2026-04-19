@@ -417,11 +417,11 @@ export default function CorpusPage() {
                     const gt = gtValues[f.name]?.trim() ?? "";
                     const hasGt = gt.length > 0;
                     return (
-                      <div key={f.name} className={`rounded-sm border px-3 py-2 ${hasGt ? "border-green/20 border-l-green border-l-2" : "border-border"}`}>
+                      <div key={f.name} className={`rounded-sm border px-3 py-2 ${hasGt ? "border-border border-l-ink-4/30 border-l-2" : "border-border"}`}>
                         <div className="flex items-center justify-between">
                           <span className="font-mono text-[10px] font-medium text-vermillion-2">{f.name}</span>
                           {hasGt ? (
-                            <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-green/15 text-green">pass</span>
+                            <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-cream-2 text-ink-4">no run</span>
                           ) : (
                             <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-cream-2 text-ink-4">no gt</span>
                           )}
