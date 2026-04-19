@@ -98,10 +98,19 @@ export default function ValidatePage() {
   const [result, setResult] = useState<ValidateResult | null>(null);
   const [running, setRunning] = useState(false);
   const [expandedField, setExpandedField] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   const { data: corpusEntries } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
+
+  // Run history from schema_runs
+  const { data: perfData } = useApi(
+    useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
+  );
+
+  const runHistory = (perfData?.runs ?? []).slice().reverse();
 
   const hasCorpus = (corpusEntries ?? []).length > 0;
 
@@ -344,6 +353,50 @@ export default function ValidatePage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* Run history */}
+            {runHistory.length > 0 && (
+              <div className="mt-8">
+                <button onClick={() => setShowHistory(!showHistory)}
+                  className="flex items-center gap-2 font-display text-[18px] font-medium tracking-tight text-ink mb-3 hover:text-vermillion-2 transition-colors"
+                  style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
+                  Run history ({runHistory.length})
+                  <ChevronDown className={`w-4 h-4 text-ink-4 transition-transform ${showHistory ? "rotate-180" : ""}`} />
+                </button>
+                {showHistory && (
+                  <div className="border border-border rounded-sm divide-y divide-border">
+                    {runHistory.map((r) => {
+                      const acc = r.accuracy ? (parseFloat(r.accuracy) * 100).toFixed(1) : "—";
+                      const isSelected = selectedRunId === r.id;
+                      return (
+                        <div key={r.id}
+                          className={`flex items-center justify-between gap-4 px-4 py-3 transition-colors ${isSelected ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
+                          <div className="flex items-center gap-4">
+                            <span className="font-mono text-[11px] text-ink font-medium">
+                              {r.versionNumber !== null ? `v${r.versionNumber}` : "—"}
+                            </span>
+                            <span className={`font-mono text-[11px] font-medium ${parseFloat(acc) >= 97 ? "text-green" : parseFloat(acc) >= 95 ? "text-ink" : "text-vermillion-2"}`}>
+                              {acc}%
+                            </span>
+                            <span className="font-mono text-[10px] text-ink-4">
+                              {r.docsPassed}/{r.docsTotal} docs passed
+                            </span>
+                            {r.regressionsCount > 0 && (
+                              <span className="font-mono text-[9px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded-sm">
+                                {r.regressionsCount} regression{r.regressionsCount !== 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                          <span className="font-mono text-[10px] text-ink-4">
+                            {r.completedAt ? timeAgo(r.completedAt) : "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
