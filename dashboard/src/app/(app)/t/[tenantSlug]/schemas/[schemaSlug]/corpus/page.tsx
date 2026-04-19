@@ -86,6 +86,7 @@ export default function CorpusPage() {
   const [newTag, setNewTag] = useState("");
   const [gtValues, setGtValues] = useState<Record<string, string>>({});
   const [savingGt, setSavingGt] = useState(false);
+  const [gtEditing, setGtEditing] = useState(false);
   const [listCollapsed, setListCollapsed] = useState(() =>
     typeof window !== "undefined" && localStorage.getItem("koji:corpus:list-collapsed") === "true"
   );
@@ -118,7 +119,7 @@ export default function CorpusPage() {
 
   // Load existing GT when selection changes
   useEffect(() => {
-    setShowTagInput(false); setNewTag("");
+    setShowTagInput(false); setNewTag(""); setGtEditing(false);
     if (!selectedId) { setGtValues({}); return; }
     api.get<{ data: Array<{ payloadJson: Record<string, unknown> }> }>(`/api/schemas/${schemaSlug}/corpus/${selectedId}/ground-truth`)
       .then((r) => {
@@ -340,24 +341,54 @@ export default function CorpusPage() {
             <div className="h-full flex items-center justify-center text-[12px] text-ink-4">Select an entry</div>
           ) : (
             <div className="p-4 flex flex-col gap-3">
+              {/* Header */}
               <div className="flex items-center justify-between">
-                <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">Ground Truth</div>
-                <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded-sm uppercase ${
-                  Object.values(gtValues).some((v) => v.trim()) ? "bg-cream-2 text-ink-3" : "bg-cream-2 text-ink-4"
-                }`}>
-                  {Object.values(gtValues).some((v) => v.trim()) ? "draft" : "empty"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">Ground Truth</span>
+                  <span className="font-mono text-[9px] text-ink-4">·</span>
+                  <span className="font-mono text-[9px] text-ink-4">{fields.length} fields</span>
+                </div>
+                {hasPermission("corpus:write") && fields.length > 0 && (
+                  gtEditing ? (
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => setGtEditing(false)} className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
+                      <button disabled={savingGt} onClick={async () => {
+                        if (!selected) return;
+                        setSavingGt(true);
+                        try {
+                          await api.post(`/api/schemas/${schemaSlug}/corpus/${selected.id}/ground-truth`, { values: gtValues });
+                          setGtEditing(false);
+                        } finally { setSavingGt(false); }
+                      }} className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30">
+                        {savingGt ? "Saving..." : "Save"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setGtEditing(true)} className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
+                      Edit
+                    </button>
+                  )
+                )}
               </div>
 
               {fields.length === 0 ? (
                 <div className="text-[11px] text-ink-4 text-center py-4">Define fields in Build mode first.</div>
-              ) : (
-                <div className="space-y-2.5">
+              ) : !Object.values(gtValues).some((v) => v.trim()) && !gtEditing ? (
+                /* No GT authored yet */
+                <div className="border border-border rounded-sm p-4 text-center">
+                  <div className="text-[12px] text-ink-3 mb-2">No ground truth authored yet</div>
+                  <button onClick={() => setGtEditing(true)}
+                    className="inline-flex items-center px-3 py-1.5 rounded-sm text-[11px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
+                    Author ground truth
+                  </button>
+                </div>
+              ) : gtEditing ? (
+                /* Edit mode — input fields */
+                <div className="space-y-2">
                   {fields.map((f) => (
                     <div key={f.name} className="space-y-0.5">
                       <label className="flex items-center gap-1">
-                        <span className="font-mono text-[10px] font-medium text-ink">{f.name}</span>
-                        <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase">{f.type}</span>
+                        <span className="font-mono text-[10px] font-medium text-vermillion-2">{f.name}</span>
                         {f.required && <span className="font-mono text-[7px] text-vermillion-2 uppercase">req</span>}
                       </label>
                       {f.type === "enum" && f.values ? (
@@ -372,9 +403,6 @@ export default function CorpusPage() {
                       ) : f.type === "date" ? (
                         <input type="date" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
                           className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] font-mono outline-none focus:border-ring" />
-                      ) : Number((f.validate as Record<string, unknown> | undefined)?.min_words) > 10 ? (
-                        <textarea value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))} rows={2}
-                          className="w-full rounded-sm border border-input bg-transparent px-2 py-1 text-[11px] outline-none focus:border-ring resize-none placeholder:text-ink-4" />
                       ) : (
                         <input type="text" value={gtValues[f.name] ?? ""} onChange={(e) => setGtValues((p) => ({ ...p, [f.name]: e.target.value }))}
                           className="w-full h-[26px] rounded-sm border border-input bg-transparent px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4" />
@@ -382,24 +410,28 @@ export default function CorpusPage() {
                     </div>
                   ))}
                 </div>
-              )}
-
-              {fields.length > 0 && (
-                <div className="flex items-center gap-2 pt-2 border-t border-border">
-                  <button disabled={savingGt || !Object.values(gtValues).some((v) => v.trim())}
-                    onClick={async () => {
-                      if (!selected) return;
-                      setSavingGt(true);
-                      try {
-                        await api.post(`/api/schemas/${schemaSlug}/corpus/${selected.id}/ground-truth`, { values: gtValues });
-                      } finally { setSavingGt(false); }
-                    }}
-                    className="inline-flex items-center px-3 py-1.5 rounded-sm text-[11px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30">
-                    {savingGt ? "Saving..." : "Save ground truth"}
-                  </button>
-                  <span className="font-mono text-[9px] text-ink-4">
-                    {Object.values(gtValues).filter((v) => v.trim()).length}/{fields.length} fields
-                  </span>
+              ) : (
+                /* View mode — field cards with pass/diverged */
+                <div className="space-y-1.5">
+                  {fields.map((f) => {
+                    const gt = gtValues[f.name]?.trim() ?? "";
+                    const hasGt = gt.length > 0;
+                    return (
+                      <div key={f.name} className={`rounded-sm border px-3 py-2 ${hasGt ? "border-green/20 border-l-green border-l-2" : "border-border"}`}>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[10px] font-medium text-vermillion-2">{f.name}</span>
+                          {hasGt ? (
+                            <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-green/15 text-green">pass</span>
+                          ) : (
+                            <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-cream-2 text-ink-4">no gt</span>
+                          )}
+                        </div>
+                        <div className="font-mono text-[11px] text-ink mt-0.5">
+                          {hasGt ? (f.type === "string" ? `"${gt}"` : gt) : "—"}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
