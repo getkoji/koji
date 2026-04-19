@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Upload, Search, ExternalLink } from "lucide-react";
+import { Upload, Search, ExternalLink, Plus, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
@@ -49,6 +49,8 @@ export default function CorpusPage() {
   const [search, setSearch] = useState("");
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [showTagInput, setShowTagInput] = useState(false);
+  const [newTag, setNewTag] = useState("");
 
   const { data: entries, loading, refetch } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
@@ -60,6 +62,13 @@ export default function CorpusPage() {
     if (search && !e.filename.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+
+  // Auto-select first entry if nothing selected
+  useEffect(() => {
+    if (!selectedId && filtered.length > 0) {
+      setSelectedId(filtered[0]!.id);
+    }
+  }, [filtered, selectedId]);
 
   const selected = filtered.find((e) => e.id === selectedId) ?? null;
 
@@ -217,11 +226,45 @@ export default function CorpusPage() {
                 </div>
 
                 {/* Tags */}
-                <div className="flex items-center gap-1.5 mt-3">
-                  {selected.tags.length > 0 ? selected.tags.map((t) => (
-                    <span key={t} className="font-mono text-[10px] font-medium px-2 py-0.5 rounded-sm bg-cream-2 text-ink-3 uppercase tracking-[0.08em]">{t}</span>
-                  )) : (
-                    <span className="font-mono text-[10px] text-ink-4">No tags</span>
+                <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+                  {selected.tags.map((t) => (
+                    <span key={t} className="inline-flex items-center gap-1 font-mono text-[10px] font-medium px-2 py-0.5 rounded-sm bg-cream-2 text-ink-3 uppercase tracking-[0.08em]">
+                      {t}
+                      {hasPermission("corpus:write") && (
+                        <button onClick={async () => {
+                          const updated = selected.tags.filter((tag) => tag !== t);
+                          await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: updated });
+                          refetch();
+                        }} className="text-ink-4 hover:text-vermillion-2 transition-colors ml-0.5">
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                  {hasPermission("corpus:write") && (
+                    showTagInput ? (
+                      <form onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!newTag.trim()) return;
+                        const updated = [...selected.tags, newTag.trim().toLowerCase()];
+                        await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: updated });
+                        setNewTag("");
+                        setShowTagInput(false);
+                        refetch();
+                      }} className="inline-flex items-center gap-1">
+                        <input value={newTag} onChange={(e) => setNewTag(e.target.value)} autoFocus
+                          placeholder="tag name"
+                          data-1p-ignore autoComplete="off"
+                          onBlur={() => { if (!newTag.trim()) setShowTagInput(false); }}
+                          onKeyDown={(e) => { if (e.key === "Escape") { setShowTagInput(false); setNewTag(""); } }}
+                          className="w-20 h-[22px] rounded-sm border border-input bg-transparent px-1.5 text-[10px] font-mono outline-none focus:border-ring placeholder:text-ink-4" />
+                      </form>
+                    ) : (
+                      <button onClick={() => setShowTagInput(true)}
+                        className="inline-flex items-center gap-0.5 font-mono text-[10px] text-ink-4 hover:text-ink transition-colors px-1.5 py-0.5 rounded-sm hover:bg-cream-2">
+                        <Plus className="w-3 h-3" /> tag
+                      </button>
+                    )
                   )}
                 </div>
               </div>

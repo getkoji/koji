@@ -367,3 +367,23 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
   const url = await storage.getSignedUrl(entry.storageKey, 3600);
   return c.json({ url });
 });
+
+/**
+ * PATCH /api/schemas/:slug/corpus/:entryId — update corpus entry (tags, etc).
+ */
+schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const entryId = c.req.param("entryId")!;
+
+  const body = await c.req.json<{ tags?: string[] }>();
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (body.tags !== undefined) updates.tags = body.tags;
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx.update(schema.corpusEntries).set(updates).where(eq(schema.corpusEntries.id, entryId)).returning()
+  );
+
+  if (rows.length === 0) return c.json({ error: "Entry not found" }, 404);
+  return c.json(rows[0]);
+});
