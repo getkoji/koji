@@ -389,6 +389,76 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
 });
 
 /**
+ * GET /api/schemas/:slug/performance — performance data for the chart.
+ */
+schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  // Get all runs for this schema ordered by version
+  const runs = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.schemaRuns.id,
+      schemaVersionId: schema.schemaRuns.schemaVersionId,
+      accuracy: schema.schemaRuns.accuracy,
+      docsTotal: schema.schemaRuns.docsTotal,
+      docsPassed: schema.schemaRuns.docsPassed,
+      regressionsCount: schema.schemaRuns.regressionsCount,
+      costUsd: schema.schemaRuns.costUsd,
+      durationMs: schema.schemaRuns.durationMs,
+      completedAt: schema.schemaRuns.completedAt,
+      createdAt: schema.schemaRuns.createdAt,
+    }).from(schema.schemaRuns)
+      .where(eq(schema.schemaRuns.schemaId, s.id))
+      .orderBy(schema.schemaRuns.createdAt)
+  );
+
+  // Enrich with version numbers
+  const enrichedRuns = [];
+  for (const run of runs) {
+    let versionNumber: number | null = null;
+    if (run.schemaVersionId) {
+      const [sv] = await withRLS(db, tenantId, (tx) =>
+        tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+          .from(schema.schemaVersions)
+          .where(eq(schema.schemaVersions.id, run.schemaVersionId))
+          .limit(1)
+      );
+      versionNumber = sv?.versionNumber ?? null;
+    }
+    enrichedRuns.push({ ...run, versionNumber });
+  }
+
+  // Get per-field results for the heatmap (from corpus_version_results)
+  const fieldResults = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      schemaVersionId: schema.corpusVersionResults.schemaVersionId,
+      fieldResultsJson: schema.corpusVersionResults.fieldResultsJson,
+    }).from(schema.corpusVersionResults)
+      .where(sql`${schema.corpusVersionResults.runId} IN (SELECT id FROM schema_runs WHERE schema_id = ${s.id})`)
+  );
+
+  // Corpus count
+  const [corpusCount] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ count: sql<number>`count(*)::int` })
+      .from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.schemaId, s.id))
+  );
+
+  return c.json({
+    runs: enrichedRuns,
+    fieldResults,
+    corpusCount: corpusCount?.count ?? 0,
+  });
+});
+
+/**
  * POST /api/schemas/:slug/corpus/:entryId/ground-truth — save ground truth.
  * Append-only: creates a new GT row, previous versions preserved.
  */
