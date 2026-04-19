@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Fragment } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database } from "lucide-react";
@@ -320,8 +320,8 @@ export default function ValidatePage() {
                   </thead>
                   <tbody>
                     {result.fields.map((f) => (
-                      <>
-                        <tr key={f.name} onClick={() => f.failingDocs.length > 0 && setExpandedField(expandedField === f.name ? null : f.name)}
+                      <Fragment key={f.name}>
+                        <tr onClick={() => f.failingDocs.length > 0 && setExpandedField(expandedField === f.name ? null : f.name)}
                           className={`border-t border-border transition-colors ${f.failingDocs.length > 0 ? "cursor-pointer hover:bg-cream-2/50" : ""} ${f.status === "regressed" ? "bg-vermillion-2/[0.02]" : ""}`}>
                           <td className="px-4 py-2.5">
                             {f.status === "regressed" ? <AlertTriangle className="w-3.5 h-3.5 text-vermillion-2" /> :
@@ -371,7 +371,7 @@ export default function ValidatePage() {
                             </td>
                           </tr>
                         )}
-                      </>
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
