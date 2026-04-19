@@ -387,3 +387,70 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
   if (rows.length === 0) return c.json({ error: "Entry not found" }, 404);
   return c.json(rows[0]);
 });
+
+/**
+ * POST /api/schemas/:slug/corpus/:entryId/ground-truth — save ground truth.
+ * Append-only: creates a new GT row, previous versions preserved.
+ */
+schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const entryId = c.req.param("entryId")!;
+  const principal = getPrincipal(c);
+
+  const body = await c.req.json<{ values: Record<string, unknown> }>();
+  if (!body.values) return c.json({ error: "values is required" }, 400);
+
+  // Get the latest GT to set supersedes_id
+  const [latest] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.corpusEntryGroundTruth.id })
+      .from(schema.corpusEntryGroundTruth)
+      .where(eq(schema.corpusEntryGroundTruth.corpusEntryId, entryId))
+      .orderBy(desc(schema.corpusEntryGroundTruth.createdAt))
+      .limit(1)
+  );
+
+  const [row] = await withRLS(db, tenantId, (tx) =>
+    tx.insert(schema.corpusEntryGroundTruth).values({
+      tenantId,
+      corpusEntryId: entryId,
+      payloadJson: body.values,
+      authoredBy: principal.userId,
+      reviewStatus: "draft",
+      supersedesId: latest?.id ?? null,
+    }).returning()
+  );
+
+  // Also update the corpus entry's ground_truth_json for quick access
+  await withRLS(db, tenantId, (tx) =>
+    tx.update(schema.corpusEntries)
+      .set({ groundTruthJson: body.values, updatedAt: new Date() })
+      .where(eq(schema.corpusEntries.id, entryId))
+  );
+
+  return c.json(row, 201);
+});
+
+/**
+ * GET /api/schemas/:slug/corpus/:entryId/ground-truth — get GT history.
+ */
+schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const entryId = c.req.param("entryId")!;
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.corpusEntryGroundTruth.id,
+      payloadJson: schema.corpusEntryGroundTruth.payloadJson,
+      reviewStatus: schema.corpusEntryGroundTruth.reviewStatus,
+      authoredByName: schema.users.name,
+      createdAt: schema.corpusEntryGroundTruth.createdAt,
+    }).from(schema.corpusEntryGroundTruth)
+      .innerJoin(schema.users, eq(schema.users.id, schema.corpusEntryGroundTruth.authoredBy))
+      .where(eq(schema.corpusEntryGroundTruth.corpusEntryId, entryId))
+      .orderBy(desc(schema.corpusEntryGroundTruth.createdAt))
+  );
+
+  return c.json({ data: rows });
+});

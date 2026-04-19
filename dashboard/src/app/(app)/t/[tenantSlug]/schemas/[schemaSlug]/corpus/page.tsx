@@ -94,7 +94,23 @@ export default function CorpusPage() {
       .then((r) => setPreviewUrl(r.url)).catch(() => setPreviewUrl(null));
   }, [selectedId, schemaSlug]);
 
-  useEffect(() => { setGtValues({}); setShowTagInput(false); setNewTag(""); }, [selectedId]);
+  // Load existing GT when selection changes
+  useEffect(() => {
+    setShowTagInput(false); setNewTag("");
+    if (!selectedId) { setGtValues({}); return; }
+    api.get<{ data: Array<{ payloadJson: Record<string, unknown> }> }>(`/api/schemas/${schemaSlug}/corpus/${selectedId}/ground-truth`)
+      .then((r) => {
+        if (r.data.length > 0) {
+          const payload = r.data[0]!.payloadJson;
+          const vals: Record<string, string> = {};
+          for (const [k, v] of Object.entries(payload)) vals[k] = String(v ?? "");
+          setGtValues(vals);
+        } else {
+          setGtValues({});
+        }
+      })
+      .catch(() => setGtValues({}));
+  }, [selectedId, schemaSlug]);
 
   async function handleUpload(file: File) {
     setUploading(true);
@@ -316,6 +332,13 @@ export default function CorpusPage() {
               {fields.length > 0 && (
                 <div className="flex items-center gap-2 pt-2 border-t border-border">
                   <button disabled={savingGt || !Object.values(gtValues).some((v) => v.trim())}
+                    onClick={async () => {
+                      if (!selected) return;
+                      setSavingGt(true);
+                      try {
+                        await api.post(`/api/schemas/${schemaSlug}/corpus/${selected.id}/ground-truth`, { values: gtValues });
+                      } finally { setSavingGt(false); }
+                    }}
                     className="inline-flex items-center px-3 py-1.5 rounded-sm text-[11px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30">
                     {savingGt ? "Saving..." : "Save ground truth"}
                   </button>
