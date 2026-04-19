@@ -30,6 +30,7 @@ import {
   ChevronsUpDown,
   PanelLeftClose,
   PanelLeftOpen,
+  BarChart3,
 } from "lucide-react";
 
 interface NavItemProps {
@@ -209,6 +210,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug, collapsed, onC
               <NavItem href={`${base}/schemas/${currentSchemaSlug}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" collapsed />
               <NavItem href={`${base}/schemas/${currentSchemaSlug}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" collapsed />
               <NavItem href={`${base}/schemas/${currentSchemaSlug}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" collapsed />
+              <NavItem href={`${base}/schemas/${currentSchemaSlug}/performance`} icon={<BarChart3 className={ICON_SIZE} />} label="Performance" collapsed />
             </>
           ) : null
         ) : schemasLoading ? (
@@ -295,6 +297,7 @@ export function Sidebar({ tenantSlug: tenantSlugProp, schemaSlug, collapsed, onC
                 <NavItem href={`${base}/schemas/${currentSchemaSlug}/build`} icon={<FileCode className={ICON_SIZE} />} label="Build" collapsed={c} />
                 <NavItem href={`${base}/schemas/${currentSchemaSlug}/validate`} icon={<ShieldCheck className={ICON_SIZE} />} label="Validate" collapsed={c} />
                 <NavItem href={`${base}/schemas/${currentSchemaSlug}/corpus`} icon={<Database className={ICON_SIZE} />} label="Corpus" collapsed={c} />
+                <NavItem href={`${base}/schemas/${currentSchemaSlug}/performance`} icon={<BarChart3 className={ICON_SIZE} />} label="Performance" collapsed={c} />
               </>
             )}
           </>
