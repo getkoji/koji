@@ -15,6 +15,7 @@ interface PerformanceRun {
   docsTotal: number;
   docsPassed: number;
   regressionsCount: number;
+  durationMs: number | null;
   completedAt: string | null;
   createdAt: string;
 }
