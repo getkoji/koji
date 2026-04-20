@@ -118,7 +118,7 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
 
         {/* Dots */}
         {data.map((d, i) => (
-          <g key={d.version}>
+          <g key={`${d.version}-${i}`}>
             <circle cx={x(i)} cy={y(d.accuracy)}
               r={hoverIdx === i ? 6 : i === data.length - 1 ? 5 : 3}
               fill={hoverIdx === i ? "#C33520" : "#C33520"}
