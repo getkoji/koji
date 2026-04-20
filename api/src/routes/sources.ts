@@ -5,6 +5,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { encrypt, getMasterKey, keyHint } from "../crypto/envelope";
+import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
 export const sources = new Hono<Env>();
 
@@ -356,6 +357,29 @@ sources.post("/:id/webhook", async (c) => {
       contentType: file.type || "application/octet-stream",
     });
 
+    // Look up the source's target pipeline + active schema version. If
+    // either is missing, record the ingestion as failed up front (the
+    // dashboard can show the failure reason) instead of enqueuing work
+    // the worker would just fail.
+    const [target] = await db
+      .select({
+        pipelineId: schema.pipelines.id,
+        schemaId: schema.pipelines.schemaId,
+        activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+      })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, source.targetPipelineId ?? ""))
+      .limit(1);
+
+    let failureReason: string | null = null;
+    if (!source.targetPipelineId || !target) {
+      failureReason =
+        "Source has no target pipeline — connect one on the pipeline page";
+    } else if (!target.schemaId || !target.activeSchemaVersionId) {
+      failureReason =
+        "Pipeline has no deployed schema version — deploy one first";
+    }
+
     const [ingestion] = await db
       .insert(schema.ingestions)
       .values({
@@ -365,18 +389,40 @@ sources.post("/:id/webhook", async (c) => {
         fileSize: file.size,
         storageKey,
         contentHash,
-        status: "received",
+        status: failureReason ? "failed" : "received",
+        failureReason,
+        completedAt: failureReason ? new Date() : null,
       })
       .returning({ id: schema.ingestions.id });
 
     ingestionIds.push(ingestion!.id);
 
-    // Hand off to the worker. If the source has no target pipeline, the
-    // handler will mark this ingestion failed with a useful message rather
-    // than us gating here — keeps the decision logic in one place.
+    if (failureReason) continue;
+
+    // Create the job + document and hand the document id to the worker.
+    const created = await createExtractionJob({
+      db,
+      tenantId: source.tenantId,
+      pipelineId: target!.pipelineId,
+      schemaId: target!.schemaId!,
+      schemaVersionId: target!.activeSchemaVersionId!,
+      triggerType: source.sourceType,
+      storageKey,
+      filename: file.name,
+      fileSize: file.size,
+      mimeType: file.type || mimeTypeFor(file.name),
+      contentHash,
+      ingestionId: ingestion!.id,
+    });
+
+    await db
+      .update(schema.ingestions)
+      .set({ status: "processing", jobId: created.jobId, docId: created.documentId })
+      .where(eq(schema.ingestions.id, ingestion!.id));
+
     await queue.enqueue(
       "ingestion.process",
-      { ingestionId: ingestion!.id },
+      { documentId: created.documentId },
       { tenantId: source.tenantId },
     );
   }

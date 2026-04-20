@@ -14,6 +14,7 @@ import {
   Plus,
   Unlink,
   AlertTriangle,
+  Send,
 } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -37,6 +38,7 @@ export default function PipelineDetailPage() {
 
   const [deployOpen, setDeployOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [runOpen, setRunOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -180,6 +182,19 @@ export default function PipelineDetailPage() {
                       </>
                     )}
                   </button>
+                  <button
+                    onClick={() => setRunOpen(true)}
+                    disabled={submitting || undeployed}
+                    title={
+                      undeployed
+                        ? "Deploy a schema version before running"
+                        : "Upload a document and run it through this pipeline"
+                    }
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Run pipeline
+                  </button>
                 </>
               ) : undefined
             }
@@ -230,6 +245,14 @@ export default function PipelineDetailPage() {
           submitting={submitting}
           onClose={() => setDeleteOpen(false)}
           onConfirm={handleDelete}
+        />
+      )}
+      {runOpen && !undeployed && (
+        <RunDialog
+          pipeline={pipeline}
+          tenantSlug={tenantSlug}
+          onClose={() => setRunOpen(false)}
+          onStarted={(jobSlug) => router.push(`/t/${tenantSlug}/jobs/${jobSlug}`)}
         />
       )}
     </ListLayout>
@@ -990,6 +1013,159 @@ function DeployDialog({
       </div>
     </div>
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Run dialog — upload a single document and route to the new job
+
+function RunDialog({
+  pipeline,
+  tenantSlug,
+  onClose,
+  onStarted,
+}: {
+  pipeline: PipelineDetail;
+  tenantSlug: string;
+  onClose: () => void;
+  onStarted: (jobSlug: string) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  void tenantSlug; // routing happens in onStarted
+
+  function handleFiles(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    setFile(list[0] ?? null);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    handleFiles(e.dataTransfer.files);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file || submitting) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const result = await pipelinesApi.run(pipeline.slug, file);
+      onStarted(result.jobSlug);
+    } catch (e: unknown) {
+      setSubmitting(false);
+      setErr(e instanceof Error ? e.message : "Failed to start the run");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
+        <div className="flex items-start justify-between mb-1">
+          <h2
+            className="font-display text-[22px] font-medium text-ink leading-tight"
+            style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
+          >
+            Run pipeline
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-4 hover:text-ink transition-colors p-1 -m-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-[12.5px] text-ink-3 mb-4">
+          Upload a document to run through{" "}
+          <strong className="text-ink">{pipeline.displayName}</strong>. Extraction starts
+          immediately and the job page will show progress.
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 border border-dashed rounded-sm transition-colors ${
+              dragOver
+                ? "border-vermillion-2 bg-vermillion-3/20"
+                : "border-border-strong bg-cream-2/40"
+            }`}
+          >
+            <Upload className="w-5 h-5 text-ink-4" />
+            {file ? (
+              <>
+                <span className="font-mono text-[12px] text-ink truncate max-w-[280px]">
+                  {file.name}
+                </span>
+                <span className="font-mono text-[10px] text-ink-4">
+                  {formatBytes(file.size)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFile(null)}
+                  className="font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors mt-1"
+                >
+                  remove
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-[12.5px] text-ink font-medium">
+                  Drop a file or pick one
+                </span>
+                <label className="font-mono text-[11px] text-vermillion-2 hover:text-ink transition-colors cursor-pointer">
+                  Choose file…
+                  <input
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => handleFiles(e.target.files)}
+                  />
+                </label>
+                <span className="font-mono text-[10px] text-ink-4">PDF, PNG, JPG</span>
+              </>
+            )}
+          </div>
+
+          {err && (
+            <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
+              {err}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!file || submitting}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {submitting ? "Starting…" : "Run"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 // ──────────────────────────────────────────────────────────────────────
