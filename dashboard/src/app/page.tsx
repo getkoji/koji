@@ -1,39 +1,50 @@
-"use client";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { api, projectsApi } from "@/lib/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
 
-export default function Home() {
-  const router = useRouter();
+/**
+ * Root redirect. Runs server-side so the user never sees a loading
+ * flash; the proxy middleware guarantees we reach here only when
+ * setup is complete and a session cookie exists. We still validate
+ * the session via /api/tenants — if it's invalid, send them back to
+ * /login rather than silently continuing to a broken page.
+ *
+ * Destinations:
+ *   - no session cookie        → /login
+ *   - session invalid (401)    → /login
+ *   - authenticated, 0 tenants → /new-project
+ *   - authenticated, N tenants → /t/{slug} using koji_active_tenant
+ *                                cookie when it matches a membership,
+ *                                otherwise the first tenant.
+ */
+export default async function RootPage() {
+  const cookieStore = await cookies();
+  const session = cookieStore.get("koji_session")?.value;
 
-  useEffect(() => {
-    async function resolve() {
-      try {
-        const status = await api.get<{ needed: boolean }>("/api/setup/status");
-        if (status.needed) {
-          router.replace("/setup");
-          return;
-        }
+  if (!session) redirect("/login");
 
-        // Redirect to the user's first project
-        const projectList = await projectsApi.list();
-        const slug = projectList[0]?.slug;
-        if (slug) {
-          router.replace(`/t/${slug}`);
-        } else {
-          router.replace("/new-project");
-        }
-      } catch {
-        router.replace("/login");
-      }
-    }
-    resolve();
-  }, [router]);
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/api/tenants`, {
+      headers: { Cookie: `koji_session=${session}` },
+      cache: "no-store",
+    });
+  } catch {
+    redirect("/login");
+  }
 
-  return (
-    <div className="min-h-screen bg-cream flex items-center justify-center">
-      <div className="animate-pulse font-mono text-[11px] text-ink-4">Loading...</div>
-    </div>
-  );
+  if (!resp.ok) redirect("/login");
+
+  const payload = (await resp.json()) as {
+    data: Array<{ slug: string; displayName: string }>;
+  };
+  const tenants = payload.data ?? [];
+
+  if (tenants.length === 0) redirect("/new-project");
+
+  const active = cookieStore.get("koji_active_tenant")?.value;
+  const target = tenants.find((t) => t.slug === active) ?? tenants[0]!;
+
+  redirect(`/t/${target.slug}`);
 }
