@@ -18,9 +18,9 @@
     "@hono/node-server": "^1.13.0",
     "@koji/db": "workspace:*",
     "@koji/types": "workspace:*",
-    "drizzle-orm": "^0.36.0",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
-    "nodemailer": "^6.9.0",
+    "nodemailer": "^8.0.5",
     "postgres": "^3.4.4",
     "yaml": "^2.8.3"
   },
@@ -29,6 +29,6 @@
     "@types/nodemailer": "^6.4.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.1.0"
+    "vitest": "^3.2.0"
   }
 }
