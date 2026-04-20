@@ -52,10 +52,19 @@ overview.get("/", requires("schema:read"), async (c) => {
   const accuracy =
     latestRun?.accuracy != null ? Number(latestRun.accuracy) * 100 : null;
 
+  // Only count documents tied to a schema that still exists. Docs from
+  // soft-deleted schemas hang around in the table but shouldn't inflate the
+  // user-facing throughput metric — the user has already retired the
+  // schema they were produced against.
   const [docsCount] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({ count: sql<number>`count(*)::int` })
-      .from(schema.documents),
+      .from(schema.documents)
+      .innerJoin(
+        schema.schemas,
+        eq(schema.schemas.id, schema.documents.schemaId),
+      )
+      .where(isNull(schema.schemas.deletedAt)),
   );
 
   const [pendingReview] = await withRLS(db, tenantId, (tx) =>
