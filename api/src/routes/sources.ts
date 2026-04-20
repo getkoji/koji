@@ -25,6 +25,7 @@ sources.get("/", requires("endpoint:read"), async (c) => {
         status: schema.sources.status,
         lastIngestedAt: schema.sources.lastIngestedAt,
         createdAt: schema.sources.createdAt,
+        targetPipelineId: schema.sources.targetPipelineId,
       })
       .from(schema.sources)
       .where(sql`deleted_at IS NULL`)
@@ -145,7 +146,7 @@ sources.patch("/:id", requires("source:write"), async (c) => {
 
   const body = await c.req.json<{
     name?: string;
-    target_pipeline_id?: string;
+    target_pipeline_id?: string | null;
     filter_config?: object;
   }>();
 

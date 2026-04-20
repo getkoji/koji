@@ -15,6 +15,13 @@ interface Source {
   status: string;
   lastIngestedAt: string | null;
   createdAt: string;
+  targetPipelineId?: string | null;
+}
+
+interface PipelineOption {
+  id: string;
+  slug: string;
+  displayName: string;
 }
 
 interface Ingestion {
@@ -209,7 +216,14 @@ export default function SourcesPage() {
 
       {/* Source detail dialog */}
       {viewSource && (
-        <SourceDetailDialog source={viewSource} onClose={() => setViewSource(null)} />
+        <SourceDetailDialog
+          source={viewSource}
+          canWrite={hasPermission("source:write")}
+          onClose={() => setViewSource(null)}
+          onChanged={() => {
+            refetch();
+          }}
+        />
       )}
 
       {/* Delete confirmation */}
@@ -327,13 +341,54 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   );
 }
 
-function SourceDetailDialog({ source, onClose }: { source: Source; onClose: () => void }) {
+function SourceDetailDialog({
+  source,
+  canWrite,
+  onClose,
+  onChanged,
+}: {
+  source: Source;
+  canWrite: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
   const { data: ingestions, loading } = useApi(
     useCallback(
       () => api.get<{ data: Ingestion[] }>(`/api/sources/${source.id}/ingestions`).then((r) => r.data),
       [source.id],
     ),
   );
+
+  // Pipelines for the target dropdown
+  const { data: pipelineOptions } = useApi(
+    useCallback(
+      () => api.get<{ data: PipelineOption[] }>("/api/pipelines").then((r) => r.data),
+      [],
+    ),
+  );
+
+  const [targetPipelineId, setTargetPipelineId] = useState<string | "">(
+    source.targetPipelineId ?? "",
+  );
+  const [savingTarget, setSavingTarget] = useState(false);
+  const [targetError, setTargetError] = useState<string | null>(null);
+  const dirty = (source.targetPipelineId ?? "") !== targetPipelineId;
+
+  async function saveTargetPipeline() {
+    if (!dirty || savingTarget) return;
+    setSavingTarget(true);
+    setTargetError(null);
+    try {
+      await api.patch(`/api/sources/${source.id}`, {
+        target_pipeline_id: targetPipelineId === "" ? null : targetPipelineId,
+      });
+      onChanged();
+    } catch (e: unknown) {
+      setTargetError(e instanceof Error ? e.message : "Failed to update target pipeline");
+    } finally {
+      setSavingTarget(false);
+    }
+  }
 
   const webhookUrl = typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.host.replace(":3002", ":9401")}/api/sources/${source.id}/webhook`
@@ -350,6 +405,49 @@ function SourceDetailDialog({ source, onClose }: { source: Source; onClose: () =
         <div className="flex items-center gap-2 mb-5">
           <Badge>{SOURCE_TYPE_LABELS[source.sourceType] ?? source.sourceType}</Badge>
           <Badge variant={source.status === "active" ? "active" : "neutral"}>{source.status}</Badge>
+        </div>
+
+        {/* Target pipeline */}
+        <div className="border border-border rounded-sm p-3 mb-5">
+          <div className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-2">
+            Target pipeline
+          </div>
+          {canWrite ? (
+            <div className="flex items-center gap-2">
+              <select
+                value={targetPipelineId}
+                onChange={(e) => setTargetPipelineId(e.target.value)}
+                className="flex-1 h-[32px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+              >
+                <option value="">Not connected</option>
+                {(pipelineOptions ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.displayName}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!dirty || savingTarget}
+                onClick={saveTargetPipeline}
+                className="inline-flex items-center px-3 py-1.5 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {savingTarget ? "Saving…" : "Save"}
+              </button>
+            </div>
+          ) : (
+            <span className="text-[12.5px] text-ink-2">
+              {(pipelineOptions ?? []).find((p) => p.id === source.targetPipelineId)?.displayName ?? (
+                <span className="text-ink-4 italic">Not connected</span>
+              )}
+            </span>
+          )}
+          {targetError && (
+            <div className="mt-2 text-[12px] text-vermillion-2">{targetError}</div>
+          )}
+          <p className="text-[11px] text-ink-4 mt-2">
+            Documents ingested through this source feed into the selected pipeline.
+          </p>
         </div>
 
         {/* Webhook URL for webhook sources */}
