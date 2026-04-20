@@ -180,7 +180,7 @@ function MetricsStrip({
       href: `${base}`,
     },
     {
-      label: "Documents",
+      label: "Processed",
       value:
         metrics?.documentsProcessed != null
           ? metrics.documentsProcessed.toLocaleString()
