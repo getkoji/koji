@@ -122,8 +122,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: server
-            dockerfile: docker/server.Dockerfile
+          - name: api
+            dockerfile: docker/api.Dockerfile
             context: .
           - name: parse
             dockerfile: docker/parse.Dockerfile
@@ -131,8 +131,8 @@ jobs:
           - name: extract
             dockerfile: docker/extract.Dockerfile
             context: .
-          - name: ui
-            dockerfile: docker/ui.Dockerfile
+          - name: dashboard
+            dockerfile: docker/dashboard.Dockerfile
             context: .
     steps:
       - name: Checkout
