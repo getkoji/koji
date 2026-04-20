@@ -280,10 +280,152 @@ async function seed() {
     };
   }).filter((r): r is NonNullable<typeof r> => r !== null);
 
-  if (docRows.length > 0) {
-    await db.insert(schema.documents).values(docRows);
+  const docsInserted = docRows.length > 0
+    ? await db.insert(schema.documents).values(docRows).returning({
+        id: schema.documents.id,
+        filename: schema.documents.filename,
+        status: schema.documents.status,
+        schemaId: schema.documents.schemaId,
+        validationJson: schema.documents.validationJson,
+      })
+    : [];
+  console.log(`  ${docsInserted.length} documents created`);
+
+  // ── Review items — one per review document + a couple of completed ones ──
+  // Every row is driven by a real document + schema. Never hardcoded in the UI;
+  // the dashboard queries /api/review which reads this table.
+  type ReviewSeed = {
+    filename: string;
+    fieldName: string;
+    reason: string;
+    proposedValue: unknown;
+    confidence: string;
+    validationRule?: string;
+    status: "pending" | "completed";
+    resolution?: "approved" | "rejected";
+    finalValue?: unknown;
+    note?: string;
+    resolvedMinutesAgo?: number;
+  };
+
+  const reviewSeeds: ReviewSeed[] = [
+    // Pending — low confidence on a claim amount (worst in queue)
+    {
+      filename: "claim-0012.pdf",
+      fieldName: "claim_amount",
+      reason: "low_confidence",
+      proposedValue: "12.50",
+      confidence: "0.6800",
+      status: "pending",
+    },
+    // Pending — low confidence on policy number
+    {
+      filename: "claim-0019.pdf",
+      fieldName: "policy_number",
+      reason: "low_confidence",
+      proposedValue: "MRD-8241",
+      confidence: "0.7200",
+      status: "pending",
+    },
+    // Pending — low confidence on claimant name (handwritten)
+    {
+      filename: "claim-0025.pdf",
+      fieldName: "claimant_name",
+      reason: "low_confidence",
+      proposedValue: "H. Brookes",
+      confidence: "0.8100",
+      status: "pending",
+    },
+    // Pending — validation failed (subtotal + tax != total)
+    {
+      filename: "invoice-0087.pdf",
+      fieldName: "total_amount",
+      reason: "validation_failed",
+      proposedValue: "500.00",
+      confidence: "0.9100",
+      validationRule: "subtotal_plus_tax_equals_total",
+      status: "pending",
+    },
+    // Pending — mandatory review regardless of confidence
+    {
+      filename: "invoice-0001.pdf",
+      fieldName: "vendor",
+      reason: "mandatory_field_review",
+      proposedValue: "Brighton & Co. Contractors",
+      confidence: "0.9700",
+      status: "pending",
+    },
+    // Pending — sampling (high confidence but randomly pulled for QA)
+    {
+      filename: "invoice-0002.pdf",
+      fieldName: "invoice_date",
+      reason: "sampling",
+      proposedValue: "2026-03-28",
+      confidence: "0.9900",
+      status: "pending",
+    },
+    // Completed — approved as-is
+    {
+      filename: "invoice-0087.pdf",
+      fieldName: "subtotal",
+      reason: "low_confidence",
+      proposedValue: "3950.00",
+      confidence: "0.8500",
+      status: "completed",
+      resolution: "approved",
+      finalValue: "3950.00",
+      resolvedMinutesAgo: 45,
+    },
+    // Completed — approved with edits
+    {
+      filename: "invoice-0003.pdf",
+      fieldName: "line_items",
+      reason: "low_confidence",
+      proposedValue: [{ description: "Services", amount: 1200 }],
+      confidence: "0.7600",
+      status: "completed",
+      resolution: "approved",
+      finalValue: [
+        { description: "Consulting services — Q1", amount: 1200 },
+      ],
+      note: "Expanded truncated line item description",
+      resolvedMinutesAgo: 120,
+    },
+  ];
+
+  // Link each review seed to a real document row we just inserted.
+  const docByFilename = new Map(docsInserted.map((d) => [d.filename, d]));
+  const reviewRows = reviewSeeds
+    .map((r) => {
+      const doc = docByFilename.get(r.filename);
+      if (!doc) return null;
+      const resolvedAt =
+        r.status === "completed" && r.resolvedMinutesAgo
+          ? new Date(Date.now() - r.resolvedMinutesAgo * 60_000)
+          : null;
+      return {
+        tenantId: TENANT,
+        documentId: doc.id,
+        schemaId: doc.schemaId!,
+        fieldName: r.fieldName,
+        reason: r.reason,
+        proposedValue: r.proposedValue,
+        confidence: r.confidence,
+        validationRule: r.validationRule ?? null,
+        status: r.status,
+        resolution: r.resolution ?? null,
+        finalValue: r.finalValue ?? null,
+        note: r.note ?? null,
+        resolvedBy: r.status === "completed" ? USER : null,
+        resolvedAt,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  if (reviewRows.length > 0) {
+    await db.insert(schema.reviewItems).values(reviewRows);
   }
-  console.log(`  ${docRows.length} documents created`);
+  console.log(`  ${reviewRows.length} review items created`);
 
   console.log("Done.");
   process.exit(0);

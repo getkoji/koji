@@ -147,6 +147,59 @@ export const jobs = {
     api.get<{ data: JobDocument[] }>(`/api/jobs/${slug}/documents`).then((r) => r.data),
 };
 
+// ── Review queue ──
+
+export interface ReviewRow {
+  id: string;
+  fieldName: string;
+  reason: string;
+  proposedValue: unknown;
+  confidence: string | null;
+  validationRule: string | null;
+  status: string;
+  resolution: string | null;
+  finalValue: unknown;
+  note: string | null;
+  assignedTo: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  documentId: string | null;
+  documentFilename: string | null;
+  jobSlug: string | null;
+  pipelineSlug: string | null;
+  pipelineName: string | null;
+  schemaSlug: string | null;
+  schemaName: string | null;
+}
+
+export interface ReviewDetail extends ReviewRow {
+  documentStorageKey: string | null;
+  documentMimeType: string | null;
+  documentExtractionJson: unknown;
+  documentPageCount: number | null;
+  documentPreviewUrl: string | null;
+  schemaVersion: number | null;
+}
+
+export const review = {
+  list: (params?: { status?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    const q = qs.toString();
+    return api.get<{ data: ReviewRow[] }>(`/api/review${q ? `?${q}` : ""}`).then((r) => r.data);
+  },
+  get: (id: string) => api.get<ReviewDetail>(`/api/review/${id}`),
+  queueIds: (status = "pending") =>
+    api.get<{ data: string[] }>(`/api/review/__queue/ids?status=${status}`).then((r) => r.data),
+  accept: (id: string, body?: { note?: string }) =>
+    api.post<ReviewRow>(`/api/review/${id}/accept`, body ?? {}),
+  override: (id: string, body: { value: unknown; note?: string }) =>
+    api.post<ReviewRow>(`/api/review/${id}/override`, body),
+  reject: (id: string, body: { reason: string }) =>
+    api.post<ReviewRow>(`/api/review/${id}/reject`, body),
+  skip: (id: string) => api.post<void>(`/api/review/${id}/skip`),
+};
+
 export interface ProjectRow {
   id: string;
   slug: string;
