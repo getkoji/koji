@@ -27,6 +27,7 @@ import { webhookTargets } from "./routes/webhook-targets";
 import { sources } from "./routes/sources";
 import { pipelinesRouter } from "./routes/pipelines";
 import { review } from "./routes/review";
+import { overview } from "./routes/overview";
 import { S3Storage } from "./storage/s3";
 import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
@@ -91,6 +92,7 @@ app.route("/api/webhook-targets", webhookTargets);
 app.route("/api/sources", sources);
 app.route("/api/pipelines", pipelinesRouter);
 app.route("/api/review", review);
+app.route("/api/overview", overview);
 
 // Export the adapter so setup.ts can create sessions
 export { adapter };

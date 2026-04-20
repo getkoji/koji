@@ -126,6 +126,59 @@ export interface JobDocument {
   createdAt: string;
 }
 
+// ── Overview ──
+
+export interface OverviewMetrics {
+  accuracy: number | null;
+  documentsProcessed: number;
+  reviewPending: number;
+  pipelinesActive: number;
+  schemaCount: number;
+}
+
+export interface OverviewActivity {
+  type:
+    | "job.completed"
+    | "job.failed"
+    | "schema.versioned"
+    | "review.resolved"
+    | "pipeline.updated"
+    | "corpus.added";
+  timestamp: string;
+  description: string;
+  link: string;
+  status?: "ok" | "warn" | "pending";
+  meta?: string;
+}
+
+export interface OverviewAttention {
+  severity: "warning" | "info";
+  kind: string;
+  description: string;
+  link: string;
+}
+
+export interface OverviewOnboarding {
+  schemaCreated: boolean;
+  documentUploaded: boolean;
+  extractionRun: boolean;
+  corpusEntries: boolean;
+  validateRun: boolean;
+  pipelineConfigured: boolean;
+  firstSchemaSlug: string | null;
+}
+
+export interface OverviewPayload {
+  metrics: OverviewMetrics;
+  recentActivity: OverviewActivity[];
+  needsAttention: OverviewAttention[];
+  onboarding: OverviewOnboarding;
+}
+
+export const overviewApi = {
+  get: () => api.get<OverviewPayload>("/api/overview"),
+};
+
 export const schemas = {
   list: () => api.get<{ data: SchemaRow[] }>("/api/schemas").then((r) => r.data),
   get: (slug: string) => api.get<SchemaRow>(`/api/schemas/${slug}`),
