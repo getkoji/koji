@@ -75,12 +75,15 @@ export const api = {
 // ── Typed endpoints ──
 
 export interface SchemaRow {
+  id?: string;
   slug: string;
   displayName: string;
   description: string | null;
   createdAt: string;
   draftYaml?: string | null;
   currentVersionId?: string | null;
+  latestVersion?: number | null;
+  corpusCount?: number;
 }
 
 export interface JobRow {

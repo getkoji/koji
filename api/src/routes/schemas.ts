@@ -44,7 +44,15 @@ schemas.get("/", requires("schema:read"), async (c) => {
         .limit(1)
     );
     if (sv) latestVersion = sv.versionNumber;
-    enriched.push({ ...row, latestVersion });
+
+    const [cc] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ count: sql<number>`count(*)::int` })
+        .from(schema.corpusEntries)
+        .where(eq(schema.corpusEntries.schemaId, row.id))
+    );
+    const corpusCount = cc?.count ?? 0;
+
+    enriched.push({ ...row, latestVersion, corpusCount });
   }
 
   return c.json({ data: enriched });
