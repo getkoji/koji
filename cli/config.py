@@ -110,6 +110,7 @@ class StorageConfig(BaseModel):
 
 
 class ServicesConfig(BaseModel):
+    dashboard: bool = True
     parse: bool = True
     ollama: bool = True
 

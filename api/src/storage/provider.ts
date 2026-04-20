@@ -22,4 +22,7 @@ export interface StorageProvider {
   exists(key: string): Promise<boolean>;
 
   getSignedUrl(key: string, expiresIn?: number): Promise<string>;
+
+  /** Fetch the entire object as a Buffer. Simpler than streaming for small-to-medium files. */
+  getBuffer(key: string): Promise<{ data: Buffer; contentType: string } | null>;
 }

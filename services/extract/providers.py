@@ -111,13 +111,17 @@ class OpenAIProvider(ModelProvider):
 def create_provider(model_str: str) -> ModelProvider:
     """Create a provider from a model string like 'openai/gpt-4o-mini' or 'llama3.2'.
 
-    Format: provider/model or just model (defaults to ollama).
+    Format: provider/model or just model.
 
     Supported prefixes:
     - openai/ — OpenAI API (also works with any OpenAI-compatible endpoint)
     - ollama/ — local ollama (explicit)
-    - (no prefix) — defaults to ollama
+    - (no prefix) — auto-detect: known OpenAI models route to OpenAI,
+                     everything else defaults to ollama
     """
+    # Known OpenAI model prefixes (covers gpt-*, o1-*, o3-*, chatgpt-*)
+    OPENAI_PREFIXES = ("gpt-", "o1-", "o3-", "chatgpt-")
+
     if "/" in model_str:
         provider, model = model_str.split("/", 1)
         provider = provider.lower()
@@ -127,9 +131,12 @@ def create_provider(model_str: str) -> ModelProvider:
         elif provider == "ollama":
             return OllamaProvider(model=model)
         else:
-            # Assume OpenAI-compatible with a custom base URL
-            # User should set KOJI_OPENAI_URL env var
             return OpenAIProvider(model=model)
     else:
-        # No prefix — default to ollama
+        # Auto-detect by model name
+        if any(model_str.startswith(p) for p in OPENAI_PREFIXES):
+            return OpenAIProvider(model=model_str)
+        if model_str.startswith("claude"):
+            # TODO: add AnthropicProvider
+            return OpenAIProvider(model=model_str)
         return OllamaProvider(model=model_str)

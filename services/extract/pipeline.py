@@ -708,21 +708,24 @@ def compute_confidence_score(
     """Compute a numeric confidence score (0.0-1.0) from individual factors.
 
     Factors:
-      - Route source quality (0.0-0.4): hint=0.4, signal_inferred=0.25,
-        broadened=0.1, fallback=0.05
-      - Source agreement  (0.0-0.3): multi-source agree=0.3, single=0.15
+      - Route source quality (0.0-0.5): hint=0.5, signal_inferred=0.35,
+        broadened=0.15, fallback=0.1
+      - Source agreement  (0.0-0.2): multi-source agree=0.2, single=0.15
       - Validation pass   (0.0-0.2): passed=0.2, failed=0.0
       - Signal density    (0.0-0.1): relevant signals present=0.1
+
+    Typical single-source hint extraction with validation: 0.95
     """
     score = 0.0
 
-    # Route source quality (0.0-0.4)
+    # Route source quality (0.0-0.5)
+    route_weights = {"hint": 0.5, "signal_inferred": 0.35, "broadened": 0.15, "fallback": 0.1}
     if route_source is not None:
-        score += ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0)
+        score += route_weights.get(route_source, ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0))
 
-    # Source agreement (0.0-0.3)
+    # Source agreement (0.0-0.2)
     if multi_source_agree:
-        score += 0.3
+        score += 0.2
     elif single_source:
         score += 0.15
 
