@@ -393,10 +393,45 @@ overview.get("/", requires("schema:read"), async (c) => {
     firstSchemaSlug: firstSchema?.slug ?? null,
   };
 
+  // ── Editorial accent line ──────────────────────────────────────────────
+  // Dynamic tagline below the project name, driven by real data. Priority
+  // order matters: the first matching state wins so the same project state
+  // always produces the same line.
+
+  const [failedRecent] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.status, "failed"),
+          sql`${schema.jobs.createdAt} >= now() - interval '24 hours'`,
+        ),
+      ),
+  );
+
+  let accentLine: string;
+  if ((failedRecent?.count ?? 0) > 0) {
+    accentLine = "Something needs attention.";
+  } else if (latestValidate && latestValidate.regressionsCount > 0) {
+    accentLine = "Regression caught.";
+  } else if ((pendingReview?.count ?? 0) > 0) {
+    accentLine = "Waiting on you.";
+  } else if (
+    !onboarding.schemaCreated &&
+    !onboarding.documentUploaded &&
+    (docsCount?.count ?? 0) === 0
+  ) {
+    accentLine = "Ready when you are.";
+  } else {
+    accentLine = "Quietly working.";
+  }
+
   return c.json({
     metrics,
     recentActivity,
     needsAttention: attention,
     onboarding,
+    accentLine,
   });
 });

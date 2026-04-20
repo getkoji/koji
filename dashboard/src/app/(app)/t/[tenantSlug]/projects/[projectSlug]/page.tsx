@@ -106,6 +106,17 @@ export default function ProjectOverviewPage() {
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
           >
             {displayName}.
+            {overview?.accentLine && (
+              <>
+                <br />
+                <em
+                  className="text-vermillion-2 italic"
+                  style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 100" }}
+                >
+                  {overview.accentLine}
+                </em>
+              </>
+            )}
           </h1>
           <p className="text-[13.5px] text-ink-3 max-w-[54ch] mt-1.5 m-0">
             {subtitle}

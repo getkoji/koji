@@ -173,6 +173,7 @@ export interface OverviewPayload {
   recentActivity: OverviewActivity[];
   needsAttention: OverviewAttention[];
   onboarding: OverviewOnboarding;
+  accentLine: string;
 }
 
 export const overviewApi = {
