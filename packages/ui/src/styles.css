@@ -145,3 +145,45 @@
   --shadow-xl:  0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
   --shadow-2xl: 0 4px 16px -4px rgba(23, 20, 16, 0.14), 0 0 0 1px var(--border);
 }
+
+/*
+ * Radix Collapsible + Accordion height animation.
+ *
+ * Radix exposes --radix-collapsible-content-height (and the accordion
+ * equivalent) on [data-state=open|closed]; we drive a height keyframe
+ * off that so shadcn Collapsible + Accordion animate smoothly instead
+ * of snapping open. Scoped by [data-slot] so only the wrapper primitive
+ * is targeted.
+ */
+[data-slot="collapsible-content"],
+[data-slot="accordion-content"] {
+  overflow: hidden;
+}
+[data-slot="collapsible-content"][data-state="open"] {
+  animation: koji-collapsible-down 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-slot="collapsible-content"][data-state="closed"] {
+  animation: koji-collapsible-up 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-slot="accordion-content"][data-state="open"] {
+  animation: koji-accordion-down 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-slot="accordion-content"][data-state="closed"] {
+  animation: koji-accordion-up 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes koji-collapsible-down {
+  from { height: 0; }
+  to   { height: var(--radix-collapsible-content-height); }
+}
+@keyframes koji-collapsible-up {
+  from { height: var(--radix-collapsible-content-height); }
+  to   { height: 0; }
+}
+@keyframes koji-accordion-down {
+  from { height: 0; }
+  to   { height: var(--radix-accordion-content-height); }
+}
+@keyframes koji-accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to   { height: 0; }
+}
