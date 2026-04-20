@@ -1,26 +1,19 @@
 /**
- * `ingestion.process` worker — the motor that turns ingested bytes into
- * extracted documents, and routes them to delivery or human review.
+ * `ingestion.process` worker — turns a `documents` row that's ready to
+ * extract into either a delivered result or a queued review item.
  *
- * Invoked by the worker loop after POST /api/sources/:id/webhook enqueues
- * {kind: "ingestion.process", payload: {ingestionId}}.
+ * Two upstream entry points create work for this handler. Both create the
+ * job + document rows synchronously and enqueue {kind: "ingestion.process",
+ * payload: {documentId}}:
  *
- * Flow (per docs/specs/document-state-machine.md):
- *   ingestion[received]
- *     → load source + target pipeline + deployed schema version
- *     → create jobs row (running)
- *     → create documents row (extracting)
- *     → fetch file bytes from storage
- *     → parse (markdown)
- *     → extract (schema_def + markdown)
- *     → evaluate confidence gate:
- *         min field confidence < pipeline.review_threshold → review
- *         otherwise                                         → delivered
- *     → update counters; update pipeline.last_run_at
- *     → emit document.delivered / document.review_requested
- *     → ingestion[complete]
+ *   1. POST /api/sources/:id/webhook — also writes an ingestions row, links
+ *      it to the document, and runs whatever filter rules the source has.
+ *   2. POST /api/pipelines/:idOrSlug/run — manual upload from the dashboard.
+ *      No ingestion row; the document is created directly under the pipeline.
  *
- * Any thrown error becomes a nack. TerminalError means don't retry.
+ * Keeping the handler payload uniform means the same retry/idempotency logic
+ * and error reporting works for both paths. See document-state-machine.md §6
+ * for the confidence-gate rules implemented here.
  */
 
 import { eq, sql } from "drizzle-orm";
@@ -44,7 +37,7 @@ export function initIngestionHandler(db: Db, storage: StorageProvider) {
 }
 
 interface IngestionProcessPayload {
-  ingestionId: string;
+  documentId: string;
 }
 
 export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
@@ -52,25 +45,24 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const db = _db;
   const storage = _storage;
 
-  const { ingestionId } = job.payload as unknown as IngestionProcessPayload;
+  const { documentId } = job.payload as unknown as IngestionProcessPayload;
   const tenantId = job.tenantId;
 
-  // ── Resolve ingestion + source + pipeline + active schema version ─────────
+  // ── Resolve document → job → pipeline → schema version in one query ───────
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
-        ingestion: {
-          id: schema.ingestions.id,
-          status: schema.ingestions.status,
-          storageKey: schema.ingestions.storageKey,
-          filename: schema.ingestions.filename,
-          fileSize: schema.ingestions.fileSize,
-          contentHash: schema.ingestions.contentHash,
+        document: {
+          id: schema.documents.id,
+          status: schema.documents.status,
+          storageKey: schema.documents.storageKey,
+          filename: schema.documents.filename,
+          mimeType: schema.documents.mimeType,
+          ingestionId: schema.documents.ingestionId,
         },
-        source: {
-          id: schema.sources.id,
-          sourceType: schema.sources.sourceType,
-          targetPipelineId: schema.sources.targetPipelineId,
+        job: {
+          id: schema.jobs.id,
+          slug: schema.jobs.slug,
         },
         pipeline: {
           id: schema.pipelines.id,
@@ -85,124 +77,71 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           yamlSource: schema.schemaVersions.yamlSource,
         },
       })
-      .from(schema.ingestions)
-      .leftJoin(schema.sources, eq(schema.sources.id, schema.ingestions.sourceId))
-      .leftJoin(schema.pipelines, eq(schema.pipelines.id, schema.sources.targetPipelineId))
+      .from(schema.documents)
+      .leftJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .leftJoin(schema.pipelines, eq(schema.pipelines.id, schema.jobs.pipelineId))
       .leftJoin(
         schema.schemaVersions,
         eq(schema.schemaVersions.id, schema.pipelines.activeSchemaVersionId),
       )
-      .where(eq(schema.ingestions.id, ingestionId))
+      .where(eq(schema.documents.id, documentId))
       .limit(1),
   );
 
   if (!row) {
-    throw new TerminalError(`Ingestion ${ingestionId} not found`);
+    throw new TerminalError(`Document ${documentId} not found`);
   }
 
-  const { ingestion, source, pipeline, schemaVersion } = row;
+  const { document, job: docJob, pipeline, schemaVersion } = row;
 
   // Idempotency: if we've already processed it, don't double-process.
-  if (ingestion.status !== "received") {
+  if (document.status !== "extracting") {
     console.log(
-      `[ingestion.process] ${ingestionId} status=${ingestion.status}, skipping`,
+      `[ingestion.process] document ${documentId} status=${document.status}, skipping`,
     );
     return;
   }
 
-  if (!source) {
-    await failIngestion(db, tenantId, ingestionId, "Source not found");
-    throw new TerminalError("Source not found");
+  if (!docJob) {
+    throw new TerminalError("Document is not attached to a job");
   }
+  const jobId = docJob.id;
+  const jobSlug = docJob.slug;
 
   if (!pipeline) {
-    await failIngestion(
-      db,
-      tenantId,
-      ingestionId,
-      "Source has no target pipeline — connect one on the pipeline page",
-    );
-    throw new TerminalError("Source has no target pipeline");
+    await markDocFailed(db, tenantId, documentId, jobId, "Job's pipeline was deleted");
+    if (document.ingestionId) {
+      await failIngestion(db, tenantId, document.ingestionId, "Pipeline deleted");
+    }
+    throw new TerminalError("Pipeline not found for job");
   }
 
   if (!schemaVersion || !pipeline.schemaId || !pipeline.activeSchemaVersionId) {
-    await failIngestion(
-      db,
-      tenantId,
-      ingestionId,
-      "Pipeline has no deployed schema version — deploy one first",
-    );
-    throw new TerminalError("No deployed schema version");
+    const reason = "Pipeline has no deployed schema version — deploy one first";
+    await markDocFailed(db, tenantId, documentId, jobId, reason);
+    if (document.ingestionId) {
+      await failIngestion(db, tenantId, document.ingestionId, reason);
+    }
+    throw new TerminalError(reason);
   }
 
-  // ── Create job + document in extracting state ─────────────────────────────
-  const jobSlug = makeJobSlug();
-  const [createdJob] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .insert(schema.jobs)
-      .values({
-        tenantId,
-        slug: jobSlug,
-        pipelineId: pipeline.id,
-        triggerType: source.sourceType,
-        status: "running",
-        docsTotal: 1,
-        docsProcessed: 0,
-        docsPassed: 0,
-        docsFailed: 0,
-        docsReviewing: 0,
-        startedAt: new Date(),
-      })
-      .returning({ id: schema.jobs.id, slug: schema.jobs.slug }),
-  );
-  const jobId = createdJob!.id;
-
-  const mimeType = mimeTypeFor(ingestion.filename);
-
-  const [createdDoc] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .insert(schema.documents)
-      .values({
-        tenantId,
-        jobId,
-        ingestionId,
-        filename: ingestion.filename ?? "unknown",
-        storageKey: ingestion.storageKey,
-        fileSize: ingestion.fileSize ?? 0,
-        mimeType,
-        contentHash: ingestion.contentHash ?? "",
-        schemaId: pipeline.schemaId,
-        schemaVersionId: pipeline.activeSchemaVersionId,
-        status: "extracting",
-        startedAt: new Date(),
-      })
-      .returning({ id: schema.documents.id }),
-  );
-  const documentId = createdDoc!.id;
-
-  // Link ingestion to the job/doc early so the trace is recoverable if the
-  // parse/extract leg fails.
-  await withRLS(db, tenantId, (tx) =>
-    tx
-      .update(schema.ingestions)
-      .set({ status: "processing", jobId, docId: documentId })
-      .where(eq(schema.ingestions.id, ingestionId)),
-  );
-
   // ── Fetch bytes, parse, extract ───────────────────────────────────────────
-  const blob = await storage.getBuffer(ingestion.storageKey);
+  const blob = await storage.getBuffer(document.storageKey);
   if (!blob) {
-    await markDocFailed(db, tenantId, documentId, jobId, "File not found in storage");
-    await failIngestion(db, tenantId, ingestionId, "File not found in storage");
-    throw new TerminalError("File not found in storage");
+    const reason = "File not found in storage";
+    await markDocFailed(db, tenantId, documentId, jobId, reason);
+    if (document.ingestionId) {
+      await failIngestion(db, tenantId, document.ingestionId, reason);
+    }
+    throw new TerminalError(reason);
   }
 
   let extractResult: ExtractResult;
   const extractStart = Date.now();
   try {
     const markdown = await callParse(
-      ingestion.filename ?? "document.pdf",
-      mimeType,
+      document.filename,
+      document.mimeType || mimeTypeFor(document.filename),
       blob.data,
     );
     extractResult = await callExtract(markdown, schemaVersion.yamlSource);
@@ -212,7 +151,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     // Mark the ingestion failed too so re-posts the same file surface an
     // actionable error instead of silently short-circuiting on the idempotency
     // check. Re-ingestion (a fresh POST) is the intended retry path.
-    await failIngestion(db, tenantId, ingestionId, msg);
+    if (document.ingestionId) {
+      await failIngestion(db, tenantId, document.ingestionId, msg);
+    }
     throw new TerminalError(`Extraction failed: ${msg}`);
   }
   const extractDurationMs = Date.now() - extractStart;
@@ -324,13 +265,15 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     });
   }
 
-  // Close out the ingestion + pipeline last-run timestamp
-  await withRLS(db, tenantId, (tx) =>
-    tx
-      .update(schema.ingestions)
-      .set({ status: "complete", completedAt: now })
-      .where(eq(schema.ingestions.id, ingestionId)),
-  );
+  // Close out the ingestion (if any) + pipeline last-run timestamp
+  if (document.ingestionId) {
+    await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.ingestions)
+        .set({ status: "complete", completedAt: now })
+        .where(eq(schema.ingestions.id, document.ingestionId!)),
+    );
+  }
 
   await withRLS(db, tenantId, (tx) =>
     tx
@@ -341,7 +284,84 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Helpers
+// Helpers used by routes too: create the job + document up front, enqueue work
+
+export interface CreateExtractionJobArgs {
+  db: Db;
+  tenantId: string;
+  pipelineId: string;
+  schemaId: string;
+  schemaVersionId: string;
+  triggerType: string;
+  storageKey: string;
+  filename: string;
+  fileSize: number;
+  mimeType: string;
+  contentHash: string;
+  ingestionId?: string;
+}
+
+export interface CreatedExtractionJob {
+  jobId: string;
+  jobSlug: string;
+  documentId: string;
+}
+
+/**
+ * Synchronously create the jobs + documents row pair for a single-document
+ * extraction. Both the webhook route and the manual-run route call this so
+ * the worker handler only has to load + execute, not construct.
+ */
+export async function createExtractionJob(
+  args: CreateExtractionJobArgs,
+): Promise<CreatedExtractionJob> {
+  const jobSlug = makeJobSlug();
+
+  const [createdJob] = await withRLS(args.db, args.tenantId, (tx) =>
+    tx
+      .insert(schema.jobs)
+      .values({
+        tenantId: args.tenantId,
+        slug: jobSlug,
+        pipelineId: args.pipelineId,
+        triggerType: args.triggerType,
+        status: "running",
+        docsTotal: 1,
+        docsProcessed: 0,
+        docsPassed: 0,
+        docsFailed: 0,
+        docsReviewing: 0,
+        startedAt: new Date(),
+      })
+      .returning({ id: schema.jobs.id, slug: schema.jobs.slug }),
+  );
+
+  const jobId = createdJob!.id;
+
+  const [createdDoc] = await withRLS(args.db, args.tenantId, (tx) =>
+    tx
+      .insert(schema.documents)
+      .values({
+        tenantId: args.tenantId,
+        jobId,
+        ingestionId: args.ingestionId ?? null,
+        filename: args.filename,
+        storageKey: args.storageKey,
+        fileSize: args.fileSize,
+        mimeType: args.mimeType,
+        contentHash: args.contentHash,
+        schemaId: args.schemaId,
+        schemaVersionId: args.schemaVersionId,
+        status: "extracting",
+        startedAt: new Date(),
+      })
+      .returning({ id: schema.documents.id }),
+  );
+
+  return { jobId, jobSlug, documentId: createdDoc!.id };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 
 interface ExtractResult {
   extracted: unknown;
@@ -414,7 +434,7 @@ function numberOr<T>(v: unknown, fallback: T): number | T {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function mimeTypeFor(filename: string | null): string {
+export function mimeTypeFor(filename: string | null): string {
   if (!filename) return "application/octet-stream";
   const ext = filename.toLowerCase().split(".").pop() ?? "";
   switch (ext) {

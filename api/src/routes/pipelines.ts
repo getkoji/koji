@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { eq, and, sql, desc } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { emitWebhookEvent } from "../webhooks/emit";
+import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
 export const pipelinesRouter = new Hono<Env>();
 
@@ -442,4 +444,80 @@ pipelinesRouter.post("/:idOrSlug/resume", requires("pipeline:write"), async (c) 
   );
 
   return c.json({ ok: true });
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/run — manual upload + run.
+ *
+ * Accepts multipart/form-data with one file. Creates a job + document under
+ * the pipeline (no source/ingestion row), persists bytes to storage, and
+ * enqueues the extraction handler. Returns the job slug so the dashboard can
+ * navigate to the job detail page and watch it tick.
+ */
+pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const queue = c.get("queue");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.pipelines.id,
+        schemaId: schema.pipelines.schemaId,
+        activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+      })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .limit(1),
+  );
+  if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
+  if (!pipeline.schemaId || !pipeline.activeSchemaVersionId) {
+    return c.json(
+      { error: "Pipeline has no deployed schema version. Deploy one first." },
+      422,
+    );
+  }
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) {
+    return c.json({ error: "Missing file in 'file' field" }, 400);
+  }
+
+  const fileBytes = await file.arrayBuffer();
+  const buffer = Buffer.from(fileBytes);
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  const storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
+
+  await storage.put(storageKey, buffer, {
+    contentType: file.type || mimeTypeFor(file.name),
+  });
+
+  const created = await createExtractionJob({
+    db,
+    tenantId,
+    pipelineId,
+    schemaId: pipeline.schemaId,
+    schemaVersionId: pipeline.activeSchemaVersionId,
+    triggerType: "manual",
+    storageKey,
+    filename: file.name,
+    fileSize: file.size,
+    mimeType: file.type || mimeTypeFor(file.name),
+    contentHash,
+  });
+
+  await queue.enqueue(
+    "ingestion.process",
+    { documentId: created.documentId },
+    { tenantId },
+  );
+
+  return c.json(
+    { jobId: created.jobId, jobSlug: created.jobSlug, documentId: created.documentId },
+    202,
+  );
 });

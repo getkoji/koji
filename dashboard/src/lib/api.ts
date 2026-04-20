@@ -30,14 +30,18 @@ function getCurrentTenantSlug(): string | undefined {
   return match?.[1];
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit & { isFormData?: boolean }): Promise<T> {
   const url = `${API_BASE}${path}`;
   const tenantSlug = getCurrentTenantSlug();
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options?.headers as Record<string, string>),
-  };
+  // For FormData bodies, let the browser set Content-Type (with the
+  // multipart boundary). Setting it manually breaks multipart parsing.
+  const headers: Record<string, string> = options?.isFormData
+    ? { ...((options?.headers as Record<string, string>) ?? {}) }
+    : {
+        "Content-Type": "application/json",
+        ...(options?.headers as Record<string, string>),
+      };
 
   // Add tenant header for tenant-scoped API calls
   if (tenantSlug) {
@@ -64,6 +68,9 @@ export const api = {
 
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+
+  postForm: <T>(path: string, form: FormData) =>
+    request<T>(path, { method: "POST", body: form, isFormData: true }),
 
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
@@ -362,6 +369,15 @@ export const pipelines = {
   deploy: (idOrSlug: string, schemaVersionId: string) =>
     api.post(`/api/pipelines/${idOrSlug}/deploy`, { schema_version_id: schemaVersionId }),
   delete: (idOrSlug: string) => api.delete(`/api/pipelines/${idOrSlug}`),
+  /** Manual run: upload one file, get back the new job slug. */
+  run: (idOrSlug: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.postForm<{ jobId: string; jobSlug: string; documentId: string }>(
+      `/api/pipelines/${idOrSlug}/run`,
+      form,
+    );
+  },
 };
 
 // ── Sources ──
