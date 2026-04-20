@@ -16,7 +16,7 @@
  * for the confidence-gate rules implemented here.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { parse as parseYaml } from "yaml";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -58,6 +58,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           storageKey: schema.documents.storageKey,
           filename: schema.documents.filename,
           mimeType: schema.documents.mimeType,
+          contentHash: schema.documents.contentHash,
           ingestionId: schema.documents.ingestionId,
         },
         job: {
@@ -125,25 +126,11 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     throw new TerminalError(reason);
   }
 
-  // ── Fetch bytes, parse, extract ───────────────────────────────────────────
-  const blob = await storage.getBuffer(document.storageKey);
-  if (!blob) {
-    const reason = "File not found in storage";
-    await markDocFailed(db, tenantId, documentId, jobId, reason);
-    if (document.ingestionId) {
-      await failIngestion(db, tenantId, document.ingestionId, reason);
-    }
-    throw new TerminalError(reason);
-  }
-
+  // ── Resolve markdown via parse_cache, falling back to live parse ─────────
   let extractResult: ExtractResult;
   const extractStart = Date.now();
   try {
-    const markdown = await callParse(
-      document.filename,
-      document.mimeType || mimeTypeFor(document.filename),
-      blob.data,
-    );
+    const markdown = await getOrParse(db, storage, tenantId, document);
     extractResult = await callExtract(markdown, schemaVersion.yamlSource);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -371,11 +358,116 @@ interface ExtractResult {
   elapsed_ms?: number;
 }
 
+/**
+ * Look up the markdown for this document, hitting parse_cache first and
+ * falling back to a live parse on miss. The cache write happens
+ * best-effort — a write failure shouldn't fail the extraction. Mirrors the
+ * pattern in routes/extract.ts (handleExtractRunJSON) so build mode and
+ * the worker share the same cache entries by (tenantId, fileHash).
+ *
+ * For large digital PDFs this turns repeat runs from minutes into milliseconds.
+ */
+async function getOrParse(
+  db: Db,
+  storage: StorageProvider,
+  tenantId: string,
+  document: {
+    id: string;
+    storageKey: string;
+    filename: string;
+    mimeType: string | null;
+    contentHash: string;
+  },
+): Promise<string> {
+  const fileHash = document.contentHash;
+
+  // 1. Cache lookup
+  if (fileHash) {
+    const [cached] = await withRLS(db, tenantId, (tx) =>
+      tx
+        .select({ storageKey: schema.parseCache.storageKey })
+        .from(schema.parseCache)
+        .where(
+          and(
+            eq(schema.parseCache.tenantId, tenantId),
+            eq(schema.parseCache.fileHash, fileHash),
+          ),
+        )
+        .limit(1),
+    );
+
+    if (cached) {
+      const cacheBlob = await storage.getBuffer(cached.storageKey);
+      if (cacheBlob) {
+        try {
+          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string };
+          if (payload.markdown) {
+            console.log(`[ingestion.process] parse cache hit for ${fileHash.slice(0, 12)}…`);
+            return payload.markdown;
+          }
+        } catch {
+          // Corrupt cache entry — fall through to live parse and overwrite.
+        }
+      }
+    }
+  }
+
+  // 2. Live parse
+  const blob = await storage.getBuffer(document.storageKey);
+  if (!blob) throw new Error("File not found in storage");
+
+  const mimeType = document.mimeType || mimeTypeFor(document.filename);
+  const liveStart = Date.now();
+  const parseResult = await callParse(document.filename, mimeType, blob.data);
+  const parseElapsedMs = Date.now() - liveStart;
+
+  // 3. Cache write (best-effort)
+  if (fileHash) {
+    const cacheKey = `cache/${tenantId}/${fileHash}.json`;
+    const cachePayload = Buffer.from(
+      JSON.stringify({
+        markdown: parseResult.markdown,
+        pages: parseResult.pages,
+        ocr_skipped: parseResult.ocr_skipped,
+      }),
+    );
+    try {
+      await storage.put(cacheKey, cachePayload, { contentType: "application/json" });
+      await withRLS(db, tenantId, (tx) =>
+        tx
+          .insert(schema.parseCache)
+          .values({
+            tenantId,
+            fileHash,
+            storageKey: cacheKey,
+            pages: parseResult.pages ?? 0,
+            ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
+            parseDurationMs: parseElapsedMs,
+          })
+          .onConflictDoNothing(),
+      );
+    } catch (err) {
+      console.warn(
+        `[ingestion.process] parse cache write failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return parseResult.markdown;
+}
+
+interface ParseResponse {
+  markdown: string;
+  pages?: number;
+  ocr_skipped?: boolean;
+}
+
 async function callParse(
   filename: string,
   mimeType: string,
   fileBuffer: Buffer,
-): Promise<string> {
+): Promise<ParseResponse> {
   const form = new FormData();
   form.append("file", new Blob([fileBuffer], { type: mimeType }), filename);
   const resp = await fetch(`${PARSE_URL}/parse`, { method: "POST", body: form });
@@ -383,9 +475,9 @@ async function callParse(
     const body = await resp.text().catch(() => "");
     throw new Error(`parse ${resp.status}: ${body.slice(0, 300)}`);
   }
-  const result = (await resp.json()) as { markdown?: string };
+  const result = (await resp.json()) as ParseResponse;
   if (!result.markdown) throw new Error("parse returned no markdown");
-  return result.markdown;
+  return result;
 }
 
 async function callExtract(markdown: string, schemaYaml: string): Promise<ExtractResult> {
