@@ -33,6 +33,7 @@ import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
 import { initEmitter } from "./webhooks/emit";
 import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
+import { initIngestionHandler, handleIngestionProcess } from "./ingestion/process";
 import type { Env } from "./env";
 
 const DATABASE_URL =
@@ -61,10 +62,15 @@ const storage = new S3Storage({
   forcePathStyle: process.env.KOJI_S3_FORCE_PATH_STYLE === "true",
 });
 
-// Inject DB + storage into every request
+// Shared queue — used by request handlers to enqueue background work
+// and by the worker loop (in start()) to pull it off.
+const queue = new PostgresQueue(db);
+
+// Inject DB + storage + queue into every request
 app.use("*", async (c, next) => {
   c.set("db", db);
   c.set("storage", storage);
+  c.set("queue", queue);
   await next();
 });
 
@@ -104,13 +110,14 @@ async function start() {
   console.log(`[koji-api] Database: ${DATABASE_URL.replace(/:[^@]+@/, ":***@")}`);
 
   // Initialize queue + webhook system
-  const queue = new PostgresQueue(db);
   initEmitter(queue, db);
   initDeliveryHandler(db);
+  initIngestionHandler(db, storage);
 
   // Start background worker
   startWorker(queue, {
     "webhook.deliver": handleWebhookDeliver,
+    "ingestion.process": handleIngestionProcess,
   });
 
   serve({ fetch: app.fetch, port: PORT });
