@@ -202,7 +202,7 @@ export function AppSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItemLink
-                href={base}
+                href={`${base}/projects/${projectSlug}`}
                 icon={<LayoutDashboard className={ICON} />}
                 label="Overview"
                 exact
