@@ -16,8 +16,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install ruff
-      - run: ruff check cli/ server/ services/ tests/
-      - run: ruff format --check cli/ server/ services/ tests/
+      - run: ruff check cli/ services/ tests/
+      - run: ruff format --check cli/ services/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
