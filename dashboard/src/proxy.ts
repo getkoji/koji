@@ -44,14 +44,22 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  // Set tenant header for tenant-scoped routes
+  // Set tenant header for tenant-scoped routes + remember the last-used
+  // tenant in a cookie so the root '/' redirect can land the user back
+  // in the workspace they were working in.
   if (pathname.startsWith("/t/")) {
     const parts = pathname.split("/");
     const tenantSlug = parts[2];
     if (tenantSlug) {
       const headers = new Headers(request.headers);
       headers.set("x-koji-tenant", tenantSlug);
-      return NextResponse.next({ headers });
+      const response = NextResponse.next({ headers });
+      response.cookies.set("koji_active_tenant", tenantSlug, {
+        path: "/",
+        sameSite: "lax",
+        maxAge: 60 * 60 * 24 * 365,
+      });
+      return response;
     }
   }
 
