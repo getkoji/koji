@@ -71,7 +71,6 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "restart": "unless-stopped",
             "networks": [net],
         },
-
         # ── API server (Hono + @koji/db) ──
         "koji-api": {
             **_image_or_build("api", "docker/api.Dockerfile", version, project_dir, dev_mode),
@@ -98,7 +97,6 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "restart": "unless-stopped",
             "networks": [net],
         },
-
     }
 
     # ── Dashboard (Next.js) ──
@@ -129,7 +127,9 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             ],
             "healthcheck": {
                 "test": [
-                    "CMD", "python", "-c",
+                    "CMD",
+                    "python",
+                    "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:9410/health')",
                 ],
                 "interval": "10s",
@@ -161,7 +161,9 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
         "dns": ["8.8.8.8", "8.8.4.4"],
         "healthcheck": {
             "test": [
-                "CMD", "python", "-c",
+                "CMD",
+                "python",
+                "-c",
                 "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')",
             ],
             "interval": "10s",

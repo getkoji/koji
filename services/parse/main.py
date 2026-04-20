@@ -121,6 +121,7 @@ def image_to_base64(file_path: str) -> list[str]:
 def pdf_pages_to_images(file_path: str, max_pages: int = 10) -> list[str]:
     try:
         import fitz
+
         doc = fitz.open(file_path)
         images = []
         for page_num in range(min(len(doc), max_pages)):
@@ -178,13 +179,15 @@ async def parse(file: UploadFile = File(...)):
         )
         elapsed = round(time.time() - start, 2)
 
-        return JSONResponse({
-            "filename": file.filename,
-            "markdown": result["markdown"],
-            "pages": result["pages"],
-            "elapsed_seconds": elapsed,
-            "ocr_skipped": skip_ocr,
-        })
+        return JSONResponse(
+            {
+                "filename": file.filename,
+                "markdown": result["markdown"],
+                "pages": result["pages"],
+                "elapsed_seconds": elapsed,
+                "ocr_skipped": skip_ocr,
+            }
+        )
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[koji-parse] Error processing {file.filename}:\n{tb}")
@@ -222,13 +225,15 @@ async def parse_stream(file: UploadFile = File(...)):
         # Send detection results immediately
         yield {
             "event": "started",
-            "data": json.dumps({
-                "filename": file.filename,
-                "pages": info["pages"],
-                "scanned": info["scanned"],
-                "ocr_skipped": skip_ocr,
-                "estimated_seconds": estimated,
-            }),
+            "data": json.dumps(
+                {
+                    "filename": file.filename,
+                    "pages": info["pages"],
+                    "scanned": info["scanned"],
+                    "ocr_skipped": skip_ocr,
+                    "estimated_seconds": estimated,
+                }
+            ),
         }
 
         # Run conversion in background thread
@@ -253,13 +258,15 @@ async def parse_stream(file: UploadFile = File(...)):
 
             yield {
                 "event": "progress",
-                "data": json.dumps({
-                    "page": est_page,
-                    "total": info["pages"],
-                    "percent": percent,
-                    "elapsed_seconds": round(elapsed, 1),
-                    "estimated_remaining_seconds": round(remaining, 1),
-                }),
+                "data": json.dumps(
+                    {
+                        "page": est_page,
+                        "total": info["pages"],
+                        "percent": percent,
+                        "elapsed_seconds": round(elapsed, 1),
+                        "estimated_remaining_seconds": round(remaining, 1),
+                    }
+                ),
             }
 
             await asyncio.sleep(poll_interval)
@@ -271,13 +278,15 @@ async def parse_stream(file: UploadFile = File(...)):
 
             yield {
                 "event": "complete",
-                "data": json.dumps({
-                    "filename": file.filename,
-                    "markdown": result["markdown"],
-                    "pages": result["pages"],
-                    "elapsed_seconds": elapsed,
-                    "ocr_skipped": skip_ocr,
-                }),
+                "data": json.dumps(
+                    {
+                        "filename": file.filename,
+                        "markdown": result["markdown"],
+                        "pages": result["pages"],
+                        "elapsed_seconds": elapsed,
+                        "ocr_skipped": skip_ocr,
+                    }
+                ),
             }
         except Exception as e:
             yield {

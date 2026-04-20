@@ -100,6 +100,7 @@ class OutputConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     """Object storage configuration. Defaults to MinIO in the local cluster."""
+
     provider: str = "s3"  # only 's3' for now (covers MinIO, AWS, R2)
     endpoint: str | None = None  # auto-set to MinIO container in cluster mode
     bucket: str = "koji"
