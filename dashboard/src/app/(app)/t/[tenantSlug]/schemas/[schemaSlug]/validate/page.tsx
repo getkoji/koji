@@ -1,233 +1,458 @@
 "use client";
 
-import { useState } from "react";
-import { DetailLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
+import { useState, useCallback, useEffect, Fragment } from "react";
+import { useParams, usePathname } from "next/navigation";
+import Link from "next/link";
+import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database } from "lucide-react";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 
-const CORPUS_DOCS = [
-  { group: "REGRESSIONS · 1", items: [
-    { name: "invoice-0087.pdf", meta: "1 field", score: "87.5%", status: "regress" as const },
-  ]},
-  { group: "RECOVERED · 2", items: [
-    { name: "invoice-0041.pdf", meta: "8/8 · new", score: "100%", status: "pass" as const },
-    { name: "invoice-0059.pdf", meta: "8/8 · new", score: "100%", status: "pass" as const },
-  ]},
-  { group: "PASSING · 59", items: Array.from({ length: 10 }, (_, i) => ({
-    name: `invoice-${String(i + 1).padStart(4, "0")}.pdf`,
-    meta: "8/8",
-    score: [100, 99.2, 100, 98.7, 100, 97.5, 100, 99.9, 100, 98.3][i] + "%",
-    status: "pass" as const,
-  }))},
-];
+// ── Types ──
 
-const FIELDS_0087 = [
-  { name: "invoice_number", expected: '"2026-087"', actual: '"2026-087"', pass: true, conf: 0.99 },
-  { name: "invoice_date", expected: '"2026-03-28"', actual: '"2026-03-28"', pass: true, conf: 0.99 },
-  { name: "vendor", expected: '"Brighton & Co."', actual: '"Brighton & Co."', pass: true, conf: 0.97 },
-  { name: "bill_to", expected: '"Vantage Capital"', actual: '"Vantage Capital"', pass: true, conf: 0.96 },
-  { name: "line_items", expected: "2 items", actual: "2 items", pass: true, conf: 0.94 },
-  { name: "subtotal", expected: "3950.00", actual: "3950.00", pass: true, conf: 0.99 },
-  { name: "tax", expected: "300.00", actual: "300.00", pass: true, conf: 0.99 },
-  { name: "total_amount", expected: "4250.00", actual: "500.00", pass: false, conf: 0.92 },
-];
+interface CorpusEntry { id: string; filename: string; }
 
-export default function ValidateModePage() {
-  const [selectedDoc, setSelectedDoc] = useState("invoice-0087.pdf");
+interface FieldResult {
+  name: string;
+  accuracy: number;
+  prevAccuracy: number | null;
+  status: "pass" | "regressed" | "failing";
+  failingDocs: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }>;
+}
 
-  const header = (
-    <>
-      <Breadcrumbs items={[
-        { label: "acme-invoices", href: "#" },
-        { label: "Schemas", href: "#" },
-        { label: "invoice" },
-      ]} />
-      <PageHeader
-        title="invoice"
-        badge={
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[11px] font-medium text-ink-3 px-2 py-0.5 border border-border-strong rounded-sm">v12</span>
-            <span className="font-mono text-[10px] font-medium text-vermillion-2 px-2 py-0.5 bg-vermillion-3 rounded-sm uppercase tracking-[0.05em]">2 unsaved</span>
-          </div>
-        }
-        actions={
-          <>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">History</button>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">Discard</button>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors">Save v13</button>
-          </>
-        }
-      />
-    </>
+interface ValidateResult {
+  overallAccuracy: number;
+  prevAccuracy: number | null;
+  docsTotal: number;
+  docsPassed: number;
+  fieldCount: number;
+  durationMs: number;
+  costUsd: number;
+  passed: boolean;
+  schemaVersion: number;
+  ranAt: string;
+  regressions: FieldResult[];
+  fields: FieldResult[];
+  failingDocs: Array<{ id: string; filename: string; failedFields: string[]; worstConfidence: number }>;
+}
+
+// ── Mock data ──
+
+const MOCK_RESULT: ValidateResult = {
+  overallAccuracy: 96.2,
+  prevAccuracy: 97.8,
+  docsTotal: 38,
+  docsPassed: 36,
+  fieldCount: 9,
+  durationMs: 45200,
+  costUsd: 1.216,
+  passed: true,
+  schemaVersion: 5,
+  ranAt: new Date(Date.now() - 120000).toISOString(),
+  regressions: [
+    {
+      name: "total_premium", accuracy: 95.2, prevAccuracy: 99.4, status: "regressed",
+      failingDocs: [
+        { id: "doc-1", filename: "POLI-25-070125.pdf", expected: "4,250.00", got: "500.00", confidence: 0.72 },
+        { id: "doc-2", filename: "invoice-0087.pdf", expected: "1,850.00", got: "1,805.00", confidence: 0.68 },
+      ],
+    },
+  ],
+  fields: [
+    { name: "total_premium", accuracy: 95.2, prevAccuracy: 99.4, status: "regressed", failingDocs: [
+      { id: "doc-1", filename: "POLI-25-070125.pdf", expected: "4,250.00", got: "500.00", confidence: 0.72 },
+      { id: "doc-2", filename: "invoice-0087.pdf", expected: "1,850.00", got: "1,805.00", confidence: 0.68 },
+    ]},
+    { name: "general_aggregate", accuracy: 94.3, prevAccuracy: 96.8, status: "regressed", failingDocs: [
+      { id: "doc-2", filename: "invoice-0087.pdf", expected: "2,000,000", got: "1,000,000", confidence: 0.65 },
+    ]},
+    { name: "policy_type", accuracy: 96.5, prevAccuracy: 97.1, status: "pass", failingDocs: [] },
+    { name: "policy_number", accuracy: 97.8, prevAccuracy: 98.4, status: "pass", failingDocs: [] },
+    { name: "insurer_name", accuracy: 98.0, prevAccuracy: 98.1, status: "pass", failingDocs: [] },
+    { name: "each_occurrence_limit", accuracy: 98.0, prevAccuracy: 98.2, status: "pass", failingDocs: [] },
+    { name: "expiration_date", accuracy: 98.2, prevAccuracy: 98.3, status: "pass", failingDocs: [] },
+    { name: "effective_date", accuracy: 99.1, prevAccuracy: 99.0, status: "pass", failingDocs: [] },
+    { name: "named_insured", accuracy: 99.3, prevAccuracy: 99.2, status: "pass", failingDocs: [] },
+  ],
+  failingDocs: [
+    { id: "doc-1", filename: "POLI-25-070125.pdf", failedFields: ["total_premium"], worstConfidence: 0.72 },
+    { id: "doc-2", filename: "invoice-0087.pdf", failedFields: ["total_premium", "general_aggregate"], worstConfidence: 0.65 },
+  ],
+};
+
+// ── Helpers ──
+
+function timeAgo(d: string): string {
+  const ms = Date.now() - new Date(d).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return "just now"; if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+// ── Page ──
+
+export default function ValidatePage() {
+  const params = useParams();
+  const pathname = usePathname();
+  const schemaSlug = params.schemaSlug as string;
+
+  const [result, setResult] = useState<ValidateResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [expandedField, setExpandedField] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [loadedFromDb, setLoadedFromDb] = useState(false);
+
+  const { data: corpusEntries, loading: corpusLoading } = useApi(
+    useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
 
-  const metricsStrip = (
-    <div className="flex flex-col gap-4 mb-1">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between py-3 border-y border-border">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">Mode</span>
-          <div className="inline-flex p-[3px] bg-cream-2 border border-border rounded-sm">
-            <a href="#" className="inline-flex items-center gap-1.5 px-3.5 py-[7px] rounded-sm text-[12px] font-medium text-ink-3 hover:text-ink transition-colors">
-              <span className="font-mono text-[13px] text-ink-4">✦</span>Build
-            </a>
-            <span className="inline-flex items-center gap-1.5 px-3.5 py-[7px] rounded-sm text-[12px] font-medium bg-cream text-ink shadow-[0_1px_0_rgba(23,20,16,0.04)]">
-              <span className="font-mono text-[13px] text-vermillion-2">▦</span>Validate
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button className="inline-flex items-center gap-1.5 px-3 py-[7px] bg-cream-2 border border-border rounded-sm font-mono text-[11px] text-ink-2">
-            <span className="text-ink-4 uppercase tracking-[0.1em] text-[9.5px]">Corpus</span>
-            <span className="text-ink">acme-invoices · 62 docs</span>
-            <span className="text-ink-4 text-[10px]">▾</span>
-          </button>
-          <button className="inline-flex items-center gap-1.5 px-3 py-[7px] bg-cream-2 border border-border rounded-sm font-mono text-[11px] text-ink-2">
-            <span className="text-ink-4 uppercase tracking-[0.1em] text-[9.5px]">Compare to</span>
-            <span className="text-ink">v12 (current)</span>
-            <span className="text-ink-4 text-[10px]">▾</span>
-          </button>
-          <button className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-vermillion-2 text-cream rounded-sm text-[12px] font-medium hover:bg-ink transition-colors">
-            <span className="text-[11px]">▶</span>Re-run
-            <kbd className="font-mono text-[9.5px] px-1 py-px border border-cream/25 rounded-sm text-cream-3 ml-1">⌘↵</kbd>
-          </button>
-        </div>
-      </div>
-
-      {/* Regression callout */}
-      <div className="grid items-center gap-4 px-4 py-3.5 bg-vermillion-3 border border-vermillion-2/25 border-l-[3px] border-l-vermillion-2 rounded-r-sm"
-           style={{ gridTemplateColumns: "auto 1fr auto" }}>
-        <div className="flex flex-col items-center pr-4 border-r border-vermillion-2/20">
-          <span className="font-display text-[28px] font-medium text-vermillion-2 leading-none" style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}>1</span>
-          <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-vermillion-2 mt-0.5">regression</span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="font-display text-[15px] font-medium text-ink leading-[1.2]" style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}>One doc newly failing on v13</span>
-          <span className="text-[12px] text-ink-2">
-            <span className="font-mono text-[11px] text-ink px-1 py-px bg-cream rounded-sm">invoice-0087.pdf</span> — <span className="font-mono text-[11px] text-ink px-1 py-px bg-cream rounded-sm">total_amount</span> now extracts <span className="font-mono text-[11px] text-ink px-1 py-px bg-cream rounded-sm">$500.00</span> instead of <span className="font-mono text-[11px] text-ink px-1 py-px bg-cream rounded-sm">$4,250.00</span>
-          </span>
-        </div>
-        <div className="flex gap-1.5 shrink-0">
-          <button className="px-3 py-1.5 text-[12px] font-medium text-vermillion-2 border border-vermillion-2/30 rounded-sm hover:bg-vermillion-2/[0.08] transition-colors">Ignore</button>
-          <button className="px-3 py-1.5 text-[12px] font-medium bg-vermillion-2 text-cream rounded-sm hover:bg-ink transition-colors">Investigate</button>
-        </div>
-      </div>
-
-      {/* Metrics with deltas */}
-      <div className="grid grid-cols-5 gap-px bg-border border border-border rounded-sm">
-        {[
-          { label: "Accuracy", value: "98.8", unit: "%", delta: "▲ +0.3", vs: "vs v12", ok: true, up: true },
-          { label: "Docs passed", value: "61", unit: "/ 62", delta: "▲ +2", vs: "vs v12", ok: true, up: true },
-          { label: "Regressions", value: "1", unit: "", delta: "▲ +1", vs: "vs v12", danger: true },
-          { label: "Avg latency", value: "2.1", unit: "s", delta: "—", vs: "flat" },
-          { label: "Avg cost", value: "$0.0009", unit: "", delta: "—", vs: "flat" },
-        ].map((m) => (
-          <div key={m.label} className={`bg-cream px-4 py-3.5 flex flex-col gap-0.5 ${m.danger ? "bg-vermillion-3/60" : ""}`}>
-            <span className={`font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase ${m.danger ? "text-vermillion-2" : "text-ink-4"}`}>{m.label}</span>
-            <span className={`font-display text-[24px] font-medium leading-none tracking-tight ${m.ok ? "text-green" : m.danger ? "text-vermillion-2" : "text-ink"}`} style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}>
-              {m.value}{m.unit && <span className="font-body text-[11px] font-normal text-ink-3 ml-0.5 tracking-normal">{m.unit}</span>}
-            </span>
-            <span className={`font-mono text-[10px] font-medium mt-1 ${m.up ? "text-green" : m.danger ? "text-vermillion-2" : "text-ink-4"}`}>
-              {m.delta} <span className="text-ink-4 font-normal">{m.vs}</span>
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+  // Run history from schema_runs
+  const { data: perfData, loading: perfLoading } = useApi(
+    useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
-  const sidebar = (
-    <div className="flex flex-col border border-border rounded-sm overflow-hidden bg-cream h-full">
-      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border">
-        <span className="font-mono text-[9.5px] font-medium tracking-[0.14em] uppercase text-ink-4">Corpus</span>
-        <span className="font-mono text-[11px] text-ink-2">62 docs</span>
-      </div>
-      <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-        <div className="flex-1 flex items-center gap-1.5 px-2.5 py-1.5 bg-cream-2 border border-border rounded-sm">
-          <span className="text-ink-4 text-[12px]">⌕</span>
-          <input className="flex-1 bg-transparent border-none outline-none font-mono text-[11px] text-ink placeholder:text-ink-4" placeholder="filter by name or field…" />
+  const runHistory = (perfData?.runs ?? []).slice().reverse();
+
+  // Auto-load latest validate results on page load (read-only, no re-extraction)
+  useEffect(() => {
+    if (loadedFromDb) return;
+    setLoadedFromDb(true);
+    api.get<ValidateResult | null>(`/api/schemas/${schemaSlug}/validate`)
+      .then((data) => { if (data) setResult(data); })
+      .catch(() => {});
+  }, [schemaSlug, loadedFromDb]);
+
+  const hasCorpus = (corpusEntries ?? []).length > 0;
+  const hasRuns = runHistory.length > 0;
+
+  async function handleRun() {
+    setResult(null);
+    setRunning(true);
+    try {
+      const data = await api.post<ValidateResult>(`/api/schemas/${schemaSlug}/validate`, {});
+      setResult(data);
+    } catch (err: unknown) {
+      console.error("Validate error:", err instanceof Error ? err.message : err);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  // ── Loading skeleton ──
+  if (corpusLoading || perfLoading) {
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+          <div className="h-3 w-32 bg-cream-2 rounded animate-pulse mb-3" />
+          <div className="h-7 w-48 bg-cream-2 rounded animate-pulse mb-2" />
+          <div className="h-3 w-64 bg-cream-2 rounded animate-pulse" />
+          <div className="flex items-baseline gap-3 mt-4">
+            <div className="h-12 w-28 bg-cream-2 rounded animate-pulse" />
+            <div className="h-4 w-12 bg-cream-2 rounded animate-pulse" />
+          </div>
         </div>
-        <button className="font-mono text-[10px] text-ink-3 px-2 py-1 rounded-sm hover:bg-cream-2 transition-colors">
-          <span className="text-ink-4 uppercase tracking-[0.1em] text-[9px]">Sort</span> severity <span className="text-ink-4">▾</span>
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {CORPUS_DOCS.map((group) => (
-          <div key={group.group}>
-            <div className={`px-3.5 py-1.5 font-mono text-[9px] font-medium tracking-[0.12em] uppercase ${group.items[0]?.status === "regress" ? "text-vermillion-2 bg-vermillion-3/40" : "text-ink-4"}`}>
-              {group.group}
-            </div>
-            {group.items.map((doc) => (
-              <button
-                key={doc.name}
-                type="button"
-                onClick={() => setSelectedDoc(doc.name)}
-                className={`w-full grid items-center gap-2 px-3.5 py-2 border-b border-dotted border-border text-left cursor-pointer transition-colors ${
-                  doc.name === selectedDoc ? "bg-cream-2" : "hover:bg-cream-2/50"
-                } ${doc.status === "regress" ? "border-l-[3px] border-l-vermillion-2 pl-[calc(0.875rem-3px)]" : ""}`}
-                style={{ gridTemplateColumns: "14px 1fr auto auto" }}
-              >
-                <span className={`font-mono text-[11px] font-medium ${doc.status === "regress" ? "text-vermillion-2" : "text-green"}`}>
-                  {doc.status === "regress" ? "!" : "✓"}
-                </span>
-                <span className="font-mono text-[11px] text-ink truncate">{doc.name}</span>
-                <span className="font-mono text-[10px] text-ink-4">{doc.meta}</span>
-                <span className={`font-mono text-[10px] font-medium ${doc.status === "regress" ? "text-vermillion-2" : "text-green"}`}>{doc.score}</span>
-              </button>
+        <div className="flex-1 px-8 pt-6">
+          <div className="h-20 bg-cream-2 rounded-sm animate-pulse mb-6 max-w-[900px]" />
+          <div className="h-5 w-40 bg-cream-2 rounded animate-pulse mb-3" />
+          <div className="space-y-1 max-w-[900px]">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-10 bg-cream-2 rounded-sm animate-pulse" />
             ))}
           </div>
-        ))}
+        </div>
       </div>
-      <div className="px-3.5 py-2 border-t border-border font-mono text-[10px] text-ink-4 flex justify-between">
-        <span>scroll for 52 more</span>
-        <span>sort: severity</span>
-      </div>
-    </div>
-  );
+    );
+  }
 
+  // ── Empty state: no corpus ──
+  if (!hasCorpus && !result) {
+    return (
+      <div className="h-[calc(100vh-60px)] flex items-center justify-center">
+        <div className="text-center max-w-[400px]">
+          <Database className="w-10 h-10 text-ink-4 mx-auto mb-4" />
+          <h2 className="font-display text-[20px] font-medium text-ink mb-2" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
+            No corpus entries for this schema
+          </h2>
+          <p className="text-[13px] text-ink-3 mb-4">Add documents to the corpus before running validate.</p>
+          <Link href={pathname.replace("/validate", "/corpus")}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
+            Go to Corpus <ExternalLink className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Ready state or results ──
   return (
-    <DetailLayout header={header} metricsStrip={metricsStrip} sidebar={sidebar} sidebarWidth="0.7fr">
-      {/* Selected doc detail */}
-      <div className="flex flex-col border border-border rounded-sm overflow-hidden bg-cream h-full">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <div className="flex items-baseline gap-2.5">
-            <span className="font-mono text-[9.5px] font-medium tracking-[0.14em] uppercase text-ink-4">Detail</span>
-            <span className="font-mono text-[12px] text-ink font-medium">{selectedDoc}</span>
-            <span className={`font-mono text-[10px] font-medium px-2 py-0.5 rounded-sm uppercase tracking-[0.08em] ${selectedDoc === "invoice-0087.pdf" ? "bg-vermillion-3 text-vermillion-2" : "bg-green/[0.12] text-green"}`}>
-              {selectedDoc === "invoice-0087.pdf" ? "regressed" : "pass"}
-            </span>
+    <div className="flex flex-col h-[calc(100vh-60px)]">
+      {/* Fixed header */}
+      <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+        <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-2">
+          <span className="text-ink-3">{schemaSlug}</span>
+          <span className="text-cream-4">/</span>
+          <span className="text-ink font-medium">Validate</span>
+        </nav>
+
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="font-display text-[28px] font-medium leading-none tracking-tight text-ink"
+                style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>Validate</h1>
+              {result && (
+                <span className={`font-mono text-[10px] font-medium px-2 py-0.5 rounded-sm uppercase tracking-[0.08em] ${result.passed ? "bg-green/15 text-green" : "bg-vermillion-3 text-vermillion-2"}`}>
+                  {result.passed ? "pass" : "fail"}
+                </span>
+              )}
+            </div>
+            {result ? (
+              <div className="flex items-center gap-3 mt-1.5 font-mono text-[10px] text-ink-4">
+                <span>v{result.schemaVersion}</span>
+                <span>·</span>
+                <span>{result.docsTotal} docs</span>
+                <span>·</span>
+                <span>{result.fieldCount} fields</span>
+                <span>·</span>
+                <span>{(result.durationMs / 1000).toFixed(1)}s</span>
+                <span>·</span>
+                <span>${result.costUsd.toFixed(3)}</span>
+                <span>·</span>
+                <span>{timeAgo(result.ranAt)}</span>
+              </div>
+            ) : (
+              <p className="text-[13px] text-ink-3 mt-1.5">
+                Run validate to test the current schema version against {(corpusEntries ?? []).length} corpus entries.
+              </p>
+            )}
           </div>
-          <button className="font-mono text-[10px] text-ink-3 px-2 py-1 rounded-sm border border-border hover:border-ink hover:text-ink transition-colors">
-            open trace →
+
+          <button onClick={handleRun} disabled={running}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50 shrink-0">
+            <ShieldCheck className="w-4 h-4" />
+            {running ? "Running..." : result ? "Re-run" : "Run validate"}
           </button>
         </div>
 
-        {/* Field comparison table */}
-        <div className="flex-1 overflow-y-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Field</th>
-                <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Expected</th>
-                <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Actual</th>
-                <th className="text-right px-4 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Conf</th>
-                <th className="text-center px-4 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Pass</th>
-              </tr>
-            </thead>
-            <tbody>
-              {FIELDS_0087.map((f) => (
-                <tr key={f.name} className={`border-b border-dotted border-border ${!f.pass ? "bg-vermillion-3/50" : ""}`}>
-                  <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium">{f.name}</td>
-                  <td className="px-4 py-2 font-mono text-[11px] text-ink-2">{f.expected}</td>
-                  <td className={`px-4 py-2 font-mono text-[11px] ${f.pass ? "text-ink-2" : "text-vermillion-2 font-medium"}`}>{f.actual}</td>
-                  <td className={`px-4 py-2 text-right font-mono text-[10px] ${f.pass ? "text-green" : "text-vermillion-2"}`}>{f.conf.toFixed(2)}</td>
-                  <td className="px-4 py-2 text-center font-mono text-[11px]">
-                    <span className={f.pass ? "text-green" : "text-vermillion-2"}>{f.pass ? "✓" : "✗"}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {/* Accuracy headline */}
+        {result && (
+          <div className="flex items-baseline gap-3 mt-4">
+            <span className="font-display text-[48px] font-medium text-ink leading-none tracking-tight"
+              style={{ fontVariationSettings: "'opsz' 72, 'SOFT' 30" }}>
+              {result.overallAccuracy.toFixed(1)}%
+            </span>
+            {result.prevAccuracy !== null && (
+              <span className={`font-mono text-[14px] font-medium ${result.overallAccuracy >= result.prevAccuracy ? "text-green" : "text-vermillion-2"}`}>
+                {result.overallAccuracy >= result.prevAccuracy ? "▲" : "▼"} {Math.abs(result.overallAccuracy - result.prevAccuracy).toFixed(1)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
-    </DetailLayout>
+
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto">
+        {running && (
+          <div className="px-8 py-12 text-center">
+            <div className="animate-pulse font-mono text-[12px] text-ink-4 mb-2">Running validate...</div>
+            <div className="font-mono text-[11px] text-ink-4">Processing {(corpusEntries ?? []).length} documents</div>
+          </div>
+        )}
+
+        {!running && !result && (
+          <div className="px-8 py-12 text-center text-[13px] text-ink-3">
+            Click "Run validate" to test the current schema version against the corpus.
+          </div>
+        )}
+
+        {!running && result && (
+          <div className="px-8 pt-6 pb-12 max-w-[900px]">
+
+            {/* Regression callout */}
+            {result.regressions.length > 0 && (
+              <div className="mb-6 border-l-[3px] border-vermillion-2 bg-vermillion-2/[0.04] rounded-r-sm px-5 py-4">
+                <div className="font-mono text-[10px] font-medium text-vermillion-2 uppercase tracking-[0.1em] mb-2">
+                  Regression · {result.regressions.length} field{result.regressions.length !== 1 ? "s" : ""}
+                </div>
+                {result.regressions.map((r) => (
+                  <div key={r.name} className="mb-2 last:mb-0">
+                    <div className="text-[13px] text-ink mb-1">
+                      <span className="font-mono font-medium text-vermillion-2">{r.name}</span>
+                      {" — "}{r.failingDocs.length} doc{r.failingDocs.length !== 1 ? "s" : ""} affected
+                    </div>
+                    <div className="space-y-1.5 mt-2">
+                      {r.failingDocs.map((d) => (
+                        <div key={d.id} className="flex items-start justify-between gap-3">
+                          <div className="font-mono text-[11px]">
+                            <span className="text-ink-4">{d.filename}</span>
+                            <div className="mt-0.5">
+                              <span className="text-ink-4">expected </span>
+                              <span className="text-green">{d.expected}</span>
+                              <span className="text-ink-4"> got </span>
+                              <span className="text-vermillion-2">{d.got}</span>
+                            </div>
+                          </div>
+                          <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors shrink-0">
+                            Fix <ExternalLink className="w-2.5 h-2.5" />
+                          </Link>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Per-field results table */}
+            <div className="mb-6">
+              <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-3"
+                style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>Per-field results</h2>
+              <div className="border border-border rounded-sm overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-cream-2/50">
+                      <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4 w-8"></th>
+                      <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Field</th>
+                      <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Accuracy</th>
+                      <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Delta</th>
+                      <th className="text-left px-4 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4 w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.fields.map((f) => (
+                      <Fragment key={f.name}>
+                        <tr onClick={() => f.failingDocs.length > 0 && setExpandedField(expandedField === f.name ? null : f.name)}
+                          className={`border-t border-border transition-colors ${f.failingDocs.length > 0 ? "cursor-pointer hover:bg-cream-2/50" : ""} ${f.status === "regressed" ? "bg-vermillion-2/[0.02]" : ""}`}>
+                          <td className="px-4 py-2.5">
+                            {f.status === "regressed" ? <AlertTriangle className="w-3.5 h-3.5 text-vermillion-2" /> :
+                             f.status === "failing" ? <XCircle className="w-3.5 h-3.5 text-vermillion-2" /> :
+                             <CheckCircle2 className="w-3.5 h-3.5 text-green" />}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono text-[11px] text-ink">{f.name}</td>
+                          <td className="px-4 py-2.5">
+                            <span className={`font-mono text-[11px] font-medium ${f.accuracy >= 98 ? "text-green" : f.accuracy >= 95 ? "text-ink" : "text-vermillion-2"}`}>
+                              {f.accuracy.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            {f.prevAccuracy !== null && (
+                              <span className={`font-mono text-[10px] ${f.accuracy >= f.prevAccuracy ? "text-green" : "text-vermillion-2"}`}>
+                                {f.accuracy >= f.prevAccuracy ? "+" : ""}{(f.accuracy - f.prevAccuracy).toFixed(1)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            {f.failingDocs.length > 0 && (
+                              <ChevronDown className={`w-3.5 h-3.5 text-ink-4 transition-transform ${expandedField === f.name ? "rotate-180" : ""}`} />
+                            )}
+                          </td>
+                        </tr>
+                        {expandedField === f.name && f.failingDocs.length > 0 && (
+                          <tr key={`${f.name}-detail`}>
+                            <td colSpan={5} className="bg-cream-2/30 px-4 py-3">
+                              <div className="space-y-2">
+                                {f.failingDocs.map((d) => (
+                                  <div key={d.id} className="flex items-center justify-between gap-4 px-3 py-2 border border-border rounded-sm bg-cream">
+                                    <div>
+                                      <div className="font-mono text-[11px] text-ink">{d.filename}</div>
+                                      <div className="font-mono text-[10px] text-ink-4 mt-0.5">
+                                        Expected: <span className="text-ink">{d.expected}</span>
+                                        {" · "}Got: <span className="text-vermillion-2">{d.got}</span>
+                                        {" · "}Conf: {(d.confidence * 100).toFixed(0)}%
+                                      </div>
+                                    </div>
+                                    <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors shrink-0">
+                                      Fix in Build <ExternalLink className="w-2.5 h-2.5" />
+                                    </Link>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Failing documents */}
+            {result.failingDocs.length > 0 && (
+              <div>
+                <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-3"
+                  style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
+                  Failing documents ({result.failingDocs.length} of {result.docsTotal})
+                </h2>
+                <div className="border border-border rounded-sm divide-y divide-border">
+                  {result.failingDocs.map((d) => (
+                    <div key={d.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                      <div>
+                        <div className="font-mono text-[11px] text-ink">{d.filename}</div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {d.failedFields.map((f) => (
+                            <span key={f} className="font-mono text-[9px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded-sm">{f}</span>
+                          ))}
+                          <span className="font-mono text-[9px] text-ink-4">worst: {(d.worstConfidence * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                      <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors shrink-0">
+                        Fix in Build <ExternalLink className="w-2.5 h-2.5" />
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Run history */}
+            {runHistory.length > 0 && (
+              <div className="mt-8">
+                <button onClick={() => setShowHistory(!showHistory)}
+                  className="flex items-center gap-2 font-display text-[18px] font-medium tracking-tight text-ink mb-3 hover:text-vermillion-2 transition-colors"
+                  style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
+                  Run history ({runHistory.length})
+                  <ChevronDown className={`w-4 h-4 text-ink-4 transition-transform ${showHistory ? "rotate-180" : ""}`} />
+                </button>
+                {showHistory && (
+                  <div className="border border-border rounded-sm divide-y divide-border">
+                    {runHistory.map((r) => {
+                      const acc = r.accuracy ? (parseFloat(r.accuracy) * 100).toFixed(1) : "—";
+                      const isSelected = selectedRunId === r.id;
+                      return (
+                        <div key={r.id}
+                          className={`flex items-center justify-between gap-4 px-4 py-3 transition-colors ${isSelected ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
+                          <div className="flex items-center gap-4">
+                            <span className="font-mono text-[11px] text-ink font-medium">
+                              {r.versionNumber !== null ? `v${r.versionNumber}` : "—"}
+                            </span>
+                            <span className={`font-mono text-[11px] font-medium ${parseFloat(acc) >= 97 ? "text-green" : parseFloat(acc) >= 95 ? "text-ink" : "text-vermillion-2"}`}>
+                              {acc}%
+                            </span>
+                            <span className="font-mono text-[10px] text-ink-4">
+                              {r.docsPassed}/{r.docsTotal} docs passed
+                            </span>
+                            {r.regressionsCount > 0 && (
+                              <span className="font-mono text-[9px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded-sm">
+                                {r.regressionsCount} regression{r.regressionsCount !== 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                          <span className="font-mono text-[10px] text-ink-4">
+                            {r.completedAt ? timeAgo(r.completedAt) : "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

@@ -81,6 +81,9 @@ async def extract(req: ExtractionRequest):
     model = req.model or DEFAULT_MODEL
     strategy = req.strategy or DEFAULT_STRATEGY
     start = time.time()
+    print(
+        f"[koji-extract] Request: model={model!r} (req.model={req.model!r}, default={DEFAULT_MODEL!r}), strategy={strategy}, markdown={len(req.markdown)} chars, fields={list(req.schema_def.get('fields', {}).keys())}"
+    )
 
     classify_mode = req.classify_mode or "keywords"
     relevant = set(req.relevant_categories) if req.relevant_categories else None

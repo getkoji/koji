@@ -17,6 +17,7 @@ import type { StorageProvider } from "./provider";
 
 export interface S3StorageConfig {
   endpoint?: string;
+  publicEndpoint?: string; // browser-reachable endpoint for signed URLs (e.g. http://localhost:9415)
   bucket: string;
   accessKey?: string;
   secretKey?: string;
@@ -26,18 +27,33 @@ export interface S3StorageConfig {
 
 export class S3Storage implements StorageProvider {
   private client: S3Client;
+  private publicClient: S3Client | null;
   private bucket: string;
 
   constructor(config: S3StorageConfig) {
     this.bucket = config.bucket;
+    const credentials = config.accessKey && config.secretKey
+      ? { accessKeyId: config.accessKey, secretAccessKey: config.secretKey }
+      : undefined;
+    const region = config.region ?? "us-east-1";
+    const forcePathStyle = config.forcePathStyle ?? false;
+
     this.client = new S3Client({
       endpoint: config.endpoint || undefined,
-      credentials: config.accessKey && config.secretKey
-        ? { accessKeyId: config.accessKey, secretAccessKey: config.secretKey }
-        : undefined,
-      region: config.region ?? "us-east-1",
-      forcePathStyle: config.forcePathStyle ?? false,
+      credentials,
+      region,
+      forcePathStyle,
     });
+
+    // Separate client for generating browser-reachable signed URLs
+    this.publicClient = config.publicEndpoint
+      ? new S3Client({
+          endpoint: config.publicEndpoint,
+          credentials,
+          region,
+          forcePathStyle,
+        })
+      : null;
   }
 
   async put(key: string, data: Buffer | ReadableStream, opts?: {
@@ -97,9 +113,27 @@ export class S3Storage implements StorageProvider {
     }
   }
 
+  async getBuffer(key: string): Promise<{ data: Buffer; contentType: string } | null> {
+    try {
+      const resp = await this.client.send(new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }));
+      if (!resp.Body) return null;
+      const bytes = await resp.Body.transformToByteArray();
+      return {
+        data: Buffer.from(bytes),
+        contentType: resp.ContentType ?? "application/octet-stream",
+      };
+    } catch (err: unknown) {
+      if ((err as { name?: string }).name === "NoSuchKey") return null;
+      throw err;
+    }
+  }
+
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
     return s3GetSignedUrl(
-      this.client,
+      this.publicClient ?? this.client,
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       { expiresIn },
     );

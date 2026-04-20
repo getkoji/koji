@@ -12,3 +12,5 @@ export * from "./agent";
 export * from "./playground";
 export * from "./webhooks";
 export * from "./queue";
+export * from "./cache";
+export * from "./extraction-runs";

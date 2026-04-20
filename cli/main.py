@@ -465,6 +465,7 @@ def db_reset(
     # Parse connection info from DATABASE_URL
     # Format: postgres://user:pass@host:port/dbname
     import re
+
     m = re.match(r"postgres(?:ql)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", db_url)
     if not m:
         console.print(f"[red]Could not parse DATABASE_URL: {db_url}[/red]")
@@ -477,13 +478,16 @@ def db_reset(
     console.print(f"  Dropping [bold]{dbname}[/bold]...")
     sp.run(
         [*psql, "-d", "postgres", "-c", f'DROP DATABASE IF EXISTS "{dbname}";'],
-        env=env, capture_output=True,
+        env=env,
+        capture_output=True,
     )
 
     console.print(f"  Creating [bold]{dbname}[/bold]...")
     result = sp.run(
         [*psql, "-d", "postgres", "-c", f'CREATE DATABASE "{dbname}";'],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         console.print(f"[red]Failed to create database: {result.stderr.strip()}[/red]")
@@ -498,7 +502,10 @@ def db_reset(
     else:
         result = sp.run(
             ["npx", "drizzle-kit", "push", "--force"],
-            cwd=str(db_pkg), env=env, capture_output=True, text=True,
+            cwd=str(db_pkg),
+            env=env,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             console.print(f"[red]Schema push failed: {result.stderr.strip()}[/red]")
@@ -510,6 +517,7 @@ def db_reset(
 def _get_db_url() -> str | None:
     """Read DATABASE_URL from environment or .env file."""
     import os
+
     url = os.environ.get("DATABASE_URL")
     if url:
         return url
@@ -531,13 +539,21 @@ def login(
         help="Server URL (e.g. https://koji.acme.internal or http://localhost:9401)",
     ),
     api_key: str | None = typer.Option(
-        None, "--api-key", "-k", help="API key for headless/CI auth (skip browser flow)",
+        None,
+        "--api-key",
+        "-k",
+        help="API key for headless/CI auth (skip browser flow)",
     ),
     profile: str | None = typer.Option(
-        None, "--profile", "-p", help="Profile name (default: derived from server URL)",
+        None,
+        "--profile",
+        "-p",
+        help="Profile name (default: derived from server URL)",
     ),
     project: str | None = typer.Option(
-        None, "--project", help="Default project slug for this profile",
+        None,
+        "--project",
+        help="Default project slug for this profile",
     ),
 ):
     """Authenticate the CLI with a Koji server.
@@ -545,7 +561,7 @@ def login(
     Opens your browser to approve API key creation. For CI/headless
     environments, pass --api-key directly.
     """
-    from .credentials import Credentials, Profile, load_credentials
+    from .credentials import Profile, load_credentials
 
     if api_key:
         # Direct key — headless mode
@@ -573,7 +589,6 @@ def login(
     name = profile or _derive_profile_name(url)
 
     import http.server
-    import json
     import secrets
     import socket
     import threading
@@ -591,6 +606,7 @@ def login(
     class CallbackHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             from urllib.parse import parse_qs, urlparse
+
             qs = parse_qs(urlparse(self.path).query)
 
             if qs.get("state", [None])[0] != state:
@@ -625,7 +641,7 @@ def login(
     callback_url = f"http://127.0.0.1:{callback_port}/callback"
     authorize_url = f"{url}/cli/authorize?callback={callback_url}&state={state}"
 
-    console.print(f"\n  Opening browser to authorize CLI...\n")
+    console.print("\n  Opening browser to authorize CLI...\n")
     console.print(f"  [dim]{authorize_url}[/dim]\n")
     webbrowser.open(authorize_url)
 
@@ -719,6 +735,7 @@ def profiles():
 def _derive_profile_name(url: str) -> str:
     """Derive a profile name from a server URL."""
     from urllib.parse import urlparse
+
     host = urlparse(url).hostname or "default"
     # localhost → "local", koji.acme.internal → "acme"
     if host in ("localhost", "127.0.0.1"):

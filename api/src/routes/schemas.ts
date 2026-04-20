@@ -389,6 +389,121 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
 });
 
 /**
+ * GET /api/schemas/:slug/performance — performance data for the chart.
+ */
+schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  // Get all runs for this schema ordered by version
+  const runs = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.schemaRuns.id,
+      schemaVersionId: schema.schemaRuns.schemaVersionId,
+      accuracy: schema.schemaRuns.accuracy,
+      docsTotal: schema.schemaRuns.docsTotal,
+      docsPassed: schema.schemaRuns.docsPassed,
+      regressionsCount: schema.schemaRuns.regressionsCount,
+      costUsd: schema.schemaRuns.costUsd,
+      durationMs: schema.schemaRuns.durationMs,
+      completedAt: schema.schemaRuns.completedAt,
+      createdAt: schema.schemaRuns.createdAt,
+    }).from(schema.schemaRuns)
+      .where(eq(schema.schemaRuns.schemaId, s.id))
+      .orderBy(schema.schemaRuns.createdAt)
+  );
+
+  // Enrich with version numbers
+  const enrichedRuns = [];
+  for (const run of runs) {
+    let versionNumber: number | null = null;
+    if (run.schemaVersionId) {
+      const [sv] = await withRLS(db, tenantId, (tx) =>
+        tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+          .from(schema.schemaVersions)
+          .where(eq(schema.schemaVersions.id, run.schemaVersionId))
+          .limit(1)
+      );
+      versionNumber = sv?.versionNumber ?? null;
+    }
+    enrichedRuns.push({ ...run, versionNumber });
+  }
+
+  // Compute per-field accuracy per run from extraction_runs + ground truth
+  const perRunFieldAccuracy: Array<{ runId: string; fields: Record<string, number> }> = [];
+
+  // Get all corpus entries with ground truth for this schema
+  const corpusRows = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ id: schema.corpusEntries.id, groundTruthJson: schema.corpusEntries.groundTruthJson })
+      .from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.schemaId, s.id))
+  );
+  const gtMap = new Map<string, Record<string, unknown>>();
+  for (const ce of corpusRows) {
+    if (ce.groundTruthJson && typeof ce.groundTruthJson === "object" && Object.keys(ce.groundTruthJson as object).length > 0) {
+      gtMap.set(ce.id, ce.groundTruthJson as Record<string, unknown>);
+    }
+  }
+
+  for (const run of enrichedRuns) {
+    // Get extraction_runs linked to this schema_run
+    const exRuns = await withRLS(db, tenantId, (tx: any) =>
+      tx.select({
+        corpusEntryId: schema.extractionRuns.corpusEntryId,
+        extractedJson: schema.extractionRuns.extractedJson,
+      })
+        .from(schema.extractionRuns)
+        .where(eq(schema.extractionRuns.schemaRunId, run.id))
+    );
+
+    if (exRuns.length === 0) continue;
+
+    const fieldCorrect: Record<string, number> = {};
+    const fieldChecked: Record<string, number> = {};
+
+    for (const exRun of exRuns) {
+      const gt = gtMap.get(exRun.corpusEntryId);
+      if (!gt) continue;
+      const extracted = exRun.extractedJson as Record<string, unknown>;
+
+      for (const [field, expected] of Object.entries(gt)) {
+        if (expected === undefined || expected === null) continue;
+        fieldChecked[field] = (fieldChecked[field] ?? 0) + 1;
+        const got = extracted[field];
+        if (String(expected).trim().toLowerCase() === String(got ?? "").trim().toLowerCase()) {
+          fieldCorrect[field] = (fieldCorrect[field] ?? 0) + 1;
+        }
+      }
+    }
+
+    const fields: Record<string, number> = {};
+    for (const f of Object.keys(fieldChecked)) {
+      fields[f] = fieldChecked[f]! > 0 ? ((fieldCorrect[f] ?? 0) / fieldChecked[f]!) * 100 : 100;
+    }
+    perRunFieldAccuracy.push({ runId: run.id, fields });
+  }
+
+  // Corpus count
+  const [corpusCount] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ count: sql<number>`count(*)::int` })
+      .from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.schemaId, s.id))
+  );
+
+  return c.json({
+    runs: enrichedRuns,
+    perRunFieldAccuracy,
+    corpusCount: corpusCount?.count ?? 0,
+  });
+});
+
+/**
  * POST /api/schemas/:slug/corpus/:entryId/ground-truth — save ground truth.
  * Append-only: creates a new GT row, previous versions preserved.
  */
@@ -453,4 +568,312 @@ schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), asyn
   );
 
   return c.json({ data: rows });
+});
+
+/**
+ * POST /api/schemas/:slug/validate — run validation.
+ *
+ * Re-runs extraction on every corpus entry with ground truth using the
+ * current schema YAML, then compares results against ground truth.
+ */
+schemas.post("/:slug/validate", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const startTime = Date.now();
+
+  const body = await c.req.json<{ model?: string }>().catch(() => ({}));
+
+  // Get schema + current YAML
+  const [schemaRow] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({
+      id: schema.schemas.id,
+      draftYaml: schema.schemas.draftYaml,
+    })
+      .from(schema.schemas)
+      .where(eq(schema.schemas.slug, slug))
+      .limit(1)
+  );
+  if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
+
+  // Get latest version YAML (fallback to draft)
+  const [latestVersion] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({
+      versionNumber: schema.schemaVersions.versionNumber,
+      yamlSource: schema.schemaVersions.yamlSource,
+    })
+      .from(schema.schemaVersions)
+      .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
+      .orderBy(desc(schema.schemaVersions.versionNumber))
+      .limit(1)
+  );
+
+  const schemaYaml = latestVersion?.yamlSource ?? schemaRow.draftYaml;
+  if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);
+
+  // Get all corpus entries with ground truth
+  const entries = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({
+      id: schema.corpusEntries.id,
+      filename: schema.corpusEntries.filename,
+      groundTruthJson: schema.corpusEntries.groundTruthJson,
+    })
+      .from(schema.corpusEntries)
+      .where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+  );
+
+  const entriesWithGT = entries.filter((e: any) =>
+    e.groundTruthJson && typeof e.groundTruthJson === "object" && Object.keys(e.groundTruthJson as object).length > 0
+  );
+
+  if (entriesWithGT.length === 0) {
+    return c.json({ error: "No corpus entries have ground truth. Save ground truth from Build mode first." }, 400);
+  }
+
+  const principal = getPrincipal(c);
+
+  // Get the version ID for the schema_run
+  const [latestVersionRow] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ id: schema.schemaVersions.id })
+      .from(schema.schemaVersions)
+      .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
+      .orderBy(desc(schema.schemaVersions.versionNumber))
+      .limit(1)
+  );
+  const versionId = latestVersionRow?.id;
+  if (!versionId) return c.json({ error: "No schema version found. Commit the schema first." }, 400);
+
+  // Create the schema_run record
+  const [schemaRun] = await withRLS(db, tenantId, (tx: any) =>
+    tx.insert(schema.schemaRuns).values({
+      tenantId,
+      schemaId: schemaRow.id,
+      schemaVersionId: versionId,
+      runType: "validate",
+      triggeredBy: principal.userId,
+      status: "running",
+      startedAt: new Date(),
+      docsTotal: entriesWithGT.length,
+    }).returning({ id: schema.schemaRuns.id })
+  );
+
+  // Run extraction on each entry via the internal extract/run endpoint
+  const EXTRACT_RUN_URL = `http://localhost:${process.env.PORT ?? "9401"}/api/extract/run`;
+  const sessionCookie = c.req.header("cookie") ?? "";
+  const tenantHeader = c.req.header("x-koji-tenant") ?? "";
+
+  const results: Array<{
+    entryId: string;
+    filename: string;
+    groundTruth: Record<string, unknown>;
+    extracted: Record<string, unknown>;
+    confidenceScores: Record<string, number>;
+  }> = [];
+
+  // Get previous extraction runs for regression detection (before we create new ones)
+  const prevExtractedMap = new Map<string, Record<string, unknown>>();
+  for (const entry of entriesWithGT) {
+    const [prevRun] = await withRLS(db, tenantId, (tx: any) =>
+      tx.select({ extractedJson: schema.extractionRuns.extractedJson })
+        .from(schema.extractionRuns)
+        .where(eq(schema.extractionRuns.corpusEntryId, entry.id))
+        .orderBy(desc(schema.extractionRuns.createdAt))
+        .limit(1)
+    );
+    if (prevRun) {
+      prevExtractedMap.set(entry.id, prevRun.extractedJson as Record<string, unknown>);
+    }
+  }
+
+  // Run extractions (sequentially to avoid overwhelming the extract service)
+  for (const entry of entriesWithGT) {
+    try {
+      const resp = await fetch(EXTRACT_RUN_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Cookie": sessionCookie,
+          "x-koji-tenant": tenantHeader,
+        },
+        body: JSON.stringify({
+          corpus_entry_id: entry.id,
+          schema_yaml: schemaYaml,
+          schema_run_id: schemaRun.id,
+          ...(body.model ? { model: body.model } : {}),
+        }),
+        signal: AbortSignal.timeout(300_000),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json() as Record<string, unknown>;
+        results.push({
+          entryId: entry.id,
+          filename: entry.filename,
+          groundTruth: entry.groundTruthJson as Record<string, unknown>,
+          extracted: (data.extracted as Record<string, unknown>) ?? {},
+          confidenceScores: (data.confidence_scores as Record<string, number>) ?? {},
+        });
+      }
+    } catch (err) {
+      console.warn(`[validate] Failed to extract ${entry.filename}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  if (results.length === 0) {
+    // Update schema_run as failed
+    await withRLS(db, tenantId, (tx: any) =>
+      tx.update(schema.schemaRuns).set({ status: "failed", completedAt: new Date(), errorMessage: "All extractions failed" })
+        .where(eq(schema.schemaRuns.id, schemaRun.id))
+    );
+    return c.json({ error: "All extractions failed" }, 502);
+  }
+
+  const validateResult = computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime);
+
+  // Update schema_run with results
+  await withRLS(db, tenantId, (tx: any) =>
+    tx.update(schema.schemaRuns).set({
+      status: "completed",
+      completedAt: new Date(),
+      docsTotal: validateResult.docsTotal,
+      docsPassed: validateResult.docsPassed,
+      regressionsCount: validateResult.regressions.length,
+      accuracy: String(validateResult.overallAccuracy / 100), // stored as 0.0-1.0
+      durationMs: validateResult.durationMs,
+    }).where(eq(schema.schemaRuns.id, schemaRun.id))
+  );
+
+  return c.json(validateResult);
+});
+
+/** Compare extraction results against ground truth and compute accuracy/regressions. */
+function computeValidateResult(
+  results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number> }>,
+  prevExtractedMap: Map<string, Record<string, unknown>>,
+  schemaVersion: number,
+  startTime: number,
+) {
+  const allFields = new Set<string>();
+  for (const r of results) {
+    for (const k of Object.keys(r.groundTruth)) allFields.add(k);
+  }
+
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> }> = [];
+  let totalCorrect = 0;
+  let totalChecked = 0;
+  const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
+
+  for (const fieldName of allFields) {
+    let correct = 0, checked = 0, prevCorrect = 0, prevChecked = 0;
+    const failing: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> = [];
+
+    for (const r of results) {
+      const expected = r.groundTruth[fieldName];
+      if (expected === undefined || expected === null) continue;
+      checked++;
+      const expectedStr = String(expected).trim().toLowerCase();
+      const got = r.extracted[fieldName];
+
+      if (String(got ?? "").trim().toLowerCase() === expectedStr) {
+        correct++;
+      } else {
+        const conf = r.confidenceScores[fieldName] ?? 0;
+        failing.push({ id: r.entryId, filename: r.filename, expected: String(expected), got: String(got ?? "—"), confidence: conf });
+        const existing = failingDocsMap.get(r.entryId);
+        if (existing) { existing.failedFields.push(fieldName); existing.worstConfidence = Math.min(existing.worstConfidence, conf); }
+        else { failingDocsMap.set(r.entryId, { id: r.entryId, filename: r.filename, failedFields: [fieldName], worstConfidence: conf }); }
+      }
+
+      const prevExtracted = prevExtractedMap.get(r.entryId);
+      if (prevExtracted) {
+        prevChecked++;
+        if (String(prevExtracted[fieldName] ?? "").trim().toLowerCase() === expectedStr) prevCorrect++;
+      }
+    }
+
+    const accuracy = checked > 0 ? (correct / checked) * 100 : 100;
+    const prevAccuracy = prevChecked > 0 ? (prevCorrect / prevChecked) * 100 : null;
+    totalCorrect += correct;
+    totalChecked += checked;
+    const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
+    fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, failingDocs: failing });
+  }
+
+  fieldResults.sort((a, b) => a.accuracy - b.accuracy);
+  const overallAccuracy = totalChecked > 0 ? (totalCorrect / totalChecked) * 100 : 100;
+
+  return {
+    overallAccuracy,
+    prevAccuracy: null,
+    docsTotal: results.length,
+    docsPassed: results.length - failingDocsMap.size,
+    fieldCount: fieldResults.length,
+    durationMs: Date.now() - startTime,
+    costUsd: 0,
+    passed: overallAccuracy >= 95,
+    schemaVersion,
+    ranAt: new Date().toISOString(),
+    regressions: fieldResults.filter((f) => f.status === "regressed"),
+    fields: fieldResults,
+    failingDocs: Array.from(failingDocsMap.values()),
+  };
+}
+
+/**
+ * GET /api/schemas/:slug/validate — read latest validation results.
+ *
+ * Compares existing extraction_runs against ground truth. Does NOT re-run extraction.
+ * Fast — just DB reads.
+ */
+schemas.get("/:slug/validate", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const startTime = Date.now();
+
+  const [schemaRow] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
+
+  const [latestVersion] = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+      .from(schema.schemaVersions).where(eq(schema.schemaVersions.schemaId, schemaRow.id))
+      .orderBy(desc(schema.schemaVersions.versionNumber)).limit(1)
+  );
+
+  const entries = await withRLS(db, tenantId, (tx: any) =>
+    tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
+      .from(schema.corpusEntries).where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+  );
+
+  const entriesWithGT = entries.filter((e: any) =>
+    e.groundTruthJson && typeof e.groundTruthJson === "object" && Object.keys(e.groundTruthJson as object).length > 0
+  );
+
+  if (entriesWithGT.length === 0) return c.json(null);
+
+  const results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number> }> = [];
+  const prevExtractedMap = new Map<string, Record<string, unknown>>();
+
+  for (const entry of entriesWithGT) {
+    const runs = await withRLS(db, tenantId, (tx: any) =>
+      tx.select({ extractedJson: schema.extractionRuns.extractedJson, confidenceScoresJson: schema.extractionRuns.confidenceScoresJson })
+        .from(schema.extractionRuns).where(eq(schema.extractionRuns.corpusEntryId, entry.id))
+        .orderBy(desc(schema.extractionRuns.createdAt)).limit(2)
+    );
+    if (runs.length > 0) {
+      results.push({
+        entryId: entry.id, filename: entry.filename,
+        groundTruth: entry.groundTruthJson as Record<string, unknown>,
+        extracted: runs[0].extractedJson as Record<string, unknown>,
+        confidenceScores: (runs[0].confidenceScoresJson as Record<string, number>) ?? {},
+      });
+      if (runs.length > 1) prevExtractedMap.set(entry.id, runs[1].extractedJson as Record<string, unknown>);
+    }
+  }
+
+  if (results.length === 0) return c.json(null);
+
+  return c.json(computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime));
 });

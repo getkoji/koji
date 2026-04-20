@@ -51,6 +51,7 @@ app.use("*", cors({ origin: (origin) => origin || "*", credentials: true }));
 // Create storage provider
 const storage = new S3Storage({
   endpoint: process.env.KOJI_S3_ENDPOINT,
+  publicEndpoint: process.env.KOJI_S3_PUBLIC_ENDPOINT,
   bucket: process.env.KOJI_S3_BUCKET ?? "koji",
   accessKey: process.env.KOJI_S3_ACCESS_KEY,
   secretKey: process.env.KOJI_S3_SECRET_KEY,

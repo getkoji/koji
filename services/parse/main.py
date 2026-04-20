@@ -1,8 +1,7 @@
 """Koji Parse Service — documents in, markdown out.
 
-Also supports extracting raw page images (base64 PNG) for the vision
-bypass path (oss-79). When a document triggers vision bypass conditions,
-the caller can request page images instead of (or alongside) markdown.
+Smart routing: digital PDFs skip OCR for 3-5x speedup.
+SSE progress streaming for long-running parses.
 """
 
 from __future__ import annotations
@@ -10,36 +9,101 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import json
 import tempfile
 import time
 import traceback
 from pathlib import Path
 
-from docling.document_converter import DocumentConverter
+import pypdfium2 as pdfium
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 app = FastAPI(title="Koji Parse Service", version="0.1.0")
 
-converter: DocumentConverter | None = None
+# Two converters: one with OCR, one without
+_converter_ocr: DocumentConverter | None = None
+_converter_no_ocr: DocumentConverter | None = None
 
 
-def get_converter() -> DocumentConverter:
-    """Lazy-load the converter on first request, not at import time."""
-    global converter
-    if converter is None:
-        converter = DocumentConverter()
-    return converter
+def get_converter(ocr: bool = True) -> DocumentConverter:
+    """Lazy-load converters on first use."""
+    global _converter_ocr, _converter_no_ocr
+
+    if ocr:
+        if _converter_ocr is None:
+            _converter_ocr = DocumentConverter()
+        return _converter_ocr
+    else:
+        if _converter_no_ocr is None:
+            opts = PdfPipelineOptions(do_ocr=False)
+            _converter_no_ocr = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                },
+            )
+        return _converter_no_ocr
 
 
-@app.get("/health")
-def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.1.0"}
+# ── Detection helpers ────────────────────────────────────────────────────
 
 
-def _convert_sync(file_path: str) -> dict:
+def get_pdf_info(file_bytes: bytes) -> dict:
+    """Quick PDF metadata: page count + text layer detection.
+
+    Uses pypdfium2 (already bundled with docling, no conflicts).
+    Checks first 3 pages for extractable text.
+    Returns: {"pages": int, "scanned": bool}
+    """
+    try:
+        pdf = pdfium.PdfDocument(file_bytes)
+        page_count = len(pdf)
+        total_chars = 0
+        for i in range(min(page_count, 3)):
+            page = pdf[i]
+            textpage = page.get_textpage()
+            text = textpage.get_text_range()
+            total_chars += len(text.strip())
+            textpage.close()
+            page.close()
+        pdf.close()
+        chars_per_page = total_chars / max(min(page_count, 3), 1)
+        return {"pages": page_count, "scanned": chars_per_page < 50}
+    except Exception:
+        return {"pages": 0, "scanned": False}
+
+
+def estimate_seconds(pages: int, scanned: bool) -> float:
+    """Rough estimate of parse time."""
+    per_page = 1.3 if scanned else 0.3
+    return round(pages * per_page, 1)
+
+
+# ── Conversion ───────────────────────────────────────────────────────────
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"}
+
+
+def classify_input(file_path: str, content_type: str | None = None) -> str:
+    ext = Path(file_path).suffix.lower()
+    if ext in IMAGE_EXTENSIONS or (content_type and content_type in IMAGE_MIMETYPES):
+        return "image"
+    if ext == ".pdf":
+        with open(file_path, "rb") as f:
+            info = get_pdf_info(f.read())
+        return "scanned_pdf" if info["scanned"] else "digital_pdf"
+    return "digital_pdf"
+
+
+def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
-    conv = get_converter()
+    conv = get_converter(ocr=not skip_ocr)
     result = conv.convert(file_path)
     markdown = result.document.export_to_markdown()
     return {
@@ -48,85 +112,13 @@ def _convert_sync(file_path: str) -> dict:
     }
 
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
-IMAGE_MIMETYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/tiff",
-    "image/bmp",
-    "image/webp",
-}
-
-
-def classify_input(file_path: str, content_type: str | None = None) -> str:
-    """Classify an input file into one of three categories.
-
-    Returns:
-        "image"        — input is already an image (JPEG/PNG/TIFF). Send
-                         directly to vision model, no conversion needed.
-        "scanned_pdf"  — PDF with no usable text layer. Render to images,
-                         then send to vision model.
-        "digital_pdf"  — PDF with a real text layer. Extract text natively,
-                         never use vision path.
-    """
-    ext = Path(file_path).suffix.lower()
-
-    # Check by extension or content type
-    if ext in IMAGE_EXTENSIONS or (content_type and content_type in IMAGE_MIMETYPES):
-        return "image"
-
-    # For PDFs, check for a text layer
-    if ext == ".pdf":
-        return "scanned_pdf" if _is_scanned_pdf(file_path) else "digital_pdf"
-
-    # Default: treat as digital (text-extractable)
-    return "digital_pdf"
-
-
-def _is_scanned_pdf(file_path: str) -> bool:
-    """Check whether a PDF has a usable text layer.
-
-    A scanned PDF has pages that are essentially images with no embedded
-    text, or text so sparse it's not useful. We check by extracting text
-    from the first few pages — if the total character count is very low
-    relative to page count, it's scanned.
-    """
-    try:
-        import fitz  # pymupdf
-
-        doc = fitz.open(file_path)
-        total_chars = 0
-        pages_checked = min(len(doc), 3)
-        for i in range(pages_checked):
-            text = doc[i].get_text()
-            total_chars += len(text.strip())
-        doc.close()
-
-        # Fewer than 50 chars per page = effectively no text layer
-        chars_per_page = total_chars / max(pages_checked, 1)
-        return chars_per_page < 50
-    except ImportError:
-        # No pymupdf — can't check, assume digital (safe default)
-        return False
-    except Exception:
-        return False
-
-
 def image_to_base64(file_path: str) -> list[str]:
-    """Read an image file and return it as a single-element base64 list.
-
-    For direct image inputs (JPEG/PNG/TIFF) — no conversion, just encode.
-    """
     with open(file_path, "rb") as f:
         raw = f.read()
     return [base64.b64encode(raw).decode("ascii")]
 
 
 def pdf_pages_to_images(file_path: str, max_pages: int = 10) -> list[str]:
-    """Render PDF pages to base64 PNGs for scanned PDFs.
-
-    Uses pymupdf (fitz). Returns a list of base64-encoded PNG strings.
-    """
     try:
         import fitz
 
@@ -139,34 +131,31 @@ def pdf_pages_to_images(file_path: str, max_pages: int = 10) -> list[str]:
             images.append(base64.b64encode(img_bytes).decode("ascii"))
         doc.close()
         return images
-    except ImportError:
-        return []
-    except Exception:
+    except (ImportError, Exception):
         return []
 
 
 def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> list[str]:
-    """Get base64 page images for any input type.
-
-    Routes to the right extraction method based on classify_input result:
-      "image"       → read the file as-is
-      "scanned_pdf" → render PDF pages to PNG
-      "digital_pdf" → should not be called (caller uses text path)
-    """
     if input_type == "image":
         return image_to_base64(file_path)
     elif input_type == "scanned_pdf":
         return pdf_pages_to_images(file_path, max_pages)
-    else:
-        return []
+    return []
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "service": "koji-parse", "version": "0.1.0"}
 
 
 @app.post("/parse")
 async def parse(file: UploadFile = File(...)):
-    """Parse a document and return markdown."""
+    """Parse a document and return markdown (non-streaming)."""
     start = time.time()
 
-    # Write uploaded file to temp location
     suffix = Path(file.filename or "doc").suffix or ".pdf"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         content = await file.read()
@@ -174,11 +163,19 @@ async def parse(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # Run heavy conversion in thread pool to not block uvicorn
+        # Detect PDF type
+        skip_ocr = False
+        info = {"pages": 0, "scanned": False}
+        if suffix.lower() == ".pdf":
+            info = get_pdf_info(content)
+            skip_ocr = not info["scanned"]
+            mode = "digital (OCR skipped)" if skip_ocr else "scanned (full OCR)"
+            print(f"[koji-parse] {file.filename}: {info['pages']} pages, {mode}")
+
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            functools.partial(_convert_sync, tmp_path),
+            functools.partial(_convert_sync, tmp_path, skip_ocr=skip_ocr),
         )
         elapsed = round(time.time() - start, 2)
 
@@ -188,6 +185,7 @@ async def parse(file: UploadFile = File(...)):
                 "markdown": result["markdown"],
                 "pages": result["pages"],
                 "elapsed_seconds": elapsed,
+                "ocr_skipped": skip_ocr,
             }
         )
     except Exception as e:
@@ -199,3 +197,103 @@ async def parse(file: UploadFile = File(...)):
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+@app.post("/parse/stream")
+async def parse_stream(file: UploadFile = File(...)):
+    """Parse a document with SSE progress updates."""
+    suffix = Path(file.filename or "doc").suffix or ".pdf"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    # Quick detection phase
+    skip_ocr = False
+    info = {"pages": 0, "scanned": False}
+    if suffix.lower() == ".pdf":
+        info = get_pdf_info(content)
+        skip_ocr = not info["scanned"]
+        mode = "digital (OCR skipped)" if skip_ocr else "scanned (full OCR)"
+        print(f"[koji-parse] {file.filename}: {info['pages']} pages, {mode}")
+
+    estimated = estimate_seconds(info["pages"], info["scanned"])
+
+    async def event_generator():
+        start = time.time()
+
+        # Send detection results immediately
+        yield {
+            "event": "started",
+            "data": json.dumps(
+                {
+                    "filename": file.filename,
+                    "pages": info["pages"],
+                    "scanned": info["scanned"],
+                    "ocr_skipped": skip_ocr,
+                    "estimated_seconds": estimated,
+                }
+            ),
+        }
+
+        # Run conversion in background thread
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(
+            None,
+            functools.partial(_convert_sync, tmp_path, skip_ocr=skip_ocr),
+        )
+
+        # Stream estimated progress while waiting
+        poll_interval = 2.0
+        while not future.done():
+            elapsed = time.time() - start
+            if estimated > 0:
+                percent = min(int((elapsed / estimated) * 100), 95)
+                remaining = max(estimated - elapsed, 0)
+                est_page = min(int((elapsed / estimated) * info["pages"]), info["pages"])
+            else:
+                percent = 50
+                remaining = 0
+                est_page = 0
+
+            yield {
+                "event": "progress",
+                "data": json.dumps(
+                    {
+                        "page": est_page,
+                        "total": info["pages"],
+                        "percent": percent,
+                        "elapsed_seconds": round(elapsed, 1),
+                        "estimated_remaining_seconds": round(remaining, 1),
+                    }
+                ),
+            }
+
+            await asyncio.sleep(poll_interval)
+
+        # Get result
+        try:
+            result = future.result()
+            elapsed = round(time.time() - start, 2)
+
+            yield {
+                "event": "complete",
+                "data": json.dumps(
+                    {
+                        "filename": file.filename,
+                        "markdown": result["markdown"],
+                        "pages": result["pages"],
+                        "elapsed_seconds": elapsed,
+                        "ocr_skipped": skip_ocr,
+                    }
+                ),
+            }
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    return EventSourceResponse(event_generator())

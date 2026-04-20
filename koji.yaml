@@ -11,10 +11,11 @@ cluster:
   # version: latest
   # Contributors working on Koji itself can build from local source instead,
   # either by passing `koji start --dev` or by setting dev: true below.
-  # dev: false
+  dev: true
 
 services:
-  parse: false
+  dashboard: false  # running locally with next dev
+  parse: true
   ollama: false
 
 pipeline:

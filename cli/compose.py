@@ -53,7 +53,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
         "koji-db": {
             "image": "postgres:16-alpine",
             "container_name": f"koji-{project}-db",
-            "ports": [f"127.0.0.1:5432:5432"],
+            "ports": ["127.0.0.1:5432:5432"],
             "environment": {
                 "POSTGRES_USER": "koji",
                 "POSTGRES_PASSWORD": "koji",
@@ -71,7 +71,6 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "restart": "unless-stopped",
             "networks": [net],
         },
-
         # ── API server (Hono + @koji/db) ──
         "koji-api": {
             **_image_or_build("api", "docker/api.Dockerfile", version, project_dir, dev_mode),
@@ -80,6 +79,9 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "environment": {
                 "DATABASE_URL": db_url,
                 "PORT": "9401",
+                "KOJI_PARSE_URL": f"http://koji-{project}-parse:9410",
+                "KOJI_EXTRACT_URL": f"http://koji-{project}-extract:9420",
+                "KOJI_MASTER_KEY": "${KOJI_MASTER_KEY:-}",
                 "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
                 "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
             },
@@ -95,9 +97,11 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "restart": "unless-stopped",
             "networks": [net],
         },
+    }
 
-        # ── Dashboard (Next.js) ──
-        "koji-dashboard": {
+    # ── Dashboard (Next.js) ──
+    if svc_cfg.dashboard:
+        services["koji-dashboard"] = {
             **_image_or_build("dashboard", "docker/dashboard.Dockerfile", version, project_dir, dev_mode),
             "container_name": f"koji-{project}-dashboard",
             "ports": [f"127.0.0.1:{cluster.ui_port}:3000"],
@@ -109,8 +113,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             },
             "restart": "unless-stopped",
             "networks": [net],
-        },
-    }
+        }
 
     # ── Parse service ──
     if svc_cfg.parse:
@@ -124,7 +127,9 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             ],
             "healthcheck": {
                 "test": [
-                    "CMD", "python", "-c",
+                    "CMD",
+                    "python",
+                    "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:9410/health')",
                 ],
                 "interval": "10s",
@@ -136,18 +141,29 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
         }
 
     # ── Extract service ──
+    # Determine extract model from pipeline config
+    extract_model = "openai/gpt-4o-mini"
+    for step in config.pipeline:
+        if step.step == "extract" and step.model:
+            extract_model = step.model  # keep full prefix: "openai/gpt-4o-mini"
+            break
+
     extract_env: dict = {
         "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
         "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
+        "KOJI_EXTRACT_MODEL": extract_model,
     }
     extract_svc: dict = {
         **_image_or_build("extract", "docker/extract.Dockerfile", version, project_dir, dev_mode),
         "container_name": f"koji-{project}-extract",
         "ports": [f"127.0.0.1:{cluster.extract_port}:9420"],
         "environment": extract_env,
+        "dns": ["8.8.8.8", "8.8.4.4"],
         "healthcheck": {
             "test": [
-                "CMD", "python", "-c",
+                "CMD",
+                "python",
+                "-c",
                 "import urllib.request; urllib.request.urlopen('http://localhost:9420/health')",
             ],
             "interval": "10s",
@@ -215,7 +231,13 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
     services["koji-api"]["environment"]["KOJI_S3_SECRET_KEY"] = minio_secret
     services["koji-api"]["environment"]["KOJI_S3_REGION"] = config.storage.region
     services["koji-api"]["environment"]["KOJI_S3_FORCE_PATH_STYLE"] = str(config.storage.force_path_style).lower()
+    services["koji-api"]["environment"]["KOJI_S3_PUBLIC_ENDPOINT"] = f"http://127.0.0.1:{cluster.minio_port}"
     services["koji-api"]["depends_on"]["koji-minio"] = {"condition": "service_healthy"}
+
+    # Wire parse/extract as API dependencies
+    if svc_cfg.parse:
+        services["koji-api"]["depends_on"]["koji-parse"] = {"condition": "service_healthy"}
+    services["koji-api"]["depends_on"]["koji-extract"] = {"condition": "service_healthy"}
 
     # ── Mailpit (email catcher for dev / self-hosted) ──
     services["koji-mailpit"] = {

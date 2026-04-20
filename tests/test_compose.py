@@ -63,8 +63,8 @@ class TestServicesDefaults:
     def test_includes_all_services(self):
         compose = generate_compose(_make_config(), PROJECT_DIR)
         svc = compose["services"]
-        assert "koji-server" in svc
-        assert "koji-ui" in svc
+        assert "koji-api" in svc
+        assert "koji-dashboard" in svc
         assert "koji-parse" in svc
         assert "koji-extract" in svc
         assert "ollama" in svc
@@ -139,21 +139,21 @@ class TestBothDisabled:
     def test_only_core_services(self):
         compose = generate_compose(_make_config(parse=False, ollama=False), PROJECT_DIR)
         svc = compose["services"]
-        assert "koji-server" in svc
-        assert "koji-ui" in svc
+        assert "koji-api" in svc
+        assert "koji-dashboard" in svc
         assert "koji-extract" in svc
         assert "koji-parse" not in svc
         assert "ollama" not in svc
 
     def test_no_optional_volumes(self):
         compose = generate_compose(_make_config(parse=False, ollama=False), PROJECT_DIR)
-        assert compose["volumes"] == {}
+        volumes = compose["volumes"]
+        assert "koji-test-hf-cache" not in volumes
+        assert "koji-test-torch-cache" not in volumes
+        assert "koji-test-ollama-data" not in volumes
 
 
 # ── Pull vs build mode tests ─────────────────────────────────────────
-#
-# Default (pull) mode references pre-built images on ghcr.io/getkoji.
-# Dev mode preserves the old build-from-source behavior for contributors.
 
 from cli.config import ClusterConfig  # noqa: E402
 
@@ -173,11 +173,11 @@ class TestPullModeDefault:
 
     def test_server_image_ref(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
-        assert compose["services"]["koji-server"]["image"] == "ghcr.io/getkoji/server:latest"
+        assert compose["services"]["koji-api"]["image"] == "ghcr.io/getkoji/api:latest"
 
-    def test_ui_image_ref(self):
+    def test_dashboard_image_ref(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
-        assert compose["services"]["koji-ui"]["image"] == "ghcr.io/getkoji/ui:latest"
+        assert compose["services"]["koji-dashboard"]["image"] == "ghcr.io/getkoji/dashboard:latest"
 
     def test_parse_image_ref(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
@@ -188,7 +188,6 @@ class TestPullModeDefault:
         assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:latest"
 
     def test_ollama_still_uses_upstream_image(self):
-        """The ollama service is unrelated to Koji builds and must keep its upstream image."""
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
         assert compose["services"]["ollama"]["image"] == "ollama/ollama:latest"
 
@@ -199,8 +198,8 @@ class TestVersionTag:
     def test_custom_version_tag_applied_to_all_services(self):
         config = KojiConfig(project="test", cluster=ClusterConfig(version="v0.2.0"))
         compose = generate_compose(config, PROJECT_DIR)
-        assert compose["services"]["koji-server"]["image"] == "ghcr.io/getkoji/server:v0.2.0"
-        assert compose["services"]["koji-ui"]["image"] == "ghcr.io/getkoji/ui:v0.2.0"
+        assert compose["services"]["koji-api"]["image"] == "ghcr.io/getkoji/api:v0.2.0"
+        assert compose["services"]["koji-dashboard"]["image"] == "ghcr.io/getkoji/dashboard:v0.2.0"
         assert compose["services"]["koji-parse"]["image"] == "ghcr.io/getkoji/parse:v0.2.0"
         assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:v0.2.0"
 
@@ -217,16 +216,18 @@ class TestDevMode:
 
     def test_dev_arg_produces_build_blocks(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
-        for name in self._koji_services(compose):
+        # Only Koji-built services have build blocks (not koji-db, koji-minio, koji-mailpit, koji-minio-init)
+        buildable = ["koji-api", "koji-dashboard", "koji-parse", "koji-extract"]
+        for name in buildable:
             svc = compose["services"][name]
             assert "build" in svc, f"{name} should have a build block in dev mode"
             assert "image" not in svc, f"{name} should not have an image ref in dev mode"
 
     def test_dev_build_context_and_dockerfile(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
-        server_build = compose["services"]["koji-server"]["build"]
-        assert server_build["context"] == PROJECT_DIR
-        assert server_build["dockerfile"] == "docker/server.Dockerfile"
+        api_build = compose["services"]["koji-api"]["build"]
+        assert api_build["context"] == PROJECT_DIR
+        assert api_build["dockerfile"] == "docker/api.Dockerfile"
 
         parse_build = compose["services"]["koji-parse"]["build"]
         assert parse_build["dockerfile"] == "docker/parse.Dockerfile"
@@ -234,19 +235,17 @@ class TestDevMode:
         extract_build = compose["services"]["koji-extract"]["build"]
         assert extract_build["dockerfile"] == "docker/extract.Dockerfile"
 
-        ui_build = compose["services"]["koji-ui"]["build"]
-        assert ui_build["dockerfile"] == "docker/ui.Dockerfile"
+        dashboard_build = compose["services"]["koji-dashboard"]["build"]
+        assert dashboard_build["dockerfile"] == "docker/dashboard.Dockerfile"
 
     def test_cluster_dev_flag_also_triggers_build(self):
-        """Setting cluster.dev: true in koji.yaml should behave like --dev."""
         config = KojiConfig(project="test", cluster=ClusterConfig(dev=True))
         compose = generate_compose(config, PROJECT_DIR)
-        assert "build" in compose["services"]["koji-server"]
-        assert "image" not in compose["services"]["koji-server"]
+        assert "build" in compose["services"]["koji-api"]
+        assert "image" not in compose["services"]["koji-api"]
 
     def test_explicit_dev_false_overrides_cluster_flag(self):
-        """Passing dev=False explicitly should win over cluster.dev = True."""
         config = KojiConfig(project="test", cluster=ClusterConfig(dev=True))
         compose = generate_compose(config, PROJECT_DIR, dev=False)
-        assert "image" in compose["services"]["koji-server"]
-        assert "build" not in compose["services"]["koji-server"]
+        assert "image" in compose["services"]["koji-api"]
+        assert "build" not in compose["services"]["koji-api"]
