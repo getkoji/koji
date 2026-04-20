@@ -37,9 +37,56 @@ async function seed() {
   console.log("  3 schemas created");
 
   // ── Schema versions (one deployed version per schema) ──
-  const invoiceYaml = "fields:\n  invoice_number: string\n  total: number\n";
-  const receiptYaml = "fields:\n  store: string\n  total: number\n";
-  const claimYaml = "fields:\n  claimant: string\n  policy_number: string\n";
+  // Shape matches what the extract service expects: `fields` is a map of
+  // field-name → {type, required?, description?}. See koji/cli/templates.
+  const invoiceYaml = `name: invoice
+description: Commercial invoice extraction
+fields:
+  invoice_number:
+    type: string
+    required: true
+    description: Invoice number or ID
+  invoice_date:
+    type: date
+    description: Date the invoice was issued
+  vendor:
+    type: string
+    description: Vendor / supplier name
+  total:
+    type: number
+    description: Invoice total amount
+`;
+  const receiptYaml = `name: receipt
+description: POS receipt extraction
+fields:
+  store:
+    type: string
+    description: Store name
+  purchase_date:
+    type: date
+    description: Transaction date
+  total:
+    type: number
+    description: Receipt total
+`;
+  const claimYaml = `name: insurance_claim
+description: First notice of loss
+fields:
+  claimant_name:
+    type: string
+    required: true
+    description: Name of the person filing the claim
+  policy_number:
+    type: string
+    required: true
+    description: Policy number or ID
+  incident_date:
+    type: date
+    description: Date of the incident
+  damages:
+    type: string
+    description: Brief description of damages
+`;
   const [invoiceVersion, receiptVersion, claimVersion] = await db
     .insert(schema.schemaVersions)
     .values([

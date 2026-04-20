@@ -258,6 +258,8 @@ sources.get("/:id/ingestions", requires("endpoint:read"), async (c) => {
  */
 sources.post("/:id/webhook", async (c) => {
   const db = c.get("db");
+  const storage = c.get("storage");
+  const queue = c.get("queue");
   const sourceId = c.req.param("id")!;
 
   // Load source (bypassing RLS since this is a public endpoint)
@@ -348,6 +350,12 @@ sources.post("/:id/webhook", async (c) => {
 
     const storageKey = `ingestions/${sourceId}/${Date.now()}-${file.name}`;
 
+    // Persist the bytes before we record the ingestion — otherwise a worker
+    // could pick up an ingestion that points at a missing object.
+    await storage.put(storageKey, Buffer.from(fileBytes), {
+      contentType: file.type || "application/octet-stream",
+    });
+
     const [ingestion] = await db
       .insert(schema.ingestions)
       .values({
@@ -362,6 +370,15 @@ sources.post("/:id/webhook", async (c) => {
       .returning({ id: schema.ingestions.id });
 
     ingestionIds.push(ingestion!.id);
+
+    // Hand off to the worker. If the source has no target pipeline, the
+    // handler will mark this ingestion failed with a useful message rather
+    // than us gating here — keeps the decision logic in one place.
+    await queue.enqueue(
+      "ingestion.process",
+      { ingestionId: ingestion!.id },
+      { tenantId: source.tenantId },
+    );
   }
 
   // Update last ingested time
