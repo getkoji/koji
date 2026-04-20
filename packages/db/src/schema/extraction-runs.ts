@@ -12,6 +12,7 @@ import {
 
 import { createdAt, primaryKey, tenantId } from "./_shared";
 import { corpusEntries } from "./corpus";
+import { schemaRuns } from "./runs";
 import { schemas, schemaVersions } from "./schemas";
 import { tenants, users } from "./tenants";
 
@@ -32,6 +33,7 @@ export const extractionRuns = pgTable(
       .notNull()
       .references(() => schemas.id, { onDelete: "cascade" }),
     schemaVersionId: uuid("schema_version_id").references(() => schemaVersions.id),
+    schemaRunId: uuid("schema_run_id").references(() => schemaRuns.id, { onDelete: "cascade" }),
     corpusEntryId: uuid("corpus_entry_id")
       .notNull()
       .references(() => corpusEntries.id, { onDelete: "cascade" }),

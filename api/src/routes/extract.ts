@@ -254,6 +254,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
     corpus_entry_id: string;
     schema_yaml: string;
     model?: string;
+    schema_run_id?: string;
   }>();
 
   if (!body.corpus_entry_id || !body.schema_yaml) {
@@ -322,7 +323,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   const accept = c.req.header("accept") ?? "";
   if (!accept.includes("text/event-stream")) {
     // Non-streaming JSON path
-    return handleExtractRunJSON(c, entry, fileBuffer, body.schema_yaml, body.model, tenantId, db, storage, fileHash, parseResult, body.corpus_entry_id, principal.userId);
+    return handleExtractRunJSON(c, entry, fileBuffer, body.schema_yaml, body.model, tenantId, db, storage, fileHash, parseResult, body.corpus_entry_id, principal.userId, body.schema_run_id);
   }
 
   // ── SSE streaming path ──
@@ -449,6 +450,7 @@ async function handleExtractRunJSON(
   cachedParse: Record<string, unknown> | null,
   corpusEntryId: string,
   userId: string,
+  schemaRunId?: string,
 ) {
   let parseResult: Record<string, unknown>;
 
@@ -553,6 +555,7 @@ async function handleExtractRunJSON(
           ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
           cached: cachedParse ? "true" : "false",
           triggeredBy: userId,
+          schemaRunId: schemaRunId ?? null,
         }).returning({ id: schema.extractionRuns.id })
       );
       return c.json({

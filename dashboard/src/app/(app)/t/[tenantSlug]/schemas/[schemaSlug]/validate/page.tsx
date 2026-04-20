@@ -113,39 +113,29 @@ export default function ValidatePage() {
 
   const runHistory = (perfData?.runs ?? []).slice().reverse();
 
-  // Auto-load latest run results on page load
+  // Auto-load latest validate results on page load (read-only, no re-extraction)
   useEffect(() => {
-    if (loadedFromDb || !perfData || perfData.runs.length === 0) return;
-    const latest = perfData.runs[perfData.runs.length - 1]!;
-    const prev = perfData.runs.length >= 2 ? perfData.runs[perfData.runs.length - 2] : null;
-    const acc = latest.accuracy ? parseFloat(latest.accuracy) * 100 : 0;
-    const prevAcc = prev?.accuracy ? parseFloat(prev.accuracy) * 100 : null;
-
-    // Build result from the DB run — use mock field details since
-    // corpus_version_results aren't populated yet
-    setResult({
-      ...MOCK_RESULT,
-      overallAccuracy: acc,
-      prevAccuracy: prevAcc,
-      docsTotal: latest.docsTotal,
-      docsPassed: latest.docsPassed,
-      schemaVersion: latest.versionNumber ?? 0,
-      ranAt: latest.completedAt ?? latest.createdAt,
-      passed: acc >= 95,
-    });
+    if (loadedFromDb) return;
     setLoadedFromDb(true);
-  }, [perfData, loadedFromDb]);
+    api.get<ValidateResult | null>(`/api/schemas/${schemaSlug}/validate`)
+      .then((data) => { if (data) setResult(data); })
+      .catch(() => {});
+  }, [schemaSlug, loadedFromDb]);
 
   const hasCorpus = (corpusEntries ?? []).length > 0;
   const hasRuns = runHistory.length > 0;
 
-  function handleRun() {
+  async function handleRun() {
+    setResult(null);
     setRunning(true);
-    // Simulate a run — replace with real API call when validate is wired
-    setTimeout(() => {
-      setResult(MOCK_RESULT);
+    try {
+      const data = await api.post<ValidateResult>(`/api/schemas/${schemaSlug}/validate`, {});
+      setResult(data);
+    } catch (err: unknown) {
+      console.error("Validate error:", err instanceof Error ? err.message : err);
+    } finally {
       setRunning(false);
-    }, 2500);
+    }
   }
 
   // ── Loading skeleton ──
@@ -285,17 +275,27 @@ export default function ValidatePage() {
                 </div>
                 {result.regressions.map((r) => (
                   <div key={r.name} className="mb-2 last:mb-0">
-                    <div className="text-[13px] text-ink">
+                    <div className="text-[13px] text-ink mb-1">
                       <span className="font-mono font-medium text-vermillion-2">{r.name}</span>
-                      {" "}dropped from {r.prevAccuracy?.toFixed(1)}% to {r.accuracy.toFixed(1)}%
-                      {" "}({r.failingDocs.length} doc{r.failingDocs.length !== 1 ? "s" : ""} affected)
+                      {" — "}{r.failingDocs.length} doc{r.failingDocs.length !== 1 ? "s" : ""} affected
                     </div>
-                    <div className="flex items-center gap-2 mt-1">
+                    <div className="space-y-1.5 mt-2">
                       {r.failingDocs.map((d) => (
-                        <Link key={d.id} href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
-                          className="inline-flex items-center gap-1 font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors">
-                          Fix {d.filename} <ExternalLink className="w-2.5 h-2.5" />
-                        </Link>
+                        <div key={d.id} className="flex items-start justify-between gap-3">
+                          <div className="font-mono text-[11px]">
+                            <span className="text-ink-4">{d.filename}</span>
+                            <div className="mt-0.5">
+                              <span className="text-ink-4">expected </span>
+                              <span className="text-green">{d.expected}</span>
+                              <span className="text-ink-4"> got </span>
+                              <span className="text-vermillion-2">{d.got}</span>
+                            </div>
+                          </div>
+                          <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors shrink-0">
+                            Fix <ExternalLink className="w-2.5 h-2.5" />
+                          </Link>
+                        </div>
                       ))}
                     </div>
                   </div>

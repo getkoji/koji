@@ -19,37 +19,16 @@ interface PerformanceRun {
   createdAt: string;
 }
 
-interface PerformanceData {
-  runs: PerformanceRun[];
-  corpusCount: number;
+interface PerRunFieldAccuracy {
+  runId: string;
+  fields: Record<string, number>;
 }
 
-// ── Mock per-field data (until corpus_version_results are populated) ──
-const MOCK_FIELDS = [
-  { name: "insurer_name",          scores: [88.2, 92.1, 95.3, 98.1, 98.0] },
-  { name: "named_insured",         scores: [95.0, 96.4, 98.1, 99.2, 99.3] },
-  { name: "policy_number",         scores: [90.1, 93.2, 96.0, 98.4, 97.8] },
-  { name: "policy_type",           scores: [85.4, 90.0, 94.2, 97.1, 96.5] },
-  { name: "effective_date",        scores: [94.3, 96.1, 97.4, 99.0, 99.1] },
-  { name: "expiration_date",       scores: [93.0, 95.2, 97.0, 98.3, 98.2] },
-  { name: "total_premium",         scores: [88.0, 91.3, 94.5, 99.4, 95.2] },
-  { name: "each_occurrence_limit", scores: [90.4, 93.0, 95.8, 98.2, 98.0] },
-  { name: "general_aggregate",     scores: [87.0, 90.4, 93.1, 96.8, 94.3] },
-];
-
-// Doc accuracy = % of docs where ALL fields pass. Lower than field avg.
-const MOCK_DOC_ACCURACY = [78.9, 84.2, 89.5, 94.7, 92.1];
-// Composite = weighted blend (0.6 * field + 0.4 * doc)
-const MOCK_COMPOSITE = MOCK_FIELDS[0]!.scores.map((_, i) => {
-  const fieldAvg = MOCK_FIELDS.reduce((sum, f) => sum + f.scores[i]!, 0) / MOCK_FIELDS.length;
-  return fieldAvg * 0.6 + MOCK_DOC_ACCURACY[i]! * 0.4;
-});
-
-const MOCK_MODELS = [
-  { name: "gpt-4o", accuracy: 97.8, latency: "2.3s", cost: "$0.032", active: true },
-  { name: "claude-sonnet-4-20250514", accuracy: 98.2, latency: "2.8s", cost: "$0.028", active: false },
-  { name: "gpt-4o-mini", accuracy: 94.1, latency: "1.1s", cost: "$0.008", active: false },
-];
+interface PerformanceData {
+  runs: PerformanceRun[];
+  perRunFieldAccuracy: PerRunFieldAccuracy[];
+  corpusCount: number;
+}
 
 // ── Helpers ──
 
@@ -70,7 +49,7 @@ function timeAgo(d: string): string {
 
 // ── SVG Chart with hover ──
 
-function TrendChart({ data }: { data: Array<{ version: number; accuracy: number; date?: string }> }) {
+function TrendChart({ data }: { data: Array<{ version: number; accuracy: number; label?: string; date?: string }> }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (data.length === 0) return null;
@@ -87,7 +66,7 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
     return (
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 260 }}>
         <circle cx={x(0)} cy={y(data[0]!.accuracy)} r={6} fill="#C33520" stroke="#F4EEE2" strokeWidth="2" />
-        <text x={x(0)} y={h - 4} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 10, fontFamily: "var(--font-mono)" }}>v{data[0]!.version}</text>
+        <text x={x(0)} y={h - 4} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 10, fontFamily: "var(--font-mono)" }}>{data[0]!.label ?? `v${data[0]!.version}`}</text>
         <text x={x(0)} y={y(data[0]!.accuracy) - 14} textAnchor="middle" className="fill-ink" style={{ fontSize: 13, fontFamily: "var(--font-mono)", fontWeight: 600 }}>{data[0]!.accuracy.toFixed(1)}%</text>
         <text x={w / 2} y={h / 2 + 30} textAnchor="middle" className="fill-ink-4" style={{ fontSize: 11 }}>Run validate again to see trends</text>
       </svg>
@@ -97,8 +76,10 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
   const linePath = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(d.accuracy)}`).join(" ");
   const areaPath = `${linePath} L ${x(data.length - 1)} ${y(minY)} L ${x(0)} ${y(minY)} Z`;
 
+  const range = maxY - minY;
+  const gridStep = range > 30 ? 10 : range > 15 ? 5 : 2;
   const gridLines = [];
-  for (let v = Math.ceil(minY); v <= maxY; v += 2) gridLines.push(v);
+  for (let v = Math.ceil(minY / gridStep) * gridStep; v <= maxY; v += gridStep) gridLines.push(v);
 
   const hovered = hoverIdx !== null ? data[hoverIdx] : null;
   const hoveredPrev = hoverIdx !== null && hoverIdx > 0 ? data[hoverIdx - 1] : null;
@@ -143,7 +124,7 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
               fill={hoverIdx === i ? "#C33520" : "#C33520"}
               stroke="#F4EEE2" strokeWidth="2"
               style={{ transition: "r 150ms" }} />
-            <text x={x(i)} y={h - 4} textAnchor="middle" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: hoverIdx === i ? "#171410" : "#998E78" }}>v{d.version}</text>
+            <text x={x(i)} y={h - 4} textAnchor="middle" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: hoverIdx === i ? "#171410" : "#998E78" }}>{d.label ?? `v${d.version}`}</text>
             {/* Invisible hover target */}
             <rect x={x(i) - 25} y={py} width={50} height={plotH + 20} fill="transparent"
               onMouseEnter={() => setHoverIdx(i)} />
@@ -157,7 +138,7 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
           style={{ left: `${(x(hoverIdx) / w) * 100}%`, top: 8, transform: "translateX(-50%)" }}>
           <div className="font-mono text-[12px] font-medium">{hovered.accuracy.toFixed(1)}%</div>
           <div className="font-mono text-[10px] text-cream/60">
-            v{hovered.version}
+            {hovered.label ?? `v${hovered.version}`}
             {hoveredPrev && (
               <span className={hoveredPrev.accuracy < hovered.accuracy ? " text-green" : " text-vermillion-3"}>
                 {" "}{hovered.accuracy > hoveredPrev.accuracy ? "+" : ""}{(hovered.accuracy - hoveredPrev.accuracy).toFixed(1)}
@@ -183,6 +164,7 @@ export default function PerformancePage() {
   const [accMode, setAccMode] = useState<"field" | "doc" | "composite">("field");
 
   const runs = data?.runs ?? [];
+  const perRunFieldAccuracy = data?.perRunFieldAccuracy ?? [];
   const corpusCount = data?.corpusCount ?? 0;
 
   // ── Empty state ──
@@ -214,20 +196,24 @@ export default function PerformancePage() {
   }
 
   // ── Build chart data from runs ──
-  const fieldData = runs
-    .filter((r) => r.versionNumber !== null && r.accuracy !== null)
-    .map((r, i) => ({ version: r.versionNumber!, accuracy: parseFloat(r.accuracy!) * 100 }));
+  const validRuns = runs.filter((r) => r.accuracy !== null);
 
-  // Doc accuracy (% of docs passing all fields) — uses mock until real per-doc data exists
-  const docData = fieldData.map((d, i) => ({
-    version: d.version,
-    accuracy: i < MOCK_DOC_ACCURACY.length ? MOCK_DOC_ACCURACY[i]! : d.accuracy * 0.92,
+  const fieldData = validRuns.map((r, i) => ({
+    version: r.versionNumber ?? 0,
+    accuracy: parseFloat(r.accuracy!) * 100,
+    label: `#${i + 1}`,
   }));
 
-  // Composite = 60% field + 40% doc
+  const docData = validRuns.map((r, i) => ({
+    version: r.versionNumber ?? 0,
+    accuracy: r.docsTotal > 0 ? (r.docsPassed / r.docsTotal) * 100 : 0,
+    label: `#${i + 1}`,
+  }));
+
   const compositeData = fieldData.map((d, i) => ({
     version: d.version,
-    accuracy: i < MOCK_COMPOSITE.length ? MOCK_COMPOSITE[i]! : d.accuracy * 0.96,
+    accuracy: docData[i] ? d.accuracy * 0.6 + docData[i].accuracy * 0.4 : d.accuracy,
+    label: `#${i + 1}`,
   }));
 
   const chartData = accMode === "field" ? fieldData : accMode === "doc" ? docData : compositeData;
@@ -239,11 +225,15 @@ export default function PerformancePage() {
 
   const latestRun = runs[runs.length - 1]!;
 
-  // Use mock field data for heatmap (until corpus_version_results populated)
-  const heatmapVersions = chartData.map((d) => d.version);
-  const heatmapFields = MOCK_FIELDS.map((f) => ({
-    name: f.name,
-    scores: f.scores.slice(0, chartData.length),
+  // Build heatmap from real per-run field accuracy data
+  const allFieldNames = new Set<string>();
+  for (const prf of perRunFieldAccuracy) {
+    for (const f of Object.keys(prf.fields)) allFieldNames.add(f);
+  }
+  const heatmapVersions = validRuns.map((_, i) => i + 1);
+  const heatmapFields = Array.from(allFieldNames).map((name) => ({
+    name,
+    scores: perRunFieldAccuracy.map((prf) => prf.fields[name] ?? 100),
   }));
 
   return (
@@ -269,7 +259,7 @@ export default function PerformancePage() {
           {[
             { label: "Accuracy", value: current ? `${current.accuracy.toFixed(1)}%` : "—", delta: prev ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}` : null, up: !regressed },
             { label: "Corpus", value: String(corpusCount), delta: null, up: true },
-            { label: "Active model", value: "gpt-4o", delta: null, up: true },
+            { label: "Runs", value: String(runs.length), delta: null, up: true },
             { label: "Fields tracked", value: `${heatmapFields.length}`, delta: null, up: true },
             { label: "Last run", value: latestRun.completedAt ? timeAgo(latestRun.completedAt) : "—", delta: current ? `v${current.version}` : null, up: true },
           ].map((m) => (
@@ -312,8 +302,7 @@ export default function PerformancePage() {
               <div className="font-mono text-[10px] font-medium text-vermillion-2 uppercase tracking-[0.08em] mb-1">Regression detected</div>
               <div className="text-[12px] text-ink">
                 v{current!.version} dropped {Math.abs(delta).toFixed(1)}pt from v{prev!.version}.
-                Caused by <span className="font-mono font-medium text-vermillion-2">total_premium</span> on{" "}
-                <span className="font-mono font-medium">invoice-0087.pdf</span> — alias matched wrong chunk.
+                Check the Validate page for per-field details.
               </div>
             </div>
           )}
@@ -333,7 +322,7 @@ export default function PerformancePage() {
                     <tr className="bg-cream-2/50">
                       <th className="text-left px-3 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Field</th>
                       {heatmapVersions.map((v, i) => (
-                        <th key={v} className={`px-2 py-2 font-mono text-[9px] font-medium text-center ${i === heatmapVersions.length - 1 ? "text-ink" : "text-ink-4"}`}>v{v}</th>
+                        <th key={v} className={`px-2 py-2 font-mono text-[9px] font-medium text-center ${i === heatmapVersions.length - 1 ? "text-ink" : "text-ink-4"}`}>#{v}</th>
                       ))}
                     </tr>
                   </thead>
@@ -362,30 +351,30 @@ export default function PerformancePage() {
               </div>
             </div>
 
-            {/* Model comparison */}
+            {/* Model info */}
             <div>
               <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-4" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
-                Model comparison
+                Run details
               </h2>
               <div className="border border-border rounded-sm overflow-hidden">
                 <table className="w-full">
                   <thead>
                     <tr className="bg-cream-2/50">
-                      {["Model", "Accuracy", "Latency", "Cost/doc"].map((h) => (
+                      {["Run", "Accuracy", "Docs", "Duration"].map((h) => (
                         <th key={h} className="text-left px-3 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {MOCK_MODELS.map((m) => (
-                      <tr key={m.name} className={`border-t border-border ${m.active ? "bg-cream-2/30" : ""}`}>
+                    {runs.filter((r) => r.versionNumber !== null).map((r, i, arr) => (
+                      <tr key={r.id} className={`border-t border-border ${i === arr.length - 1 ? "bg-cream-2/30" : ""}`}>
                         <td className="px-3 py-2 font-mono text-[11px] text-ink">
-                          {m.name}
-                          {m.active && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">active</span>}
+                          v{r.versionNumber}
+                          {i === arr.length - 1 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
                         </td>
-                        <td className="px-3 py-2"><span className={`font-mono text-[11px] font-medium ${m.accuracy >= 97 ? "text-green" : "text-ink-3"}`}>{m.accuracy}%</span></td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{m.latency}</td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{m.cost}</td>
+                        <td className="px-3 py-2"><span className={`font-mono text-[11px] font-medium ${r.accuracy && parseFloat(r.accuracy) * 100 >= 97 ? "text-green" : "text-ink-3"}`}>{r.accuracy ? (parseFloat(r.accuracy) * 100).toFixed(1) : "—"}%</span></td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.docsPassed}/{r.docsTotal}</td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
