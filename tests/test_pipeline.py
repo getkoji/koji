@@ -1390,7 +1390,7 @@ class TestPipelineMetadata:
 class TestComputeConfidenceScore:
     """Unit tests for the compute_confidence_score function."""
 
-    def test_route_source_hint_contributes_0_4(self):
+    def test_route_source_hint_contributes_0_5(self):
         score = compute_confidence_score(
             route_source="hint",
             multi_source_agree=False,
@@ -1398,9 +1398,9 @@ class TestComputeConfidenceScore:
             validation_passed=False,
             has_relevant_signals=False,
         )
-        assert score == 0.4
+        assert score == 0.5
 
-    def test_route_source_signal_inferred_contributes_0_25(self):
+    def test_route_source_signal_inferred_contributes_0_35(self):
         score = compute_confidence_score(
             route_source="signal_inferred",
             multi_source_agree=False,
@@ -1408,9 +1408,9 @@ class TestComputeConfidenceScore:
             validation_passed=False,
             has_relevant_signals=False,
         )
-        assert score == 0.25
+        assert score == 0.35
 
-    def test_route_source_broadened_contributes_0_1(self):
+    def test_route_source_broadened_contributes_0_15(self):
         score = compute_confidence_score(
             route_source="broadened",
             multi_source_agree=False,
@@ -1418,9 +1418,9 @@ class TestComputeConfidenceScore:
             validation_passed=False,
             has_relevant_signals=False,
         )
-        assert score == 0.1
+        assert score == 0.15
 
-    def test_route_source_fallback_contributes_0_05(self):
+    def test_route_source_fallback_contributes_0_1(self):
         score = compute_confidence_score(
             route_source="fallback",
             multi_source_agree=False,
@@ -1428,9 +1428,9 @@ class TestComputeConfidenceScore:
             validation_passed=False,
             has_relevant_signals=False,
         )
-        assert score == 0.05
+        assert score == 0.1
 
-    def test_multi_source_agree_contributes_0_3(self):
+    def test_multi_source_agree_contributes_0_2(self):
         score = compute_confidence_score(
             route_source=None,
             multi_source_agree=True,
@@ -1438,7 +1438,7 @@ class TestComputeConfidenceScore:
             validation_passed=False,
             has_relevant_signals=False,
         )
-        assert score == 0.3
+        assert score == 0.2
 
     def test_single_source_contributes_0_15(self):
         score = compute_confidence_score(
@@ -1523,7 +1523,7 @@ class TestComputeConfidenceScore:
             has_relevant_signals=False,
         )
         assert with_agreement > without_agreement
-        assert with_agreement - without_agreement == pytest.approx(0.15)  # 0.3 - 0.15
+        assert with_agreement - without_agreement == pytest.approx(0.05)  # 0.2 - 0.15
 
     def test_validation_failure_reduces_score(self):
         valid = compute_confidence_score(
@@ -1609,8 +1609,8 @@ class TestReconcileConfidenceScores:
         schema = {"fields": {"f": {"type": "string"}}}
         routes = [make_field_route(field_name="f", source="fallback")]
         out = reconcile(results, schema, routes=routes)
-        # fallback(0.05) + single(0.15) + valid(0.2) + no_signals(0.0) = 0.4
-        assert out["confidence_scores"]["f"] == 0.4
+        # fallback(0.1) + single(0.15) + valid(0.2) + no_signals(0.0) = 0.45
+        assert out["confidence_scores"]["f"] == 0.45
         assert out["confidence"]["f"] == "medium"
 
     def test_validation_failure_lowers_score(self):
@@ -1624,9 +1624,9 @@ class TestReconcileConfidenceScores:
             )
         ]
         out = reconcile(results, schema, routes=routes)
-        # hint(0.4) + single(0.15) + failed_validation(0.0) + signals(0.1) = 0.65
-        assert out["confidence_scores"]["f"] == 0.65
-        assert out["confidence"]["f"] == "medium"
+        # hint(0.5) + single(0.15) + failed_validation(0.0) + signals(0.1) = 0.75
+        assert out["confidence_scores"]["f"] == 0.75
+        assert out["confidence"]["f"] == "high"
 
     def test_no_routes_still_works(self):
         """reconcile works without routes (backwards compatible signature)."""

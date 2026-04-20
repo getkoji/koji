@@ -53,7 +53,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
         "koji-db": {
             "image": "postgres:16-alpine",
             "container_name": f"koji-{project}-db",
-            "ports": [f"127.0.0.1:5432:5432"],
+            "ports": ["127.0.0.1:5432:5432"],
             "environment": {
                 "POSTGRES_USER": "koji",
                 "POSTGRES_PASSWORD": "koji",

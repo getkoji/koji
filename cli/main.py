@@ -545,7 +545,7 @@ def login(
     Opens your browser to approve API key creation. For CI/headless
     environments, pass --api-key directly.
     """
-    from .credentials import Credentials, Profile, load_credentials
+    from .credentials import Profile, load_credentials
 
     if api_key:
         # Direct key — headless mode
@@ -573,7 +573,6 @@ def login(
     name = profile or _derive_profile_name(url)
 
     import http.server
-    import json
     import secrets
     import socket
     import threading
@@ -625,7 +624,7 @@ def login(
     callback_url = f"http://127.0.0.1:{callback_port}/callback"
     authorize_url = f"{url}/cli/authorize?callback={callback_url}&state={state}"
 
-    console.print(f"\n  Opening browser to authorize CLI...\n")
+    console.print("\n  Opening browser to authorize CLI...\n")
     console.print(f"  [dim]{authorize_url}[/dim]\n")
     webbrowser.open(authorize_url)
 

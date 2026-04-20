@@ -2,16 +2,12 @@
 
 import os
 import tempfile
-from pathlib import Path
-
-import pytest
-import yaml
 
 # Patch the credentials path before import
 _tmpdir = tempfile.mkdtemp()
 os.environ["XDG_CONFIG_HOME"] = _tmpdir
 
-from cli.credentials import (
+from cli.credentials import (  # noqa: E402
     Credentials,
     Profile,
     _credentials_path,

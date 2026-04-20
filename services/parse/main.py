@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
-import io
 import json
 import tempfile
 import time
@@ -20,7 +19,7 @@ import pypdfium2 as pdfium
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 

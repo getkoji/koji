@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import patch
 
+from cli.config import KojiConfig
 from cli.doctor import (
     CheckResult,
     check_api_keys,
@@ -16,7 +17,6 @@ from cli.doctor import (
     check_ports_available,
     run_all_checks,
 )
-from cli.config import KojiConfig
 
 # ── Docker checks ─────────────────────────────────────────────────────
 

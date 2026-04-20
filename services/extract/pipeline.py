@@ -688,12 +688,12 @@ def _score_label(score: float) -> str:
     return "not_found"
 
 
-# Weights for route source quality factor (0.0–0.4)
+# Weights for route source quality factor (0.0–0.5)
 ROUTE_SOURCE_WEIGHTS: dict[str, float] = {
-    "hint": 0.4,
-    "signal_inferred": 0.25,
-    "broadened": 0.1,
-    "fallback": 0.05,
+    "hint": 0.5,
+    "signal_inferred": 0.35,
+    "broadened": 0.15,
+    "fallback": 0.1,
 }
 
 
@@ -719,9 +719,8 @@ def compute_confidence_score(
     score = 0.0
 
     # Route source quality (0.0-0.5)
-    route_weights = {"hint": 0.5, "signal_inferred": 0.35, "broadened": 0.15, "fallback": 0.1}
     if route_source is not None:
-        score += route_weights.get(route_source, ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0))
+        score += ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0)
 
     # Source agreement (0.0-0.2)
     if multi_source_agree:
