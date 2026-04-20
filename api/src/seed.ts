@@ -78,7 +78,35 @@ async function seed() {
 
   console.log("  3 schema versions created");
 
-  // ── Pipelines (each wired to a schema + its deployed version) ──
+  // ── Model endpoints (pipelines reference these via model_provider_id) ──
+  const [openaiEndpoint, anthropicEndpoint] = await db
+    .insert(schema.modelEndpoints)
+    .values([
+      {
+        tenantId: TENANT,
+        slug: "openai-primary",
+        displayName: "OpenAI primary",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        configJson: { api_base: "https://api.openai.com/v1" },
+        status: "active",
+        createdBy: USER,
+      },
+      {
+        tenantId: TENANT,
+        slug: "anthropic-fallback",
+        displayName: "Anthropic fallback",
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        configJson: {},
+        status: "active",
+        createdBy: USER,
+      },
+    ])
+    .returning();
+  console.log("  2 model endpoints created");
+
+  // ── Pipelines (each wired to a schema + its deployed version + a model) ──
   const [claimsPipeline, invoicePipeline, receiptPipeline] = await db
     .insert(schema.pipelines)
     .values([
@@ -88,6 +116,15 @@ async function seed() {
         displayName: "Claims Intake",
         schemaId: claimSchema!.id,
         activeSchemaVersionId: claimVersion!.id,
+        modelProviderId: openaiEndpoint!.id,
+        reviewThreshold: "0.85",
+        configJson: {
+          stages: {
+            preflight: { max_pages: 20, max_size_mb: 10 },
+            chunker: { strategy: "page" },
+            validator: { strictness: "normal" },
+          },
+        },
         yamlSource: "step: extract",
         parsedJson: {},
         triggerType: "webhook",
@@ -101,10 +138,19 @@ async function seed() {
         displayName: "Invoice Ingest",
         schemaId: invoiceSchema!.id,
         activeSchemaVersionId: invoiceVersion!.id,
+        modelProviderId: openaiEndpoint!.id,
+        reviewThreshold: "0.90",
+        configJson: {
+          stages: {
+            preflight: { max_pages: 50, max_size_mb: 25 },
+            chunker: { strategy: "semantic" },
+            validator: { strictness: "strict" },
+          },
+        },
         yamlSource: "step: extract",
         parsedJson: {},
         triggerType: "s3_watcher",
-        triggerConfigJson: {},
+        triggerConfigJson: { bucket: "acme-invoices-inbound" },
         status: "active",
         createdBy: USER,
       },
@@ -114,16 +160,64 @@ async function seed() {
         displayName: "Receipt Scan",
         schemaId: receiptSchema!.id,
         activeSchemaVersionId: receiptVersion!.id,
+        modelProviderId: anthropicEndpoint!.id,
+        reviewThreshold: "0.80",
+        configJson: {
+          stages: {
+            preflight: { max_pages: 5, max_size_mb: 5 },
+            chunker: { strategy: "whole" },
+          },
+        },
         yamlSource: "step: extract",
         parsedJson: {},
         triggerType: "manual",
         triggerConfigJson: {},
-        status: "active",
+        status: "paused",
         createdBy: USER,
       },
     ])
     .returning();
   console.log("  3 pipelines created");
+
+  // ── Sources — at least one per pipeline so the detail page's
+  //    "Connected sources" section has real rows ──
+  await db.insert(schema.sources).values([
+    {
+      tenantId: TENANT,
+      slug: "acme-invoices-inbound",
+      displayName: "acme-invoices-inbound",
+      sourceType: "s3",
+      configJson: { bucket: "acme-invoices-inbound", region: "us-east-1", prefix: "incoming/" },
+      targetPipelineId: invoicePipeline!.id,
+      status: "active",
+      lastIngestedAt: new Date(Date.now() - 30 * 60 * 1000),
+      createdBy: USER,
+    },
+    {
+      tenantId: TENANT,
+      slug: "partner-claims-webhook",
+      displayName: "Partner claims webhook",
+      sourceType: "webhook",
+      configJson: { path: "/api/sources/partner-claims-webhook/webhook" },
+      targetPipelineId: claimsPipeline!.id,
+      status: "active",
+      lastIngestedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      webhookSecret: "whsec_seed_claims",
+      createdBy: USER,
+    },
+    {
+      tenantId: TENANT,
+      slug: "receipts-inbox",
+      displayName: "Receipts inbox",
+      sourceType: "email",
+      configJson: { address: "receipts@inbound.getkoji.dev" },
+      targetPipelineId: null,
+      status: "paused",
+      lastIngestedAt: null,
+      createdBy: USER,
+    },
+  ]);
+  console.log("  3 sources created");
 
   // ── Jobs — spread across pipelines so the list is realistic ──
   type JobSeed = {

@@ -256,6 +256,135 @@ export const review = {
   skip: (id: string) => api.post<void>(`/api/review/${id}/skip`),
 };
 
+// ── Pipelines ──
+
+export interface PipelineRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  schemaId: string | null;
+  activeSchemaVersionId: string | null;
+  modelProviderId: string | null;
+  reviewThreshold: string;
+  status: string;
+  triggerType: string;
+  lastRunAt: string | null;
+  createdAt: string;
+  schemaSlug: string | null;
+  schemaName: string | null;
+  deployedVersion: number | null;
+  modelProviderName: string | null;
+  modelProviderModel: string | null;
+  docsTotal: number;
+  docsPassed: number;
+  docsFailed: number;
+}
+
+export interface PipelineDeployedVersion {
+  id: string;
+  number: number;
+  commitMessage: string | null;
+  deployedAt: string;
+}
+
+export interface PipelineConnectedSource {
+  id: string;
+  slug: string;
+  displayName: string;
+  sourceType: string;
+  status: string;
+  lastIngestedAt: string | null;
+}
+
+export interface PipelineRecentJob {
+  id: string;
+  slug: string;
+  status: string;
+  docsTotal: number;
+  docsProcessed: number;
+  docsPassed: number;
+  docsFailed: number;
+  avgLatencyMs: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface PipelineDetail {
+  id: string;
+  slug: string;
+  displayName: string;
+  schemaId: string | null;
+  activeSchemaVersionId: string | null;
+  modelProviderId: string | null;
+  configJson: Record<string, unknown> | null;
+  reviewThreshold: string;
+  yamlSource: string;
+  triggerType: string;
+  triggerConfigJson: Record<string, unknown> | null;
+  status: string;
+  lastRunAt: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  schemaSlug: string | null;
+  schemaName: string | null;
+  modelProviderName: string | null;
+  modelProviderModel: string | null;
+  creatorEmail: string | null;
+  creatorName: string | null;
+  deployedVersion: PipelineDeployedVersion | null;
+  connectedSources: PipelineConnectedSource[];
+  recentJobs: PipelineRecentJob[];
+  stats: { docsTotal: number; docsPassed: number; docsFailed: number; jobCount: number };
+}
+
+export interface SchemaVersion {
+  id: string;
+  versionNumber: number;
+  commitMessage: string | null;
+  committedByName: string | null;
+  createdAt: string;
+}
+
+export const pipelines = {
+  list: () => api.get<{ data: PipelineRow[] }>("/api/pipelines").then((r) => r.data),
+  get: (idOrSlug: string) => api.get<PipelineDetail>(`/api/pipelines/${idOrSlug}`),
+  schemaVersions: (schemaSlug: string) =>
+    api
+      .get<{ data: SchemaVersion[] }>(`/api/schemas/${schemaSlug}/versions`)
+      .then((r) => r.data),
+  pause: (idOrSlug: string) =>
+    api.post<{ ok: true }>(`/api/pipelines/${idOrSlug}/pause`, {}),
+  resume: (idOrSlug: string) =>
+    api.post<{ ok: true }>(`/api/pipelines/${idOrSlug}/resume`, {}),
+  deploy: (idOrSlug: string, schemaVersionId: string) =>
+    api.post(`/api/pipelines/${idOrSlug}/deploy`, { schema_version_id: schemaVersionId }),
+  delete: (idOrSlug: string) => api.delete(`/api/pipelines/${idOrSlug}`),
+};
+
+// ── Sources ──
+
+export interface SourceRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  sourceType: string;
+  status: string;
+  lastIngestedAt: string | null;
+  createdAt: string;
+  targetPipelineId: string | null;
+}
+
+export const sources = {
+  list: () => api.get<{ data: SourceRow[] }>("/api/sources").then((r) => r.data),
+  /** Set target pipeline. Pass `null` to disconnect. */
+  setTargetPipeline: (sourceId: string, targetPipelineId: string | null) =>
+    api.patch<SourceRow>(`/api/sources/${sourceId}`, {
+      target_pipeline_id: targetPipelineId,
+    }),
+};
+
 export interface ProjectRow {
   id: string;
   slug: string;
