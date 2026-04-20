@@ -3,70 +3,287 @@
  *
  * Usage: DATABASE_URL=postgres://koji:koji@localhost:5433/koji pnpm --filter @koji/api seed
  */
-import { sql } from "drizzle-orm";
+import crypto from "node:crypto";
 import { createDb, schema } from "@koji/db";
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5433/koji";
-const TENANT = "00000000-0000-0000-0000-000000000000";
-const USER = "00000000-0000-0000-0000-000000000001";
 
 const db = createDb(DATABASE_URL);
 
 async function seed() {
   console.log("Seeding...");
 
-  // Create schemas
-  const [invoiceSchema] = await db.insert(schema.schemas).values([
-    { tenantId: TENANT, slug: "invoice", displayName: "Invoice", description: "Commercial invoice extraction — number, dates, parties, line items, totals.", createdBy: USER },
-    { tenantId: TENANT, slug: "receipt", displayName: "Receipt", description: "POS receipt extraction — store, date, items, total.", createdBy: USER },
-    { tenantId: TENANT, slug: "insurance-claim", displayName: "Insurance Claim", description: "First notice of loss — claimant, policy, incident, damages.", createdBy: USER },
-  ]).returning();
+  // Resolve tenant + user from whatever the setup flow produced
+  const [tenantRow] = await db.select({ id: schema.tenants.id }).from(schema.tenants).limit(1);
+  const [userRow] = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
+  if (!tenantRow || !userRow) {
+    console.error("No tenant/user found. Complete /setup first.");
+    process.exit(1);
+  }
+  const TENANT = tenantRow.id;
+  const USER = userRow.id;
+  console.log(`  tenant=${TENANT}`);
+  console.log(`  user=${USER}`);
+
+  // ── Schemas ──
+  const [invoiceSchema, receiptSchema, claimSchema] = await db
+    .insert(schema.schemas)
+    .values([
+      { tenantId: TENANT, slug: "invoice", displayName: "Invoice", description: "Commercial invoice extraction — number, dates, parties, line items, totals.", createdBy: USER },
+      { tenantId: TENANT, slug: "receipt", displayName: "Receipt", description: "POS receipt extraction — store, date, items, total.", createdBy: USER },
+      { tenantId: TENANT, slug: "insurance-claim", displayName: "Insurance Claim", description: "First notice of loss — claimant, policy, incident, damages.", createdBy: USER },
+    ])
+    .returning();
   console.log("  3 schemas created");
 
-  // Create pipelines
-  const [claimsPipeline] = await db.insert(schema.pipelines).values([
-    { tenantId: TENANT, slug: "claims-intake", displayName: "Claims Intake", yamlSource: "step: extract", parsedJson: {}, triggerType: "webhook", triggerConfigJson: {}, status: "active", createdBy: USER },
-    { tenantId: TENANT, slug: "invoice-ingest", displayName: "Invoice Ingest", yamlSource: "step: extract", parsedJson: {}, triggerType: "s3_watcher", triggerConfigJson: {}, status: "active", createdBy: USER },
-    { tenantId: TENANT, slug: "receipt-scan", displayName: "Receipt Scan", yamlSource: "step: extract", parsedJson: {}, triggerType: "manual", triggerConfigJson: {}, status: "active", createdBy: USER },
-  ]).returning();
+  // ── Schema versions (one deployed version per schema) ──
+  const invoiceYaml = "fields:\n  invoice_number: string\n  total: number\n";
+  const receiptYaml = "fields:\n  store: string\n  total: number\n";
+  const claimYaml = "fields:\n  claimant: string\n  policy_number: string\n";
+  const [invoiceVersion, receiptVersion, claimVersion] = await db
+    .insert(schema.schemaVersions)
+    .values([
+      {
+        tenantId: TENANT,
+        schemaId: invoiceSchema!.id,
+        versionNumber: 12,
+        yamlSource: invoiceYaml,
+        yamlHash: crypto.createHash("sha256").update(invoiceYaml).digest("hex"),
+        parsedJson: { fields: { invoice_number: "string", total: "number" } },
+        commitMessage: "Initial invoice schema",
+        committedBy: USER,
+      },
+      {
+        tenantId: TENANT,
+        schemaId: receiptSchema!.id,
+        versionNumber: 3,
+        yamlSource: receiptYaml,
+        yamlHash: crypto.createHash("sha256").update(receiptYaml).digest("hex"),
+        parsedJson: { fields: { store: "string", total: "number" } },
+        commitMessage: "Initial receipt schema",
+        committedBy: USER,
+      },
+      {
+        tenantId: TENANT,
+        schemaId: claimSchema!.id,
+        versionNumber: 4,
+        yamlSource: claimYaml,
+        yamlHash: crypto.createHash("sha256").update(claimYaml).digest("hex"),
+        parsedJson: { fields: { claimant: "string", policy_number: "string" } },
+        commitMessage: "Initial claim schema",
+        committedBy: USER,
+      },
+    ])
+    .returning();
+
+  console.log("  3 schema versions created");
+
+  // ── Pipelines (each wired to a schema + its deployed version) ──
+  const [claimsPipeline, invoicePipeline, receiptPipeline] = await db
+    .insert(schema.pipelines)
+    .values([
+      {
+        tenantId: TENANT,
+        slug: "claims-intake",
+        displayName: "Claims Intake",
+        schemaId: claimSchema!.id,
+        activeSchemaVersionId: claimVersion!.id,
+        yamlSource: "step: extract",
+        parsedJson: {},
+        triggerType: "webhook",
+        triggerConfigJson: {},
+        status: "active",
+        createdBy: USER,
+      },
+      {
+        tenantId: TENANT,
+        slug: "invoice-ingest",
+        displayName: "Invoice Ingest",
+        schemaId: invoiceSchema!.id,
+        activeSchemaVersionId: invoiceVersion!.id,
+        yamlSource: "step: extract",
+        parsedJson: {},
+        triggerType: "s3_watcher",
+        triggerConfigJson: {},
+        status: "active",
+        createdBy: USER,
+      },
+      {
+        tenantId: TENANT,
+        slug: "receipt-scan",
+        displayName: "Receipt Scan",
+        schemaId: receiptSchema!.id,
+        activeSchemaVersionId: receiptVersion!.id,
+        yamlSource: "step: extract",
+        parsedJson: {},
+        triggerType: "manual",
+        triggerConfigJson: {},
+        status: "active",
+        createdBy: USER,
+      },
+    ])
+    .returning();
   console.log("  3 pipelines created");
 
-  // Create jobs
-  const jobData = [
-    { slug: "job-20260414-1442-a91c", pipeline: claimsPipeline!.id, status: "complete", total: 47, processed: 47, passed: 46, failed: 1, latency: 2300, cost: "0.042", trigger: "webhook", ago: 2 },
-    { slug: "job-20260414-0903-b2df", pipeline: claimsPipeline!.id, status: "running", total: 24, processed: 12, passed: 12, failed: 0, latency: 1800, cost: "0.011", trigger: "webhook", ago: 18 },
-    { slug: "job-20260413-2201-c4e1", pipeline: claimsPipeline!.id, status: "failed", total: 3, processed: 1, passed: 0, failed: 1, latency: null, cost: "0.001", trigger: "manual", ago: 60 },
-    { slug: "job-20260413-1442-f891", pipeline: claimsPipeline!.id, status: "complete", total: 89, processed: 89, passed: 88, failed: 1, latency: 1950, cost: "0.079", trigger: "scheduled", ago: 180 },
-    { slug: "job-20260413-1100-d234", pipeline: claimsPipeline!.id, status: "complete", total: 52, processed: 52, passed: 51, failed: 1, latency: 2100, cost: "0.048", trigger: "webhook", ago: 300 },
-    { slug: "job-20260412-1830-e567", pipeline: claimsPipeline!.id, status: "complete", total: 31, processed: 31, passed: 31, failed: 0, latency: 1700, cost: "0.029", trigger: "s3_watcher", ago: 1440 },
-    { slug: "job-20260412-0900-a123", pipeline: claimsPipeline!.id, status: "canceled", total: 0, processed: 0, passed: 0, failed: 0, latency: null, cost: "0.000", trigger: "manual", ago: 1800 },
-    { slug: "job-20260411-1400-b456", pipeline: claimsPipeline!.id, status: "complete", total: 64, processed: 64, passed: 63, failed: 1, latency: 2200, cost: "0.058", trigger: "webhook", ago: 2880 },
-    { slug: "job-20260410-0800-c789", pipeline: claimsPipeline!.id, status: "complete", total: 112, processed: 112, passed: 110, failed: 2, latency: 2400, cost: "0.103", trigger: "scheduled", ago: 4320 },
-    { slug: "job-20260409-1600-d012", pipeline: claimsPipeline!.id, status: "complete", total: 28, processed: 28, passed: 28, failed: 0, latency: 1600, cost: "0.025", trigger: "webhook", ago: 5760 },
+  // ── Jobs — spread across pipelines so the list is realistic ──
+  type JobSeed = {
+    slug: string;
+    pipeline: string;
+    status: "complete" | "running" | "failed" | "canceled";
+    total: number;
+    processed: number;
+    passed: number;
+    failed: number;
+    reviewing?: number;
+    latency: number | null;
+    cost: string;
+    trigger: string;
+    ago: number;
+  };
+
+  const jobData: JobSeed[] = [
+    { slug: "job-20260420-1430", pipeline: invoicePipeline!.id, status: "running", total: 142, processed: 48, passed: 47, failed: 0, reviewing: 1, latency: 1850, cost: "0.056", trigger: "scheduled", ago: 2 },
+    { slug: "job-20260420-0900", pipeline: invoicePipeline!.id, status: "complete", total: 142, processed: 142, passed: 142, failed: 0, reviewing: 0, latency: 1920, cost: "0.167", trigger: "scheduled", ago: 180 },
+    { slug: "job-20260420-0600", pipeline: invoicePipeline!.id, status: "complete", total: 238, processed: 238, passed: 237, failed: 0, reviewing: 1, latency: 2050, cost: "0.283", trigger: "scheduled", ago: 360 },
+    { slug: "job-20260419-2144", pipeline: invoicePipeline!.id, status: "complete", total: 5, processed: 5, passed: 5, failed: 0, reviewing: 0, latency: 1200, cost: "0.006", trigger: "manual", ago: 1020 },
+    { slug: "job-20260419-1800", pipeline: claimsPipeline!.id, status: "canceled", total: 62, processed: 14, passed: 14, failed: 0, reviewing: 0, latency: 2100, cost: "0.019", trigger: "manual", ago: 1320 },
+    { slug: "job-20260419-1200", pipeline: claimsPipeline!.id, status: "failed", total: 28, processed: 28, passed: 25, failed: 3, reviewing: 0, latency: 2400, cost: "0.042", trigger: "webhook", ago: 1680 },
+    { slug: "job-20260418-1442", pipeline: invoicePipeline!.id, status: "complete", total: 218, processed: 218, passed: 218, failed: 0, reviewing: 0, latency: 1890, cost: "0.248", trigger: "scheduled", ago: 2880 },
+    { slug: "job-20260418-1200", pipeline: invoicePipeline!.id, status: "complete", total: 194, processed: 194, passed: 193, failed: 1, reviewing: 0, latency: 1950, cost: "0.219", trigger: "scheduled", ago: 3120 },
+    { slug: "job-20260418-0900", pipeline: receiptPipeline!.id, status: "complete", total: 62, processed: 62, passed: 62, failed: 0, reviewing: 0, latency: 1450, cost: "0.052", trigger: "scheduled", ago: 3420 },
+    { slug: "job-20260417-1442", pipeline: invoicePipeline!.id, status: "complete", total: 251, processed: 251, passed: 251, failed: 0, reviewing: 0, latency: 1920, cost: "0.285", trigger: "scheduled", ago: 4320 },
   ];
 
-  for (const j of jobData) {
-    const now = new Date();
-    const startedAt = new Date(now.getTime() - j.ago * 60 * 1000);
-    const completedAt = j.status === "running" ? null : new Date(startedAt.getTime() + (j.latency ?? 0));
-
-    await db.insert(schema.jobs).values({
-      tenantId: TENANT,
-      slug: j.slug,
-      pipelineId: j.pipeline,
-      triggerType: j.trigger,
-      status: j.status,
-      docsTotal: j.total,
-      docsProcessed: j.processed,
-      docsPassed: j.passed,
-      docsFailed: j.failed,
-      avgLatencyMs: j.latency,
-      totalCostUsd: j.cost,
-      startedAt,
-      completedAt,
-    });
-  }
+  const jobsInserted = await db
+    .insert(schema.jobs)
+    .values(
+      jobData.map((j) => {
+        const now = new Date();
+        const startedAt = new Date(now.getTime() - j.ago * 60 * 1000);
+        const completedAt = j.status === "running" ? null : new Date(startedAt.getTime() + (j.latency ?? 0));
+        return {
+          tenantId: TENANT,
+          slug: j.slug,
+          pipelineId: j.pipeline,
+          triggerType: j.trigger,
+          status: j.status,
+          docsTotal: j.total,
+          docsProcessed: j.processed,
+          docsPassed: j.passed,
+          docsFailed: j.failed,
+          docsReviewing: j.reviewing ?? 0,
+          avgLatencyMs: j.latency,
+          totalCostUsd: j.cost,
+          startedAt,
+          completedAt,
+        };
+      }),
+    )
+    .returning({ id: schema.jobs.id, slug: schema.jobs.slug });
   console.log(`  ${jobData.length} jobs created`);
+
+  // ── Documents — seed a handful per job so the detail page has real rows ──
+  const jobBySlug = new Map(jobsInserted.map((r) => [r.slug, r.id]));
+  const pipelineSchemaMap = new Map([
+    [invoicePipeline!.id, { schemaId: invoiceSchema!.id, versionId: invoiceVersion!.id }],
+    [claimsPipeline!.id, { schemaId: claimSchema!.id, versionId: claimVersion!.id }],
+    [receiptPipeline!.id, { schemaId: receiptSchema!.id, versionId: receiptVersion!.id }],
+  ]);
+
+  type DocSeed = { job: string; pipelineId: string; filename: string; status: string; confidence?: string | null; durationMs?: number | null; validation?: unknown; extraction?: unknown };
+  const docSeeds: DocSeed[] = [];
+
+  function rand(min: number, max: number) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function conf(lo: number, hi: number) { return (lo + Math.random() * (hi - lo)).toFixed(4); }
+
+  // Running job — 48 processed so far, 1 in review
+  pushDocs("job-20260420-1430", invoicePipeline!.id, "invoice", 8, "delivered", { lo: 0.96, hi: 0.99 }, 1);
+  pushDocs("job-20260420-1430", invoicePipeline!.id, "invoice", 1, "review", { lo: 0.72, hi: 0.82 }, 47, { reason: "low_confidence" });
+  pushDocs("job-20260420-1430", invoicePipeline!.id, "invoice", 3, "extracting", null, 49);
+
+  // Completed clean — show top 10
+  pushDocs("job-20260420-0900", invoicePipeline!.id, "invoice", 10, "delivered", { lo: 0.97, hi: 0.99 }, 1);
+
+  // Completed with one review
+  pushDocs("job-20260420-0600", invoicePipeline!.id, "invoice", 1, "review", { lo: 0.70, hi: 0.78 }, 87, { reason: "low_confidence" });
+  pushDocs("job-20260420-0600", invoicePipeline!.id, "invoice", 9, "delivered", { lo: 0.96, hi: 0.99 }, 1);
+
+  // Small ad-hoc run
+  pushDocs("job-20260419-2144", invoicePipeline!.id, "invoice", 5, "delivered", { lo: 0.98, hi: 0.99 }, 1);
+
+  // Cancelled — 14 delivered
+  pushDocs("job-20260419-1800", claimsPipeline!.id, "claim", 6, "delivered", { lo: 0.94, hi: 0.99 }, 1);
+
+  // Failed job — 3 failed with different error causes
+  pushDocs("job-20260419-1200", claimsPipeline!.id, "claim", 1, "failed", null, 12, { error_cause: "chunker_error", message: "Document could not be chunked" });
+  pushDocs("job-20260419-1200", claimsPipeline!.id, "claim", 1, "failed", null, 19, { error_cause: "validation_failed", message: "Required field 'policy_number' missing" });
+  pushDocs("job-20260419-1200", claimsPipeline!.id, "claim", 1, "failed", null, 25, { error_cause: "retries_exhausted", message: "Model timed out after 3 attempts" });
+  pushDocs("job-20260419-1200", claimsPipeline!.id, "claim", 10, "delivered", { lo: 0.93, hi: 0.98 }, 1);
+
+  // Older completes — 6 docs each so the detail page has content
+  pushDocs("job-20260418-1442", invoicePipeline!.id, "invoice", 6, "delivered", { lo: 0.96, hi: 0.99 }, 1);
+  pushDocs("job-20260418-1200", invoicePipeline!.id, "invoice", 1, "review", { lo: 0.72, hi: 0.82 }, 1, { reason: "mandatory_field_review" });
+  pushDocs("job-20260418-1200", invoicePipeline!.id, "invoice", 5, "delivered", { lo: 0.96, hi: 0.99 }, 2);
+  pushDocs("job-20260418-0900", receiptPipeline!.id, "receipt", 6, "delivered", { lo: 0.95, hi: 0.99 }, 1);
+  pushDocs("job-20260417-1442", invoicePipeline!.id, "invoice", 6, "delivered", { lo: 0.97, hi: 0.99 }, 1);
+
+  function pushDocs(
+    jobSlug: string,
+    pipelineId: string,
+    prefix: string,
+    count: number,
+    status: string,
+    confRange: { lo: number; hi: number } | null,
+    startIndex: number,
+    validation?: unknown,
+  ) {
+    for (let i = 0; i < count; i++) {
+      const idx = startIndex + i;
+      docSeeds.push({
+        job: jobSlug,
+        pipelineId,
+        filename: `${prefix}-${idx.toString().padStart(4, "0")}.pdf`,
+        status,
+        confidence: confRange ? conf(confRange.lo, confRange.hi) : null,
+        durationMs: status === "extracting" ? null : rand(2000, 4500),
+        validation,
+      });
+    }
+  }
+
+  const docRows = docSeeds.map((d) => {
+    const mapping = pipelineSchemaMap.get(d.pipelineId);
+    const jobId = jobBySlug.get(d.job);
+    if (!jobId || !mapping) return null;
+    const contentHash = crypto
+      .createHash("sha256")
+      .update(`${d.job}:${d.filename}`)
+      .digest("hex");
+    return {
+      tenantId: TENANT,
+      jobId,
+      filename: d.filename,
+      storageKey: `seed/${d.job}/${d.filename}`,
+      fileSize: 150_000,
+      mimeType: "application/pdf",
+      contentHash,
+      pageCount: 1,
+      schemaId: mapping.schemaId,
+      schemaVersionId: mapping.versionId,
+      status: d.status,
+      confidence: d.confidence,
+      durationMs: d.durationMs ?? null,
+      validationJson: d.validation ?? null,
+      extractionJson: null,
+      startedAt: d.status === "extracting" ? null : new Date(Date.now() - rand(60_000, 3_600_000)),
+      completedAt: d.status === "extracting" ? null : new Date(Date.now() - rand(1000, 60_000)),
+    };
+  }).filter((r): r is NonNullable<typeof r> => r !== null);
+
+  if (docRows.length > 0) {
+    await db.insert(schema.documents).values(docRows);
+  }
+  console.log(`  ${docRows.length} documents created`);
 
   console.log("Done.");
   process.exit(0);

@@ -86,12 +86,38 @@ export interface SchemaRow {
 export interface JobRow {
   slug: string;
   status: string;
+  triggerType: string;
   docsTotal: number;
   docsProcessed: number;
   docsPassed: number;
   docsFailed: number;
+  docsReviewing: number;
   avgLatencyMs: number | null;
   totalCostUsd: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  pipelineSlug: string | null;
+  pipelineName: string | null;
+  schemaName: string | null;
+  schemaVersion: number | null;
+}
+
+export interface JobDetail extends JobRow {
+  id: string;
+  schemaSlug: string | null;
+}
+
+export interface JobDocument {
+  id: string;
+  filename: string;
+  status: string;
+  confidence: string | null;
+  durationMs: number | null;
+  costUsd: string | null;
+  pageCount: number | null;
+  extractionJson: unknown;
+  validationJson: unknown;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -108,14 +134,17 @@ export const schemas = {
 };
 
 export const jobs = {
-  list: (params?: { status?: string; limit?: number }) => {
+  list: (params?: { status?: string; pipeline?: string; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
+    if (params?.pipeline) qs.set("pipeline", params.pipeline);
     if (params?.limit) qs.set("limit", String(params.limit));
     const q = qs.toString();
     return api.get<{ data: JobRow[] }>(`/api/jobs${q ? `?${q}` : ""}`).then((r) => r.data);
   },
-  get: (slug: string) => api.get<JobRow>(`/api/jobs/${slug}`),
+  get: (slug: string) => api.get<JobDetail>(`/api/jobs/${slug}`),
+  documents: (slug: string) =>
+    api.get<{ data: JobDocument[] }>(`/api/jobs/${slug}/documents`).then((r) => r.data),
 };
 
 export interface ProjectRow {
