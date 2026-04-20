@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -25,19 +25,35 @@ from sse_starlette.sse import EventSourceResponse
 
 app = FastAPI(title="Koji Parse Service", version="0.1.0")
 
-# Two converters: one with OCR, one without
-_converter_ocr: DocumentConverter | None = None
+# Two converters cover the cases we actually want:
+#   - skip_ocr=True  → digital PDFs whose text layer we trust
+#   - skip_ocr=False → scanned PDFs and images, OCR'd with
+#                      force_full_page_ocr=True so docling actually
+#                      OCRs the entire page instead of only the small
+#                      bitmap regions it identifies as "image content"
+#                      (which produced near-empty markdown for fully
+#                      scanned docs and made downstream extraction
+#                      return all-null fields).
+_converter_full_ocr: DocumentConverter | None = None
 _converter_no_ocr: DocumentConverter | None = None
 
 
 def get_converter(ocr: bool = True) -> DocumentConverter:
     """Lazy-load converters on first use."""
-    global _converter_ocr, _converter_no_ocr
+    global _converter_full_ocr, _converter_no_ocr
 
     if ocr:
-        if _converter_ocr is None:
-            _converter_ocr = DocumentConverter()
-        return _converter_ocr
+        if _converter_full_ocr is None:
+            opts = PdfPipelineOptions(
+                do_ocr=True,
+                ocr_options=EasyOcrOptions(force_full_page_ocr=True),
+            )
+            _converter_full_ocr = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                },
+            )
+        return _converter_full_ocr
     else:
         if _converter_no_ocr is None:
             opts = PdfPipelineOptions(do_ocr=False)
