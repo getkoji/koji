@@ -23,9 +23,25 @@ function MetaDot() {
   return <span className="text-cream-4 text-[8px]">●</span>;
 }
 
-function GhostButton({ children }: { children: React.ReactNode }) {
+function GhostButton({
+  children,
+  onClick,
+  disabled,
+  title,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
-    <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+    >
       {children}
     </button>
   );
@@ -49,6 +65,31 @@ export default function TraceViewPage() {
 
   // Clamp selected index to stages length so a short trace doesn't blow up.
   const [selectedStage, setSelectedStage] = useState(0);
+  const [copiedTrace, setCopiedTrace] = useState(false);
+
+  const handleCopyTrace = useCallback(() => {
+    const id = data?.trace?.traceExternalId;
+    if (!id) return;
+    navigator.clipboard?.writeText(id);
+    setCopiedTrace(true);
+    setTimeout(() => setCopiedTrace(false), 1500);
+  }, [data?.trace?.traceExternalId]);
+
+  const handleDownloadJson = useCallback(() => {
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const baseName = data.filename.replace(/\.[^.]+$/, "") || data.documentId;
+    a.download = `${baseName}-trace.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [data]);
   const clampedStage = Math.min(selectedStage, Math.max(0, stages.length - 1));
 
   if (loading && !data) {
@@ -137,11 +178,37 @@ export default function TraceViewPage() {
         }
         actions={
           <>
-            <GhostButton>Copy trace ID</GhostButton>
-            <GhostButton>Download JSON</GhostButton>
-            <button className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
-              Open doc ↗
-            </button>
+            <GhostButton
+              onClick={handleCopyTrace}
+              disabled={!data.trace?.traceExternalId}
+              title={
+                data.trace?.traceExternalId
+                  ? "Copy the trace's external ID to the clipboard"
+                  : "No trace recorded for this document"
+              }
+            >
+              {copiedTrace ? "Copied" : "Copy trace ID"}
+            </GhostButton>
+            <GhostButton onClick={handleDownloadJson}>Download JSON</GhostButton>
+            {data.documentPreviewUrl ? (
+              <a
+                href={data.documentPreviewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+              >
+                Open doc ↗
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled
+                title="Document file isn't available in storage"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream opacity-40 cursor-not-allowed"
+              >
+                Open doc ↗
+              </button>
+            )}
           </>
         }
       />

@@ -18,6 +18,7 @@ export function StageDetail({
   fields: TraceField[];
 }) {
   const isExtract = stage.name === "Extract";
+  const summary = extractSummary(stage);
 
   return (
     <section className="flex flex-col border border-border rounded-sm overflow-hidden bg-cream">
@@ -37,10 +38,10 @@ export function StageDetail({
           </div>
           <div className="font-mono text-[10.5px] text-ink-3 flex items-center gap-2">
             <span>{stage.durationMs.toLocaleString()} ms</span>
-            {isExtract && (
+            {isExtract && summary.model && (
               <>
                 <span className="text-cream-4 text-[8px]">●</span>
-                <span>gpt-4o-mini</span>
+                <span>{summary.model}</span>
               </>
             )}
           </div>
@@ -63,14 +64,15 @@ export function StageDetail({
         </div>
       </header>
 
-      {/* Extract-specific stats row */}
+      {/* Extract-specific stats row — only what's actually persisted. Chunks /
+          Tokens / Cost aren't saved anywhere yet; Model + Fields + Duration
+          come straight from the trace_stages row's summary_json. */}
       {isExtract && (
-        <div className="grid grid-cols-4 gap-px bg-border border-b border-border">
+        <div className="grid grid-cols-3 gap-px bg-border border-b border-border">
           {[
-            { k: "Model", v: "gpt-4o-mini" },
-            { k: "Chunks", v: "4" },
-            { k: "Tokens", v: "3,240 in · 240 out" },
-            { k: "Cost", v: "$0.00095" },
+            { k: "Model", v: summary.model ?? "—" },
+            { k: "Fields", v: summary.fields !== null ? String(summary.fields) : "—" },
+            { k: "Duration", v: `${stage.durationMs.toLocaleString()} ms` },
           ].map((s) => (
             <div key={s.k} className="bg-cream px-3.5 py-2.5 flex flex-col gap-0.5">
               <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">
@@ -84,28 +86,19 @@ export function StageDetail({
 
       {/* Body */}
       {isExtract ? <ExtractBody fields={fields} /> : <GenericBody stage={stage} />}
-
-      {/* Raw I/O */}
-      {isExtract && (
-        <div className="border-t border-border bg-cream">
-          {[
-            { label: "Show raw prompt", sub: "3,240 tokens · 4 chunks" },
-            { label: "Show raw response", sub: "240 tokens · JSON" },
-            { label: "Show request headers", sub: "openai-api-version, model, temperature: 0" },
-          ].map((r) => (
-            <button
-              key={r.label}
-              className="flex items-center gap-2 w-full px-4 py-2 border-b border-border last:border-none font-mono text-[11px] text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors text-left"
-            >
-              <span className="text-ink-4 text-[9px] w-2.5">▸</span>
-              <span className="text-ink font-medium">{r.label}</span>
-              <span className="ml-auto text-ink-4 text-[10px]">{r.sub}</span>
-            </button>
-          ))}
-        </div>
-      )}
     </section>
   );
+}
+
+function extractSummary(stage: TraceStage): { model: string | null; fields: number | null } {
+  // TraceStage.meta is a display string assembled in page-level mapStages from
+  // summary_json. Parse the two values we surface in the stats row. If the
+  // format shifts we gracefully fall back to nulls and render "—".
+  const meta = stage.meta ?? "";
+  const model = meta.match(/model:\s*([^\s·]+)/i)?.[1] ?? null;
+  const fieldsRaw = meta.match(/fields:\s*(\d+)/i)?.[1];
+  const fields = fieldsRaw ? Number.parseInt(fieldsRaw, 10) : null;
+  return { model, fields };
 }
 
 function ExtractBody({ fields }: { fields: TraceField[] }) {
@@ -163,7 +156,7 @@ function FieldRow({ field }: { field: TraceField }) {
 function GenericBody({ stage }: { stage: TraceStage }) {
   return (
     <div className="flex-1 flex items-center justify-center p-8 text-ink-4 font-mono text-[11px]">
-      Stage detail for "{stage.name}" — {stage.durationMs}ms, {stage.status}
+      Stage detail for &ldquo;{stage.name}&rdquo; — {stage.durationMs}ms, {stage.status}
     </div>
   );
 }

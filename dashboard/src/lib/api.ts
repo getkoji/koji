@@ -157,6 +157,8 @@ export interface TraceStageRow {
 export interface DocumentDetail {
   documentId: string;
   filename: string;
+  storageKey: string | null;
+  mimeType: string | null;
   status: string;
   confidence: string | null;
   durationMs: number | null;
@@ -174,6 +176,7 @@ export interface DocumentDetail {
   schemaVersion: number | null;
   trace: TraceSummary | null;
   stages: TraceStageRow[];
+  documentPreviewUrl: string | null;
 }
 
 // ── Overview ──
