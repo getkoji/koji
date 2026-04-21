@@ -17,6 +17,7 @@
  */
 
 import { and, eq, sql } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -127,14 +128,46 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   }
 
   // ── Resolve markdown via parse_cache, falling back to live parse ─────────
+  //
+  // Each step below records a trace_stages row so the trace view can show
+  // the real timeline instead of "No trace stages recorded". On failure we
+  // still flush the stages we got to — the trace is more useful with a
+  // partial-but-honest timeline than with nothing.
+  const recorder = new TraceRecorder();
+
   let extractResult: ExtractResult;
   const extractStart = Date.now();
   try {
-    const markdown = await getOrParse(db, storage, tenantId, document);
-    extractResult = await callExtract(markdown, schemaVersion.yamlSource);
+    const markdown = await recorder.run(
+      "parse",
+      async () => {
+        const md = await getOrParse(db, storage, tenantId, document);
+        return { value: md, summary: { markdown_chars: md.length } };
+      },
+    );
+    extractResult = await recorder.run(
+      "extract",
+      async () => {
+        const res = await callExtract(markdown, schemaVersion.yamlSource);
+        return {
+          value: res,
+          summary: {
+            model: res.model ?? "unknown",
+            fields: Object.keys(
+              (res.extracted ?? {}) as Record<string, unknown>,
+            ).length,
+            tokens: res.elapsed_ms ?? null,
+          },
+        };
+      },
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await markDocFailed(db, tenantId, documentId, jobId, `Extraction failed: ${msg}`);
+    // Best-effort: persist the partial trace so users can see exactly where
+    // the run died. Swallow errors here — extraction failure is the thing
+    // that matters.
+    await recorder.flush(db, tenantId, documentId, jobId, extractStart, "failed").catch(() => {});
     // Mark the ingestion failed too so re-posts the same file surface an
     // actionable error instead of silently short-circuiting on the idempotency
     // check. Re-ingestion (a fresh POST) is the intended retry path.
@@ -145,7 +178,8 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   }
   const extractDurationMs = Date.now() - extractStart;
 
-  // ── Confidence gate ───────────────────────────────────────────────────────
+  // ── Confidence gate (recorded as the 'validate' stage) ──────────────────
+  const validateStart = Date.now();
   const confidence = numberOr(extractResult.confidence, null);
   const fieldScores = extractResult.confidence_scores ?? {};
   const threshold = Number(pipeline.reviewThreshold);
@@ -154,6 +188,13 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const routeToReview =
     lowField !== null ||
     (confidence !== null && Number.isFinite(threshold) && confidence < threshold);
+
+  recorder.record("validate", Date.now() - validateStart, routeToReview ? "warn" : "ok", {
+    threshold,
+    doc_confidence: confidence,
+    route_to_review: routeToReview,
+    ...(lowField ? { low_field: lowField.name, low_confidence: lowField.confidence } : {}),
+  });
 
   const now = new Date();
   const docConfidence = confidence === null ? null : confidence.toFixed(4);
@@ -268,6 +309,17 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       .set({ lastRunAt: now })
       .where(eq(schema.pipelines.id, pipeline.id)),
   );
+
+  // Flush the trace + stages so the trace view has a real timeline. Best
+  // effort — a trace-write failure shouldn't un-do the successful delivery.
+  await recorder
+    .flush(db, tenantId, documentId, jobId, extractStart, routeToReview ? "review" : "ok")
+    .catch((err) =>
+      console.warn(
+        "[ingestion.process] trace flush failed:",
+        err instanceof Error ? err.message : err,
+      ),
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -461,6 +513,126 @@ interface ParseResponse {
   markdown: string;
   pages?: number;
   ocr_skipped?: boolean;
+}
+
+/**
+ * Captures each motor stage's timing + summary so the trace view has a real
+ * timeline. Stages are held in memory during processing, then flushed to the
+ * `traces` + `trace_stages` tables on terminal transition (delivered / review
+ * / failed). Writing only at the end means a single round trip and keeps the
+ * hot path out of the DB during parse/extract.
+ */
+interface StageRecord {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  durationMs: number;
+  summaryJson: Record<string, unknown>;
+  errorMessage?: string;
+}
+
+class TraceRecorder {
+  private stages: StageRecord[] = [];
+
+  /**
+   * Run an async step, time it, and record a stage row. On success the
+   * caller returns `{ value, summary }` — the summary ends up in
+   * trace_stages.summary_json. On throw we record a fail stage and
+   * re-raise so the caller's catch block can deal with the error.
+   */
+  async run<T>(
+    name: string,
+    fn: () => Promise<{ value: T; summary: Record<string, unknown> }>,
+  ): Promise<T> {
+    const start = Date.now();
+    try {
+      const { value, summary } = await fn();
+      this.stages.push({
+        name,
+        status: "ok",
+        durationMs: Date.now() - start,
+        summaryJson: summary,
+      });
+      return value;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.stages.push({
+        name,
+        status: "fail",
+        durationMs: Date.now() - start,
+        summaryJson: {},
+        errorMessage: msg,
+      });
+      throw err;
+    }
+  }
+
+  /** Record a stage whose work was already done inline — e.g. the confidence gate. */
+  record(
+    name: string,
+    durationMs: number,
+    status: "ok" | "warn" | "fail",
+    summaryJson: Record<string, unknown>,
+    errorMessage?: string,
+  ): void {
+    this.stages.push({ name, status, durationMs, summaryJson, errorMessage });
+  }
+
+  /**
+   * Flush to DB: insert a `traces` row, then all buffered `trace_stages`
+   * with laid-out startedAt/completedAt timestamps anchored at `originMs`.
+   */
+  async flush(
+    db: Db,
+    tenantId: string,
+    documentId: string,
+    jobId: string,
+    originMs: number,
+    traceStatus: "ok" | "review" | "failed",
+  ): Promise<void> {
+    if (this.stages.length === 0) return;
+
+    const startedAt = new Date(originMs);
+    const totalMs = this.stages.reduce((sum, s) => sum + s.durationMs, 0);
+    const completedAt = new Date(originMs + totalMs);
+
+    const [trace] = await withRLS(db, tenantId, (tx) =>
+      tx
+        .insert(schema.traces)
+        .values({
+          tenantId,
+          documentId,
+          jobId,
+          traceExternalId: `trc_${randomBytes(8).toString("hex")}`,
+          status: traceStatus,
+          totalDurationMs: totalMs,
+          startedAt,
+          completedAt,
+        })
+        .returning({ id: schema.traces.id }),
+    );
+    if (!trace) return;
+
+    let cursor = originMs;
+    const rows = this.stages.map((s, i) => {
+      const stageStart = new Date(cursor);
+      cursor += s.durationMs;
+      const stageEnd = new Date(cursor);
+      return {
+        tenantId,
+        traceId: trace.id,
+        stageName: s.name,
+        stageOrder: i,
+        status: s.status,
+        startedAt: stageStart,
+        completedAt: stageEnd,
+        durationMs: s.durationMs,
+        summaryJson: s.summaryJson,
+        errorMessage: s.errorMessage ?? null,
+      };
+    });
+
+    await withRLS(db, tenantId, (tx) => tx.insert(schema.traceStages).values(rows));
+  }
 }
 
 async function callParse(
