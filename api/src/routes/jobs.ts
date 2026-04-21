@@ -162,6 +162,7 @@ jobs.get("/:slug/documents", requires("job:read"), async (c) => {
  */
 jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
   const db = c.get("db");
+  const storage = c.get("storage");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const docId = c.req.param("docId")!;
@@ -171,6 +172,8 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
       .select({
         documentId: schema.documents.id,
         filename: schema.documents.filename,
+        storageKey: schema.documents.storageKey,
+        mimeType: schema.documents.mimeType,
         status: schema.documents.status,
         confidence: schema.documents.confidence,
         durationMs: schema.documents.durationMs,
@@ -238,9 +241,22 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
       )
     : [];
 
+  // Sign a short-lived URL for "Open doc" if we have the file in storage.
+  // Best-effort — old rows (or seed rows pointing at keys that never got
+  // uploaded) will return null and the UI will just disable the button.
+  let documentPreviewUrl: string | null = null;
+  if (row.storageKey) {
+    try {
+      documentPreviewUrl = await storage.getSignedUrl(row.storageKey, 3600);
+    } catch {
+      documentPreviewUrl = null;
+    }
+  }
+
   return c.json({
     ...row,
     trace: trace ?? null,
     stages,
+    documentPreviewUrl,
   });
 });
