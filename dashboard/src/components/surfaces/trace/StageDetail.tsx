@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { jobs as jobsApi } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import type { TraceField, TraceStage } from "@/lib/types";
@@ -14,6 +16,8 @@ export function StageDetail({
   fields,
   jobSlug,
   documentId,
+  documentPreviewUrl,
+  documentMimeType,
 }: {
   stage: TraceStage;
   stageIndex: number;
@@ -23,6 +27,8 @@ export function StageDetail({
   fields: TraceField[];
   jobSlug: string;
   documentId: string;
+  documentPreviewUrl: string | null;
+  documentMimeType: string | null;
 }) {
   const isExtract = stage.name === "Extract";
   const isParse = stage.name === "Parse";
@@ -96,7 +102,12 @@ export function StageDetail({
       {isExtract ? (
         <ExtractBody fields={fields} />
       ) : isParse ? (
-        <ParseBody jobSlug={jobSlug} documentId={documentId} />
+        <ParseBody
+          jobSlug={jobSlug}
+          documentId={documentId}
+          documentPreviewUrl={documentPreviewUrl}
+          documentMimeType={documentMimeType}
+        />
       ) : (
         <GenericBody stage={stage} />
       )}
@@ -167,12 +178,28 @@ function FieldRow({ field }: { field: TraceField }) {
   );
 }
 
-function ParseBody({ jobSlug, documentId }: { jobSlug: string; documentId: string }) {
+function ParseBody({
+  jobSlug,
+  documentId,
+  documentPreviewUrl,
+  documentMimeType,
+}: {
+  jobSlug: string;
+  documentId: string;
+  documentPreviewUrl: string | null;
+  documentMimeType: string | null;
+}) {
   const { data, loading, error } = useApi(
     useCallback(() => jobsApi.documentMarkdown(jobSlug, documentId), [jobSlug, documentId]),
   );
+  const hasOriginal = Boolean(documentPreviewUrl);
+  const [view, setView] = useState<"original" | "rendered" | "raw">(
+    hasOriginal ? "original" : "rendered",
+  );
 
   const isMissing = error?.message.includes("No cached markdown") || error?.message.includes("not found");
+  const isPdf = (documentMimeType ?? "").toLowerCase().includes("pdf");
+  const isImage = (documentMimeType ?? "").toLowerCase().startsWith("image/");
 
   return (
     <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[420px]">
@@ -192,35 +219,113 @@ function ParseBody({ jobSlug, documentId }: { jobSlug: string; documentId: strin
               )}
               <span className="text-cream-4 text-[8px]">●</span>
               <span>{data.ocrSkipped ? "no OCR" : "OCR"}</span>
+              <span className="text-cream-4 text-[8px]">●</span>
             </>
+          )}
+          {(data || hasOriginal) && (
+            <span className="inline-flex rounded-sm border border-border overflow-hidden">
+              {hasOriginal && (
+                <button
+                  type="button"
+                  onClick={() => setView("original")}
+                  className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    view === "original"
+                      ? "bg-ink text-cream"
+                      : "bg-cream text-ink-3 hover:text-ink"
+                  }`}
+                >
+                  original
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setView("rendered")}
+                disabled={!data || data.markdown.length === 0}
+                className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                  hasOriginal ? "border-l border-border" : ""
+                } ${
+                  view === "rendered"
+                    ? "bg-ink text-cream"
+                    : "bg-cream text-ink-3 hover:text-ink"
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                rendered
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("raw")}
+                disabled={!data || data.markdown.length === 0}
+                className={`px-2 py-0.5 text-[10px] font-medium transition-colors border-l border-border ${
+                  view === "raw"
+                    ? "bg-ink text-cream"
+                    : "bg-cream text-ink-3 hover:text-ink"
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                raw
+              </button>
+            </span>
           )}
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {loading && !data && (
+        {view === "original" && hasOriginal && isPdf && (
+          <iframe
+            src={documentPreviewUrl!}
+            title="Original document"
+            className="w-full h-full min-h-[600px] border-0 bg-cream-2"
+          />
+        )}
+        {view === "original" && hasOriginal && isImage && (
+          <div className="p-4 flex items-start justify-center bg-cream-2 min-h-full">
+            <img
+              src={documentPreviewUrl!}
+              alt="Original document"
+              className="max-w-full h-auto border border-border"
+            />
+          </div>
+        )}
+        {view === "original" && hasOriginal && !isPdf && !isImage && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            Inline preview not supported for {documentMimeType ?? "this file type"}.{" "}
+            <a
+              href={documentPreviewUrl!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-vermillion-2 underline"
+            >
+              Open in a new tab ↗
+            </a>
+          </div>
+        )}
+        {loading && !data && view !== "original" && (
           <div className="p-8 text-center font-mono text-[11px] text-ink-4">
             Loading markdown…
           </div>
         )}
-        {error && isMissing && (
+        {error && isMissing && view !== "original" && (
           <div className="p-8 text-center font-mono text-[11px] text-ink-4">
             No cached markdown for this document — it pre-dates parse_cache writes.
           </div>
         )}
-        {error && !isMissing && (
+        {error && !isMissing && view !== "original" && (
           <div className="p-8 text-center font-mono text-[11px] text-vermillion-2">
             {error.message}
           </div>
         )}
-        {data && data.markdown.length === 0 && (
+        {data && data.markdown.length === 0 && view !== "original" && (
           <div className="p-8 text-center font-mono text-[11px] text-ink-4">
             Parse produced an empty markdown document.
           </div>
         )}
-        {data && data.markdown.length > 0 && (
+        {data && data.markdown.length > 0 && view === "raw" && (
           <pre className="font-mono text-[11.5px] text-ink-2 leading-[1.55] px-4 py-3 whitespace-pre-wrap break-words m-0">
             {data.markdown}
           </pre>
+        )}
+        {data && data.markdown.length > 0 && view === "rendered" && (
+          <div className="prose-parse px-4 py-3">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.markdown}</ReactMarkdown>
+          </div>
         )}
       </div>
     </div>
