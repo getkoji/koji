@@ -257,6 +257,13 @@ export const jobs = {
     api.get<{ data: JobDocument[] }>(`/api/jobs/${slug}/documents`).then((r) => r.data),
   document: (jobSlug: string, docId: string) =>
     api.get<DocumentDetail>(`/api/jobs/${jobSlug}/documents/${docId}`),
+  documentMarkdown: (jobSlug: string, docId: string) =>
+    api.get<{
+      markdown: string;
+      pages: number | null;
+      ocrSkipped: boolean;
+      cachedAt: string;
+    }>(`/api/jobs/${jobSlug}/documents/${docId}/markdown`),
 };
 
 // ── Review queue ──
