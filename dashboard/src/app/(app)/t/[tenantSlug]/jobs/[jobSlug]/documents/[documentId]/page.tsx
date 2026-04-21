@@ -284,6 +284,8 @@ export default function TraceViewPage() {
         fields={fields}
         jobSlug={jobSlug}
         documentId={documentId}
+        documentPreviewUrl={data.documentPreviewUrl}
+        documentMimeType={data.mimeType}
       />
     </DetailLayout>
   );

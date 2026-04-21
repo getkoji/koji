@@ -67,3 +67,93 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Rendered-markdown view for parse output. Matches the editorial feel of
+   the rest of the trace chrome (body font, ink tones, soft borders) so the
+   rendered view reads as "this is the document" rather than
+   "this is a React component". */
+.prose-parse {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-width: none;
+}
+.prose-parse h1,
+.prose-parse h2,
+.prose-parse h3,
+.prose-parse h4,
+.prose-parse h5,
+.prose-parse h6 {
+  font-family: var(--font-display), serif;
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin: 1.1em 0 0.45em;
+  font-variation-settings: "opsz" 72, "SOFT" 40;
+}
+.prose-parse h1 { font-size: 18px; }
+.prose-parse h2 { font-size: 15.5px; }
+.prose-parse h3 { font-size: 13.5px; }
+.prose-parse h4,
+.prose-parse h5,
+.prose-parse h6 { font-size: 12.5px; }
+.prose-parse > :first-child { margin-top: 0; }
+.prose-parse p { margin: 0.55em 0; }
+.prose-parse ul,
+.prose-parse ol { margin: 0.55em 0; padding-left: 1.25em; }
+.prose-parse li { margin: 0.2em 0; }
+.prose-parse ul { list-style: disc; }
+.prose-parse ol { list-style: decimal; }
+.prose-parse strong { color: var(--ink); font-weight: 600; }
+.prose-parse em { font-style: italic; }
+.prose-parse a { color: var(--vermillion-2); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.prose-parse hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.prose-parse blockquote {
+  border-left: 2px solid var(--border-strong);
+  margin: 0.7em 0;
+  padding: 0.1em 0 0.1em 0.75em;
+  color: var(--ink-3);
+}
+.prose-parse code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  background: var(--cream-2);
+  padding: 0.05em 0.3em;
+  border-radius: 2px;
+}
+.prose-parse pre {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  background: var(--cream-2);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.65em 0.8em;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.7em 0;
+}
+.prose-parse pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+.prose-parse table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.7em 0;
+  font-size: 11.5px;
+}
+.prose-parse th,
+.prose-parse td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.6em;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-parse th {
+  background: var(--cream-2);
+  font-weight: 600;
+  color: var(--ink);
+}
+.prose-parse img { max-width: 100%; height: auto; }
