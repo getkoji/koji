@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, desc, asc } from "drizzle-orm";
+import { and, eq, desc, asc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
@@ -150,4 +150,97 @@ jobs.get("/:slug/documents", requires("job:read"), async (c) => {
   );
 
   return c.json({ data: docs });
+});
+
+/**
+ * GET /api/jobs/:slug/documents/:docId — single document with trace + stages.
+ *
+ * Powers the trace-view page. Returns the document, its job, the pipeline's
+ * active schema (for the "Invoice v13"-style badge in the header), the trace
+ * summary row, and every trace_stages row ordered by stage_order. All in one
+ * round trip so the page renders without chained fetches.
+ */
+jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const [row] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        documentId: schema.documents.id,
+        filename: schema.documents.filename,
+        status: schema.documents.status,
+        confidence: schema.documents.confidence,
+        durationMs: schema.documents.durationMs,
+        costUsd: schema.documents.costUsd,
+        pageCount: schema.documents.pageCount,
+        extractionJson: schema.documents.extractionJson,
+        validationJson: schema.documents.validationJson,
+        startedAt: schema.documents.startedAt,
+        completedAt: schema.documents.completedAt,
+        createdAt: schema.documents.createdAt,
+        jobId: schema.jobs.id,
+        jobSlug: schema.jobs.slug,
+        schemaSlug: schema.schemas.slug,
+        schemaName: schema.schemas.displayName,
+        schemaVersion: schema.schemaVersions.versionNumber,
+      })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .leftJoin(schema.schemas, eq(schema.schemas.id, schema.documents.schemaId))
+      .leftJoin(
+        schema.schemaVersions,
+        eq(schema.schemaVersions.id, schema.documents.schemaVersionId),
+      )
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  );
+
+  if (!row) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const [trace] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.traces.id,
+        traceExternalId: schema.traces.traceExternalId,
+        status: schema.traces.status,
+        totalDurationMs: schema.traces.totalDurationMs,
+        startedAt: schema.traces.startedAt,
+        completedAt: schema.traces.completedAt,
+      })
+      .from(schema.traces)
+      .where(eq(schema.traces.documentId, docId))
+      .orderBy(desc(schema.traces.startedAt))
+      .limit(1),
+  );
+
+  const stages = trace
+    ? await withRLS(db, tenantId, (tx) =>
+        tx
+          .select({
+            id: schema.traceStages.id,
+            stageName: schema.traceStages.stageName,
+            stageOrder: schema.traceStages.stageOrder,
+            status: schema.traceStages.status,
+            startedAt: schema.traceStages.startedAt,
+            completedAt: schema.traceStages.completedAt,
+            durationMs: schema.traceStages.durationMs,
+            summaryJson: schema.traceStages.summaryJson,
+            errorMessage: schema.traceStages.errorMessage,
+          })
+          .from(schema.traceStages)
+          .where(eq(schema.traceStages.traceId, trace.id))
+          .orderBy(asc(schema.traceStages.stageOrder)),
+      )
+    : [];
+
+  return c.json({
+    ...row,
+    trace: trace ?? null,
+    stages,
+  });
 });

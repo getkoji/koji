@@ -424,13 +424,192 @@ fields:
   const docsInserted = docRows.length > 0
     ? await db.insert(schema.documents).values(docRows).returning({
         id: schema.documents.id,
+        jobId: schema.documents.jobId,
         filename: schema.documents.filename,
         status: schema.documents.status,
         schemaId: schema.documents.schemaId,
+        mimeType: schema.documents.mimeType,
         validationJson: schema.documents.validationJson,
+        startedAt: schema.documents.startedAt,
+        completedAt: schema.documents.completedAt,
       })
     : [];
   console.log(`  ${docsInserted.length} documents created`);
+
+  // ── Traces + trace_stages — one trace per terminal document, with 7
+  //    realistic stage rows. The trace view UI queries these; see
+  //    api/src/routes/jobs.ts GET /:slug/documents/:docId.
+  const traceRows: Array<{
+    tenantId: string;
+    documentId: string;
+    jobId: string;
+    traceExternalId: string;
+    status: string;
+    totalDurationMs: number;
+    startedAt: Date;
+    completedAt: Date;
+  }> = [];
+  const stageSeeds: Array<{ docIdx: number; stageName: string; stageOrder: number; status: string; durationMs: number; summaryJson: Record<string, unknown>; errorMessage: string | null }> = [];
+
+  function randHex(n: number): string {
+    return Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  }
+
+  for (let i = 0; i < docsInserted.length; i++) {
+    const d = docsInserted[i]!;
+    // Skip docs that are still in-flight — no trace yet.
+    if (d.status === "extracting" || d.status === "received") continue;
+
+    const startedAt = d.startedAt ?? new Date(Date.now() - rand(60_000, 3_600_000));
+    const completedAt = d.completedAt ?? new Date(startedAt.getTime() + rand(3000, 8000));
+    const totalMs = Math.max(100, completedAt.getTime() - startedAt.getTime());
+
+    const failedAtValidate = d.status === "failed"
+      && (d.validationJson as { error_cause?: string } | null)?.error_cause === "validation_failed";
+    const failedAtChunker = d.status === "failed"
+      && (d.validationJson as { error_cause?: string } | null)?.error_cause === "chunker_error";
+    const failedAtExtract = d.status === "failed" && !failedAtValidate && !failedAtChunker;
+    const routedToReview = d.status === "review";
+
+    // Distribute duration across stages: extract dominates.
+    const weights = { ingress: 0.01, integrity: 0.005, ocr: 0.01, classify: 0.03, extract: 0.88, normalize: 0.01, validate: 0.005 };
+    const dur = (pct: number) => Math.max(1, Math.round(totalMs * pct));
+
+    const stages: Array<{ name: string; pct: number; status: string; summary: Record<string, unknown>; err?: string }> = [
+      {
+        name: "ingress",
+        pct: weights.ingress,
+        status: "ok",
+        summary: { source: d.mimeType ?? "application/pdf", size_bytes: rand(40_000, 250_000) },
+      },
+      {
+        name: "integrity",
+        pct: weights.integrity,
+        status: "ok",
+        summary: { valid: true, pages: 1 },
+      },
+      {
+        name: "ocr_quality",
+        pct: weights.ocr,
+        status: "ok",
+        summary: { text_density: (0.85 + Math.random() * 0.14).toFixed(2), language: "en" },
+      },
+      {
+        name: "classify",
+        pct: weights.classify,
+        status: "ok",
+        summary: {
+          top_category: "invoice",
+          confidence: (0.85 + Math.random() * 0.14).toFixed(2),
+        },
+      },
+      {
+        name: "extract",
+        pct: weights.extract,
+        status: failedAtExtract || failedAtChunker ? "fail" : routedToReview ? "warn" : "ok",
+        summary: {
+          model: "gpt-4o-mini",
+          chunks: rand(2, 6),
+          fields: rand(4, 10),
+          tokens_in: rand(800, 4000),
+          tokens_out: rand(120, 450),
+        },
+        err: failedAtChunker
+          ? "Chunker could not segment document — page layout unparseable"
+          : failedAtExtract
+            ? "Model call failed: retries exhausted"
+            : undefined,
+      },
+      {
+        name: "normalize",
+        pct: weights.normalize,
+        status: failedAtExtract || failedAtChunker ? "fail" : "ok",
+        summary: { transforms_applied: rand(0, 4) },
+      },
+      {
+        name: "validate",
+        pct: weights.validate,
+        status: failedAtValidate ? "fail" : routedToReview ? "warn" : "ok",
+        summary: {
+          rules_passed: failedAtValidate ? rand(1, 3) : 4,
+          rules_total: 4,
+          ...(routedToReview ? { low_confidence_fields: 1 } : {}),
+        },
+        err: failedAtValidate
+          ? "Validation failed: required field missing"
+          : undefined,
+      },
+    ];
+
+    traceRows.push({
+      tenantId: TENANT,
+      documentId: d.id,
+      jobId: d.jobId,
+      traceExternalId: `trc_${randHex(16)}`,
+      status:
+        d.status === "failed" ? "failed" : routedToReview ? "review" : "ok",
+      totalDurationMs: totalMs,
+      startedAt,
+      completedAt,
+    });
+
+    for (let s = 0; s < stages.length; s++) {
+      const st = stages[s]!;
+      stageSeeds.push({
+        docIdx: i,
+        stageName: st.name,
+        stageOrder: s,
+        status: st.status,
+        durationMs: dur(st.pct),
+        summaryJson: st.summary,
+        errorMessage: st.err ?? null,
+      });
+    }
+  }
+
+  if (traceRows.length > 0) {
+    const insertedTraces = await db
+      .insert(schema.traces)
+      .values(traceRows)
+      .returning({ id: schema.traces.id, documentId: schema.traces.documentId, startedAt: schema.traces.startedAt });
+    console.log(`  ${insertedTraces.length} traces created`);
+
+    // Build a doc_id → trace row map so we can attach stages with correct
+    // startedAt/completedAt derived from the trace's startedAt.
+    const traceByDocId = new Map(insertedTraces.map((t) => [t.documentId, t]));
+
+    const stageRows = stageSeeds
+      .map((s) => {
+        const d = docsInserted[s.docIdx];
+        if (!d) return null;
+        const trace = traceByDocId.get(d.id);
+        if (!trace) return null;
+        // Lay stages end-to-end starting at the trace's startedAt.
+        const priorDurations = stageSeeds
+          .filter((o) => o.docIdx === s.docIdx && o.stageOrder < s.stageOrder)
+          .reduce((acc, o) => acc + o.durationMs, 0);
+        const startedAt = new Date(trace.startedAt.getTime() + priorDurations);
+        const completedAt = new Date(startedAt.getTime() + s.durationMs);
+        return {
+          tenantId: TENANT,
+          traceId: trace.id,
+          stageName: s.stageName,
+          stageOrder: s.stageOrder,
+          status: s.status,
+          startedAt,
+          completedAt,
+          durationMs: s.durationMs,
+          summaryJson: s.summaryJson,
+          errorMessage: s.errorMessage,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    if (stageRows.length > 0) {
+      await db.insert(schema.traceStages).values(stageRows);
+      console.log(`  ${stageRows.length} trace stages created`);
+    }
+  }
 
   // ── Review items — one per review document + a couple of completed ones ──
   // Every row is driven by a real document + schema. Never hardcoded in the UI;

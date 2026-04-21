@@ -133,6 +133,49 @@ export interface JobDocument {
   createdAt: string;
 }
 
+export interface TraceSummary {
+  id: string;
+  traceExternalId: string;
+  status: string;
+  totalDurationMs: number | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface TraceStageRow {
+  id: string;
+  stageName: string;
+  stageOrder: number;
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  summaryJson: Record<string, unknown> | null;
+  errorMessage: string | null;
+}
+
+export interface DocumentDetail {
+  documentId: string;
+  filename: string;
+  status: string;
+  confidence: string | null;
+  durationMs: number | null;
+  costUsd: string | null;
+  pageCount: number | null;
+  extractionJson: unknown;
+  validationJson: unknown;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  jobId: string;
+  jobSlug: string;
+  schemaSlug: string | null;
+  schemaName: string | null;
+  schemaVersion: number | null;
+  trace: TraceSummary | null;
+  stages: TraceStageRow[];
+}
+
 // ── Overview ──
 
 export interface OverviewMetrics {
@@ -209,6 +252,8 @@ export const jobs = {
   get: (slug: string) => api.get<JobDetail>(`/api/jobs/${slug}`),
   documents: (slug: string) =>
     api.get<{ data: JobDocument[] }>(`/api/jobs/${slug}/documents`).then((r) => r.data),
+  document: (jobSlug: string, docId: string) =>
+    api.get<DocumentDetail>(`/api/jobs/${jobSlug}/documents/${docId}`),
 };
 
 // ── Review queue ──
