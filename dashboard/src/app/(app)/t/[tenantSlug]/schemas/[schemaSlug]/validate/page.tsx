@@ -35,50 +35,6 @@ interface ValidateResult {
   failingDocs: Array<{ id: string; filename: string; failedFields: string[]; worstConfidence: number }>;
 }
 
-// ── Mock data ──
-
-const MOCK_RESULT: ValidateResult = {
-  overallAccuracy: 96.2,
-  prevAccuracy: 97.8,
-  docsTotal: 38,
-  docsPassed: 36,
-  fieldCount: 9,
-  durationMs: 45200,
-  costUsd: 1.216,
-  passed: true,
-  schemaVersion: 5,
-  ranAt: new Date(Date.now() - 120000).toISOString(),
-  regressions: [
-    {
-      name: "total_premium", accuracy: 95.2, prevAccuracy: 99.4, status: "regressed",
-      failingDocs: [
-        { id: "doc-1", filename: "POLI-25-070125.pdf", expected: "4,250.00", got: "500.00", confidence: 0.72 },
-        { id: "doc-2", filename: "invoice-0087.pdf", expected: "1,850.00", got: "1,805.00", confidence: 0.68 },
-      ],
-    },
-  ],
-  fields: [
-    { name: "total_premium", accuracy: 95.2, prevAccuracy: 99.4, status: "regressed", failingDocs: [
-      { id: "doc-1", filename: "POLI-25-070125.pdf", expected: "4,250.00", got: "500.00", confidence: 0.72 },
-      { id: "doc-2", filename: "invoice-0087.pdf", expected: "1,850.00", got: "1,805.00", confidence: 0.68 },
-    ]},
-    { name: "general_aggregate", accuracy: 94.3, prevAccuracy: 96.8, status: "regressed", failingDocs: [
-      { id: "doc-2", filename: "invoice-0087.pdf", expected: "2,000,000", got: "1,000,000", confidence: 0.65 },
-    ]},
-    { name: "policy_type", accuracy: 96.5, prevAccuracy: 97.1, status: "pass", failingDocs: [] },
-    { name: "policy_number", accuracy: 97.8, prevAccuracy: 98.4, status: "pass", failingDocs: [] },
-    { name: "insurer_name", accuracy: 98.0, prevAccuracy: 98.1, status: "pass", failingDocs: [] },
-    { name: "each_occurrence_limit", accuracy: 98.0, prevAccuracy: 98.2, status: "pass", failingDocs: [] },
-    { name: "expiration_date", accuracy: 98.2, prevAccuracy: 98.3, status: "pass", failingDocs: [] },
-    { name: "effective_date", accuracy: 99.1, prevAccuracy: 99.0, status: "pass", failingDocs: [] },
-    { name: "named_insured", accuracy: 99.3, prevAccuracy: 99.2, status: "pass", failingDocs: [] },
-  ],
-  failingDocs: [
-    { id: "doc-1", filename: "POLI-25-070125.pdf", failedFields: ["total_premium"], worstConfidence: 0.72 },
-    { id: "doc-2", filename: "invoice-0087.pdf", failedFields: ["total_premium", "general_aggregate"], worstConfidence: 0.65 },
-  ],
-};
-
 // ── Helpers ──
 
 function timeAgo(d: string): string {
