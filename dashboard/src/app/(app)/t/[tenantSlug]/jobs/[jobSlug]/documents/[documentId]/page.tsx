@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import type { TraceStage, TraceField } from "@/lib/types";
 import { Timeline } from "@/components/surfaces/trace/Timeline";
@@ -53,9 +53,21 @@ export default function TraceViewPage() {
   const jobSlug = params?.jobSlug ?? "";
   const documentId = params?.documentId ?? "";
 
-  const { data, loading, error } = useApi(
+  const { data, loading, error, refetch } = useApi(
     useCallback(() => jobsApi.document(jobSlug, documentId), [jobSlug, documentId]),
   );
+
+  // Poll every 3s while the document is still being processed. Stops as
+  // soon as we see a terminal status so idle trace views don't hammer the
+  // API. Mirrors the job detail page's polling loop.
+  const isProcessing = data
+    ? !["delivered", "review", "failed"].includes(data.status)
+    : false;
+  useEffect(() => {
+    if (!isProcessing) return;
+    const h = setInterval(() => refetch(), 3000);
+    return () => clearInterval(h);
+  }, [isProcessing, refetch]);
 
   const stages = useMemo<TraceStage[]>(
     () => (data ? mapStages(data.stages, data.trace?.totalDurationMs ?? null) : []),
