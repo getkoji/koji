@@ -260,3 +260,82 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     documentPreviewUrl,
   });
 });
+
+/**
+ * GET /api/jobs/:slug/documents/:docId/markdown — the parsed markdown.
+ *
+ * Powers the "Parse" stage detail pane. Every parse result is written to
+ * parse_cache keyed by (tenant, content_hash); this endpoint does the lookup
+ * on the document's contentHash and streams the cached JSON blob back.
+ * Returns 404 when the document predates parse_cache writes (some seeded rows)
+ * or when parse never completed for this document.
+ */
+jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        contentHash: schema.documents.contentHash,
+      })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  );
+
+  if (!doc || !doc.contentHash) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const [cached] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        storageKey: schema.parseCache.storageKey,
+        pages: schema.parseCache.pages,
+        ocrSkipped: schema.parseCache.ocrSkipped,
+        createdAt: schema.parseCache.createdAt,
+      })
+      .from(schema.parseCache)
+      .where(
+        and(
+          eq(schema.parseCache.tenantId, tenantId),
+          eq(schema.parseCache.fileHash, doc.contentHash),
+        ),
+      )
+      .limit(1),
+  );
+
+  if (!cached) {
+    return c.json({ error: "No cached markdown for this document" }, 404);
+  }
+
+  const blob = await storage.getBuffer(cached.storageKey);
+  if (!blob) {
+    return c.json({ error: "Cache blob missing from storage" }, 404);
+  }
+
+  let payload: { markdown?: string; pages?: number; ocr_skipped?: boolean };
+  try {
+    payload = JSON.parse(blob.data.toString());
+  } catch {
+    return c.json({ error: "Cached markdown is unreadable" }, 500);
+  }
+
+  // Markdown is immutable per (tenant, file_hash) — safe to cache on the
+  // client for an hour. The session cookie keeps it private.
+  c.header("Cache-Control", "private, max-age=3600");
+  return c.json({
+    markdown: payload.markdown ?? "",
+    pages: payload.pages ?? cached.pages ?? null,
+    ocrSkipped:
+      typeof payload.ocr_skipped === "boolean"
+        ? payload.ocr_skipped
+        : cached.ocrSkipped === "true",
+    cachedAt: cached.createdAt,
+  });
+});

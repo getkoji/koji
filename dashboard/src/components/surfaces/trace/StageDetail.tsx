@@ -1,5 +1,8 @@
 "use client";
 
+import { useCallback } from "react";
+import { jobs as jobsApi } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
 import type { TraceField, TraceStage } from "@/lib/types";
 
 export function StageDetail({
@@ -9,6 +12,8 @@ export function StageDetail({
   onPrev,
   onNext,
   fields,
+  jobSlug,
+  documentId,
 }: {
   stage: TraceStage;
   stageIndex: number;
@@ -16,8 +21,11 @@ export function StageDetail({
   onPrev: () => void;
   onNext: () => void;
   fields: TraceField[];
+  jobSlug: string;
+  documentId: string;
 }) {
   const isExtract = stage.name === "Extract";
+  const isParse = stage.name === "Parse";
   const summary = extractSummary(stage);
 
   return (
@@ -85,7 +93,13 @@ export function StageDetail({
       )}
 
       {/* Body */}
-      {isExtract ? <ExtractBody fields={fields} /> : <GenericBody stage={stage} />}
+      {isExtract ? (
+        <ExtractBody fields={fields} />
+      ) : isParse ? (
+        <ParseBody jobSlug={jobSlug} documentId={documentId} />
+      ) : (
+        <GenericBody stage={stage} />
+      )}
     </section>
   );
 }
@@ -149,6 +163,66 @@ function FieldRow({ field }: { field: TraceField }) {
           {field.diagnostic}
         </div>
       )}
+    </div>
+  );
+}
+
+function ParseBody({ jobSlug, documentId }: { jobSlug: string; documentId: string }) {
+  const { data, loading, error } = useApi(
+    useCallback(() => jobsApi.documentMarkdown(jobSlug, documentId), [jobSlug, documentId]),
+  );
+
+  const isMissing = error?.message.includes("No cached markdown") || error?.message.includes("not found");
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[420px]">
+      <div className="flex items-baseline justify-between px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Markdown · parse output
+        </span>
+        <span className="font-mono text-[10px] text-ink-3 flex items-center gap-2">
+          {data && (
+            <>
+              <span>{data.markdown.length.toLocaleString()} chars</span>
+              {data.pages !== null && (
+                <>
+                  <span className="text-cream-4 text-[8px]">●</span>
+                  <span>{data.pages} page{data.pages === 1 ? "" : "s"}</span>
+                </>
+              )}
+              <span className="text-cream-4 text-[8px]">●</span>
+              <span>{data.ocrSkipped ? "no OCR" : "OCR"}</span>
+            </>
+          )}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {loading && !data && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            Loading markdown…
+          </div>
+        )}
+        {error && isMissing && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            No cached markdown for this document — it pre-dates parse_cache writes.
+          </div>
+        )}
+        {error && !isMissing && (
+          <div className="p-8 text-center font-mono text-[11px] text-vermillion-2">
+            {error.message}
+          </div>
+        )}
+        {data && data.markdown.length === 0 && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            Parse produced an empty markdown document.
+          </div>
+        )}
+        {data && data.markdown.length > 0 && (
+          <pre className="font-mono text-[11.5px] text-ink-2 leading-[1.55] px-4 py-3 whitespace-pre-wrap break-words m-0">
+            {data.markdown}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }

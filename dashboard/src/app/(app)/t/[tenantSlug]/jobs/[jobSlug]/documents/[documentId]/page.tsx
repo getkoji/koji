@@ -282,6 +282,8 @@ export default function TraceViewPage() {
         onPrev={() => setSelectedStage((i) => Math.max(0, i - 1))}
         onNext={() => setSelectedStage((i) => Math.min(stages.length - 1, i + 1))}
         fields={fields}
+        jobSlug={jobSlug}
+        documentId={documentId}
       />
     </DetailLayout>
   );
@@ -451,6 +453,7 @@ const STAGE_LABELS: Record<string, string> = {
   ingress: "Ingress",
   integrity: "Integrity check",
   ocr_quality: "OCR quality",
+  parse: "Parse",
   classify: "Classify",
   extract: "Extract",
   normalize: "Normalize",
