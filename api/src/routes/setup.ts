@@ -3,7 +3,6 @@ import { setCookie } from "hono/cookie";
 import { sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
-import { adapter } from "../index";
 
 export const setup = new Hono<Env>();
 
@@ -11,8 +10,7 @@ export const setup = new Hono<Env>();
  * GET /api/setup/status — check whether first-run setup is needed.
  */
 setup.get("/status", async (c) => {
-  const authAdapter = process.env.KOJI_AUTH_ADAPTER ?? "local";
-  if (authAdapter !== "local") {
+  if (c.get("authAdapterKind") !== "local") {
     return c.json({ needed: false, reason: "external_auth" });
   }
 
@@ -29,8 +27,7 @@ setup.get("/status", async (c) => {
  * POST /api/setup — create the first user + default tenant.
  */
 setup.post("/", async (c) => {
-  const authAdapter = process.env.KOJI_AUTH_ADAPTER ?? "local";
-  if (authAdapter !== "local") {
+  if (c.get("authAdapterKind") !== "local") {
     return c.json({ error: "Setup is disabled when using external auth" }, 404);
   }
 
@@ -93,7 +90,7 @@ setup.post("/", async (c) => {
     createdBy: user!.id,
   }).returning();
 
-  const session = await adapter.createSession(user!.id);
+  const session = await c.get("auth").createSession(user!.id);
   setCookie(c, "koji_session", session.token, {
     httpOnly: true,
     secure: false,

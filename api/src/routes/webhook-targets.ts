@@ -4,7 +4,7 @@ import { randomBytes, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { encrypt, decrypt, getMasterKey, keyHint } from "../crypto/envelope";
+import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 
 export const webhookTargets = new Hono<Env>();
 
@@ -43,7 +43,7 @@ webhookTargets.post("/", requires("webhook:write"), async (c) => {
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);
 
-  const masterKey = getMasterKey();
+  const masterKey = c.get("masterKey");
   if (!masterKey) {
     return c.json({ error: "KOJI_MASTER_KEY is not set" }, 500);
   }
@@ -183,7 +183,7 @@ webhookTargets.post("/:id/test", requires("webhook:write"), async (c) => {
   const tenantId = getTenantId(c);
   const targetId = c.req.param("id")!;
 
-  const masterKey = getMasterKey();
+  const masterKey = c.get("masterKey");
   if (!masterKey) {
     return c.json({ error: "KOJI_MASTER_KEY is not set" }, 500);
   }

@@ -4,7 +4,7 @@ import { randomBytes, createHash, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { encrypt, getMasterKey, keyHint } from "../crypto/envelope";
+import { encrypt, keyHint } from "../crypto/envelope";
 import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
 export const sources = new Hono<Env>();
@@ -94,7 +94,7 @@ sources.post("/", requires("source:write"), async (c) => {
   if (body.source_type === "webhook") {
     // Generate webhook secret
     webhookSecretPlain = randomBytes(32).toString("hex");
-    const masterKey = getMasterKey();
+    const masterKey = c.get("masterKey");
     if (masterKey) {
       authJson = {
         encrypted_key: encrypt(webhookSecretPlain, masterKey, tenantId),
@@ -278,7 +278,7 @@ sources.post("/:id/webhook", async (c) => {
   const signatureHeader = c.req.header("Koji-Source-Signature");
   if (!signatureHeader) return c.json({ error: "Missing Koji-Source-Signature header" }, 401);
 
-  const masterKey = getMasterKey();
+  const masterKey = c.get("masterKey");
   if (!masterKey || !source.authJson) {
     return c.json({ error: "Source not configured for webhook verification" }, 500);
   }

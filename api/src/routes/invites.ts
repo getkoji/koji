@@ -7,11 +7,8 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getRoles } from "../auth/middleware";
 import { highestRoleRank, isValidRole } from "../auth/roles";
 import { teamInviteEmail } from "../email-templates";
-import { sendEmail } from "../email";
-import { adapter } from "../index";
 
 const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token).digest();
@@ -75,12 +72,12 @@ invites.post("/", requires("member:invite"), async (c) => {
   });
 
   // Send invite email
-  const inviteUrl = `${APP_URL}/accept-invite?token=${token}`;
+  const inviteUrl = `${c.get("appUrl")}/accept-invite?token=${token}`;
   const inviterName = principal.name ?? principal.email;
   const projectName = tenant?.displayName ?? "Koji";
   const email = teamInviteEmail(inviterName, projectName, inviteUrl);
 
-  await sendEmail({
+  await c.get("emailSender").send({
     to: body.email,
     subject: email.subject,
     text: email.text,
@@ -267,7 +264,7 @@ invites.post("/accept", async (c) => {
     .where(eq(schema.invites.id, invite.id));
 
   // Create session so the user is logged in
-  const session = await adapter.createSession(user.id);
+  const session = await c.get("auth").createSession(user.id);
   setCookie(c, "koji_session", session.token, {
     httpOnly: true,
     secure: false,

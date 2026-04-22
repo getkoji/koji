@@ -447,7 +447,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const perRunFieldAccuracy: Array<{ runId: string; fields: Record<string, number> }> = [];
 
   // Get all corpus entries with ground truth for this schema
-  const corpusRows = await withRLS(db, tenantId, (tx: any) =>
+  const corpusRows = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries)
       .where(eq(schema.corpusEntries.schemaId, s.id))
@@ -461,7 +461,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
 
   for (const run of enrichedRuns) {
     // Get extraction_runs linked to this schema_run
-    const exRuns = await withRLS(db, tenantId, (tx: any) =>
+    const exRuns = await withRLS(db, tenantId, (tx) =>
       tx.select({
         corpusEntryId: schema.extractionRuns.corpusEntryId,
         extractedJson: schema.extractionRuns.extractedJson,
@@ -498,7 +498,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   }
 
   // Corpus count
-  const [corpusCount] = await withRLS(db, tenantId, (tx: any) =>
+  const [corpusCount] = await withRLS(db, tenantId, (tx) =>
     tx.select({ count: sql<number>`count(*)::int` })
       .from(schema.corpusEntries)
       .where(eq(schema.corpusEntries.schemaId, s.id))
@@ -590,10 +590,12 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const slug = c.req.param("slug")!;
   const startTime = Date.now();
 
-  const body = await c.req.json<{ model?: string }>().catch(() => ({}));
+  const body = await c.req
+    .json<{ model?: string }>()
+    .catch((): { model?: string } => ({}));
 
   // Get schema + current YAML
-  const [schemaRow] = await withRLS(db, tenantId, (tx: any) =>
+  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.schemas.id,
       draftYaml: schema.schemas.draftYaml,
@@ -605,7 +607,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   // Get latest version YAML (fallback to draft)
-  const [latestVersion] = await withRLS(db, tenantId, (tx: any) =>
+  const [latestVersion] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       versionNumber: schema.schemaVersions.versionNumber,
       yamlSource: schema.schemaVersions.yamlSource,
@@ -620,7 +622,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);
 
   // Get all corpus entries with ground truth
-  const entries = await withRLS(db, tenantId, (tx: any) =>
+  const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
       filename: schema.corpusEntries.filename,
@@ -641,7 +643,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const principal = getPrincipal(c);
 
   // Get the version ID for the schema_run
-  const [latestVersionRow] = await withRLS(db, tenantId, (tx: any) =>
+  const [latestVersionRow] = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.schemaVersions.id })
       .from(schema.schemaVersions)
       .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
@@ -652,7 +654,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   if (!versionId) return c.json({ error: "No schema version found. Commit the schema first." }, 400);
 
   // Create the schema_run record
-  const [schemaRun] = await withRLS(db, tenantId, (tx: any) =>
+  const [schemaRun] = await withRLS(db, tenantId, (tx) =>
     tx.insert(schema.schemaRuns).values({
       tenantId,
       schemaId: schemaRow.id,
@@ -664,6 +666,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       docsTotal: entriesWithGT.length,
     }).returning({ id: schema.schemaRuns.id })
   );
+  if (!schemaRun) return c.json({ error: "Failed to create schema run" }, 500);
 
   // Run extraction on each entry via the internal extract/run endpoint
   const EXTRACT_RUN_URL = `http://localhost:${process.env.PORT ?? "9401"}/api/extract/run`;
@@ -681,7 +684,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   // Get previous extraction runs for regression detection (before we create new ones)
   const prevExtractedMap = new Map<string, Record<string, unknown>>();
   for (const entry of entriesWithGT) {
-    const [prevRun] = await withRLS(db, tenantId, (tx: any) =>
+    const [prevRun] = await withRLS(db, tenantId, (tx) =>
       tx.select({ extractedJson: schema.extractionRuns.extractedJson })
         .from(schema.extractionRuns)
         .where(eq(schema.extractionRuns.corpusEntryId, entry.id))
@@ -729,7 +732,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 
   if (results.length === 0) {
     // Update schema_run as failed
-    await withRLS(db, tenantId, (tx: any) =>
+    await withRLS(db, tenantId, (tx) =>
       tx.update(schema.schemaRuns).set({ status: "failed", completedAt: new Date(), errorMessage: "All extractions failed" })
         .where(eq(schema.schemaRuns.id, schemaRun.id))
     );
@@ -739,7 +742,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const validateResult = computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime);
 
   // Update schema_run with results
-  await withRLS(db, tenantId, (tx: any) =>
+  await withRLS(db, tenantId, (tx) =>
     tx.update(schema.schemaRuns).set({
       status: "completed",
       completedAt: new Date(),
@@ -839,18 +842,18 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   const slug = c.req.param("slug")!;
   const startTime = Date.now();
 
-  const [schemaRow] = await withRLS(db, tenantId, (tx: any) =>
+  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
-  const [latestVersion] = await withRLS(db, tenantId, (tx: any) =>
+  const [latestVersion] = await withRLS(db, tenantId, (tx) =>
     tx.select({ versionNumber: schema.schemaVersions.versionNumber })
       .from(schema.schemaVersions).where(eq(schema.schemaVersions.schemaId, schemaRow.id))
       .orderBy(desc(schema.schemaVersions.versionNumber)).limit(1)
   );
 
-  const entries = await withRLS(db, tenantId, (tx: any) =>
+  const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries).where(eq(schema.corpusEntries.schemaId, schemaRow.id))
   );
@@ -865,7 +868,7 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   const prevExtractedMap = new Map<string, Record<string, unknown>>();
 
   for (const entry of entriesWithGT) {
-    const runs = await withRLS(db, tenantId, (tx: any) =>
+    const runs = await withRLS(db, tenantId, (tx) =>
       tx.select({ extractedJson: schema.extractionRuns.extractedJson, confidenceScoresJson: schema.extractionRuns.confidenceScoresJson })
         .from(schema.extractionRuns).where(eq(schema.extractionRuns.corpusEntryId, entry.id))
         .orderBy(desc(schema.extractionRuns.createdAt)).limit(2)
@@ -874,10 +877,10 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
       results.push({
         entryId: entry.id, filename: entry.filename,
         groundTruth: entry.groundTruthJson as Record<string, unknown>,
-        extracted: runs[0].extractedJson as Record<string, unknown>,
-        confidenceScores: (runs[0].confidenceScoresJson as Record<string, number>) ?? {},
+        extracted: runs[0]!.extractedJson as Record<string, unknown>,
+        confidenceScores: (runs[0]!.confidenceScoresJson as Record<string, number>) ?? {},
       });
-      if (runs.length > 1) prevExtractedMap.set(entry.id, runs[1].extractedJson as Record<string, unknown>);
+      if (runs.length > 1) prevExtractedMap.set(entry.id, runs[1]!.extractedJson as Record<string, unknown>);
     }
   }
 

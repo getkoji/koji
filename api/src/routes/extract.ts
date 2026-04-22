@@ -8,11 +8,12 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 
 /**
- * Extraction routes — proxies to the Python parse + extract services.
+ * Extraction routes — proxies to the parse + extract services.
+ *
+ * Service URLs are injected per-request via the Hono context (`c.get("parseUrl")`,
+ * `c.get("extractUrl")`) so the same handlers run under both the Node self-hosted
+ * server (URLs from env) and the hosted platform (URLs from Workers bindings).
  */
-
-const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
-const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
 
 export const extract = new Hono<Env>();
 
@@ -169,7 +170,7 @@ extract.post("/parse", requires("job:run"), async (c) => {
   const formData = new FormData();
   formData.append("file", file);
 
-  const resp = await fetch(`${PARSE_URL}/parse`, {
+  const resp = await fetch(`${c.get("parseUrl")}/parse`, {
     method: "POST",
     body: formData,
   });
@@ -190,7 +191,7 @@ extract.post("/process", requires("job:run"), async (c) => {
   const parseForm = new FormData();
   parseForm.append("file", file);
 
-  const parseResp = await fetch(`${PARSE_URL}/parse`, {
+  const parseResp = await fetch(`${c.get("parseUrl")}/parse`, {
     method: "POST",
     body: parseForm,
   });
@@ -214,7 +215,7 @@ extract.post("/process", requires("job:run"), async (c) => {
     schemaObj = schemaField;
   }
 
-  const extractResp = await fetch(`${EXTRACT_URL}/extract`, {
+  const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -334,7 +335,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
       let parseResult: Record<string, unknown> | null = null;
 
       for await (const event of postMultipartSSE(
-        `${PARSE_URL}/parse/stream`,
+        `${c.get("parseUrl")}/parse/stream`,
         entry.filename,
         entry.mimeType,
         fileBuffer,
@@ -386,7 +387,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         return;
       }
 
-      const extractResp = await fetch(`${EXTRACT_URL}/extract`, {
+      const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -461,7 +462,7 @@ async function handleExtractRunJSON(
     // Cache miss — parse and store
     try {
       const resp = await postMultipart(
-        `${PARSE_URL}/parse`,
+        `${c.get("parseUrl")}/parse`,
         entry.filename,
         entry.mimeType,
         fileBuffer,
@@ -490,7 +491,7 @@ async function handleExtractRunJSON(
       }));
       await storage.put(cacheKey, cacheData, { contentType: "application/json" });
 
-      await withRLS(db, tenantId, (tx: any) =>
+      await withRLS(db, tenantId, (tx) =>
         tx.insert(schema.parseCache).values({
           tenantId,
           fileHash,
@@ -519,7 +520,7 @@ async function handleExtractRunJSON(
   }
 
   try {
-    const extractResp = await fetch(`${EXTRACT_URL}/extract`, {
+    const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -540,7 +541,7 @@ async function handleExtractRunJSON(
     // Persist the run
     const yamlHash = crypto.createHash("sha256").update(schemaYaml).digest("hex");
     try {
-      const [run] = await withRLS(db, tenantId, (tx: any) =>
+      const [run] = await withRLS(db, tenantId, (tx) =>
         tx.insert(schema.extractionRuns).values({
           tenantId,
           schemaId: entry.schemaId,
@@ -559,7 +560,7 @@ async function handleExtractRunJSON(
         }).returning({ id: schema.extractionRuns.id })
       );
       return c.json({
-        id: run.id,
+        id: run!.id,
         filename: entry.filename,
         pages: parseResult.pages,
         parse_seconds: parseResult.elapsed_seconds,
@@ -605,7 +606,7 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
   const tenantId = getTenantId(c);
   const corpusEntryId = c.req.param("corpusEntryId")!;
 
-  const [run] = await withRLS(db, tenantId, (tx: any) =>
+  const [run] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.extractionRuns.id,
       model: schema.extractionRuns.model,

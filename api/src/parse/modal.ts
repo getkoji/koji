@@ -89,8 +89,14 @@ export class ModalParseProvider implements ParseProvider {
     const { filename, mimeType, fileBuffer } = input;
     const deadline = Date.now() + this.timeoutMs;
 
+    // Copy into a fresh ArrayBuffer-backed Uint8Array — Node's
+    // `Buffer<ArrayBufferLike>` doesn't unify with DOM's `BlobPart` under
+    // strict Workers type libs (ArrayBufferLike includes SharedArrayBuffer).
+    // `Uint8Array.from` produces `Uint8Array<ArrayBuffer>`, a valid
+    // `BlobPart` in both typesets.
+    const part = Uint8Array.from(fileBuffer);
     const form = new FormData();
-    form.append("file", new Blob([fileBuffer], { type: mimeType }), filename);
+    form.append("file", new Blob([part], { type: mimeType }), filename);
     form.append("filename", filename);
     form.append("mime_type", mimeType);
 

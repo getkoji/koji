@@ -1,58 +1,40 @@
+/**
+ * Node entry point for the Koji API server.
+ *
+ * Reads `process.env` once at boot, builds the Node-friendly adapters
+ * (LocalAuth / S3 / PostgresQueue / DockerParse), hands them to
+ * `createApp(...)`, then serves the returned Hono app via `@hono/node-server`
+ * and runs the in-process queue worker against the returned handlers.
+ *
+ * The edge runtime (Cloudflare Workers) has its own entry point in
+ * `platform/apps/hosted` that calls the same `createApp(...)` with edge-
+ * friendly adapters (Clerk / R2 / CloudflareQueue / Modal). Neither entry
+ * point knows about the other — see `src/app.ts` for the contract.
+ */
+
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 
 import { createDb } from "@koji/db";
 
+import { createApp } from "./app";
 import { LocalAuthAdapter } from "./auth/local";
-import { authMiddleware } from "./auth/middleware";
-import { createAuthRoutes } from "./routes/auth";
-import { passwordReset } from "./routes/password-reset";
-import { health } from "./routes/health";
-import { schemas } from "./routes/schemas";
-import { jobs } from "./routes/jobs";
-import { extract } from "./routes/extract";
-import { me } from "./routes/me";
-import { setup } from "./routes/setup";
-import { tenants } from "./routes/tenants";
-import { projects } from "./routes/projects";
-import { invites } from "./routes/invites";
-import { members } from "./routes/members";
-import { apiKeys } from "./routes/api-keys";
-import { cliAuth } from "./routes/cli-auth";
-import { modelProviders } from "./routes/model-providers";
-import { modelCatalog } from "./routes/model-catalog";
-import { webhookTargets } from "./routes/webhook-targets";
-import { sources } from "./routes/sources";
-import { pipelinesRouter } from "./routes/pipelines";
-import { review } from "./routes/review";
-import { overview } from "./routes/overview";
 import { S3Storage } from "./storage/s3";
 import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
-import { initEmitter } from "./webhooks/emit";
-import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
-import { initIngestionHandler, initParseProvider, handleIngestionProcess } from "./ingestion/process";
 import { createParseProvider } from "./parse/factory";
-import type { Env } from "./env";
+import { SmtpEmailSender } from "./email/smtp";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
 const PORT = parseInt(process.env.PORT ?? "9401", 10);
 const AUTH_ADAPTER = process.env.KOJI_AUTH_ADAPTER ?? "local";
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
+const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
+const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
+const MASTER_KEY = process.env.KOJI_MASTER_KEY ?? null;
 
 const db = createDb(DATABASE_URL);
-
-// Create the auth adapter based on config
-const adapter = new LocalAuthAdapter(db);
-
-const app = new Hono<Env>();
-
-app.use("*", logger());
-app.use("*", cors({ origin: (origin) => origin || "*", credentials: true }));
-
-// Create storage provider
+const auth = new LocalAuthAdapter(db);
 const storage = new S3Storage({
   endpoint: process.env.KOJI_S3_ENDPOINT,
   publicEndpoint: process.env.KOJI_S3_PUBLIC_ENDPOINT,
@@ -62,65 +44,51 @@ const storage = new S3Storage({
   region: process.env.KOJI_S3_REGION,
   forcePathStyle: process.env.KOJI_S3_FORCE_PATH_STYLE === "true",
 });
-
-// Shared queue — used by request handlers to enqueue background work
-// and by the worker loop (in start()) to pull it off.
 const queue = new PostgresQueue(db);
-
-// Inject DB + storage + queue into every request
-app.use("*", async (c, next) => {
-  c.set("db", db);
-  c.set("storage", storage);
-  c.set("queue", queue);
-  await next();
+const parseProvider = createParseProvider({
+  backend: (process.env.KOJI_PARSE_BACKEND ?? "docker") as "docker" | "modal",
+  dockerUrl: PARSE_URL,
+  modalUrl: process.env.KOJI_PARSE_MODAL_URL,
+  modalTokenId: process.env.MODAL_TOKEN_ID,
+  modalTokenSecret: process.env.MODAL_TOKEN_SECRET,
+});
+const emailSender = new SmtpEmailSender({
+  host: process.env.SMTP_HOST ?? "localhost",
+  port: parseInt(process.env.SMTP_PORT ?? "1025", 10),
+  from: process.env.SMTP_FROM ?? "koji@localhost",
+  user: process.env.SMTP_USER,
+  pass: process.env.SMTP_PASS,
 });
 
-// Auth middleware — validates session, resolves tenant, loads grants
-app.use("*", authMiddleware(adapter));
+const { app, handlers } = createApp({
+  db,
+  auth,
+  storage,
+  queue,
+  parseProvider,
+  emailSender,
+  masterKey: MASTER_KEY,
+  appUrl: APP_URL,
+  extractUrl: EXTRACT_URL,
+  parseUrl: PARSE_URL,
+  authAdapterKind: AUTH_ADAPTER,
+});
 
-// Routes
-app.route("/health", health);
-app.route("/api/auth", createAuthRoutes(adapter));
-app.route("/api/auth", passwordReset);
-app.route("/api/schemas", schemas);
-app.route("/api/jobs", jobs);
-app.route("/api", extract);
-app.route("/api/me", me);
-app.route("/api/setup", setup);
-app.route("/api/tenants", tenants);
-app.route("/api/projects", projects);
-app.route("/api/invites", invites);
-app.route("/api/members", members);
-app.route("/api/api-keys", apiKeys);
-app.route("/api/cli", cliAuth);
-app.route("/api/model-providers", modelProviders);
-app.route("/api/model-catalog", modelCatalog);
-app.route("/api/webhook-targets", webhookTargets);
-app.route("/api/sources", sources);
-app.route("/api/pipelines", pipelinesRouter);
-app.route("/api/review", review);
-app.route("/api/overview", overview);
+// Expose the adapter for any external caller that used to import `adapter`
+// from this module (legacy route code has been migrated to `c.get("auth")`,
+// so in practice nothing reaches for this — kept for now as a narrow
+// back-door for scripts like `seed.ts` that run outside the request lifecycle).
+export { auth as adapter };
 
-// Export the adapter so setup.ts can create sessions
-export { adapter };
-
-// Start
 async function start() {
   console.log(`[koji-api] Starting on port ${PORT}`);
   console.log(`[koji-api] Auth adapter: ${AUTH_ADAPTER}`);
   console.log(`[koji-api] Database: ${DATABASE_URL.replace(/:[^@]+@/, ":***@")}`);
 
-  // Initialize queue + webhook system
-  initEmitter(queue, db);
-  initDeliveryHandler(db);
-  initIngestionHandler(db, storage);
-  initParseProvider(createParseProvider());
-
-  // Start background worker
-  startWorker(queue, {
-    "webhook.deliver": handleWebhookDeliver,
-    "ingestion.process": handleIngestionProcess,
-  });
+  // In-process worker loop — Node-only. The hosted Workers deployment uses
+  // the Cloudflare Queues consumer handler instead; see
+  // `platform/apps/hosted/src/index.ts`.
+  startWorker(queue, handlers);
 
   serve({ fetch: app.fetch, port: PORT });
   console.log(`[koji-api] Ready`);
