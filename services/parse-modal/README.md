@@ -49,9 +49,11 @@ cd koji/services/parse-modal
 modal deploy app.py
 ```
 
-The first build takes ~10 min — Docling + torch-cpu is a ~5 GB image
-and model weights are pre-baked into the image. Subsequent deploys that
-only touch Python source are seconds.
+The first build takes ~10 min — Docling + torch-cu121 is a ~7 GB image
+and model weights (Docling layout/tableformer + EasyOCR detector/
+recognizer) are pre-baked into the image so runtime invocations never
+hit the network for weights. Subsequent deploys that only touch Python
+source rebuild in seconds off cached layers.
 
 The deployed app exposes two entry points:
 
@@ -133,6 +135,22 @@ to the caller. The HTTP wrapper (`parse_http`) catches them and returns
 the 422 `{error, filename}` shape the docker `/parse` endpoint uses, so
 the Node adapter can treat both providers identically.
 
+### 303 polling for long parses
+
+Modal's `fastapi_endpoint` proxy has a 150 s response-write deadline.
+If the function is still running when that deadline hits, Modal
+returns `303 See Other` with a `Location` header pointing at the same
+URL + a `?__modal_function_call_id=fc-...` query param. The client is
+expected to follow that redirect (as a GET) to keep polling until the
+function settles — and subsequent poll responses can themselves be
+303s that the client must keep following.
+
+`api/src/parse/modal.ts` (the Node client) handles this manually with
+`redirect: "manual"` + a poll loop that reattaches the `Modal-Key` /
+`Modal-Secret` headers on every hop. Don't replace it with fetch's
+default redirect-follow — default redirect follow drops auth headers
+across the 303 → GET transition and the subsequent hops will 401.
+
 ## Wiring the API
 
 The platform API (`koji/api`) reads these env vars:
@@ -153,16 +171,21 @@ Deploy flow:
 
 ## Tuning
 
-- `timeout=600` — max 10 min per parse. A 100-page scanned PDF at full
-  OCR takes ~2 min on the default container; 10 min is a safe ceiling.
-- `min_containers=1` — keeps one container warm so the first parse
-  of the day doesn't pay the 15-30 s torch+docling load cost. If
-  hosted traffic is spiky or low-volume, consider dropping this and
-  using a scheduled warmup ping instead — compare $$ after a week of
-  real usage.
-- `memory=4096`, `cpu=2.0` — tuned for single-document Docling at CPU
-  inference. OCR on long documents is CPU-bound; bump `cpu` first if
-  p95 latency regresses.
+- `gpu="L4"` — Docling + EasyOCR run 10-30× faster on an L4 than on CPU
+  for scanned-PDF OCR workloads. L4 ($0.80/hr) is the price/perf sweet
+  spot; drop to `T4` ($0.59/hr) if latency allows, upgrade to `A10G`
+  ($1.10/hr) only if throughput is the bottleneck.
+- `timeout=600` — max 10 min per parse. A 232-page scanned PDF through
+  full OCR on L4 finishes in ~50s; 10 min is a safe ceiling for
+  worst-case cold-start + enormous doc.
+- **No `min_containers` pinned.** Defaults to 0 → container scales to
+  zero when idle. L4s idle at ~$0.80/hr, which is ~$580/mo for a
+  pinned warm container. First call after idle eats a ~20-30 s cold
+  start (L4 boot + CUDA init + Docling model load from baked image).
+  Flip to `min_containers=1` temporarily around a demo or under known
+  load, then revert.
+- `memory=4096`, `cpu=2.0` — paired with the L4 for Docling's GPU +
+  CPU pre/post-processing. Bump if OOMing on very large PDFs.
 
 ## Secrets
 
@@ -172,6 +195,60 @@ object storage, call a cloud OCR service), create the secret in the
 Modal dashboard and attach it via `modal.Secret.from_name("...")` on
 the `@app.function(...)` decorator — do not read secrets from env at
 runtime.
+
+## Troubleshooting
+
+### `modal deploy` fails with `ModuleNotFoundError: No module named 'fastapi'`
+
+`modal deploy` imports `app.py` locally before uploading so it can
+enumerate the `@app.function` and `@modal.fastapi_endpoint` decorators.
+The endpoint's signature references `fastapi.Request`, so fastapi has
+to be importable on the deploy machine. Fix:
+
+```bash
+pip install modal fastapi
+```
+
+The Modal runtime container already has fastapi via the image's
+`fastapi[standard]` pin — this is purely a build-time concern.
+
+### First runtime invocation 422s with `<urlopen error [Errno 104] Connection reset by peer>`
+
+A model download is hitting the network mid-request. All weights are
+supposed to be baked into the image by the `run_commands` step that
+calls `StandardPdfPipeline.download_models_hf()` and
+`easyocr.Reader(["en"])`. If a new model class gets added to the
+Docling pipeline and nobody updates that preload step, the first
+runtime invocation that triggers it will try to download mid-request
+and fail. Add the new download to the `run_commands` list and redeploy.
+
+### Runtime crashes with `nvrtc: error: failed to open libnvrtc-builtins.so.13.0`
+
+torch's CUDA version doesn't match the Modal L4's CUDA runtime. The
+image pins torch against the cu121 wheel index
+(`extra_index_url="https://download.pytorch.org/whl/cu121"`), which
+bundles CUDA 12.1 runtime libs that work on L4. If you change torch
+pins, keep the extra_index_url in sync or torch will pull a wheel with
+mismatched CUDA libs. Also: pin `torchvision` (and `torchaudio` if you
+add it) — otherwise pip's resolver is free to upgrade torch under the
+hood to a version that doesn't match your pins.
+
+### Parses that complete server-side but the client reports "bad redirect method"
+
+Modal returned a 303 after its 150 s proxy deadline and the client
+couldn't follow it correctly — usually because it's using fetch's
+default redirect-follow, which 307/308s with preserved POST method
+eventually return a response the client rejects. Use the manual-redirect
+polling loop in `api/src/parse/modal.ts` as the reference
+implementation.
+
+### Cold start takes 30-60 s every invocation
+
+L4 idle with `min_containers=0` scales to zero between jobs. Cold
+start includes: L4 allocation (~10 s), CUDA init (~5 s), Docling model
+load from the baked image (~10 s), EasyOCR reader warm-up (~5 s). If
+the cold-start cost is unacceptable for an imminent use (demo,
+benchmark), flip `min_containers=1` temporarily and revert once done.
 
 ## Keeping parity with the docker service
 
