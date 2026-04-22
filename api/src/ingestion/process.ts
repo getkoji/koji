@@ -30,6 +30,10 @@ import {
   prepareWebhookEvent,
   type PreparedWebhookEvent,
 } from "../webhooks/emit";
+import {
+  resolveExtractEndpoint,
+  type ExtractEndpointPayload,
+} from "../extract/resolve-endpoint";
 import { isTransientError } from "./errors";
 
 export interface IngestionHandlerConfig {
@@ -103,6 +107,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           reviewThreshold: schema.pipelines.reviewThreshold,
           schemaId: schema.pipelines.schemaId,
           activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+          modelProviderId: schema.pipelines.modelProviderId,
         },
         schemaVersion: {
           id: schema.schemaVersions.id,
@@ -184,10 +189,20 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         return { value: md, summary: { markdown_chars: md.length } };
       },
     );
+    const endpointPayload = await resolveExtractEndpoint(
+      db,
+      tenantId,
+      pipeline.modelProviderId,
+    );
     extractResult = await recorder.run(
       "extract",
       async () => {
-        const res = await callExtract(extractUrl, markdown, schemaVersion.yamlSource);
+        const res = await callExtract(
+          extractUrl,
+          markdown,
+          schemaVersion.yamlSource,
+          endpointPayload,
+        );
         return {
           value: res,
           summary: {
@@ -785,7 +800,12 @@ class TraceRecorder {
   }
 }
 
-async function callExtract(extractUrl: string, markdown: string, schemaYaml: string): Promise<ExtractResult> {
+async function callExtract(
+  extractUrl: string,
+  markdown: string,
+  schemaYaml: string,
+  endpoint: ExtractEndpointPayload | null,
+): Promise<ExtractResult> {
   let schemaDef: unknown;
   try {
     schemaDef = parseYaml(schemaYaml);
@@ -793,10 +813,12 @@ async function callExtract(extractUrl: string, markdown: string, schemaYaml: str
     const msg = err instanceof Error ? err.message : "yaml parse";
     throw new TerminalError(`Invalid schema YAML: ${msg}`);
   }
+  const reqBody: Record<string, unknown> = { markdown, schema_def: schemaDef };
+  if (endpoint) reqBody.endpoint = endpoint;
   const resp = await fetch(`${extractUrl}/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ markdown, schema_def: schemaDef }),
+    body: JSON.stringify(reqBody),
     signal: AbortSignal.timeout(120_000),
   });
   if (!resp.ok) {

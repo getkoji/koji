@@ -53,6 +53,35 @@ DEFAULT_MODEL = os.environ.get("KOJI_EXTRACT_MODEL", "llama3.2")
 DEFAULT_STRATEGY = os.environ.get("KOJI_EXTRACT_STRATEGY", "intelligent")
 
 
+class EndpointConfig(BaseModel):
+    """Per-request model endpoint config.
+
+    The Node API resolves this from the pipeline's ``modelProviderId``
+    (decrypted ``authJson``) and passes it on every extract call. When
+    None, the extract service falls back to env-var defaults
+    (OPENAI_API_KEY + KOJI_OPENAI_URL or ollama). See
+    api/src/extract/resolve-endpoint.ts on the Node side and
+    providers.create_provider here.
+
+    Fields are intentionally loose: the Node side doesn't know which
+    adapter will be picked, so it sends the superset. The Python
+    adapter pulls only the fields it cares about.
+    """
+
+    provider: str  # "openai" | "azure-openai" | "anthropic" | "bedrock" | "ollama"
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    # Azure-specific
+    deployment_name: str | None = None
+    api_version: str | None = None
+    # Bedrock-specific
+    aws_region: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_session_token: str | None = None
+
+
 class ExtractionRequest(BaseModel):
     markdown: str
     schema_def: dict
@@ -68,6 +97,11 @@ class ExtractionRequest(BaseModel):
     # Shape matches pipeline.intelligent_extract's classify_config param —
     # see docs/design/classify-split.md.
     classify_config: dict | None = None
+    # Per-request model endpoint config. When provided, overrides the
+    # env-var defaults and routes to the matching provider adapter. Node
+    # passes this after fetching + decrypting the pipeline's model
+    # endpoint row.
+    endpoint: EndpointConfig | None = None
 
 
 @app.get("/health")
@@ -78,11 +112,19 @@ def health():
 @app.post("/extract")
 async def extract(req: ExtractionRequest):
     """Extract structured data from markdown."""
-    model = req.model or DEFAULT_MODEL
+    # When an explicit endpoint config is provided, prefer its model over
+    # the legacy req.model. This lets the Node side choose the target
+    # model per pipeline without the caller having to keep req.model in
+    # sync with the endpoint row.
+    model = (req.endpoint.model if req.endpoint else None) or req.model or DEFAULT_MODEL
     strategy = req.strategy or DEFAULT_STRATEGY
     start = time.time()
+    endpoint_label = (
+        f"endpoint.provider={req.endpoint.provider!r}" if req.endpoint else "endpoint=None"
+    )
     print(
-        f"[koji-extract] Request: model={model!r} (req.model={req.model!r}, default={DEFAULT_MODEL!r}), strategy={strategy}, markdown={len(req.markdown)} chars, fields={list(req.schema_def.get('fields', {}).keys())}"
+        f"[koji-extract] Request: model={model!r} {endpoint_label}, strategy={strategy}, "
+        f"markdown={len(req.markdown)} chars, fields={list(req.schema_def.get('fields', {}).keys())}"
     )
 
     classify_mode = req.classify_mode or "keywords"
@@ -97,9 +139,10 @@ async def extract(req: ExtractionRequest):
                 req.schema_def,
                 model,
                 classify_config=req.classify_config,
+                endpoint_cfg=req.endpoint,
             )
         elif strategy == "agent":
-            result = await _run_agent(req.markdown, req.schema_def, model)
+            result = await _run_agent(req.markdown, req.schema_def, model, endpoint_cfg=req.endpoint)
         else:
             from .parallel import parallel_extract
 
@@ -110,6 +153,7 @@ async def extract(req: ExtractionRequest):
                 OLLAMA_URL,
                 relevant_categories=relevant,
                 classify_mode=classify_mode,
+                endpoint_cfg=req.endpoint,
             )
 
         _apply_post_extract(result, req.schema_def)
@@ -154,8 +198,20 @@ async def extract(req: ExtractionRequest):
         )
 
 
-async def _run_agent(markdown: str, schema_def: dict, model: str) -> dict:
-    """Run the agent-based extraction loop."""
+async def _run_agent(
+    markdown: str,
+    schema_def: dict,
+    model: str,
+    endpoint_cfg: EndpointConfig | None = None,  # accepted for signature parity; see note below
+) -> dict:
+    """Run the agent-based extraction loop.
+
+    NOTE: ``endpoint_cfg`` is accepted so callers can pass it uniformly,
+    but the agent path currently makes raw Ollama HTTP calls and does
+    NOT honor a non-Ollama endpoint. Using ``strategy=agent`` with a
+    BYO endpoint is undefined today — filed as a follow-up in the
+    tasks list.
+    """
     from .tools import DocumentTools
 
     MAX_TOOL_ROUNDS = 15
