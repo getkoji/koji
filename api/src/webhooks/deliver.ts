@@ -362,10 +362,13 @@ export async function advanceDeliverStage(
     // drizzle-orm's `execute` returns either an array (postgres-js) or an
     // object with `.rows` (node-postgres) depending on the driver — handle
     // both rather than assume.
+    // Driver-dependent serialisation: postgres-js returns timestamp cols as
+    // ISO strings from raw execute(), node-postgres returns Date. Type the
+    // field as the union so downstream code is forced to normalise.
     type LockedRow = {
       id: string;
       summary_json: DeliverSummary | null;
-      started_at: Date | null;
+      started_at: Date | string | null;
       status: string;
     };
     const rows: LockedRow[] = Array.isArray(locked)
@@ -401,7 +404,15 @@ export async function advanceDeliverStage(
 
     if (isFinal) {
       const completedAt = new Date();
-      const startedMs = row.started_at ? row.started_at.getTime() : completedAt.getTime();
+      // ``row.started_at`` comes back from drizzle's raw ``tx.execute`` call
+      // as whatever the underlying driver serialises — ``postgres-js`` hands
+      // back an ISO string, ``node-postgres`` hands back a ``Date``. Wrap
+      // in ``new Date(...)`` so we end up with a Date regardless. Empty /
+      // missing values fall through to ``completedAt`` so durationMs clamps
+      // to zero instead of producing NaN.
+      const startedMs = row.started_at
+        ? new Date(row.started_at).getTime()
+        : completedAt.getTime();
       await tx
         .update(schema.traceStages)
         .set({
