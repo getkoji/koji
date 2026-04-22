@@ -13,10 +13,11 @@ Current adapters:
   (vLLM, TGI, self-hosted). Also used as a stopgap for providers whose
   dedicated adapter hasn't shipped yet.
 - :class:`AzureOpenAIProvider` — Azure OpenAI with deployment routing
+- :class:`AnthropicProvider` — native Anthropic Messages API
+  (``/v1/messages`` with ``x-api-key`` + ``anthropic-version`` headers)
 
-Planned (stubbed here; implemented in platform-78/79):
+Planned (stubbed here; implemented in platform-78):
 - :class:`BedrockProvider` — AWS Bedrock with SigV4 signing
-- :class:`AnthropicProvider` — native Anthropic messages API
 """
 
 from __future__ import annotations
@@ -79,7 +80,11 @@ class OllamaProvider(ModelProvider):
 
 
 class OpenAIProvider(ModelProvider):
-    """Works with OpenAI, Anthropic (via proxy), and any OpenAI-compatible API."""
+    """Works with OpenAI and any OpenAI-compatible API (vLLM, TGI,
+    self-hosted, LiteLLM-style proxies, etc.). For native Anthropic
+    endpoints use :class:`AnthropicProvider`; routing claude-* models
+    through this adapter against ``https://api.anthropic.com`` will
+    404 because their API is not OpenAI-shaped."""
 
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
         self.model = model
@@ -247,27 +252,119 @@ class BedrockProvider(ModelProvider):
 
 
 class AnthropicProvider(ModelProvider):
-    """Native Anthropic Messages API. Implemented in platform-79.
+    """Native Anthropic Messages API.
 
     Previously requests using claude-* models were shoe-horned through
     :class:`OpenAIProvider`, which silently 404'd on Anthropic's
-    endpoint because the request shape is different
-    (``/v1/messages`` + ``x-api-key`` header + different body schema).
+    endpoint because the request shape is different:
+    ``{base_url}/messages`` with ``x-api-key`` +
+    ``anthropic-version`` headers and a body that treats ``system`` as
+    a top-level field (not a message) and requires ``max_tokens``.
+
+    JSON mode is emulated by appending an explicit JSON-only instruction
+    to the prompt, since Anthropic has no ``response_format`` field.
     """
+
+    # Pinned Messages API version. Bump deliberately — each version has
+    # subtle response-shape implications.
+    ANTHROPIC_VERSION = "2023-06-01"
+
+    JSON_SUFFIX = "\n\nRespond with ONLY a JSON object."
 
     def __init__(self, model: str, api_key: str, base_url: str | None = None):
         self.model = model
         self.api_key = api_key
-        self.base_url = base_url or "https://api.anthropic.com/v1"
+        self.base_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
+
+    def _headers(self) -> dict:
+        return {
+            "x-api-key": self.api_key,
+            "anthropic-version": self.ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _extract_text(response_json: dict) -> str:
+        """Pull the first text block from an Anthropic Messages response.
+
+        Anthropic returns ``content`` as a list of blocks. For plain
+        text generation there is a single ``{"type": "text", ...}``
+        block; tool-use responses interleave ``tool_use`` blocks (not
+        supported yet — see ``chat()``).
+        """
+        blocks = response_json.get("content") or []
+        for block in blocks:
+            if block.get("type") == "text":
+                return block.get("text", "")
+        return ""
 
     async def generate(self, prompt: str, json_mode: bool = True) -> str:
-        raise NotImplementedError(
-            "AnthropicProvider is stubbed — see platform-79 for the "
-            "native Anthropic Messages API implementation."
-        )
+        effective_prompt = prompt + self.JSON_SUFFIX if json_mode else prompt
+        payload: dict = {
+            "model": self.model,
+            "max_tokens": 4096,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": effective_prompt}],
+        }
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"{self.base_url}/messages",
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return self._extract_text(resp.json())
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        raise NotImplementedError("AnthropicProvider — see platform-79")
+        if tools:
+            # Anthropic tool use uses a distinct ``tool_use`` /
+            # ``tool_result`` block shape rather than OpenAI's
+            # ``tool_calls`` array. Translating that is a separate
+            # piece of work — file a follow-up task before wiring
+            # tools to AnthropicProvider.
+            raise NotImplementedError(
+                "AnthropicProvider.chat(tools=...) not yet supported. "
+                "Anthropic tool use requires translating OpenAI-shape "
+                "tool definitions into Anthropic tool_use blocks; "
+                "file a follow-up task for that before using tools "
+                "against an anthropic endpoint."
+            )
+
+        # Extract system prompts (Anthropic puts them in a top-level
+        # ``system`` field, not a ``role: system`` message). Multiple
+        # system messages concatenate with a blank-line separator so
+        # callers composing layered system prompts don't lose any.
+        system_parts: list[str] = []
+        converted: list[dict] = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                if content:
+                    system_parts.append(content)
+            else:
+                converted.append({"role": role, "content": content})
+
+        payload: dict = {
+            "model": self.model,
+            "max_tokens": 4096,
+            "temperature": 0,
+            "messages": converted,
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"{self.base_url}/messages",
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            text = self._extract_text(resp.json())
+            # Match the OpenAI-provider contract the caller expects
+            # (see OpenAIProvider.chat returning ``choice["message"]``).
+            return {"role": "assistant", "content": text}
 
 
 def build_provider(
@@ -392,6 +489,11 @@ def create_provider(model_str: str) -> ModelProvider:
             return OpenAIProvider(model=model)
         elif provider == "ollama":
             return OllamaProvider(model=model)
+        elif provider == "anthropic":
+            return AnthropicProvider(
+                model=model,
+                api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            )
         else:
             return OpenAIProvider(model=model)
     else:
@@ -399,6 +501,8 @@ def create_provider(model_str: str) -> ModelProvider:
         if any(model_str.startswith(p) for p in OPENAI_PREFIXES):
             return OpenAIProvider(model=model_str)
         if model_str.startswith("claude"):
-            # TODO: route to AnthropicProvider once platform-79 lands.
-            return OpenAIProvider(model=model_str)
+            return AnthropicProvider(
+                model=model_str,
+                api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            )
         return OllamaProvider(model=model_str)
