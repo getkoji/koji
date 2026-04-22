@@ -10,9 +10,11 @@
  *
  *     DATABASE_URL=postgres://... pnpm --filter @koji/db migrate
  *
- * Re-runs are safe: `CREATE TABLE IF NOT EXISTS` and `CREATE POLICY IF NOT
- * EXISTS` make every statement idempotent (with the caveat that altering an
- * existing table or policy requires a new migration, not a re-run of this one).
+ * Re-runs are safe. Drizzle's own CREATE TABLE statements are idempotent, and
+ * the hand-written RLS file pairs every CREATE POLICY with a preceding
+ * DROP POLICY IF EXISTS so repeat runs drop-and-recreate cleanly. (Postgres
+ * does NOT support `CREATE POLICY IF NOT EXISTS`; the drop/create dance is
+ * the idiomatic workaround.)
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
