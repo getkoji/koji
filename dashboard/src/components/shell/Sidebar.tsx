@@ -113,6 +113,19 @@ function SubNavItemLink({ href, icon, label }: NavItemLinkProps) {
 const ICON = "w-[15px] h-[15px]";
 const SUBICON = "w-[13px] h-[13px]";
 
+/**
+ * Returns the stored slug if it's still present in the tenant's schema list,
+ * otherwise null. Used to drop stale localStorage entries for schemas that
+ * have been deleted or renamed.
+ */
+export function reconcileStoredSchemaSlug(
+  storedSlug: string | null,
+  validSlugs: string[],
+): string | null {
+  if (!storedSlug) return null;
+  return validSlugs.includes(storedSlug) ? storedSlug : null;
+}
+
 export function AppSidebar({
   tenantSlug: tenantSlugProp,
   schemaSlug,
@@ -169,12 +182,23 @@ export function AppSidebar({
   }, [urlSchemaSlug, storageKey]);
 
   useEffect(() => {
-    if (
-      !storedSchemaSlug &&
-      schemasList &&
-      schemasList.length > 0 &&
-      typeof window !== "undefined"
-    ) {
+    if (!schemasList || typeof window === "undefined") return;
+
+    const validSlugs = schemasList.map((s) => s.slug);
+    const reconciled = reconcileStoredSchemaSlug(storedSchemaSlug, validSlugs);
+
+    if (reconciled !== storedSchemaSlug) {
+      if (reconciled === null) {
+        localStorage.removeItem(storageKey);
+      } else {
+        localStorage.setItem(storageKey, reconciled);
+      }
+      setStoredSchemaSlug(reconciled);
+      return;
+    }
+
+    // Cold start: no stored slug, but we have schemas — pick the first.
+    if (!storedSchemaSlug && schemasList.length > 0) {
       const first = schemasList[0]!.slug;
       localStorage.setItem(storageKey, first);
       setStoredSchemaSlug(first);
