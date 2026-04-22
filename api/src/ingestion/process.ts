@@ -235,9 +235,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     // max-retry counter) but we also reach this branch directly for known-
     // terminal conditions: malformed schema YAML, 4xx errors from the
     // internal services, anything `isTransientError` doesn't recognise.
-    if (isTransientError(err)) {
+    if (isTransientError(err) && job.attempt < job.maxAttempts) {
       console.warn(
-        `[ingestion.process] transient failure for ${documentId}, will retry: ${msg}`,
+        `[ingestion.process] transient failure for ${documentId} (attempt ${job.attempt}/${job.maxAttempts}), will retry: ${msg}`,
       );
       throw err;
     }
