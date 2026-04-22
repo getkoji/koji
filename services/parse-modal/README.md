@@ -40,10 +40,10 @@ markdown from the docker service should produce the same N chars
 ## Deploy
 
 ```bash
-# one-time on the deploy machine — starlette has to be importable
+# one-time on the deploy machine — fastapi has to be importable
 # locally because `modal deploy` parses app.py before uploading (the
-# endpoint's type annotation references starlette.Request).
-pip install modal starlette
+# endpoint's type annotation references fastapi.Request).
+pip install modal fastapi
 
 cd koji/services/parse-modal
 modal deploy app.py
