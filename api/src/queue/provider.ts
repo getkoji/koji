@@ -19,7 +19,13 @@ export interface QueuedJob {
   kind: string;
   payload: Record<string, unknown>;
   tenantId: string;
+  /** 1-based attempt counter — incremented at poll time. */
   attempt: number;
+  /** Total attempts the queue will make before this job becomes terminal.
+   *  Handlers that need to distinguish "fails, will retry" from "fails,
+   *  final attempt" (e.g. Deliver stage accounting) compare
+   *  `attempt >= maxAttempts`. */
+  maxAttempts: number;
 }
 
 export interface QueueProvider {

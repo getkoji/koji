@@ -24,7 +24,11 @@ import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
-import { emitWebhookEvent, countMatchingTargets } from "../webhooks/emit";
+import {
+  enqueueWebhookDeliveries,
+  prepareWebhookEvent,
+  type PreparedWebhookEvent,
+} from "../webhooks/emit";
 import { isTransientError } from "./errors";
 
 const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
@@ -234,10 +238,11 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const docConfidence = confidence === null ? null : confidence.toFixed(4);
   const docExtraction = extractResult.extracted ?? null;
 
-  // Defer the actual webhook emit until after the trace + Deliver stage
-  // rows exist — we want each enqueued delivery job to carry the
-  // traceStageId so the handler can update the aggregate counter.
-  let pendingEmit: { eventType: string; data: object };
+  // Webhook event prepared (but not enqueued) below — we write the Deliver
+  // trace stage first and only enqueue delivery jobs after the trace is
+  // flushed, so the worker never races `advanceDeliverStage` against a
+  // stage row that hasn't been written yet.
+  let prepared: PreparedWebhookEvent | null = null;
 
   if (routeToReview) {
     // Insert review item. Prefer the worst-field details; fall back to doc-level.
@@ -285,18 +290,16 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         .where(eq(schema.jobs.id, jobId)),
     );
 
-    pendingEmit = {
-      eventType: "document.review_requested",
-      data: {
-        document_id: documentId,
-        job_id: jobId,
-        job_slug: jobSlug,
-        pipeline_id: pipeline.id,
-        field: reviewField,
-        confidence: reviewConfidence,
-        threshold,
-      },
-    };
+    prepared = await prepareWebhookEvent(tenantId, "document.review_requested", {
+      document_id: documentId,
+      job_id: jobId,
+      job_slug: jobSlug,
+      pipeline_id: pipeline.id,
+      field: reviewField,
+      confidence: reviewConfidence,
+      threshold,
+    });
+    recorder.recordDeliverStage(prepared);
   } else {
     // Delivered
     await withRLS(db, tenantId, (tx) =>
@@ -325,17 +328,15 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         .where(eq(schema.jobs.id, jobId)),
     );
 
-    pendingEmit = {
-      eventType: "document.delivered",
-      data: {
-        document_id: documentId,
-        job_id: jobId,
-        job_slug: jobSlug,
-        pipeline_id: pipeline.id,
-        extraction: docExtraction,
-        confidence: docConfidence,
-      },
-    };
+    prepared = await prepareWebhookEvent(tenantId, "document.delivered", {
+      document_id: documentId,
+      job_id: jobId,
+      job_slug: jobSlug,
+      pipeline_id: pipeline.id,
+      extraction: docExtraction,
+      confidence: docConfidence,
+    });
+    recorder.recordDeliverStage(prepared);
   }
 
   // Close out the ingestion (if any) + pipeline last-run timestamp
@@ -355,88 +356,32 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       .where(eq(schema.pipelines.id, pipeline.id)),
   );
 
-  // Flush the trace + stages so the trace view has a real timeline, then
-  // append the async Deliver stage and kick off the actual webhook emits.
-  // Best-effort — a trace-write failure shouldn't un-do the successful
-  // delivery, and a delivery failure shouldn't rewrite the trace.
-  try {
-    const flushResult = await recorder.flush(
-      db,
-      tenantId,
-      documentId,
-      jobId,
-      extractStart,
-      routeToReview ? "review" : "ok",
-    );
+  // Flush the trace + stages so the trace view has a real timeline. Best
+  // effort — a trace-write failure shouldn't un-do the successful delivery.
+  const flushed = await recorder
+    .flush(db, tenantId, documentId, jobId, extractStart, routeToReview ? "review" : "ok")
+    .catch((err) => {
+      console.warn(
+        "[ingestion.process] trace flush failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return false as const;
+    });
 
-    if (flushResult) {
-      const targetCount = await countMatchingTargets(tenantId, pendingEmit.eventType);
-      const deliverStartedAt = new Date();
-
-      if (targetCount === 0) {
-        // No subscribers — record a skipped row so the timeline tells the
-        // full story ("Deliver · skipped · no targets configured") rather
-        // than silently omitting the stage.
-        await withRLS(db, tenantId, (tx) =>
-          tx.insert(schema.traceStages).values({
-            tenantId,
-            traceId: flushResult.traceId,
-            stageName: "deliver",
-            stageOrder: flushResult.nextStageOrder,
-            status: "skipped",
-            startedAt: deliverStartedAt,
-            completedAt: deliverStartedAt,
-            durationMs: 0,
-            summaryJson: {
-              event_type: pendingEmit.eventType,
-              targets_total: 0,
-              reason: "no webhook targets configured",
-            },
-          }),
-        );
-      } else {
-        // Pre-insert the Deliver stage in the in_flight state. The
-        // webhook delivery handler updates this row as each attempt
-        // completes, finalising status + durationMs when the last
-        // attempt lands.
-        const [deliverStage] = await withRLS(db, tenantId, (tx) =>
-          tx
-            .insert(schema.traceStages)
-            .values({
-              tenantId,
-              traceId: flushResult.traceId,
-              stageName: "deliver",
-              stageOrder: flushResult.nextStageOrder,
-              status: "in_flight",
-              startedAt: deliverStartedAt,
-              completedAt: null,
-              durationMs: null,
-              summaryJson: {
-                event_type: pendingEmit.eventType,
-                targets_total: targetCount,
-                targets_delivered: 0,
-                targets_failed: 0,
-              },
-            })
-            .returning({ id: schema.traceStages.id }),
-        );
-
-        await emitWebhookEvent(tenantId, pendingEmit.eventType, pendingEmit.data, {
-          traceStageId: deliverStage?.id,
-        });
-        return;
-      }
+  // Enqueue webhook deliveries AFTER the trace (and its Deliver stage row)
+  // is in place. If the flush failed we still emit — the webhook contract
+  // trumps the trace visibility nicety; the worker's advanceDeliverStage
+  // tolerates a missing row.
+  if (prepared) {
+    if (flushed === false) {
+      console.warn(
+        "[ingestion.process] emitting webhook without Deliver trace stage —",
+        "advanceDeliverStage will no-op for event",
+        prepared.eventId,
+      );
     }
-  } catch (err) {
-    console.warn(
-      "[ingestion.process] trace flush / deliver-stage failed:",
-      err instanceof Error ? err.message : err,
-    );
+    await enqueueWebhookDeliveries(tenantId, prepared, { documentId });
   }
-
-  // Fallback path: if flushResult was null or targetCount was 0, still
-  // fire the webhook (without a trace stage to update).
-  await emitWebhookEvent(tenantId, pendingEmit.eventType, pendingEmit.data);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -641,8 +586,11 @@ interface ParseResponse {
  */
 interface StageRecord {
   name: string;
-  status: "ok" | "warn" | "fail";
-  durationMs: number;
+  status: "ok" | "warn" | "fail" | "in_flight";
+  /** When known (completed stages). The Deliver stage is written as
+   *  `in_flight` with `durationMs=null` and is finalised by the webhook
+   *  worker on the last target's terminal outcome. */
+  durationMs: number | null;
   summaryJson: Record<string, unknown>;
   errorMessage?: string;
 }
@@ -695,12 +643,60 @@ class TraceRecorder {
   }
 
   /**
+   * Record an in-flight Deliver stage. Its duration + terminal status are
+   * unknown at flush time — the webhook worker's `advanceDeliverStage`
+   * takes over once each delivery job resolves. Writing the stage here
+   * (rather than having the worker CREATE it) guarantees the row exists
+   * before any `webhook.deliver` job becomes visible to the worker.
+   *
+   * The counter is maintained per-target in `summary_json.targets`: a
+   * target only contributes to `targets_delivered` / `targets_failed`
+   * on its terminal outcome (success, or final retry failure), not on
+   * every attempt. See the motor's webhook-deliver handler.
+   */
+  recordDeliverStage(prepared: PreparedWebhookEvent): void {
+    const total = prepared.targets.length;
+    // No subscribers? The stage has no work to do — record it as a
+    // zero-duration "ok" stage so the timeline shows a clean completion.
+    if (total === 0) {
+      this.stages.push({
+        name: "deliver",
+        status: "ok",
+        durationMs: 0,
+        summaryJson: {
+          event_id: prepared.eventId,
+          event_type: prepared.payload.type,
+          targets_total: 0,
+          targets: {},
+          targets_delivered: 0,
+          targets_failed: 0,
+        },
+      });
+      return;
+    }
+    this.stages.push({
+      name: "deliver",
+      status: "in_flight",
+      durationMs: null,
+      summaryJson: {
+        event_id: prepared.eventId,
+        event_type: prepared.payload.type,
+        targets_total: total,
+        targets: {},
+        targets_delivered: 0,
+        targets_failed: 0,
+      },
+    });
+  }
+
+  /**
    * Flush to DB: insert a `traces` row, then all buffered `trace_stages`
    * with laid-out startedAt/completedAt timestamps anchored at `originMs`.
    *
-   * Returns { traceId, nextStageOrder, tailMs } so callers can append
-   * additional stages (like the async deliver stage, which we don't know
-   * the final shape of until the queue worker finishes).
+   * Returns `true` on success so the caller knows it's safe to enqueue the
+   * webhook deliveries now that the Deliver trace stage row is in place.
+   * Returns `false` if the insert couldn't be completed — the caller may
+   * choose to still emit (webhook contract beats trace visibility).
    */
   async flush(
     db: Db,
@@ -709,11 +705,16 @@ class TraceRecorder {
     jobId: string,
     originMs: number,
     traceStatus: "ok" | "review" | "failed",
-  ): Promise<{ traceId: string; nextStageOrder: number; tailMs: number } | null> {
-    if (this.stages.length === 0) return null;
+  ): Promise<boolean> {
+    if (this.stages.length === 0) return false;
 
     const startedAt = new Date(originMs);
-    const totalMs = this.stages.reduce((sum, s) => sum + s.durationMs, 0);
+    // Only completed stages contribute to `total_duration_ms` — the Deliver
+    // stage is in-flight and its duration is still unknown at flush time.
+    const totalMs = this.stages.reduce(
+      (sum, s) => sum + (s.durationMs ?? 0),
+      0,
+    );
     const completedAt = new Date(originMs + totalMs);
 
     const [trace] = await withRLS(db, tenantId, (tx) =>
@@ -731,13 +732,15 @@ class TraceRecorder {
         })
         .returning({ id: schema.traces.id }),
     );
-    if (!trace) return null;
+    if (!trace) return false;
 
     let cursor = originMs;
     const rows = this.stages.map((s, i) => {
       const stageStart = new Date(cursor);
-      cursor += s.durationMs;
-      const stageEnd = new Date(cursor);
+      // In-flight stages (Deliver) don't advance the cursor — they have no
+      // known completion time yet. The worker fills these in.
+      const stageEnd = s.durationMs === null ? null : new Date(cursor + s.durationMs);
+      if (s.durationMs !== null) cursor += s.durationMs;
       return {
         tenantId,
         traceId: trace.id,
@@ -753,12 +756,7 @@ class TraceRecorder {
     });
 
     await withRLS(db, tenantId, (tx) => tx.insert(schema.traceStages).values(rows));
-
-    return {
-      traceId: trace.id,
-      nextStageOrder: this.stages.length,
-      tailMs: cursor,
-    };
+    return true;
   }
 }
 

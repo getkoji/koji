@@ -52,7 +52,7 @@ export class PostgresQueue implements QueueProvider {
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, kind, payload_json, tenant_id, attempt
+      RETURNING id, kind, payload_json, tenant_id, attempt, max_retries
     `));
 
     return (result as unknown as Array<{
@@ -61,12 +61,16 @@ export class PostgresQueue implements QueueProvider {
       payload_json: Record<string, unknown>;
       tenant_id: string;
       attempt: number;
+      max_retries: number;
     }>).map((r) => ({
       id: r.id,
       kind: r.kind,
       payload: r.payload_json,
       tenantId: r.tenant_id,
       attempt: r.attempt,
+      // Surface `max_retries` as `maxAttempts` so handlers can tell
+      // "this was the last attempt" without another DB round-trip.
+      maxAttempts: r.max_retries,
     }));
   }
 
