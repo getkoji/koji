@@ -459,7 +459,7 @@ function buildMetrics(
 
 function normalizeStatus(s: string): "ok" | "warn" | "fail" {
   if (s === "fail" || s === "failed") return "fail";
-  if (s === "warn" || s === "review") return "warn";
+  if (s === "warn" || s === "review" || s === "skipped" || s === "in_flight") return "warn";
   return "ok";
 }
 
@@ -476,6 +476,7 @@ const STAGE_LABELS: Record<string, string> = {
   hitl_router: "Review queue",
   human_review: "Human review",
   emit: "Emit",
+  deliver: "Deliver",
 };
 
 function prettyStageName(name: string): string {
@@ -486,6 +487,30 @@ function stageMeta(r: TraceStageRow): string {
   if (r.errorMessage) return r.errorMessage;
   const s = r.summaryJson;
   if (!s || typeof s !== "object") return "—";
+
+  // Deliver stage has a known shape — render it as the human-readable
+  // "delivered N/M targets · event_type" instead of the generic
+  // key-value dump so the timeline reads like a sentence.
+  if (r.stageName === "deliver") {
+    const summary = s as {
+      event_type?: string;
+      targets_total?: number;
+      targets_delivered?: number;
+      targets_failed?: number;
+      reason?: string;
+    };
+    const total = Number(summary.targets_total ?? 0);
+    if (total === 0) return summary.reason ?? "no webhook targets";
+    const delivered = Number(summary.targets_delivered ?? 0);
+    const failed = Number(summary.targets_failed ?? 0);
+    const settled = delivered + failed;
+    const parts = [`${delivered}/${total} delivered`];
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (settled < total) parts.push(`${total - settled} in flight`);
+    if (summary.event_type) parts.push(summary.event_type);
+    return parts.join(" · ");
+  }
+
   const parts: string[] = [];
   for (const [k, v] of Object.entries(s)) {
     if (v === null || v === undefined) continue;
