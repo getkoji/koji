@@ -34,8 +34,12 @@ export class DockerParseProvider implements ParseProvider {
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
     const { filename, mimeType, fileBuffer } = input;
+    // See modal.ts — Buffer doesn't unify with DOM's BlobPart under strict
+    // Workers type libs; copying into a fresh ArrayBuffer-backed Uint8Array
+    // works in both typesets.
+    const part = Uint8Array.from(fileBuffer);
     const form = new FormData();
-    form.append("file", new Blob([fileBuffer], { type: mimeType }), filename);
+    form.append("file", new Blob([part], { type: mimeType }), filename);
     const resp = await fetch(`${this.url}/parse`, { method: "POST", body: form });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
