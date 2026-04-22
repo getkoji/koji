@@ -42,4 +42,19 @@ export interface QueueProvider {
   nack(jobId: string, retryable: boolean, errorMessage?: string): Promise<void>;
 }
 
+/** Info returned when the reaper terminally fails a stuck job. */
+export interface ReapedJob {
+  id: string;
+  kind: string;
+  tenantId: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ReapResult {
+  /** Number of stuck jobs reset to pending for retry. */
+  retried: number;
+  /** Jobs that exceeded max retries and were terminally failed. */
+  terminal: ReapedJob[];
+}
+
 export type HandlerMap = Record<string, (job: QueuedJob) => Promise<void>>;

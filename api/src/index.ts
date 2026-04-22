@@ -14,7 +14,8 @@
 
 import { serve } from "@hono/node-server";
 
-import { createDb } from "@koji/db";
+import { createDb, schema } from "@koji/db";
+import { eq } from "drizzle-orm";
 
 import { createApp } from "./app";
 import { LocalAuthAdapter } from "./auth/local";
@@ -23,6 +24,7 @@ import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
 import { createParseProvider } from "./parse/factory";
 import { SmtpEmailSender } from "./email/smtp";
+import { markDocFailed } from "./ingestion/process";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
@@ -88,7 +90,35 @@ async function start() {
   // In-process worker loop — Node-only. The hosted Workers deployment uses
   // the Cloudflare Queues consumer handler instead; see
   // `platform/apps/hosted/src/index.ts`.
-  startWorker(queue, handlers);
+  startWorker(queue, handlers, {
+    onTerminalReap: async (job) => {
+      if (job.kind === "ingestion.process") {
+        const documentId = job.payload.documentId as string | undefined;
+        if (!documentId) return;
+
+        // Look up the document to find its jobId
+        const [doc] = await db
+          .select({
+            jobId: schema.documents.jobId,
+            status: schema.documents.status,
+          })
+          .from(schema.documents)
+          .where(eq(schema.documents.id, documentId))
+          .limit(1);
+
+        if (!doc || doc.status !== "extracting") return;
+
+        await markDocFailed(
+          db,
+          job.tenantId,
+          documentId,
+          doc.jobId,
+          "Worker lost — job exceeded visibility timeout after max retries",
+        );
+        console.log(`[reaper] Marked document ${documentId} as failed`);
+      }
+    },
+  });
 
   serve({ fetch: app.fetch, port: PORT });
   console.log(`[koji-api] Ready`);
