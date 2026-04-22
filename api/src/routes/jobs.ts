@@ -337,6 +337,7 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
     tx
       .select({
         documentId: schema.documents.id,
+        jobId: schema.documents.jobId,
         status: schema.documents.status,
       })
       .from(schema.documents)
@@ -353,16 +354,35 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
     return c.json({ error: "Document is currently processing" }, 409);
   }
 
+  const now = new Date();
+
+  // Reset document — clear stale extraction results so the UI shows a clean
+  // "extracting" state instead of the previous run's data.
   await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.documents)
       .set({
         status: "extracting",
+        extractionJson: null,
+        confidence: null,
+        validationJson: null,
+        durationMs: null,
         completedAt: null,
         emittedAt: null,
-        durationMs: null,
+        startedAt: now,
       })
       .where(eq(schema.documents.id, doc.documentId)),
+  );
+
+  // Reset job back to running so the dashboard reflects the rerun.
+  await withRLS(db, tenantId, (tx) =>
+    tx
+      .update(schema.jobs)
+      .set({
+        status: "running",
+        completedAt: null,
+      })
+      .where(eq(schema.jobs.id, doc.jobId)),
   );
 
   await queue.enqueue(
