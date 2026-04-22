@@ -270,9 +270,9 @@ class AnthropicProvider(ModelProvider):
         raise NotImplementedError("AnthropicProvider — see platform-79")
 
 
-def create_provider(
+def build_provider(
     model_str: str,
-    endpoint_cfg: "EndpointConfig | None" = None,
+    endpoint_cfg: EndpointConfig | None = None,
 ) -> ModelProvider:
     """Create a provider from either an explicit endpoint config or a
     legacy model string.
@@ -281,84 +281,105 @@ def create_provider(
       API), the endpoint's provider field picks the adapter and the
       endpoint's credentials + base_url + extras are used directly.
       ``model_str`` is ignored.
-    - When ``endpoint_cfg`` is None (bench, CLI, early adopters), we
-      fall back to the legacy ``provider/model`` string + env-var
-      defaults.
+    - When ``endpoint_cfg`` is None (bench, CLI, early adopters), this
+      delegates to :func:`create_provider` — the legacy
+      ``provider/model`` string + env-var path. We keep ``create_provider``
+      as a separate function (rather than collapsing into one) because
+      the pipeline test suite monkeypatches it with a bare
+      ``lambda model: mock`` — adding an ``endpoint_cfg`` kwarg to its
+      signature would break every mock. ``build_provider`` is the wrapper
+      that production callers use; tests continue to stub
+      ``create_provider`` directly.
 
     Supported endpoint providers: ``openai``, ``azure-openai``,
     ``anthropic``, ``bedrock``, ``ollama``. OpenAI-compatible self-hosts
     (vLLM, TGI, etc.) use ``provider=openai`` with a custom ``base_url``.
     """
-    if endpoint_cfg is not None:
-        provider = endpoint_cfg.provider.lower()
-        model = endpoint_cfg.model
+    if endpoint_cfg is None:
+        return create_provider(model_str)
 
-        if provider == "openai":
-            if not endpoint_cfg.api_key:
-                raise ValueError("openai endpoint requires api_key")
-            return OpenAIProvider(
-                model=model,
-                api_key=endpoint_cfg.api_key,
-                base_url=endpoint_cfg.base_url,
-            )
-        elif provider == "azure-openai":
-            missing = [
-                f
-                for f in (
-                    ("api_key", endpoint_cfg.api_key),
-                    ("base_url", endpoint_cfg.base_url),
-                    ("deployment_name", endpoint_cfg.deployment_name),
-                    ("api_version", endpoint_cfg.api_version),
-                )
-                if not f[1]
-            ]
-            if missing:
-                raise ValueError(
-                    f"azure-openai endpoint missing required fields: "
-                    f"{', '.join(n for n, _ in missing)}"
-                )
-            return AzureOpenAIProvider(
-                model=model,
-                api_key=endpoint_cfg.api_key,
-                base_url=endpoint_cfg.base_url,
-                deployment_name=endpoint_cfg.deployment_name,
-                api_version=endpoint_cfg.api_version,
-            )
-        elif provider == "bedrock":
-            missing = [
-                f
-                for f in (
-                    ("aws_region", endpoint_cfg.aws_region),
-                    ("aws_access_key_id", endpoint_cfg.aws_access_key_id),
-                    ("aws_secret_access_key", endpoint_cfg.aws_secret_access_key),
-                )
-                if not f[1]
-            ]
-            if missing:
-                raise ValueError(
-                    f"bedrock endpoint missing required fields: "
-                    f"{', '.join(n for n, _ in missing)}"
-                )
-            return BedrockProvider(
-                model=model,
-                region=endpoint_cfg.aws_region,
-                access_key_id=endpoint_cfg.aws_access_key_id,
-                secret_access_key=endpoint_cfg.aws_secret_access_key,
-                session_token=endpoint_cfg.aws_session_token,
-            )
-        elif provider == "anthropic":
-            if not endpoint_cfg.api_key:
-                raise ValueError("anthropic endpoint requires api_key")
-            return AnthropicProvider(
-                model=model,
-                api_key=endpoint_cfg.api_key,
-                base_url=endpoint_cfg.base_url,
-            )
-        elif provider == "ollama":
-            return OllamaProvider(model=model, base_url=endpoint_cfg.base_url)
-        else:
-            raise ValueError(f"unknown endpoint provider: {provider!r}")
+    provider = endpoint_cfg.provider.lower()
+    model = endpoint_cfg.model
 
+    if provider == "openai":
+        if not endpoint_cfg.api_key:
+            raise ValueError("openai endpoint requires api_key")
+        return OpenAIProvider(
+            model=model,
+            api_key=endpoint_cfg.api_key,
+            base_url=endpoint_cfg.base_url,
+        )
+    elif provider == "azure-openai":
+        missing = [
+            f
+            for f in (
+                ("api_key", endpoint_cfg.api_key),
+                ("base_url", endpoint_cfg.base_url),
+                ("deployment_name", endpoint_cfg.deployment_name),
+                ("api_version", endpoint_cfg.api_version),
+            )
+            if not f[1]
+        ]
+        if missing:
+            raise ValueError(
+                f"azure-openai endpoint missing required fields: "
+                f"{', '.join(n for n, _ in missing)}"
+            )
+        return AzureOpenAIProvider(
+            model=model,
+            api_key=endpoint_cfg.api_key,
+            base_url=endpoint_cfg.base_url,
+            deployment_name=endpoint_cfg.deployment_name,
+            api_version=endpoint_cfg.api_version,
+        )
+    elif provider == "bedrock":
+        missing = [
+            f
+            for f in (
+                ("aws_region", endpoint_cfg.aws_region),
+                ("aws_access_key_id", endpoint_cfg.aws_access_key_id),
+                ("aws_secret_access_key", endpoint_cfg.aws_secret_access_key),
+            )
+            if not f[1]
+        ]
+        if missing:
+            raise ValueError(
+                f"bedrock endpoint missing required fields: "
+                f"{', '.join(n for n, _ in missing)}"
+            )
+        return BedrockProvider(
+            model=model,
+            region=endpoint_cfg.aws_region,
+            access_key_id=endpoint_cfg.aws_access_key_id,
+            secret_access_key=endpoint_cfg.aws_secret_access_key,
+            session_token=endpoint_cfg.aws_session_token,
+        )
+    elif provider == "anthropic":
+        if not endpoint_cfg.api_key:
+            raise ValueError("anthropic endpoint requires api_key")
+        return AnthropicProvider(
+            model=model,
+            api_key=endpoint_cfg.api_key,
+            base_url=endpoint_cfg.base_url,
+        )
+    elif provider == "ollama":
+        return OllamaProvider(model=model, base_url=endpoint_cfg.base_url)
+    else:
+        raise ValueError(f"unknown endpoint provider: {provider!r}")
+
+
+def create_provider(model_str: str) -> ModelProvider:
+    """Legacy provider factory — env-var defaults + model-string routing.
+
+    Kept at this exact signature (single positional argument, no
+    kwargs) because ``tests/test_pipeline.py`` monkeypatches it with a
+    bare ``lambda model: provider`` in many places. Adding params here
+    breaks every one of those patches.
+
+    Production callers go through :func:`build_provider` instead, which
+    either delegates here when no endpoint config is supplied or
+    constructs the provider directly from an explicit ``EndpointConfig``.
+    """
     # ── Legacy path: env-var defaults + model-string routing ─────────────
     # Known OpenAI model prefixes (covers gpt-*, o1-*, o3-*, chatgpt-*)
     OPENAI_PREFIXES = ("gpt-", "o1-", "o3-", "chatgpt-")
