@@ -1,10 +1,49 @@
 import { Hono } from "hono";
-import { and, eq, desc, asc, sql } from "drizzle-orm";
+import { and, eq, desc, asc, gte, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
 
 export const jobs = new Hono<Env>();
+
+/**
+ * Resolve a `since` query param to an absolute cutoff.
+ *
+ * Accepts either a shorthand (`today` | `7d` | `30d` | `all`) or an ISO 8601
+ * timestamp. Returns:
+ *   - `{ cutoff: Date }` to apply as `createdAt >= cutoff`
+ *   - `{ cutoff: null }` when the caller passed nothing (or `all`) — no filter
+ *   - `{ error }` for unrecognized shorthands or unparseable timestamps (→ 400)
+ *
+ * Shorthand semantics (all server-side so clients in different zones agree):
+ *   today → start of the current UTC day
+ *   7d    → now - 7 days
+ *   30d   → now - 30 days
+ */
+function resolveSince(raw: string | undefined): { cutoff: Date | null } | { error: string } {
+  if (!raw || raw === "all") return { cutoff: null };
+
+  const now = Date.now();
+  if (raw === "today") {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    return { cutoff: d };
+  }
+  if (raw === "7d") return { cutoff: new Date(now - 7 * 24 * 60 * 60 * 1000) };
+  if (raw === "30d") return { cutoff: new Date(now - 30 * 24 * 60 * 60 * 1000) };
+
+  // Treat anything else as a timestamp. Reject if it doesn't parse OR if it
+  // looks like a malformed shorthand (e.g. "5d", "90d") so typos don't pass
+  // silently as NaN dates.
+  if (/^\d+[a-zA-Z]+$/.test(raw)) {
+    return { error: `Unknown 'since' shorthand: ${raw}. Use today, 7d, 30d, or all.` };
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return { error: `Invalid 'since' value: ${raw}` };
+  }
+  return { cutoff: parsed };
+}
 
 /**
  * GET /api/jobs — list jobs for the current tenant.
@@ -18,8 +57,20 @@ jobs.get("/", requires("job:read"), async (c) => {
   const status = c.req.query("status");
   const pipelineSlug = c.req.query("pipeline");
 
+  const since = resolveSince(c.req.query("since"));
+  if ("error" in since) {
+    return c.json({ error: since.error }, 400);
+  }
+
+  // Build filter predicates up-front and combine with `and()` rather than
+  // chaining .where() (drizzle replaces on repeat chain calls, it does not AND).
+  const conditions: SQL[] = [];
+  if (status) conditions.push(eq(schema.jobs.status, status));
+  if (pipelineSlug) conditions.push(eq(schema.pipelines.slug, pipelineSlug));
+  if (since.cutoff) conditions.push(gte(schema.jobs.createdAt, since.cutoff));
+
   const rows = await withRLS(db, tenantId, (tx) => {
-    let q = tx
+    const base = tx
       .select({
         slug: schema.jobs.slug,
         status: schema.jobs.status,
@@ -45,17 +96,10 @@ jobs.get("/", requires("job:read"), async (c) => {
       .leftJoin(
         schema.schemaVersions,
         eq(schema.schemaVersions.id, schema.pipelines.activeSchemaVersionId),
-      )
-      .orderBy(desc(schema.jobs.createdAt))
-      .limit(limit);
+      );
 
-    if (status) {
-      q = q.where(eq(schema.jobs.status, status)) as typeof q;
-    }
-    if (pipelineSlug) {
-      q = q.where(eq(schema.pipelines.slug, pipelineSlug)) as typeof q;
-    }
-    return q;
+    const filtered = conditions.length > 0 ? base.where(and(...conditions)) : base;
+    return filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
   });
 
   return c.json({ data: rows });
