@@ -898,7 +898,7 @@ async function failIngestion(
   );
 }
 
-async function markDocFailed(
+export async function markDocFailed(
   db: Db,
   tenantId: string,
   documentId: string,

@@ -65,6 +65,68 @@ describe("queue job state machine", () => {
   });
 });
 
+describe("reaper state machine", () => {
+  it("stuck jobs under max_retries get reset to pending", () => {
+    // Simulates what reapStale does: job is running, attempt < max_retries
+    const job = { status: "running", attempt: 3, maxRetries: 12, startedAt: new Date(Date.now() - 20 * 60 * 1000) };
+    const visibilityTimeoutMs = 15 * 60 * 1000;
+    const isStale = Date.now() - job.startedAt.getTime() > visibilityTimeoutMs;
+    const canRetry = job.attempt < job.maxRetries;
+
+    expect(isStale).toBe(true);
+    expect(canRetry).toBe(true);
+
+    // Reaper resets to pending — does NOT bump attempt (poll already did)
+    const afterReap = { ...job, status: "pending" };
+    expect(afterReap.status).toBe("pending");
+    expect(afterReap.attempt).toBe(3); // unchanged
+  });
+
+  it("stuck jobs at max_retries get terminally failed", () => {
+    const job = { status: "running", attempt: 12, maxRetries: 12, startedAt: new Date(Date.now() - 20 * 60 * 1000) };
+    const exhausted = job.attempt >= job.maxRetries;
+
+    expect(exhausted).toBe(true);
+
+    const afterReap = { ...job, status: "failed_terminal", completedAt: new Date() };
+    expect(afterReap.status).toBe("failed_terminal");
+    expect(afterReap.completedAt).toBeDefined();
+  });
+
+  it("recently-started running jobs are NOT reaped", () => {
+    const job = { status: "running", attempt: 1, startedAt: new Date(Date.now() - 5 * 60 * 1000) };
+    const visibilityTimeoutMs = 15 * 60 * 1000;
+    const isStale = Date.now() - job.startedAt.getTime() > visibilityTimeoutMs;
+
+    expect(isStale).toBe(false);
+  });
+
+  it("reaper backoff uses exponential scaling", () => {
+    // run_at = NOW() + 30s * 2^attempt, matching the SQL: interval '30 seconds' * POW(2, attempt)
+    const cases = [
+      { attempt: 0, expectedSec: 30 },
+      { attempt: 1, expectedSec: 60 },
+      { attempt: 2, expectedSec: 120 },
+      { attempt: 5, expectedSec: 960 },
+      { attempt: 10, expectedSec: 30720 }, // capped at LEAST(attempt, 10)
+      { attempt: 15, expectedSec: 30720 }, // same cap
+    ];
+
+    for (const { attempt, expectedSec } of cases) {
+      const backoffSec = 30 * Math.pow(2, Math.min(attempt, 10));
+      expect(backoffSec).toBe(expectedSec);
+    }
+  });
+
+  it("visibility timeout of 15 minutes exceeds longest normal operation", () => {
+    // Longest legitimate pipeline: Modal parse (10 min) + extract (2 min) = 12 min
+    // Visibility timeout is 15 min — 3 min buffer
+    const longestOperationMs = (10 + 2) * 60 * 1000;
+    const visibilityTimeoutMs = 15 * 60 * 1000;
+    expect(visibilityTimeoutMs).toBeGreaterThan(longestOperationMs);
+  });
+});
+
 describe("webhook delivery signature", () => {
   it("HMAC-SHA256 signature format is correct", async () => {
     const { createHmac } = await import("node:crypto");

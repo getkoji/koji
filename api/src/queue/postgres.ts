@@ -9,7 +9,7 @@
 import { eq, and, lte, inArray, sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Db } from "@koji/db";
-import type { QueueProvider, QueuedJob, EnqueueOptions } from "./provider";
+import type { QueueProvider, QueuedJob, EnqueueOptions, ReapResult, ReapedJob } from "./provider";
 
 const PRIORITY_MAP = { high: 10, normal: 0, low: -10 } as const;
 const BASE_BACKOFF_MS = 30_000; // 30 seconds
@@ -129,5 +129,63 @@ export class PostgresQueue implements QueueProvider {
         errorMessage: errorMessage ?? null,
       })
       .where(eq(schema.backgroundJobs.id, jobId));
+  }
+
+  /**
+   * Reclaim jobs stuck in 'running' past the visibility timeout.
+   *
+   * A job stays 'running' when the worker dies mid-processing (OOM, deploy,
+   * container restart). The committed status update from poll() is durable
+   * but the handler never acked/nacked.
+   *
+   * - Under max_retries: reset to 'pending' with backoff so the normal
+   *   worker loop retries it. The attempt counter was already bumped by
+   *   poll(), so the reaper doesn't touch it.
+   * - At/above max_retries: mark 'failed_terminal' and return the job info
+   *   so the caller can do domain-level cleanup (e.g. mark orphaned
+   *   documents as failed).
+   */
+  async reapStale(visibilityTimeoutMs: number): Promise<ReapResult> {
+    const intervalSec = Math.floor(visibilityTimeoutMs / 1000);
+
+    // 1. Reset retryable stuck jobs
+    const retryable = await this.db.execute(sql.raw(`
+      UPDATE background_jobs
+      SET status = 'pending',
+          run_at = NOW() + (interval '30 seconds' * POW(2, LEAST(attempt, 10)))
+      WHERE status = 'running'
+        AND started_at < NOW() - interval '${intervalSec} seconds'
+        AND attempt < max_retries
+      RETURNING id
+    `));
+
+    // 2. Terminally fail exhausted stuck jobs
+    const terminal = await this.db.execute(sql.raw(`
+      UPDATE background_jobs
+      SET status = 'failed_terminal',
+          completed_at = NOW(),
+          error_message = 'Worker lost — exceeded visibility timeout after max retries'
+      WHERE status = 'running'
+        AND started_at < NOW() - interval '${intervalSec} seconds'
+        AND attempt >= max_retries
+      RETURNING id, kind, payload_json, tenant_id
+    `));
+
+    const terminalJobs: ReapedJob[] = (terminal as unknown as Array<{
+      id: string;
+      kind: string;
+      payload_json: Record<string, unknown>;
+      tenant_id: string;
+    }>).map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      tenantId: r.tenant_id,
+      payload: r.payload_json,
+    }));
+
+    return {
+      retried: (retryable as unknown as unknown[]).length,
+      terminal: terminalJobs,
+    };
   }
 }
