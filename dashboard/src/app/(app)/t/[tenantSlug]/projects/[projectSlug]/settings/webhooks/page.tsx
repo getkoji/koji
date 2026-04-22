@@ -112,7 +112,9 @@ export default function WebhooksPage() {
       await api.delete(`/api/webhook-targets/${deleteTarget.id}`);
       setDeleteTarget(null);
       refetch();
-    } catch { setDeleting(false); }
+    } finally {
+      setDeleting(false);
+    }
   }
 
   if (loading) {

@@ -9,7 +9,7 @@
  * this function call — never logged, cached, or returned.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -32,11 +32,13 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     eventId,
     eventType,
     payload,
+    traceStageId,
   } = job.payload as {
     webhookTargetId: string;
     eventId: string;
     eventType: string;
     payload: object;
+    traceStageId?: string | null;
   };
 
   // Load the target
@@ -126,7 +128,112 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
         .set({ lastError: `HTTP ${httpStatus}: ${responseBody.slice(0, 200)}` })
         .where(eq(schema.webhookTargets.id, webhookTargetId))
     );
+  }
+
+  // Advance the Deliver trace stage (if the motor created one for this
+  // event). Each delivery increments the aggregate success/fail counter.
+  // When the last attempt lands (delivered + failed == total) we also
+  // finalise the stage: completed_at + duration_ms + status.
+  //
+  // Best-effort — if the trace update fails we still want the delivery
+  // itself to succeed (or the retry to re-fire on HTTP failure).
+  if (traceStageId) {
+    try {
+      await advanceDeliverStage(db, job.tenantId, traceStageId, succeeded);
+    } catch (err) {
+      console.warn(
+        "[webhook.deliver] trace-stage update failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (!succeeded) {
     // Throw to trigger retry via nack
     throw new Error(`Webhook delivery failed: HTTP ${httpStatus}`);
   }
+}
+
+/**
+ * Atomically bump the Deliver stage's success/failure counter and, if
+ * all expected deliveries have landed, mark the stage complete.
+ *
+ * Uses a SELECT ... FOR UPDATE inside a transaction so concurrent
+ * delivery workers don't race on the jsonb counter.
+ */
+async function advanceDeliverStage(
+  db: Db,
+  tenantId: string,
+  traceStageId: string,
+  succeeded: boolean,
+): Promise<void> {
+  await withRLS(db, tenantId, async (tx) => {
+    const [stage] = await tx
+      .select({
+        id: schema.traceStages.id,
+        startedAt: schema.traceStages.startedAt,
+        summaryJson: schema.traceStages.summaryJson,
+      })
+      .from(schema.traceStages)
+      .where(eq(schema.traceStages.id, traceStageId))
+      .for("update")
+      .limit(1);
+
+    if (!stage) return;
+
+    const summary = (stage.summaryJson ?? {}) as {
+      targets_total?: number;
+      targets_delivered?: number;
+      targets_failed?: number;
+      [k: string]: unknown;
+    };
+
+    const total = Number(summary.targets_total ?? 0);
+    const delivered = Number(summary.targets_delivered ?? 0) + (succeeded ? 1 : 0);
+    const failed = Number(summary.targets_failed ?? 0) + (succeeded ? 0 : 1);
+    const settled = delivered + failed;
+
+    const isFinal = total > 0 && settled >= total;
+    const completedAt = isFinal ? new Date() : null;
+    const durationMs =
+      isFinal && stage.startedAt
+        ? Math.max(0, completedAt!.getTime() - stage.startedAt.getTime())
+        : null;
+
+    // Any failed attempt taints the whole row — the timeline should show
+    // red if even one target didn't receive the payload.
+    const finalStatus = isFinal ? (failed > 0 ? "fail" : "ok") : "in_flight";
+
+    await tx
+      .update(schema.traceStages)
+      .set({
+        summaryJson: {
+          ...summary,
+          targets_delivered: delivered,
+          targets_failed: failed,
+        },
+        status: finalStatus,
+        completedAt: isFinal ? completedAt : null,
+        durationMs: isFinal ? durationMs : null,
+      })
+      .where(eq(schema.traceStages.id, traceStageId));
+
+    // If the stage is finalising, also roll its duration into the parent
+    // trace's total_duration_ms so the metrics strip at the top of the
+    // trace view reflects the full lifecycle, not just Parse + Extract.
+    if (isFinal && durationMs !== null) {
+      await tx
+        .update(schema.traces)
+        .set({
+          totalDurationMs: sql`${schema.traces.totalDurationMs} + ${durationMs}`,
+          completedAt,
+        })
+        .where(
+          eq(
+            schema.traces.id,
+            sql`(SELECT trace_id FROM trace_stages WHERE id = ${traceStageId})`,
+          ),
+        );
+    }
+  });
 }

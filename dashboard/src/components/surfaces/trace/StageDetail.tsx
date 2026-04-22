@@ -32,6 +32,7 @@ export function StageDetail({
 }) {
   const isExtract = stage.name === "Extract";
   const isParse = stage.name === "Parse";
+  const isDeliver = stage.name === "Deliver";
   const summary = extractSummary(stage);
 
   return (
@@ -108,6 +109,8 @@ export function StageDetail({
           documentPreviewUrl={documentPreviewUrl}
           documentMimeType={documentMimeType}
         />
+      ) : isDeliver ? (
+        <DeliverBody jobSlug={jobSlug} documentId={documentId} stage={stage} />
       ) : (
         <GenericBody stage={stage} />
       )}
@@ -330,6 +333,164 @@ function ParseBody({
       </div>
     </div>
   );
+}
+
+function DeliverBody({
+  jobSlug,
+  documentId,
+  stage,
+}: {
+  jobSlug: string;
+  documentId: string;
+  stage: TraceStage;
+}) {
+  const { data, loading, error, refetch } = useApi(
+    useCallback(() => jobsApi.documentDeliveries(jobSlug, documentId), [jobSlug, documentId]),
+  );
+
+  // Parse the event_type / target counts out of stage.meta so we can
+  // show the summary even when there are zero delivery rows yet (e.g.
+  // skipped stage with no targets configured).
+  const meta = stage.meta ?? "";
+  const eventType =
+    meta.match(/document\.[\w_]+/)?.[0] ??
+    meta.match(/event type:\s*([^\s·]+)/i)?.[1] ??
+    null;
+  const skippedReason = meta.includes("no webhook targets") ? meta : null;
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[420px]">
+      <div className="flex items-baseline justify-between px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Webhook deliveries{eventType ? ` · ${eventType}` : ""}
+        </span>
+        <button
+          type="button"
+          onClick={refetch}
+          className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+          title="Refetch deliveries"
+        >
+          refresh ↻
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {loading && !data && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            Loading deliveries…
+          </div>
+        )}
+        {error && (
+          <div className="p-8 text-center font-mono text-[11px] text-vermillion-2">
+            {error.message}
+          </div>
+        )}
+        {data && data.length === 0 && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">
+            {skippedReason ?? "No deliveries recorded for this document yet."}
+          </div>
+        )}
+        {data && data.length > 0 && (
+          <div className="divide-y divide-border">
+            {data.map((d) => (
+              <DeliveryRow key={d.id} delivery={d} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeliveryRow({
+  delivery,
+}: {
+  delivery: {
+    id: string;
+    eventType: string;
+    status: string;
+    httpStatus: number | null;
+    responseBody: string | null;
+    attemptCount: number;
+    deliveredAt: string | null;
+    createdAt: string;
+    targetUrl: string | null;
+    targetDisplayName: string | null;
+  };
+}) {
+  const [open, setOpen] = useState(false);
+  const ok = delivery.status === "succeeded";
+  const statusColor = ok ? "text-green" : "text-vermillion-2";
+  const httpLabel = delivery.httpStatus ?? "—";
+  const when = delivery.deliveredAt ?? delivery.createdAt;
+
+  return (
+    <div className="px-4 py-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={`font-mono text-[11px] font-medium shrink-0 ${statusColor}`}>
+            {ok ? "✓" : "✗"} {httpLabel}
+          </span>
+          <span className="font-mono text-[11px] text-ink truncate" title={delivery.targetUrl ?? ""}>
+            {delivery.targetDisplayName ?? delivery.targetUrl ?? delivery.id}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {delivery.attemptCount > 1 && (
+            <span className="font-mono text-[9px] text-ink-4 tracking-[0.05em] uppercase">
+              attempt {delivery.attemptCount}
+            </span>
+          )}
+          <span className="font-mono text-[10px] text-ink-4">
+            {formatDeliveryTime(when)}
+          </span>
+          <span className={`text-ink-4 text-[10px] transition-transform ${open ? "rotate-180" : ""}`}>
+            ▾
+          </span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="mt-2.5 flex flex-col gap-2 font-mono text-[10.5px] text-ink-3">
+          {delivery.targetUrl && (
+            <div className="flex items-start gap-2">
+              <span className="text-ink-4 uppercase tracking-[0.08em] text-[9px] shrink-0 pt-0.5">
+                URL
+              </span>
+              <span className="text-ink break-all">{delivery.targetUrl}</span>
+            </div>
+          )}
+          <div className="flex items-start gap-2">
+            <span className="text-ink-4 uppercase tracking-[0.08em] text-[9px] shrink-0 pt-0.5">
+              Event
+            </span>
+            <span className="text-ink-2">{delivery.eventType}</span>
+          </div>
+          {delivery.responseBody && (
+            <div className="flex flex-col gap-1">
+              <span className="text-ink-4 uppercase tracking-[0.08em] text-[9px]">
+                Response
+              </span>
+              <pre className="bg-cream-2 border border-border rounded-sm px-2.5 py-1.5 text-[10.5px] whitespace-pre-wrap break-words text-ink-2 m-0">
+                {delivery.responseBody}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDeliveryTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function GenericBody({ stage }: { stage: TraceStage }) {
