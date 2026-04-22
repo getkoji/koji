@@ -25,6 +25,7 @@ import type { StorageProvider } from "../storage/provider";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 import { emitWebhookEvent, countMatchingTargets } from "../webhooks/emit";
+import { isTransientError } from "./errors";
 
 const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
 const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
@@ -97,6 +98,14 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const { document, job: docJob, pipeline, schemaVersion } = row;
 
   // Idempotency: if we've already processed it, don't double-process.
+  //
+  // This guard doubles as the safety net for transient-error retries: the
+  // catch block below throws raw (no markDocFailed) on transient failures
+  // so the doc stays in `extracting` and the queue re-invokes this handler
+  // from the top. We re-run from a clean slate. If an earlier attempt
+  // happened to succeed (e.g. the worker died *after* we moved the doc to
+  // `delivered` but before acking the job), this guard sees the post-
+  // processing status and short-circuits.
   if (document.status !== "extracting") {
     console.log(
       `[ingestion.process] document ${documentId} status=${document.status}, skipping`,
@@ -163,6 +172,31 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    // Transient failures (5xx from parse/extract, connection errors, timeouts,
+    // model-provider 429s) get handed back to the queue worker for retry.
+    // The queue supports up to `maxRetries` (default 12) attempts with
+    // exponential backoff + jitter — we don't need to re-implement that here.
+    //
+    // Invariant: we deliberately do NOT markDocFailed / failIngestion / flush
+    // a failed trace on the transient path. That keeps `documents.status`
+    // in `extracting`, which is exactly what the idempotency guard at the top
+    // of this handler expects on re-invocation: if status is still
+    // `extracting` we re-run cleanly; if a prior attempt succeeded and moved
+    // the doc to `delivered`/`review`, we short-circuit and ack. Either way
+    // the retry is safe.
+    //
+    // Terminal failures exhaust retries the slow way (via the queue's
+    // max-retry counter) but we also reach this branch directly for known-
+    // terminal conditions: malformed schema YAML, 4xx errors from the
+    // internal services, anything `isTransientError` doesn't recognise.
+    if (isTransientError(err)) {
+      console.warn(
+        `[ingestion.process] transient failure for ${documentId}, will retry: ${msg}`,
+      );
+      throw err;
+    }
+
     await markDocFailed(db, tenantId, documentId, jobId, `Extraction failed: ${msg}`);
     // Best-effort: persist the partial trace so users can see exactly where
     // the run died. Swallow errors here — extraction failure is the thing
