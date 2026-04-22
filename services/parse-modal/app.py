@@ -56,8 +56,19 @@ image = (
         "fonts-dejavu-core",
         "ca-certificates",
     )
-    .pip_install("torch==2.4.1")
+    # One pip_install call so pip's resolver sees every pin at once.
+    # The previous two-step install let docling's transitive deps
+    # upgrade torch from 2.4.1 to 2.11 (which ships CUDA-13 kernels
+    # and misses `libnvrtc-builtins.so.13.0` on L4), making every
+    # invocation fail at the first torch kernel launch.
+    #
+    # Use the cu121 wheel index so torch bundles its own CUDA 12.1
+    # runtime libs (Modal L4 containers speak that ABI). Keeping
+    # torchvision and torchaudio pinned too so the resolver doesn't
+    # pull in a mismatched set.
     .pip_install(
+        "torch==2.4.1",
+        "torchvision==0.19.1",
         "docling==2.14.0",
         "transformers==4.44.2",
         "sentencepiece==0.2.0",
@@ -71,6 +82,7 @@ image = (
         # the common extras (uvicorn, python-multipart for form bodies,
         # etc.) that the endpoint actually uses.
         "fastapi[standard]==0.115.6",
+        extra_index_url="https://download.pytorch.org/whl/cu121",
     )
     # Pre-download the Docling layout/OCR model weights at image build
     # time. Without this, the first invocation on a cold container stalls
