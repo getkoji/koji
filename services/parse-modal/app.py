@@ -320,12 +320,18 @@ def parse(
 # — no extra cold-start, no extra network hop.
 
 
-# Don't import starlette at module scope. ``modal deploy`` parses this
-# file locally to discover functions, and the deploy machine doesn't
-# need starlette on its python path — starlette + fastapi are bundled
-# into the Modal runtime container (the one where ``parse_http``
-# actually executes). Keep the parameter untyped so the deploy-time
-# import works and let the runtime do its own resolution.
+# Need the ``Request`` type on the endpoint signature — FastAPI inspects
+# parameter annotations at route-registration time to decide "is this the
+# request body?" vs "is this a query param?". Without the annotation it
+# falls through to query-param injection and every call 422s with
+# ``{"detail":[{"type":"missing","loc":["query","request"]}]}``.
+#
+# ``modal deploy`` imports this module locally, so starlette has to be
+# importable on the deploy machine. It's a tiny pure-python package —
+# `pip install starlette` (or just install `fastapi`, which pulls it in)
+# on whichever box runs `modal deploy` (README documents this). The
+# Modal runtime container already has both.
+from starlette.requests import Request  # noqa: E402
 
 
 @app.function(
@@ -335,7 +341,7 @@ def parse(
     cpu=2.0,
 )
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-async def parse_http(request):
+async def parse_http(request: Request):
     """HTTP wrapper around :func:`parse`.
 
     Accepts a multipart form with:

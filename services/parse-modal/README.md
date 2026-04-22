@@ -40,6 +40,11 @@ markdown from the docker service should produce the same N chars
 ## Deploy
 
 ```bash
+# one-time on the deploy machine — starlette has to be importable
+# locally because `modal deploy` parses app.py before uploading (the
+# endpoint's type annotation references starlette.Request).
+pip install modal starlette
+
 cd koji/services/parse-modal
 modal deploy app.py
 ```
