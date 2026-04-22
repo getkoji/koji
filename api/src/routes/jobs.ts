@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, eq, desc, asc } from "drizzle-orm";
+import { and, eq, desc, asc, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
@@ -338,4 +338,67 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
         : cached.ocrSkipped === "true",
     cachedAt: cached.createdAt,
   });
+});
+
+/**
+ * GET /api/jobs/:slug/documents/:docId/deliveries — webhook delivery
+ * attempts for this document.
+ *
+ * Powers the Deliver stage detail pane. Filters webhook_deliveries by
+ * the document_id embedded in the payload's data blob — the payload
+ * shape is set by emitWebhookEvent in api/src/webhooks/emit.ts and
+ * always carries the document_id for document.* events. Each row is
+ * joined to webhook_targets so the UI can show the destination URL
+ * next to the HTTP status.
+ *
+ * Returns the delivery attempts in order of oldest → newest per target.
+ * A row with status="failed" and httpStatus=null means the HTTP call
+ * never produced a response (timeout, DNS, connection refused).
+ */
+jobs.get("/:slug/documents/:docId/deliveries", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.documents.id })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  );
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.webhookDeliveries.id,
+        eventType: schema.webhookDeliveries.eventType,
+        status: schema.webhookDeliveries.status,
+        httpStatus: schema.webhookDeliveries.httpStatus,
+        responseBody: schema.webhookDeliveries.responseBody,
+        attemptCount: schema.webhookDeliveries.attemptCount,
+        deliveredAt: schema.webhookDeliveries.deliveredAt,
+        createdAt: schema.webhookDeliveries.createdAt,
+        targetId: schema.webhookDeliveries.targetId,
+        targetUrl: schema.webhookTargets.url,
+        targetDisplayName: schema.webhookTargets.displayName,
+      })
+      .from(schema.webhookDeliveries)
+      .leftJoin(
+        schema.webhookTargets,
+        eq(schema.webhookTargets.id, schema.webhookDeliveries.targetId),
+      )
+      .where(
+        sql`${schema.webhookDeliveries.payloadJson}->'data'->>'document_id' = ${docId}`,
+      )
+      .orderBy(asc(schema.webhookDeliveries.createdAt)),
+  );
+
+  return c.json({ data: rows });
 });

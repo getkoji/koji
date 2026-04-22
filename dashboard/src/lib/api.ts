@@ -264,7 +264,27 @@ export const jobs = {
       ocrSkipped: boolean;
       cachedAt: string;
     }>(`/api/jobs/${jobSlug}/documents/${docId}/markdown`),
+  documentDeliveries: (jobSlug: string, docId: string) =>
+    api
+      .get<{ data: DocumentDelivery[] }>(
+        `/api/jobs/${jobSlug}/documents/${docId}/deliveries`,
+      )
+      .then((r) => r.data),
 };
+
+export interface DocumentDelivery {
+  id: string;
+  eventType: string;
+  status: string;
+  httpStatus: number | null;
+  responseBody: string | null;
+  attemptCount: number;
+  deliveredAt: string | null;
+  createdAt: string;
+  targetId: string;
+  targetUrl: string | null;
+  targetDisplayName: string | null;
+}
 
 // ── Review queue ──
 
