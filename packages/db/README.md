@@ -94,6 +94,23 @@ The RLS policies read `current_setting('app.current_tenant_id', true)::uuid`. Th
 
 **The Postgres role matters.** RLS is bypassed by any role with the `BYPASSRLS` attribute, including every Postgres superuser. Runtime connections must use a non-superuser role — the hosted platform uses a dedicated `app_user` role created during deploy; self-hosted installs provision the equivalent at bootstrap. The test suite (`src/rls.test.ts`) demonstrates the pattern: a superuser connection applies migrations and seeds data, and a separate non-superuser connection exercises the policies.
 
+### The `app_user` role — how it gets provisioned
+
+Three paths, all land on the same role with the same grants:
+
+1. **Fresh docker-compose cluster.** `koji start --dev` mounts `docker/db-init/01_app_user.sql` into the Postgres container's `/docker-entrypoint-initdb.d/`. The init hook only fires when pgdata is empty, so this covers a fresh `docker volume rm koji-koji-dev-pgdata && koji start --dev`.
+2. **Existing cluster, any subsequent API boot.** `runMigrations(...)` in `src/migrate.ts` re-runs the same provisioning idempotently (`DO $$ BEGIN IF NOT EXISTS … CREATE ROLE … END $$;` + grants). This catches dev volumes from before this file landed and any pgdata created outside the docker init flow.
+3. **Managed Postgres (RDS, Aurora, Neon, etc.).** The managed migrate user usually can't `CREATE ROLE`. In that case `provisionAppUser` logs a warning and skips — ops is expected to run the SQL once out-of-band. The SQL lives at `docker/db-init/01_app_user.sql`; copy-paste into your managed console.
+
+Role spec:
+
+- `NOSUPERUSER NOINHERIT NOCREATEDB NOCREATEROLE` — zero admin surface.
+- `LOGIN PASSWORD 'app_user'` — default dev password. **Change it in any environment with real tenants** (set `POSTGRES_PASSWORD_APP_USER` or update the init script before first boot).
+- `GRANT SELECT, INSERT, UPDATE, DELETE` on all tables + sequences in `public`.
+- Default privileges forwarded so new tables created by future migrations automatically grant to `app_user`.
+
+The API's runtime `DATABASE_URL` is expected to eventually point at `app_user` (not the superuser `koji`). That swap is a separate task — filed as a follow-up because it requires verifying every query that writes to a tenant-scoped table goes through `withRLS(...)` first. Dev currently still connects as `koji` superuser, so dev queries bypass RLS; the RLS test suite keeps us honest by running as `app_user` for real isolation checks.
+
 See `docs/specs/auth-permissioning.md` §5.3 for the full contract.
 
 ## Testing
