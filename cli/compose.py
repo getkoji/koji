@@ -61,6 +61,11 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             },
             "volumes": [
                 f"koji-{project}-pgdata:/var/lib/postgresql/data",
+                # Init scripts run on first boot (empty pgdata volume)
+                # only. packages/db/src/migrate.ts re-runs the same
+                # provisioning idempotently on every API boot so
+                # existing volumes also get the app_user role.
+                f"{project_dir}/docker/db-init:/docker-entrypoint-initdb.d:ro",
             ],
             "healthcheck": {
                 "test": ["CMD", "pg_isready", "-U", "koji"],
