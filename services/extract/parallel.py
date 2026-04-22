@@ -205,9 +205,11 @@ async def parallel_extract(
 ) -> dict:
     """Split → classify → filter → extract in parallel → merge."""
     from .classify import classify_chunks, filter_relevant
-    from .providers import create_provider
+    from .providers import build_provider, create_provider
 
-    provider = create_provider(model, endpoint_cfg=endpoint_cfg)
+    # Direct create_provider call when no endpoint_cfg so tests that
+    # monkeypatch services.extract.parallel.create_provider still intercept.
+    provider = build_provider(model, endpoint_cfg) if endpoint_cfg else create_provider(model)
 
     all_chunks = split_into_chunks(markdown)
     print(f"[koji-extract] Split: {len(all_chunks)} chunks")

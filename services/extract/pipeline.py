@@ -10,7 +10,7 @@ import time
 
 from .document_map import Chunk, build_document_map, summarize_map
 from .packet_splitter import Section, classify_chunks_to_sections
-from .providers import ModelProvider, create_provider
+from .providers import ModelProvider, build_provider, create_provider
 from .router import group_routes, route_fields, summarize_routing
 
 
@@ -922,7 +922,11 @@ async def intelligent_extract(
     byte-identical to the pre-classifier pipeline.
     """
     start = time.time()
-    provider = create_provider(model, endpoint_cfg=endpoint_cfg)
+    # When an endpoint is configured, go straight through build_provider.
+    # When not, call create_provider directly so test suites that
+    # monkeypatch pipeline.create_provider (lambda model: mock) still
+    # intercept — see providers.build_provider docstring.
+    provider = build_provider(model, endpoint_cfg) if endpoint_cfg else create_provider(model)
     schema_name = schema_def.get("name", "document")
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -1107,7 +1111,11 @@ async def intelligent_extract(
     # case endpoint_cfg no longer applies (different model, potentially
     # different provider) and we fall back to env-var routing.
     classify_endpoint_cfg = endpoint_cfg if classify_config.get("model") is None else None
-    classify_provider = create_provider(classify_model, endpoint_cfg=classify_endpoint_cfg)
+    classify_provider = (
+        build_provider(classify_model, classify_endpoint_cfg)
+        if classify_endpoint_cfg
+        else create_provider(classify_model)
+    )
     types = classify_config.get("types") or []
     short_doc_chunks = classify_config.get("short_doc_chunks")
     coalesce_threshold = classify_config.get("coalesce_other_threshold")
