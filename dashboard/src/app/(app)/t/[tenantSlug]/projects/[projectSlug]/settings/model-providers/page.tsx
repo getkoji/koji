@@ -14,6 +14,9 @@ interface ModelProvider {
   provider: string;
   model: string;
   baseUrl: string | null;
+  deploymentName: string | null;
+  apiVersion: string | null;
+  awsRegion: string | null;
   keyHint: string | null;
   hasKey: boolean;
   status: string;
@@ -30,16 +33,21 @@ const PROVIDER_TYPES = [
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
 
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return "never";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+/**
+ * Compact one-line summary of a provider's non-secret config, shown
+ * next to the provider badge in the list row. Stays under ~40 chars.
+ */
+function providerConfigSummary(p: ModelProvider): string | null {
+  if (p.provider === "azure-openai") {
+    const parts: string[] = [];
+    if (p.deploymentName) parts.push(p.deploymentName);
+    if (p.apiVersion) parts.push(p.apiVersion);
+    return parts.length ? parts.join(" · ") : null;
+  }
+  if (p.provider === "bedrock") {
+    return p.awsRegion ?? null;
+  }
+  return p.baseUrl ?? null;
 }
 
 export default function ModelProvidersPage() {
@@ -88,12 +96,19 @@ export default function ModelProvidersPage() {
 
         {(providers ?? []).length > 0 ? (
           <SettingsTable>
-            {(providers ?? []).map((p) => (
+            {(providers ?? []).map((p) => {
+              const configSummary = providerConfigSummary(p);
+              return (
               <SettingsRow key={p.id}>
                 <div className="flex items-center gap-4">
                   <span className="text-[12.5px] text-ink font-medium">{p.displayName}</span>
                   <Badge>{p.provider}</Badge>
                   <span className="font-mono text-[11px] text-ink-3">{p.model}</span>
+                  {configSummary && (
+                    <span className="font-mono text-[11px] text-ink-4 truncate max-w-[280px]" title={configSummary}>
+                      {configSummary}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   {p.keyHint && <Meta>••••{p.keyHint}</Meta>}
@@ -110,7 +125,8 @@ export default function ModelProvidersPage() {
                   )}
                 </div>
               </SettingsRow>
-            ))}
+              );
+            })}
           </SettingsTable>
         ) : (
           <div className="border border-border rounded-sm py-6 text-center text-[12.5px] text-ink-3">
@@ -165,7 +181,16 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [providerType, setProviderType] = useState("openai");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
-  const [credentials, setCredentials] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  // Azure-specific
+  const [deploymentName, setDeploymentName] = useState("");
+  const [apiVersion, setApiVersion] = useState("");
+  // Bedrock-specific
+  const [awsRegion, setAwsRegion] = useState("");
+  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
+  const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
+  const [awsSessionToken, setAwsSessionToken] = useState("");
+
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -180,9 +205,16 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   function handleProviderChange(value: string) {
     setProviderType(value);
     setModel(""); // reset model when switching providers
+    // Reset secrets so one provider's key never leaks into another's payload.
+    setApiKey("");
+    setAwsAccessKeyId("");
+    setAwsSecretAccessKey("");
+    setAwsSessionToken("");
     const pt = PROVIDER_TYPES.find((p) => p.value === value);
-    if (pt?.defaultUrl) setBaseUrl(pt.defaultUrl);
-    else setBaseUrl("");
+    setBaseUrl(pt?.defaultUrl ?? "");
+    // Seed a sensible default for the Azure api-version so users don't
+    // have to look it up; they can still override.
+    if (value === "azure-openai" && !apiVersion) setApiVersion("2024-02-15-preview");
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -191,11 +223,29 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     setCreating(true);
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     try {
-      await api.post("/api/model-providers", {
+      // Only send fields that apply to this provider. The backend
+      // validates required-per-provider and returns a 400 with a
+      // specific message if anything is missing.
+      const payload: Record<string, unknown> = {
         name, slug, provider: providerType, model,
-        base_url: baseUrl || undefined,
-        credentials: credentials || undefined,
-      });
+      };
+      if (providerType === "bedrock") {
+        payload.aws_region = awsRegion || undefined;
+        payload.aws_access_key_id = awsAccessKeyId || undefined;
+        payload.aws_secret_access_key = awsSecretAccessKey || undefined;
+        if (awsSessionToken) payload.aws_session_token = awsSessionToken;
+      } else {
+        payload.base_url = baseUrl || undefined;
+        if (providerType === "azure-openai") {
+          payload.deployment_name = deploymentName || undefined;
+          payload.api_version = apiVersion || undefined;
+        }
+        if (providerType !== "ollama") {
+          payload.api_key = apiKey || undefined;
+        }
+      }
+
+      await api.post("/api/model-providers", payload);
       onCreated();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create provider");
@@ -203,13 +253,17 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     }
   }
 
+  const isAzure = providerType === "azure-openai";
+  const isBedrock = providerType === "bedrock";
+  const isOllama = providerType === "ollama";
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add model provider</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Configure a model provider for extractions. Your API key will be encrypted at rest.
+          Configure a model provider for extractions. Credentials are encrypted at rest.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -238,24 +292,135 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
               </select>
               {(catalogModels ?? []).length === 0 && (
                 <p className="text-[11px] text-ink-4">
-                  Add the provider first, then use "Fetch models" to populate the catalog.
+                  Add the provider first, then use &quot;Fetch models&quot; to populate the catalog.
                 </p>
               )}
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">Base URL</label>
-            <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1"
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
-          </div>
+          {/* Non-Bedrock: base URL (label + required-ness varies by provider) */}
+          {!isBedrock && (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">
+                Base URL{isAzure || isOllama ? " *" : ""}
+              </label>
+              <input
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                required={isAzure || isOllama}
+                placeholder={
+                  isAzure ? "https://{resource}.openai.azure.com" :
+                  isOllama ? "http://localhost:11434" :
+                  "https://api.openai.com/v1"
+                }
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              />
+            </div>
+          )}
 
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">API key</label>
-            <PasswordInput value={credentials} onChange={(e) => setCredentials(e.target.value)} placeholder="sk-..." autoComplete="off"
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
-            <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
-          </div>
+          {/* Azure OpenAI: deployment name + api version */}
+          {isAzure && (
+            <>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Deployment name *</label>
+                <input
+                  required
+                  value={deploymentName}
+                  onChange={(e) => setDeploymentName(e.target.value)}
+                  placeholder="prod-gpt4o"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Azure Portal → your resource → Deployments → this name.</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">API version *</label>
+                <input
+                  required
+                  value={apiVersion}
+                  onChange={(e) => setApiVersion(e.target.value)}
+                  placeholder="2024-02-15-preview"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Typically <span className="font-mono">2024-02-15-preview</span> or newer — check the Azure docs for the latest.</p>
+              </div>
+            </>
+          )}
+
+          {/* Bedrock: region + AWS credential pair (+ optional session token) */}
+          {isBedrock && (
+            <>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">AWS region *</label>
+                <input
+                  required
+                  value={awsRegion}
+                  onChange={(e) => setAwsRegion(e.target.value)}
+                  placeholder="us-east-1"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Example: <span className="font-mono">us-east-1</span>. Bedrock must be enabled in the region.</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Access key ID *</label>
+                <input
+                  required
+                  value={awsAccessKeyId}
+                  onChange={(e) => setAwsAccessKeyId(e.target.value)}
+                  placeholder="AKIA..."
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Format: <span className="font-mono">AKIA...</span> (or <span className="font-mono">ASIA...</span> for temporary STS creds).</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Secret access key *</label>
+                <PasswordInput
+                  required
+                  value={awsSecretAccessKey}
+                  onChange={(e) => setAwsSecretAccessKey(e.target.value)}
+                  placeholder="40-char secret"
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Session token (optional)</label>
+                <PasswordInput
+                  value={awsSessionToken}
+                  onChange={(e) => setAwsSessionToken(e.target.value)}
+                  placeholder="Only for temporary STS credentials"
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Only needed if you&apos;re using temporary credentials from AWS STS.</p>
+              </div>
+            </>
+          )}
+
+          {/* Single API key field for non-Bedrock, non-Ollama providers */}
+          {!isBedrock && !isOllama && (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">
+                API key{providerType === "custom" ? "" : " *"}
+              </label>
+              <PasswordInput
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={providerType === "anthropic" ? "sk-ant-..." : "sk-..."}
+                required={providerType !== "custom"}
+                autoComplete="off"
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              />
+              <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
+            </div>
+          )}
+
+          {isOllama && (
+            <p className="text-[11px] text-ink-4">
+              Ollama runs locally, no API key required.
+            </p>
+          )}
 
           {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
 
@@ -272,16 +437,32 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
 }
 
 function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProvider; onClose: () => void; onRotated: () => void }) {
+  // Single-key flow state (non-Bedrock)
   const [newKey, setNewKey] = useState("");
+  // Bedrock flow state — user must re-enter the full credential set.
+  // Access key id + secret are required; session token stays optional.
+  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
+  const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
+  const [awsSessionToken, setAwsSessionToken] = useState("");
+
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isBedrock = provider.provider === "bedrock";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setRotating(true);
     try {
-      await api.post(`/api/model-providers/${provider.id}/rotate`, { credentials: newKey });
+      const payload: Record<string, unknown> = isBedrock
+        ? {
+            aws_access_key_id: awsAccessKeyId,
+            aws_secret_access_key: awsSecretAccessKey,
+            ...(awsSessionToken ? { aws_session_token: awsSessionToken } : {}),
+          }
+        : { api_key: newKey };
+      await api.post(`/api/model-providers/${provider.id}/rotate`, payload);
       onRotated();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to rotate key");
@@ -292,22 +473,61 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Rotate credentials</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Replace the API key for <strong className="text-ink">{provider.displayName}</strong>. The old key will be discarded immediately.
+          Replace credentials for <strong className="text-ink">{provider.displayName}</strong>. The old credentials will be discarded immediately.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">New API key</label>
-            <PasswordInput required value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-..." autoFocus autoComplete="off"
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
-          </div>
+          {isBedrock ? (
+            <>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">New access key ID *</label>
+                <input
+                  required
+                  value={awsAccessKeyId}
+                  onChange={(e) => setAwsAccessKeyId(e.target.value)}
+                  placeholder="AKIA..."
+                  autoFocus
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">New secret access key *</label>
+                <PasswordInput
+                  required
+                  value={awsSecretAccessKey}
+                  onChange={(e) => setAwsSecretAccessKey(e.target.value)}
+                  placeholder="40-char secret"
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Session token (optional)</label>
+                <PasswordInput
+                  value={awsSessionToken}
+                  onChange={(e) => setAwsSessionToken(e.target.value)}
+                  placeholder="Only for temporary STS credentials"
+                  autoComplete="off"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">Leave blank unless your credentials are temporary STS tokens.</p>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">New API key</label>
+              <PasswordInput required value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-..." autoFocus autoComplete="off"
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+            </div>
+          )}
           {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
           <div className="flex items-center justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
             <button type="submit" disabled={rotating} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
-              {rotating ? "Rotating..." : "Rotate key"}
+              {rotating ? "Rotating..." : isBedrock ? "Rotate credentials" : "Rotate key"}
             </button>
           </div>
         </form>
