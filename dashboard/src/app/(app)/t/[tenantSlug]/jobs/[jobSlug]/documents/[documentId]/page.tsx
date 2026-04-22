@@ -494,7 +494,11 @@ function buildMetrics(
 
 function normalizeStatus(s: string): "ok" | "warn" | "fail" {
   if (s === "fail" || s === "failed") return "fail";
-  if (s === "warn" || s === "review" || s === "skipped" || s === "in_flight") return "warn";
+  if (s === "warn" || s === "review") return "warn";
+  // `in_flight` means the Deliver stage is still fanning out — treat it
+  // as a warning so the timeline row visually stands out from the
+  // already-settled stages above it.
+  if (s === "in_flight") return "warn";
   return "ok";
 }
 
@@ -523,32 +527,30 @@ function stageMeta(r: TraceStageRow): string {
   const s = r.summaryJson;
   if (!s || typeof s !== "object") return "—";
 
-  // Deliver stage has a known shape — render it as the human-readable
-  // "delivered N/M targets · event_type" instead of the generic
-  // key-value dump so the timeline reads like a sentence.
+  // Deliver stage gets a fixed summary shape. The per-target breakdown
+  // (which target is `delivered` / `failed` / `in_flight` and how many
+  // attempts each took) lives in `summary.targets` for any future callers
+  // that want to render the detail — the summary line itself stays at the
+  // aggregate level so the timeline row doesn't balloon.
   if (r.stageName === "deliver") {
-    const summary = s as {
-      event_type?: string;
-      targets_total?: number;
-      targets_delivered?: number;
-      targets_failed?: number;
-      reason?: string;
-    };
-    const total = Number(summary.targets_total ?? 0);
-    if (total === 0) return summary.reason ?? "no webhook targets";
-    const delivered = Number(summary.targets_delivered ?? 0);
-    const failed = Number(summary.targets_failed ?? 0);
-    const settled = delivered + failed;
-    const parts = [`${delivered}/${total} delivered`];
-    if (failed > 0) parts.push(`${failed} failed`);
-    if (settled < total) parts.push(`${total - settled} in flight`);
-    if (summary.event_type) parts.push(summary.event_type);
-    return parts.join(" · ");
+    const delivered = Number((s as Record<string, unknown>).targets_delivered ?? 0);
+    const failed = Number((s as Record<string, unknown>).targets_failed ?? 0);
+    const total = Number((s as Record<string, unknown>).targets_total ?? 0);
+    const eventType = (s as Record<string, unknown>).event_type;
+    const parts: string[] = [
+      `delivered: ${delivered}/${total}`,
+      ...(failed > 0 ? [`failed: ${failed}`] : []),
+      ...(typeof eventType === "string" && eventType.length > 0 ? [`event: ${eventType}`] : []),
+    ];
+    return parts.join(" · ") || "—";
   }
 
   const parts: string[] = [];
   for (const [k, v] of Object.entries(s)) {
     if (v === null || v === undefined) continue;
+    // Skip the per-target breakdown — it blows up the summary line.
+    // Callers that want it can read `summaryJson.targets` directly.
+    if (k === "targets") continue;
     const formatted =
       typeof v === "number" || typeof v === "boolean" || typeof v === "string"
         ? `${v}`

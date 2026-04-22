@@ -1,8 +1,16 @@
 /**
  * Webhook event emitter — finds matching targets and enqueues deliveries.
  *
- * Call emitWebhookEvent() from any event site (one line per event).
- * The actual delivery is handled asynchronously by the queue worker.
+ * Two shapes:
+ *   - `emitWebhookEvent(tenantId, eventType, data)` — one-shot emit. Use
+ *     from any fire-and-forget site (route handlers, schedulers) where the
+ *     caller doesn't need to record a Deliver trace stage.
+ *   - `prepareWebhookEvent(...)` + `enqueueWebhookDeliveries(...)` — used
+ *     by the motor (ingestion/process.ts) so it can insert the Deliver
+ *     trace stage with the correct `targets_total` *before* any delivery
+ *     job becomes visible to the worker. Without this split the worker
+ *     could run `advanceDeliverStage` on a stage row that doesn't exist
+ *     yet.
  */
 
 import { eq } from "drizzle-orm";
@@ -20,24 +28,43 @@ export function initEmitter(queue: QueueProvider, db: Db) {
   _db = db;
 }
 
+export interface PreparedWebhookEvent {
+  /** The event id shared by every delivery job for this event. */
+  eventId: string;
+  /** The fully-built payload envelope that will ship to every target. */
+  payload: {
+    id: string;
+    type: string;
+    created_at: string;
+    api_version: string;
+    data: object;
+  };
+  /** The matching active targets for this tenant + event type. */
+  targets: Array<{ id: string }>;
+}
+
 /**
- * Emit a webhook event. Finds matching active targets for the tenant
- * and enqueues a delivery job for each. Returns the number of targets
- * a job was enqueued for — callers that care about trace accounting
- * (e.g. the ingestion motor's Deliver stage) need this count.
- *
- * The optional `traceStageId` is threaded into each queued job so the
- * delivery handler can update the aggregate Deliver stage row when
- * the HTTP POST completes.
+ * Phase 1 of a two-phase emit — resolves the matching targets and builds
+ * the payload envelope, but does NOT enqueue. Used by the motor so it can
+ * seed the Deliver trace stage with `targets_total = targets.length` in the
+ * same transaction that records the trace, before any delivery job becomes
+ * visible to the worker.
  */
-export async function emitWebhookEvent(
+export async function prepareWebhookEvent(
   tenantId: string,
   eventType: string,
   data: object,
-  opts: { traceStageId?: string } = {},
-): Promise<{ enqueuedCount: number; eventId: string }> {
+): Promise<PreparedWebhookEvent> {
   const eventId = `evt_${randomBytes(12).toString("hex")}`;
-  if (!_queue || !_db) return { enqueuedCount: 0, eventId };
+  const payload = {
+    id: eventId,
+    type: eventType,
+    created_at: new Date().toISOString(),
+    api_version: "2026-04-01",
+    data,
+  };
+
+  if (!_db) return { eventId, payload, targets: [] };
 
   const targets = await withRLS(_db, tenantId, (tx) =>
     tx
@@ -49,51 +76,58 @@ export async function emitWebhookEvent(
       .where(eq(schema.webhookTargets.status, "active"))
   );
 
-  const matching = targets.filter(
-    (t) => t.subscribedEvents.includes(eventType) || t.subscribedEvents.includes("*"),
-  );
+  const matching = targets
+    .filter(
+      (t) => t.subscribedEvents.includes(eventType) || t.subscribedEvents.includes("*"),
+    )
+    .map((t) => ({ id: t.id }));
 
-  for (const target of matching) {
+  return { eventId, payload, targets: matching };
+}
+
+export interface EnqueueDeliveriesOptions {
+  /** If set, each enqueued job carries the document id through so the
+   *  worker can find the Deliver trace stage row. */
+  documentId?: string;
+}
+
+/**
+ * Phase 2 of a two-phase emit — enqueues a delivery job for each target
+ * returned by `prepareWebhookEvent`. Call this AFTER the Deliver trace
+ * stage row is written so the worker can always find it.
+ */
+export async function enqueueWebhookDeliveries(
+  tenantId: string,
+  prepared: PreparedWebhookEvent,
+  opts: EnqueueDeliveriesOptions = {},
+): Promise<void> {
+  if (!_queue) return;
+
+  for (const target of prepared.targets) {
     await _queue.enqueue(
       "webhook.deliver",
       {
         webhookTargetId: target.id,
-        eventId,
-        eventType,
-        traceStageId: opts.traceStageId ?? null,
-        payload: {
-          id: eventId,
-          type: eventType,
-          created_at: new Date().toISOString(),
-          api_version: "2026-04-01",
-          data,
-        },
+        eventId: prepared.eventId,
+        eventType: prepared.payload.type,
+        ...(opts.documentId ? { documentId: opts.documentId } : {}),
+        payload: prepared.payload,
       },
       { tenantId },
     );
   }
-
-  return { enqueuedCount: matching.length, eventId };
 }
 
 /**
- * Count active targets matching an event type without enqueuing. Used
- * by the motor to pre-size the Deliver trace stage before emit — so
- * a doc with zero targets still gets an honest "skipped" row instead
- * of being omitted from the timeline.
+ * Fire-and-forget emit. Combines prepare + enqueue for callers that don't
+ * need to record a Deliver trace stage (e.g. `schema.deployed` from a
+ * route handler — there's no document timeline to attach to).
  */
-export async function countMatchingTargets(
+export async function emitWebhookEvent(
   tenantId: string,
   eventType: string,
-): Promise<number> {
-  if (!_db) return 0;
-  const targets = await withRLS(_db, tenantId, (tx) =>
-    tx
-      .select({ subscribedEvents: schema.webhookTargets.subscribedEvents })
-      .from(schema.webhookTargets)
-      .where(eq(schema.webhookTargets.status, "active")),
-  );
-  return targets.filter(
-    (t) => t.subscribedEvents.includes(eventType) || t.subscribedEvents.includes("*"),
-  ).length;
+  data: object,
+): Promise<void> {
+  const prepared = await prepareWebhookEvent(tenantId, eventType, data);
+  await enqueueWebhookDeliveries(tenantId, prepared);
 }

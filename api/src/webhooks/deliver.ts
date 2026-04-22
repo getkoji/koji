@@ -3,13 +3,29 @@
  * in the worker.
  *
  * Loads the target, decrypts the signing secret, computes the HMAC
- * signature, POSTs to the target URL, and records the delivery.
+ * signature, POSTs to the target URL, and records the delivery. Each
+ * attempt writes a `webhook_deliveries` row (one per attempt, good for
+ * audit / debugging).
  *
- * The decrypted secret exists only in memory for the duration of
- * this function call — never logged, cached, or returned.
+ * In addition — when the delivery is part of a document's lifecycle
+ * event (we get a `documentId` in the job payload) — the handler updates
+ * the document's Deliver trace stage via `advanceDeliverStage`. The
+ * stage counter (`targets_delivered` / `targets_failed`) is maintained
+ * per-target on its *terminal* outcome only:
+ *
+ *   - first attempt succeeds                → count once as delivered
+ *   - fails, retries, eventually succeeds   → count once as delivered
+ *   - fails, retries, exhausts maxAttempts  → count once as failed
+ *   - intermediate failed attempt           → bump attempts, don't settle
+ *
+ * The stage is finalised (status flips from `in_flight` to `ok` or
+ * `fail`) when every target has reached a terminal outcome.
+ *
+ * The decrypted secret exists only in memory for the duration of this
+ * function call — never logged, cached, or returned.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -32,13 +48,13 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     eventId,
     eventType,
     payload,
-    traceStageId,
+    documentId,
   } = job.payload as {
     webhookTargetId: string;
     eventId: string;
     eventType: string;
     payload: object;
-    traceStageId?: string | null;
+    documentId?: string;
   };
 
   // Load the target
@@ -51,10 +67,36 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
   );
 
   if (!target) {
+    // The target was deleted mid-flight. Settle the per-target counter so
+    // the Deliver stage can still finalise instead of hanging forever.
+    if (documentId) {
+      await advanceDeliverStage(db, {
+        tenantId: job.tenantId,
+        documentId,
+        eventId,
+        targetId: webhookTargetId,
+        succeeded: false,
+        isFinalAttempt: true,
+        httpStatus: null,
+        attempt: job.attempt,
+      });
+    }
     throw new TerminalError(`Webhook target ${webhookTargetId} not found`);
   }
 
   if (target.status !== "active") {
+    if (documentId) {
+      await advanceDeliverStage(db, {
+        tenantId: job.tenantId,
+        documentId,
+        eventId,
+        targetId: webhookTargetId,
+        succeeded: false,
+        isFinalAttempt: true,
+        httpStatus: null,
+        attempt: job.attempt,
+      });
+    }
     throw new TerminalError(`Webhook target ${webhookTargetId} is ${target.status}`);
   }
 
@@ -98,7 +140,7 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     responseBody = err instanceof Error ? err.message : "Connection failed";
   }
 
-  // Record delivery attempt
+  // Record delivery attempt (one row per attempt — unchanged)
   await withRLS(db, job.tenantId, (tx) =>
     tx.insert(schema.webhookDeliveries).values({
       tenantId: job.tenantId,
@@ -113,7 +155,7 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     })
   );
 
-  // Update target's last delivery time
+  // Update target's last delivery time / last error (unchanged)
   if (succeeded) {
     await withRLS(db, job.tenantId, (tx) =>
       tx
@@ -130,110 +172,250 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     );
   }
 
-  // Advance the Deliver trace stage (if the motor created one for this
-  // event). Each delivery increments the aggregate success/fail counter.
-  // When the last attempt lands (delivered + failed == total) we also
-  // finalise the stage: completed_at + duration_ms + status.
-  //
-  // Best-effort — if the trace update fails we still want the delivery
-  // itself to succeed (or the retry to re-fire on HTTP failure).
-  if (traceStageId) {
-    try {
-      await advanceDeliverStage(db, job.tenantId, traceStageId, succeeded);
-    } catch (err) {
-      console.warn(
-        "[webhook.deliver] trace-stage update failed:",
-        err instanceof Error ? err.message : err,
-      );
-    }
+  // Count toward the Deliver stage counter ONLY on terminal outcomes —
+  // success counts every time (a single success ends this target's story)
+  // and a failure counts only on the last scheduled attempt.
+  const isFinalAttempt = !succeeded && job.attempt >= job.maxAttempts;
+
+  if (documentId) {
+    await advanceDeliverStage(db, {
+      tenantId: job.tenantId,
+      documentId,
+      eventId,
+      targetId: webhookTargetId,
+      succeeded,
+      isFinalAttempt,
+      httpStatus: httpStatus || null,
+      attempt: job.attempt,
+    });
   }
 
   if (!succeeded) {
-    // Throw to trigger retry via nack
+    // Throw to trigger retry via nack (or terminal fail once exhausted —
+    // the queue decides based on `attempt >= maxRetries`).
     throw new Error(`Webhook delivery failed: HTTP ${httpStatus}`);
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Deliver trace stage — per-target counter
+
+export type DeliverTargetStatus = "delivered" | "failed" | "in_flight";
+
+export interface DeliverTargetEntry {
+  status: DeliverTargetStatus;
+  http_status?: number | null;
+  attempts: number;
+}
+
+export interface DeliverSummary {
+  event_id?: string;
+  event_type?: string;
+  targets_total: number;
+  targets: Record<string, DeliverTargetEntry>;
+  targets_delivered: number;
+  targets_failed: number;
+}
+
+export interface MergeDeliverTargetInput {
+  targetId: string;
+  succeeded: boolean;
+  isFinalAttempt: boolean;
+  httpStatus: number | null;
+  attempt: number;
+}
+
+export interface MergeDeliverTargetResult {
+  summary: DeliverSummary;
+  /** True when every target has reached a terminal status AND the map is
+   *  fully populated. The stage row should be flipped out of `in_flight`. */
+  isFinal: boolean;
+}
+
 /**
- * Atomically bump the Deliver stage's success/failure counter and, if
- * all expected deliveries have landed, mark the stage complete.
+ * Pure merge function for the Deliver stage summary. Extracted so it can
+ * be unit-tested without a database.
  *
- * Uses a SELECT ... FOR UPDATE inside a transaction so concurrent
- * delivery workers don't race on the jsonb counter.
+ * Settling rules:
+ *   - succeeded                          → target → `delivered` (+1)
+ *   - failed on the final attempt        → target → `failed`    (+1)
+ *   - failed with retries remaining      → target → `in_flight` (no count bump)
+ *
+ * Aggregate counts are always recomputed from `targets` so they can never
+ * drift from the per-target truth. `attempts` is tracked as a high-water
+ * mark — a late-arriving intermediate failure (pathological reorder)
+ * can't decrement it.
  */
-async function advanceDeliverStage(
+export function mergeDeliverTarget(
+  prev: DeliverSummary,
+  input: MergeDeliverTargetInput,
+): MergeDeliverTargetResult {
+  const targets = { ...prev.targets };
+  const existing = targets[input.targetId];
+  const nextAttempts = Math.max(existing?.attempts ?? 0, input.attempt);
+
+  if (input.succeeded) {
+    targets[input.targetId] = {
+      status: "delivered",
+      http_status: input.httpStatus,
+      attempts: nextAttempts,
+    };
+  } else if (input.isFinalAttempt) {
+    targets[input.targetId] = {
+      status: "failed",
+      http_status: input.httpStatus,
+      attempts: nextAttempts,
+    };
+  } else {
+    targets[input.targetId] = {
+      status: "in_flight",
+      http_status: input.httpStatus,
+      attempts: nextAttempts,
+    };
+  }
+
+  let delivered = 0;
+  let failed = 0;
+  for (const entry of Object.values(targets)) {
+    if (entry.status === "delivered") delivered++;
+    else if (entry.status === "failed") failed++;
+  }
+
+  const mapped = Object.keys(targets).length;
+  const settled = delivered + failed;
+  const isFinal =
+    prev.targets_total > 0 && mapped >= prev.targets_total && settled === mapped;
+
+  return {
+    summary: {
+      ...(prev.event_id ? { event_id: prev.event_id } : {}),
+      ...(prev.event_type ? { event_type: prev.event_type } : {}),
+      targets_total: prev.targets_total,
+      targets,
+      targets_delivered: delivered,
+      targets_failed: failed,
+    },
+    isFinal,
+  };
+}
+
+interface AdvanceArgs {
+  tenantId: string;
+  documentId: string;
+  eventId: string;
+  targetId: string;
+  succeeded: boolean;
+  /** True when this attempt exhausted the retry budget. On intermediate
+   *  failures we only bump the attempt count — we don't settle the target. */
+  isFinalAttempt: boolean;
+  httpStatus: number | null;
+  attempt: number;
+}
+
+/**
+ * Update the Deliver trace stage for a single target. Runs under
+ * `SELECT ... FOR UPDATE` so concurrent webhook workers can't race each
+ * other and produce inconsistent counters.
+ *
+ * Settling rules:
+ *   - succeeded → target flipped to `delivered` (regardless of attempt)
+ *   - failed on the final attempt → flipped to `failed`
+ *   - failed with retries remaining → keep `in_flight`, bump attempt count
+ *
+ * Aggregate counters (`targets_delivered`, `targets_failed`) are always
+ * recomputed from the per-target map so they can never drift. The stage
+ * is finalised (status → `ok` / `fail`, completed_at + duration set) when
+ * every known target has reached a terminal status AND the map has
+ * `targets_total` entries.
+ */
+export async function advanceDeliverStage(
   db: Db,
-  tenantId: string,
-  traceStageId: string,
-  succeeded: boolean,
+  args: AdvanceArgs,
 ): Promise<void> {
+  const {
+    tenantId,
+    documentId,
+    eventId,
+    targetId,
+    succeeded,
+    isFinalAttempt,
+    httpStatus,
+    attempt,
+  } = args;
+
   await withRLS(db, tenantId, async (tx) => {
-    const [stage] = await tx
-      .select({
-        id: schema.traceStages.id,
-        startedAt: schema.traceStages.startedAt,
-        summaryJson: schema.traceStages.summaryJson,
-      })
-      .from(schema.traceStages)
-      .where(eq(schema.traceStages.id, traceStageId))
-      .for("update")
-      .limit(1);
+    // Find the Deliver stage row for this document. We scope by event id
+    // too so `document.delivered` and `document.review_requested` events
+    // (which share a document) never cross-update each other.
+    const locked = await tx.execute(sql`
+      SELECT ts.id, ts.summary_json, ts.started_at, ts.status
+      FROM ${schema.traceStages} ts
+      JOIN ${schema.traces} tr ON tr.id = ts.trace_id
+      WHERE tr.document_id = ${documentId}
+        AND ts.stage_name = 'deliver'
+        AND ts.summary_json->>'event_id' = ${eventId}
+      ORDER BY ts.stage_order DESC
+      LIMIT 1
+      FOR UPDATE OF ts
+    `);
 
-    if (!stage) return;
+    // drizzle-orm's `execute` returns either an array (postgres-js) or an
+    // object with `.rows` (node-postgres) depending on the driver — handle
+    // both rather than assume.
+    type LockedRow = {
+      id: string;
+      summary_json: DeliverSummary | null;
+      started_at: Date | null;
+      status: string;
+    };
+    const rows: LockedRow[] = Array.isArray(locked)
+      ? (locked as unknown as LockedRow[])
+      : ((locked as unknown as { rows?: LockedRow[] }).rows ?? []);
+    const row = rows[0];
 
-    const summary = (stage.summaryJson ?? {}) as {
-      targets_total?: number;
-      targets_delivered?: number;
-      targets_failed?: number;
-      [k: string]: unknown;
+    if (!row || !row.summary_json) {
+      // Stage not found — either the motor hasn't finished flushing yet
+      // (extremely narrow race) or this is a route-level emit with no
+      // document trace. Nothing to do; the next retry (on failure) or a
+      // subsequent sibling target's delivery (on success) will still
+      // progress overall.
+      return;
+    }
+
+    const prev: DeliverSummary = {
+      targets_total: row.summary_json.targets_total ?? 0,
+      targets: row.summary_json.targets ?? {},
+      targets_delivered: row.summary_json.targets_delivered ?? 0,
+      targets_failed: row.summary_json.targets_failed ?? 0,
+      ...(row.summary_json.event_id ? { event_id: row.summary_json.event_id } : {}),
+      ...(row.summary_json.event_type ? { event_type: row.summary_json.event_type } : {}),
     };
 
-    const total = Number(summary.targets_total ?? 0);
-    const delivered = Number(summary.targets_delivered ?? 0) + (succeeded ? 1 : 0);
-    const failed = Number(summary.targets_failed ?? 0) + (succeeded ? 0 : 1);
-    const settled = delivered + failed;
+    const { summary, isFinal } = mergeDeliverTarget(prev, {
+      targetId,
+      succeeded,
+      isFinalAttempt,
+      httpStatus,
+      attempt,
+    });
 
-    const isFinal = total > 0 && settled >= total;
-    const completedAt = isFinal ? new Date() : null;
-    const durationMs =
-      isFinal && stage.startedAt
-        ? Math.max(0, completedAt!.getTime() - stage.startedAt.getTime())
-        : null;
-
-    // Any failed attempt taints the whole row — the timeline should show
-    // red if even one target didn't receive the payload.
-    const finalStatus = isFinal ? (failed > 0 ? "fail" : "ok") : "in_flight";
-
-    await tx
-      .update(schema.traceStages)
-      .set({
-        summaryJson: {
-          ...summary,
-          targets_delivered: delivered,
-          targets_failed: failed,
-        },
-        status: finalStatus,
-        completedAt: isFinal ? completedAt : null,
-        durationMs: isFinal ? durationMs : null,
-      })
-      .where(eq(schema.traceStages.id, traceStageId));
-
-    // If the stage is finalising, also roll its duration into the parent
-    // trace's total_duration_ms so the metrics strip at the top of the
-    // trace view reflects the full lifecycle, not just Parse + Extract.
-    if (isFinal && durationMs !== null) {
+    if (isFinal) {
+      const completedAt = new Date();
+      const startedMs = row.started_at ? row.started_at.getTime() : completedAt.getTime();
       await tx
-        .update(schema.traces)
+        .update(schema.traceStages)
         .set({
-          totalDurationMs: sql`${schema.traces.totalDurationMs} + ${durationMs}`,
+          summaryJson: summary,
+          status: summary.targets_failed > 0 ? "fail" : "ok",
           completedAt,
+          durationMs: Math.max(0, completedAt.getTime() - startedMs),
         })
-        .where(
-          eq(
-            schema.traces.id,
-            sql`(SELECT trace_id FROM trace_stages WHERE id = ${traceStageId})`,
-          ),
-        );
+        .where(and(eq(schema.traceStages.id, row.id), eq(schema.traceStages.tenantId, tenantId)));
+    } else {
+      await tx
+        .update(schema.traceStages)
+        .set({ summaryJson: summary })
+        .where(and(eq(schema.traceStages.id, row.id), eq(schema.traceStages.tenantId, tenantId)));
     }
   });
 }
