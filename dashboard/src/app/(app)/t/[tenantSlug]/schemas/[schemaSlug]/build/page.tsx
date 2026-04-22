@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
+import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 // ── Types ──
 
@@ -123,7 +125,7 @@ export default function BuildPage() {
   );
   const projectName = tenants?.find((t) => t.slug === tenantSlug)?.displayName ?? tenantSlug;
 
-  const { data: schemaDetail, refetch } = useApi(
+  const { data: schemaDetail, loading: schemaLoading, error: schemaError, refetch } = useApi(
     useCallback(() => api.get<SchemaDetail>(`/api/schemas/${schemaSlug}`), [schemaSlug]),
   );
   const { data: versions, refetch: refetchVersions } = useApi(
@@ -452,7 +454,7 @@ export default function BuildPage() {
   }
 
   // Loading
-  if (!schemaDetail) {
+  if (schemaLoading && !schemaDetail) {
     return (
       <div className="flex flex-col h-[calc(100vh-60px)]">
         <div className="p-10 animate-pulse">
@@ -460,6 +462,42 @@ export default function BuildPage() {
           <div className="h-8 w-48 bg-cream-2 rounded mb-2" />
           <div className="h-3 w-64 bg-cream-2 rounded" />
         </div>
+      </div>
+    );
+  }
+
+  // Not found / error — render an explicit empty state instead of the
+  // forever-skeleton that used to sit here when the schema 404'd.
+  if (schemaError || !schemaDetail) {
+    const notFound = schemaError?.message.toLowerCase().includes("not found") ?? !schemaDetail;
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-10 pt-5 pb-0 shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
+            <span className="text-ink-3">{projectName}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink-3">Schemas</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">{schemaSlug}</span>
+          </nav>
+        </div>
+        <EmptyState
+          icon={<FileQuestion className="w-10 h-10" />}
+          title={notFound ? "Schema not found" : "Cannot reach API"}
+          description={
+            notFound
+              ? `No schema with slug "${schemaSlug}" exists in this workspace.`
+              : (schemaError?.message ?? "Unknown error")
+          }
+          action={
+            <Link
+              href={`/t/${tenantSlug}`}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+            >
+              Back to schemas
+            </Link>
+          }
+        />
       </div>
     );
   }

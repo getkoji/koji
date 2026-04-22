@@ -3,9 +3,10 @@
 import { useState, useCallback, useEffect, Fragment } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database } from "lucide-react";
+import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 // ── Types ──
 
@@ -50,6 +51,7 @@ export default function ValidatePage() {
   const params = useParams();
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+  const tenantSlug = (params.tenantSlug as string | undefined) ?? pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
   const [result, setResult] = useState<ValidateResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -58,12 +60,12 @@ export default function ValidatePage() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loadedFromDb, setLoadedFromDb] = useState(false);
 
-  const { data: corpusEntries, loading: corpusLoading } = useApi(
+  const { data: corpusEntries, loading: corpusLoading, error: corpusError } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
 
   // Run history from schema_runs
-  const { data: perfData, loading: perfLoading } = useApi(
+  const { data: perfData, loading: perfLoading, error: perfError } = useApi(
     useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
@@ -115,6 +117,45 @@ export default function ValidatePage() {
               <div key={i} className="h-10 bg-cream-2 rounded-sm animate-pulse" />
             ))}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Not found / API error ──
+  // If either endpoint errored, branch before the "no corpus" empty state
+  // below — otherwise a 404 on the schema itself would misleadingly show
+  // "No corpus entries" instead of "Schema not found".
+  const fatalError = corpusError ?? perfError;
+  if (fatalError) {
+    const notFound = fatalError.message.toLowerCase().includes("not found");
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-2">
+            <span className="text-ink-3">{schemaSlug}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">Validate</span>
+          </nav>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState
+            icon={<FileQuestion className="w-10 h-10" />}
+            title={notFound ? "Schema not found" : "Cannot reach API"}
+            description={
+              notFound
+                ? `No schema with slug "${schemaSlug}" exists in this workspace.`
+                : fatalError.message
+            }
+            action={
+              <Link
+                href={`/t/${tenantSlug}`}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+              >
+                Back to schemas
+              </Link>
+            }
+          />
         </div>
       </div>
     );

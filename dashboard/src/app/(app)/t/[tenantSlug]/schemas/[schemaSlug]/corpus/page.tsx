@@ -4,10 +4,11 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml } from "yaml";
-import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 interface CorpusEntry {
   id: string; filename: string; fileSize: number; mimeType: string;
@@ -92,10 +93,10 @@ export default function CorpusPage() {
     typeof window !== "undefined" && localStorage.getItem("koji:corpus:list-collapsed") === "true"
   );
 
-  const { data: entries, loading, refetch } = useApi(
+  const { data: entries, loading, error: entriesError, refetch } = useApi(
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
-  const { data: schemaDetail } = useApi(
+  const { data: schemaDetail, error: schemaError } = useApi(
     useCallback(() => api.get<{ latestVersion?: { yamlSource: string } }>(`/api/schemas/${schemaSlug}`), [schemaSlug]),
   );
 
@@ -160,6 +161,45 @@ export default function CorpusPage() {
 
   function toggleList() {
     setListCollapsed((p) => { const n = !p; localStorage.setItem("koji:corpus:list-collapsed", String(n)); return n; });
+  }
+
+  // ── Not found / API error ──
+  // Both endpoints 404 with "Schema not found" when the slug is invalid.
+  // Branch here so the page renders an explicit empty state instead of
+  // the forever "Loading..." marker inside the three-panel layout.
+  const fatalError = entriesError ?? schemaError;
+  if (fatalError) {
+    const notFound = fatalError.message.toLowerCase().includes("not found");
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-6 pt-4 pb-3 border-b border-border shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-1">
+            <span className="text-ink-3">{schemaSlug}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">Corpus</span>
+          </nav>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState
+            icon={<FileQuestion className="w-10 h-10" />}
+            title={notFound ? "Schema not found" : "Cannot reach API"}
+            description={
+              notFound
+                ? `No schema with slug "${schemaSlug}" exists in this workspace.`
+                : fatalError.message
+            }
+            action={
+              <Link
+                href={`/t/${tenantSlug}`}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+              >
+                Back to schemas
+              </Link>
+            }
+          />
+        </div>
+      </div>
+    );
   }
 
   return (
