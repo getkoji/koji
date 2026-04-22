@@ -36,11 +36,37 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  // Check if the user has a valid session
+  // Validate the session. Cookie presence alone isn't enough — a stale or
+  // forged cookie would let the shell + tenant-scoped pages render their
+  // chrome even though every data fetch inside would fail with 401. Hit
+  // the API's authenticated `/api/me` endpoint with the cookie and treat
+  // any non-2xx as "not signed in", clearing the stale cookie and routing
+  // back through /login.
   if (pathname.startsWith("/t/") || pathname === "/") {
     const sessionCookie = request.cookies.get("koji_session")?.value;
     if (!sessionCookie) {
       return NextResponse.redirect(new URL("/login", request.url));
+    }
+
+    let valid = false;
+    try {
+      const res = await fetch(`${API_BASE}/api/me`, {
+        headers: {
+          Cookie: `koji_session=${sessionCookie}`,
+          "Content-Type": "application/json",
+        },
+      });
+      valid = res.ok;
+    } catch {
+      // API unreachable. Don't boot the user just because the API is down —
+      // let the page render and surface the real error via its own fetch.
+      valid = true;
+    }
+
+    if (!valid) {
+      const response = NextResponse.redirect(new URL("/login", request.url));
+      response.cookies.delete("koji_session");
+      return response;
     }
   }
 
