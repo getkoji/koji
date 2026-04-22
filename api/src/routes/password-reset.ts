@@ -2,14 +2,12 @@ import { Hono } from "hono";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@koji/db";
-import { sendEmail } from "../email";
 import { hashPassword } from "../auth/password";
 import { passwordResetEmail } from "../email-templates";
 import { createRateLimiter } from "../rate-limit";
 import type { Env } from "../env";
 
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
 
 // 5 forgot-password requests per IP per 15 minutes
 const forgotLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 5 });
@@ -64,10 +62,10 @@ passwordReset.post("/forgot-password", async (c) => {
       expiresAt,
     });
 
-    const resetUrl = `${APP_URL}/reset-password?token=${token}`;
+    const resetUrl = `${c.get("appUrl")}/reset-password?token=${token}`;
     const email = passwordResetEmail(user.name ?? "", resetUrl);
 
-    await sendEmail({
+    await c.get("emailSender").send({
       to: user.email,
       subject: email.subject,
       text: email.text,

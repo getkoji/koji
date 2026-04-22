@@ -18,7 +18,15 @@ import type { AuthAdapter, Principal } from "./adapter";
 import { resolvePermissions, type Permission } from "./roles";
 import type { Env } from "../env";
 
-const SESSION_COOKIE = "koji_session";
+const DEFAULT_SESSION_COOKIE = "koji_session";
+
+export interface AuthMiddlewareOptions {
+  /** Cookie name the middleware should pull a bearer token from. Defaults to
+   *  `koji_session` (the local adapter). Hosted/Clerk sets `__session` on the
+   *  app domain, so the platform Worker configures that here.
+   *  Authorization: Bearer tokens are always honoured as a fallback. */
+  sessionCookie?: string;
+}
 
 /** Routes that skip auth entirely. */
 const PUBLIC_PATHS = new Set([
@@ -48,7 +56,9 @@ function matchesNoTenantPath(path: string): boolean {
   return false;
 }
 
-export function authMiddleware(adapter: AuthAdapter) {
+export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions = {}) {
+  const sessionCookie = opts.sessionCookie ?? DEFAULT_SESSION_COOKIE;
+
   return async (c: Context<Env>, next: Next) => {
     const path = c.req.path;
 
@@ -65,7 +75,7 @@ export function authMiddleware(adapter: AuthAdapter) {
     }
 
     // --- Stage 1: Identify ---
-    const cookieToken = getCookie(c, SESSION_COOKIE);
+    const cookieToken = getCookie(c, sessionCookie);
     const bearerToken = c.req.header("Authorization")?.replace("Bearer ", "");
     const token = cookieToken || bearerToken;
 

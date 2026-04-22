@@ -29,14 +29,16 @@ import { and, eq, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
-import { decrypt, getMasterKey } from "../crypto/envelope";
+import { decrypt } from "../crypto/envelope";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 
 let _db: Db | null = null;
+let _masterKey: string | null = null;
 
-export function initDeliveryHandler(db: Db) {
+export function initDeliveryHandler(db: Db, masterKey: string | null) {
   _db = db;
+  _masterKey = masterKey;
 }
 
 export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
@@ -101,13 +103,12 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
   }
 
   // Decrypt the signing secret
-  const masterKey = getMasterKey();
-  if (!masterKey) {
+  if (!_masterKey) {
     throw new TerminalError("KOJI_MASTER_KEY is not set");
   }
 
   const secretBlob = target.secretEncrypted.toString("utf8");
-  const secret = decrypt(secretBlob, masterKey, job.tenantId);
+  const secret = decrypt(secretBlob, _masterKey, job.tenantId);
 
   // Build HMAC signature
   const timestamp = Math.floor(Date.now() / 1000);

@@ -23,7 +23,6 @@ import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
-import { createParseProvider } from "../parse/factory";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 import {
@@ -33,31 +32,33 @@ import {
 } from "../webhooks/emit";
 import { isTransientError } from "./errors";
 
-const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
+export interface IngestionHandlerConfig {
+  /** Base URL for the extract HTTP service (self-hosted sidecar or hosted proxy). */
+  extractUrl: string;
+}
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
 let _parseProvider: ParseProvider | null = null;
+let _extractUrl: string | null = null;
 
-export function initIngestionHandler(db: Db, storage: StorageProvider) {
+export function initIngestionHandler(
+  db: Db,
+  storage: StorageProvider,
+  config: IngestionHandlerConfig,
+) {
   _db = db;
   _storage = storage;
+  _extractUrl = config.extractUrl;
 }
 
 /**
  * Install the ParseProvider the motor should use for live parses.
- * Usually called from the API bootstrap; if never called, we lazy-init
- * a Docker-backed provider via {@link createParseProvider} on first use.
+ * Must be called before the first `handleIngestionProcess` invocation —
+ * there's no longer a fallback since the factory requires explicit config.
  */
 export function initParseProvider(provider: ParseProvider) {
   _parseProvider = provider;
-}
-
-function getParseProvider(): ParseProvider {
-  if (!_parseProvider) {
-    _parseProvider = createParseProvider();
-  }
-  return _parseProvider;
 }
 
 interface IngestionProcessPayload {
@@ -65,10 +66,16 @@ interface IngestionProcessPayload {
 }
 
 export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
-  if (!_db || !_storage) throw new Error("Ingestion handler not initialized");
+  if (!_db || !_storage || !_extractUrl) {
+    throw new Error("Ingestion handler not initialized");
+  }
+  if (!_parseProvider) {
+    throw new Error("Parse provider not initialized — call initParseProvider()");
+  }
   const db = _db;
   const storage = _storage;
-  const parseProvider = getParseProvider();
+  const parseProvider = _parseProvider;
+  const extractUrl = _extractUrl;
 
   const { documentId } = job.payload as unknown as IngestionProcessPayload;
   const tenantId = job.tenantId;
@@ -180,7 +187,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     extractResult = await recorder.run(
       "extract",
       async () => {
-        const res = await callExtract(markdown, schemaVersion.yamlSource);
+        const res = await callExtract(extractUrl, markdown, schemaVersion.yamlSource);
         return {
           value: res,
           summary: {
@@ -778,7 +785,7 @@ class TraceRecorder {
   }
 }
 
-async function callExtract(markdown: string, schemaYaml: string): Promise<ExtractResult> {
+async function callExtract(extractUrl: string, markdown: string, schemaYaml: string): Promise<ExtractResult> {
   let schemaDef: unknown;
   try {
     schemaDef = parseYaml(schemaYaml);
@@ -786,7 +793,7 @@ async function callExtract(markdown: string, schemaYaml: string): Promise<Extrac
     const msg = err instanceof Error ? err.message : "yaml parse";
     throw new TerminalError(`Invalid schema YAML: ${msg}`);
   }
-  const resp = await fetch(`${EXTRACT_URL}/extract`, {
+  const resp = await fetch(`${extractUrl}/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ markdown, schema_def: schemaDef }),

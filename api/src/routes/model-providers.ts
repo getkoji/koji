@@ -1,12 +1,13 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { eq, and, sql, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { encrypt, decrypt, getMasterKey, keyHint } from "../crypto/envelope";
+import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 
-function requireMasterKey(): string {
-  const key = getMasterKey();
+function requireMasterKey(c: Context<Env>): string {
+  const key = c.get("masterKey");
   if (!key) {
     throw new Error("KOJI_MASTER_KEY is not set. Cannot encrypt model provider credentials.");
   }
@@ -69,7 +70,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);
-  const masterKey = requireMasterKey();
+  const masterKey = requireMasterKey(c);
 
   const body = await c.req.json<{
     name: string;
@@ -148,7 +149,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
-  const masterKey = requireMasterKey();
+  const masterKey = requireMasterKey(c);
 
   const body = await c.req.json<{
     name?: string;
@@ -237,7 +238,7 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
-  const masterKey = requireMasterKey();
+  const masterKey = requireMasterKey(c);
 
   const body = await c.req.json<{
     credentials: string | Record<string, string>;
@@ -285,7 +286,7 @@ modelProviders.post("/:id/fetch-models", requires("endpoint:write"), async (c) =
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
-  const masterKey = requireMasterKey();
+  const masterKey = requireMasterKey(c);
 
   const [endpoint] = await withRLS(db, tenantId, (tx) =>
     tx
