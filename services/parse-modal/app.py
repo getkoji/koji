@@ -36,8 +36,11 @@ import modal
 # OpenCV/docling image stack, tesseract (+ English data), poppler, image
 # format libraries, base fonts, CA certs for model downloads.
 #
-# Torch comes from the CPU-only wheel index — CUDA builds are ~2GB
-# larger and we don't need them for Docling's CPU inference path.
+# Torch comes from the default CUDA wheel — we run on L4 GPUs for the
+# Docling + EasyOCR inference path. EasyOCR auto-detects CUDA via
+# ``torch.cuda.is_available()``. The CUDA build is ~2GB larger than
+# the CPU build but Modal caches image layers so the cost is a
+# one-time pull, not per-deploy.
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -53,10 +56,7 @@ image = (
         "fonts-dejavu-core",
         "ca-certificates",
     )
-    .pip_install(
-        "torch==2.4.1",
-        index_url="https://download.pytorch.org/whl/cpu",
-    )
+    .pip_install("torch==2.4.1")
     .pip_install(
         "docling==2.14.0",
         "transformers==4.44.2",
@@ -264,16 +264,17 @@ def _convert_bytes(
 # Node client (platform-60) uses the Modal JS SDK, which is cleaner than
 # HTTP for this synchronous request/response shape.
 #
-# ``min_containers=1`` keeps one instance warm so the first parse of the
-# day doesn't pay the cold-start cost (loading torch + docling models
-# into memory is ~15s even with the weights pre-baked into the image).
-# Tune this after we see real traffic — for light hosted volume a
-# scheduled warm-up might be cheaper than a pinned container.
+# GPU-backed: Docling + EasyOCR are 10-30x faster on an L4 than on
+# CPU for scanned-PDF workloads. ``min_containers`` intentionally
+# unset (defaults to 0) — L4s cost ~$0.80/hr idle, so we scale to
+# zero between jobs and accept a ~20-30s cold start on the first
+# invocation. Flip to ``min_containers=1`` when we have real demo
+# traffic worth pinning a warm container for.
 
 
 @app.function(
+    gpu="L4",
     timeout=600,
-    min_containers=1,
     memory=4096,
     cpu=2.0,
 )
@@ -340,8 +341,8 @@ from fastapi import Request  # noqa: E402
 
 
 @app.function(
+    gpu="L4",
     timeout=600,
-    min_containers=1,
     memory=4096,
     cpu=2.0,
 )
