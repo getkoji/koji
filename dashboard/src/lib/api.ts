@@ -270,6 +270,8 @@ export const jobs = {
         `/api/jobs/${jobSlug}/documents/${docId}/deliveries`,
       )
       .then((r) => r.data),
+  rerunDocument: (jobSlug: string, docId: string) =>
+    api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/rerun`, {}),
 };
 
 export interface DocumentDelivery {

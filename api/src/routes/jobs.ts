@@ -262,6 +262,77 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
 });
 
 /**
+ * POST /api/jobs/:slug/documents/:docId/rerun — re-queue a settled document.
+ *
+ * "Rerun" means: take an existing document (typically one that hit `failed`)
+ * and put it back on the extraction queue, reusing the same document + job
+ * rows. No new rows are created. We guard against two cases:
+ *
+ *   - Document is currently `extracting` → 409. Queuing again would risk two
+ *     workers racing on the same row and double-billing the LLM.
+ *   - Document is `delivered` or `review` → 409. These are settled outputs
+ *     downstream may already have consumed; rerunning would clobber validated
+ *     data silently. If an operator really needs to redo a delivered doc,
+ *     they can re-upload the file through the manual run endpoint.
+ *
+ * Anything else (`failed`, `received`, or the occasional stuck intermediate
+ * state) gets flipped back to `extracting`, the terminal timestamps are
+ * cleared so the UI doesn't show stale "completed at" strings, and the
+ * ingestion.process job is re-enqueued with the same documentId. Mirrors the
+ * enqueue pattern used by the pipeline manual-run and source-ingest paths.
+ */
+jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const queue = c.get("queue");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        documentId: schema.documents.id,
+        status: schema.documents.status,
+      })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  );
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  if (doc.status === "extracting") {
+    return c.json({ error: "Document is currently processing" }, 409);
+  }
+  if (doc.status === "delivered" || doc.status === "review") {
+    return c.json({ error: "Document already settled, cannot rerun" }, 409);
+  }
+
+  await withRLS(db, tenantId, (tx) =>
+    tx
+      .update(schema.documents)
+      .set({
+        status: "extracting",
+        completedAt: null,
+        emittedAt: null,
+        durationMs: null,
+      })
+      .where(eq(schema.documents.id, doc.documentId)),
+  );
+
+  await queue.enqueue(
+    "ingestion.process",
+    { documentId: doc.documentId },
+    { tenantId },
+  );
+
+  return c.json({ ok: true }, 202);
+});
+
+/**
  * GET /api/jobs/:slug/documents/:docId/markdown — the parsed markdown.
  *
  * Powers the "Parse" stage detail pane. Every parse result is written to
