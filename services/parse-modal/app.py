@@ -314,17 +314,12 @@ def parse(
 # — no extra cold-start, no extra network hop.
 
 
-# Use Starlette's raw ``Request`` rather than FastAPI's parameter
-# injection (``File(...)``/``Form(...)``). FastAPI's injection markers
-# (``File(...)``, ``Form(...)``) are evaluated at function *definition*
-# time, which is awkward given we want to avoid pulling them into this
-# module's top-level import path. Parsing the multipart body by hand is
-# a few lines and keeps the module layout simple.
-#
-# ``starlette`` is a transitive dep of ``modal`` (Modal uses FastAPI for
-# its web-endpoint runtime), so the import is safe both locally during
-# ``modal deploy`` and inside the deployed container.
-from starlette.requests import Request  # noqa: E402
+# Don't import starlette at module scope. ``modal deploy`` parses this
+# file locally to discover functions, and the deploy machine doesn't
+# need starlette on its python path — starlette + fastapi are bundled
+# into the Modal runtime container (the one where ``parse_http``
+# actually executes). Keep the parameter untyped so the deploy-time
+# import works and let the runtime do its own resolution.
 
 
 @app.function(
@@ -334,7 +329,7 @@ from starlette.requests import Request  # noqa: E402
     cpu=2.0,
 )
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-async def parse_http(request: Request):
+async def parse_http(request):
     """HTTP wrapper around :func:`parse`.
 
     Accepts a multipart form with:
