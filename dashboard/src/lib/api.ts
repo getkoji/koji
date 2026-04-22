@@ -373,6 +373,25 @@ export interface PipelineRecentJob {
   createdAt: string;
 }
 
+export interface RetryPolicy {
+  maxAttempts: number;
+  backoffBaseMs: number;
+  backoffMaxMs: number;
+  retryTransient: boolean;
+}
+
+/**
+ * Defaults applied when a pipeline's retry policy is null. Mirror of the
+ * server-side `DEFAULT_RETRY_POLICY` in `@koji/types/db` — kept in sync by
+ * hand since the dashboard does not consume `@koji/types` directly.
+ */
+export const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  maxAttempts: 12,
+  backoffBaseMs: 5_000,
+  backoffMaxMs: 300_000,
+  retryTransient: true,
+};
+
 export interface PipelineDetail {
   id: string;
   slug: string;
@@ -381,6 +400,7 @@ export interface PipelineDetail {
   activeSchemaVersionId: string | null;
   modelProviderId: string | null;
   configJson: Record<string, unknown> | null;
+  retryPolicy: RetryPolicy | null;
   reviewThreshold: string;
   yamlSource: string;
   triggerType: string;
@@ -424,6 +444,12 @@ export const pipelines = {
   deploy: (idOrSlug: string, schemaVersionId: string) =>
     api.post(`/api/pipelines/${idOrSlug}/deploy`, { schema_version_id: schemaVersionId }),
   delete: (idOrSlug: string) => api.delete(`/api/pipelines/${idOrSlug}`),
+  /** Update the retry policy. Pass `null` to clear the override. */
+  setRetryPolicy: (idOrSlug: string, policy: RetryPolicy | null) =>
+    api.patch<{ retryPolicy: RetryPolicy | null }>(
+      `/api/pipelines/${idOrSlug}/retry-policy`,
+      policy,
+    ),
   /** Manual run: upload one file, get back the new job slug. */
   run: (idOrSlug: string, file: File) => {
     const form = new FormData();

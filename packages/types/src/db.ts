@@ -68,6 +68,35 @@ export type Pipeline = InferSelectModel<typeof pipelines>;
 export type Source = InferSelectModel<typeof sources>;
 export type Ingestion = InferSelectModel<typeof ingestions>;
 
+/**
+ * Per-pipeline retry policy. Stored in `pipelines.retry_policy_json` as a
+ * nullable jsonb column — NULL means "use platform defaults" (see
+ * {@link DEFAULT_RETRY_POLICY}). Wiring into the motor + queue is a follow-up
+ * after platform-53 (transient-error classifier).
+ */
+export interface RetryPolicy {
+  /** Max delivery attempts before the job is marked terminal. */
+  maxAttempts: number;
+  /** Starting delay for exponential backoff, in milliseconds. */
+  backoffBaseMs: number;
+  /** Upper cap for the computed backoff delay, in milliseconds. */
+  backoffMaxMs: number;
+  /** If true, errors classified as transient are retried up to `maxAttempts`. */
+  retryTransient: boolean;
+}
+
+/**
+ * Defaults applied when `pipelines.retry_policy_json` is NULL. These mirror
+ * the hardcoded values in `api/src/queue/postgres.ts` (retained there until
+ * the motor consults this policy directly).
+ */
+export const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  maxAttempts: 12,
+  backoffBaseMs: 5_000,
+  backoffMaxMs: 300_000,
+  retryTransient: true,
+};
+
 export type ModelEndpoint = InferSelectModel<typeof modelEndpoints>;
 export type EndpointUsageRollup = InferSelectModel<typeof endpointUsageRollups>;
 

@@ -2,10 +2,50 @@ import { Hono } from "hono";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
+import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
+
+/**
+ * Narrow an unknown body into a {@link RetryPolicy}. Returns the validated
+ * policy on success, or an error message on failure. All four fields are
+ * required; partial updates are out of scope for the initial cut.
+ */
+function validateRetryPolicy(input: unknown): RetryPolicy | { error: string } {
+  if (input === null || typeof input !== "object") {
+    return { error: "retry policy must be an object" };
+  }
+  const obj = input as Record<string, unknown>;
+  const { maxAttempts, backoffBaseMs, backoffMaxMs, retryTransient } = obj;
+
+  if (typeof maxAttempts !== "number" || !Number.isFinite(maxAttempts) || maxAttempts < 1) {
+    return { error: "maxAttempts must be a positive number" };
+  }
+  if (
+    typeof backoffBaseMs !== "number" ||
+    !Number.isFinite(backoffBaseMs) ||
+    backoffBaseMs <= 0
+  ) {
+    return { error: "backoffBaseMs must be a positive number" };
+  }
+  if (
+    typeof backoffMaxMs !== "number" ||
+    !Number.isFinite(backoffMaxMs) ||
+    backoffMaxMs <= 0
+  ) {
+    return { error: "backoffMaxMs must be a positive number" };
+  }
+  if (backoffMaxMs < backoffBaseMs) {
+    return { error: "backoffMaxMs must be >= backoffBaseMs" };
+  }
+  if (typeof retryTransient !== "boolean") {
+    return { error: "retryTransient must be a boolean" };
+  }
+
+  return { maxAttempts, backoffBaseMs, backoffMaxMs, retryTransient };
+}
 
 export const pipelinesRouter = new Hono<Env>();
 
@@ -124,6 +164,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
         configJson: schema.pipelines.configJson,
+        retryPolicyJson: schema.pipelines.retryPolicyJson,
         reviewThreshold: schema.pipelines.reviewThreshold,
         yamlSource: schema.pipelines.yamlSource,
         triggerType: schema.pipelines.triggerType,
@@ -236,8 +277,13 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
       .where(eq(schema.jobs.pipelineId, pipelineId)),
   );
 
+  // `retryPolicyJson` is stored as jsonb; surface it as a typed `retryPolicy`
+  // field (null = fall back to platform defaults).
+  const retryPolicy = (pipeline.retryPolicyJson ?? null) as RetryPolicy | null;
+
   return c.json({
     ...pipeline,
+    retryPolicy,
     deployedVersion,
     connectedSources,
     recentJobs,
@@ -317,6 +363,48 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
 
   if (rows.length === 0) return c.json({ error: "Pipeline not found" }, 404);
   return c.json(rows[0]);
+});
+
+/**
+ * PATCH /api/pipelines/:idOrSlug/retry-policy — set or reset the retry policy.
+ *
+ * Accepts either a full {@link RetryPolicy} object or `null` to clear the
+ * override and fall back to platform defaults. Partial updates are not
+ * supported: callers must send all four fields together so the policy is
+ * internally consistent. Wired into the motor/queue is a follow-up after
+ * platform-53 (transient-error classifier).
+ */
+pipelinesRouter.patch("/:idOrSlug/retry-policy", requires("pipeline:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const idOrSlug = c.req.param("idOrSlug")!;
+  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const body = (await c.req.json().catch(() => undefined)) as unknown;
+
+  let nextValue: RetryPolicy | null;
+  if (body === null) {
+    nextValue = null;
+  } else {
+    const parsed = validateRetryPolicy(body);
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    nextValue = parsed;
+  }
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .update(schema.pipelines)
+      .set({ retryPolicyJson: nextValue, updatedAt: new Date() })
+      .where(eq(schema.pipelines.id, pipelineId))
+      .returning({
+        id: schema.pipelines.id,
+        retryPolicyJson: schema.pipelines.retryPolicyJson,
+      }),
+  );
+
+  if (rows.length === 0) return c.json({ error: "Pipeline not found" }, 404);
+  return c.json({ retryPolicy: (rows[0]!.retryPolicyJson ?? null) as RetryPolicy | null });
 });
 
 /**
