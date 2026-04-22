@@ -262,18 +262,19 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
 });
 
 /**
- * POST /api/jobs/:slug/documents/:docId/rerun — re-queue a settled document.
+ * POST /api/jobs/:slug/documents/:docId/rerun — re-queue a document.
  *
- * "Rerun" means: take an existing document (typically one that hit `failed`)
- * and put it back on the extraction queue, reusing the same document + job
- * rows. No new rows are created. We guard against two cases:
+ * "Rerun" means: take an existing document and put it back on the extraction
+ * queue, reusing the same document + job rows. No new rows are created.
  *
- *   - Document is currently `extracting` → 409. Queuing again would risk two
- *     workers racing on the same row and double-billing the LLM.
- *   - Document is `delivered` or `review` → 409. These are settled outputs
- *     downstream may already have consumed; rerunning would clobber validated
- *     data silently. If an operator really needs to redo a delivered doc,
- *     they can re-upload the file through the manual run endpoint.
+ * The only guard is against an in-flight race: if status is already
+ * `extracting`, two workers could end up on the same document (and we'd
+ * double-bill the LLM). Every other status — `failed`, `delivered`,
+ * `review`, stuck intermediate states — is rerunnable. Operators need this
+ * for schema iteration, for retrying after a fix, and for re-emitting
+ * webhook events. The new extraction overwrites the existing row's result
+ * on completion; any downstream consumer that needs a canonical history
+ * should be listening to webhook events, not polling the document.
  *
  * Anything else (`failed`, `received`, or the occasional stuck intermediate
  * state) gets flipped back to `extracting`, the terminal timestamps are
@@ -306,9 +307,6 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
 
   if (doc.status === "extracting") {
     return c.json({ error: "Document is currently processing" }, 409);
-  }
-  if (doc.status === "delivered" || doc.status === "review") {
-    return c.json({ error: "Document already settled, cannot rerun" }, 409);
   }
 
   await withRLS(db, tenantId, (tx) =>

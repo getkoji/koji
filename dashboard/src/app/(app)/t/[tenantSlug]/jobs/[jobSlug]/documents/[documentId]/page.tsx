@@ -209,18 +209,11 @@ export default function TraceViewPage() {
           <>
             <GhostButton
               onClick={handleRerun}
-              disabled={
-                rerunning ||
-                data.status === "extracting" ||
-                data.status === "delivered" ||
-                data.status === "review"
-              }
+              disabled={rerunning || data.status === "extracting"}
               title={
                 data.status === "extracting"
                   ? "Document is currently processing"
-                  : data.status === "delivered" || data.status === "review"
-                    ? "Document already settled"
-                    : "Re-queue this document for extraction"
+                  : "Re-queue this document for extraction"
               }
             >
               {rerunning ? "Re-queueing…" : "Rerun"}
