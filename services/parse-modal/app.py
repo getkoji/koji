@@ -326,12 +326,17 @@ def parse(
 # falls through to query-param injection and every call 422s with
 # ``{"detail":[{"type":"missing","loc":["query","request"]}]}``.
 #
-# ``modal deploy`` imports this module locally, so starlette has to be
-# importable on the deploy machine. It's a tiny pure-python package —
-# `pip install starlette` (or just install `fastapi`, which pulls it in)
-# on whichever box runs `modal deploy` (README documents this). The
-# Modal runtime container already has both.
-from starlette.requests import Request  # noqa: E402
+# Import from ``fastapi`` (not ``starlette``) — FastAPI's param-source
+# detector matches on the fully-qualified ``fastapi.Request`` class and
+# doesn't always recognise the raw ``starlette.requests.Request`` even
+# though they are the same underlying type. Using ``fastapi.Request``
+# is the documented path.
+#
+# ``modal deploy`` imports this module locally, so ``fastapi`` has to
+# be importable on the deploy machine (`pip install fastapi`). The
+# Modal runtime container already has it via the image's
+# ``fastapi[standard]`` pin.
+from fastapi import Request  # noqa: E402
 
 
 @app.function(
