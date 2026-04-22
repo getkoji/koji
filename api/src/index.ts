@@ -33,7 +33,8 @@ import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
 import { initEmitter } from "./webhooks/emit";
 import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
-import { initIngestionHandler, handleIngestionProcess } from "./ingestion/process";
+import { initIngestionHandler, initParseProvider, handleIngestionProcess } from "./ingestion/process";
+import { createParseProvider } from "./parse/factory";
 import type { Env } from "./env";
 
 const DATABASE_URL =
@@ -113,6 +114,7 @@ async function start() {
   initEmitter(queue, db);
   initDeliveryHandler(db);
   initIngestionHandler(db, storage);
+  initParseProvider(createParseProvider());
 
   // Start background worker
   startWorker(queue, {

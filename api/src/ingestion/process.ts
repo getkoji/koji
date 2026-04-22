@@ -22,6 +22,8 @@ import { parse as parseYaml } from "yaml";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
+import type { ParseProvider } from "../parse/provider";
+import { createParseProvider } from "../parse/factory";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 import {
@@ -31,15 +33,31 @@ import {
 } from "../webhooks/emit";
 import { isTransientError } from "./errors";
 
-const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
 const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
+let _parseProvider: ParseProvider | null = null;
 
 export function initIngestionHandler(db: Db, storage: StorageProvider) {
   _db = db;
   _storage = storage;
+}
+
+/**
+ * Install the ParseProvider the motor should use for live parses.
+ * Usually called from the API bootstrap; if never called, we lazy-init
+ * a Docker-backed provider via {@link createParseProvider} on first use.
+ */
+export function initParseProvider(provider: ParseProvider) {
+  _parseProvider = provider;
+}
+
+function getParseProvider(): ParseProvider {
+  if (!_parseProvider) {
+    _parseProvider = createParseProvider();
+  }
+  return _parseProvider;
 }
 
 interface IngestionProcessPayload {
@@ -50,6 +68,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   if (!_db || !_storage) throw new Error("Ingestion handler not initialized");
   const db = _db;
   const storage = _storage;
+  const parseProvider = getParseProvider();
 
   const { documentId } = job.payload as unknown as IngestionProcessPayload;
   const tenantId = job.tenantId;
@@ -154,7 +173,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     const markdown = await recorder.run(
       "parse",
       async () => {
-        const md = await getOrParse(db, storage, tenantId, document);
+        const md = await getOrParse(db, storage, parseProvider, tenantId, document);
         return { value: md, summary: { markdown_chars: md.length } };
       },
     );
@@ -484,6 +503,7 @@ interface ExtractResult {
 async function getOrParse(
   db: Db,
   storage: StorageProvider,
+  parseProvider: ParseProvider,
   tenantId: string,
   document: {
     id: string;
@@ -532,7 +552,11 @@ async function getOrParse(
 
   const mimeType = document.mimeType || mimeTypeFor(document.filename);
   const liveStart = Date.now();
-  const parseResult = await callParse(document.filename, mimeType, blob.data);
+  const parseResult = await parseProvider.parse({
+    filename: document.filename,
+    mimeType,
+    fileBuffer: blob.data,
+  });
   const parseElapsedMs = Date.now() - liveStart;
 
   // 3. Cache write (best-effort)
@@ -569,12 +593,6 @@ async function getOrParse(
   }
 
   return parseResult.markdown;
-}
-
-interface ParseResponse {
-  markdown: string;
-  pages?: number;
-  ocr_skipped?: boolean;
 }
 
 /**
@@ -758,23 +776,6 @@ class TraceRecorder {
     await withRLS(db, tenantId, (tx) => tx.insert(schema.traceStages).values(rows));
     return true;
   }
-}
-
-async function callParse(
-  filename: string,
-  mimeType: string,
-  fileBuffer: Buffer,
-): Promise<ParseResponse> {
-  const form = new FormData();
-  form.append("file", new Blob([fileBuffer], { type: mimeType }), filename);
-  const resp = await fetch(`${PARSE_URL}/parse`, { method: "POST", body: form });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`parse ${resp.status}: ${body.slice(0, 300)}`);
-  }
-  const result = (await resp.json()) as ParseResponse;
-  if (!result.markdown) throw new Error("parse returned no markdown");
-  return result;
 }
 
 async function callExtract(markdown: string, schemaYaml: string): Promise<ExtractResult> {
