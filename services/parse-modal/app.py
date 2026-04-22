@@ -65,6 +65,12 @@ image = (
         "huggingface-hub==0.25.2",
         "pillow==10.4.0",
         "pypdfium2==4.30.0",
+        # Required by @modal.fastapi_endpoint. Modal 1.x removed the
+        # implicit fastapi install from runtime images; web endpoints
+        # now have to declare it themselves. `fastapi[standard]` pulls
+        # the common extras (uvicorn, python-multipart for form bodies,
+        # etc.) that the endpoint actually uses.
+        "fastapi[standard]==0.115.6",
     )
     # Pre-download the Docling layout/OCR model weights at image build
     # time. Without this, the first invocation on a cold container stalls
