@@ -350,20 +350,22 @@ function FilterBar({
 
 function JobsDataGrid({ jobs, tenantSlug }: { jobs: JobRow[]; tenantSlug: string }) {
   return (
-    <div className="border border-border rounded-sm overflow-hidden bg-cream">
-      <div className="grid grid-cols-[220px_minmax(140px,1fr)_96px_80px_1fr_72px_92px_96px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
-        <ColHead>Job ID</ColHead>
-        <ColHead>Pipeline</ColHead>
-        <ColHead>Status</ColHead>
-        <ColHead className="text-right">Documents</ColHead>
-        <ColHead>Progress</ColHead>
-        <ColHead className="text-right">Rate</ColHead>
-        <ColHead className="text-right">Duration</ColHead>
-        <ColHead className="text-right">Created</ColHead>
+    <div className="border border-border rounded-sm bg-cream overflow-x-auto">
+      <div className="min-w-[960px]">
+        <div className="grid grid-cols-[220px_minmax(140px,1fr)_96px_80px_1fr_72px_92px_96px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
+          <ColHead>Job ID</ColHead>
+          <ColHead>Pipeline</ColHead>
+          <ColHead>Status</ColHead>
+          <ColHead className="text-right">Documents</ColHead>
+          <ColHead>Progress</ColHead>
+          <ColHead className="text-right">Rate</ColHead>
+          <ColHead className="text-right">Duration</ColHead>
+          <ColHead className="text-right">Created</ColHead>
+        </div>
+        {jobs.map((job) => (
+          <JobRowItem key={job.slug} job={job} tenantSlug={tenantSlug} />
+        ))}
       </div>
-      {jobs.map((job) => (
-        <JobRowItem key={job.slug} job={job} tenantSlug={tenantSlug} />
-      ))}
     </div>
   );
 }
