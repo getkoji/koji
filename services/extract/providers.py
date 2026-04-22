@@ -12,9 +12,9 @@ Current adapters:
 - :class:`OpenAIProvider` — OpenAI + any OpenAI-compatible endpoint
   (vLLM, TGI, self-hosted). Also used as a stopgap for providers whose
   dedicated adapter hasn't shipped yet.
-
-Planned (stubbed here; implemented in platform-77/78/79):
 - :class:`AzureOpenAIProvider` — Azure OpenAI with deployment routing
+
+Planned (stubbed here; implemented in platform-78/79):
 - :class:`BedrockProvider` — AWS Bedrock with SigV4 signing
 - :class:`AnthropicProvider` — native Anthropic messages API
 """
@@ -134,12 +134,17 @@ class OpenAIProvider(ModelProvider):
 
 
 class AzureOpenAIProvider(ModelProvider):
-    """Azure OpenAI. Implemented in platform-77.
+    """Azure OpenAI.
 
     The protocol differs from stock OpenAI in three ways:
     - URL is ``{base_url}/openai/deployments/{deployment}/chat/completions``
     - ``api-version`` query param is required
     - Auth is ``api-key`` header rather than ``Authorization: Bearer``
+
+    Request/response body shapes are identical to OpenAI chat
+    completions. The ``model`` field is effectively ignored by Azure
+    (the deployment already pins a model) but we include it for
+    parity with the OpenAI adapter.
     """
 
     def __init__(
@@ -156,14 +161,57 @@ class AzureOpenAIProvider(ModelProvider):
         self.deployment_name = deployment_name
         self.api_version = api_version
 
-    async def generate(self, prompt: str, json_mode: bool = True) -> str:
-        raise NotImplementedError(
-            "AzureOpenAIProvider is stubbed — see platform-77 for the "
-            "full implementation (deployment routing + api-version)."
+    def _headers(self) -> dict:
+        return {
+            "api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
+    def _url(self) -> str:
+        return (
+            f"{self.base_url}/openai/deployments/{self.deployment_name}"
+            f"/chat/completions?api-version={self.api_version}"
         )
 
+    async def generate(self, prompt: str, json_mode: bool = True) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        async with httpx.AsyncClient(timeout=300) as client:
+            payload: dict = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 4096,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+            resp = await client.post(
+                self._url(),
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        raise NotImplementedError("AzureOpenAIProvider — see platform-77")
+        async with httpx.AsyncClient(timeout=300) as client:
+            payload: dict = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 4096,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            resp = await client.post(
+                self._url(),
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            choice = resp.json()["choices"][0]
+            return choice["message"]
 
 
 class BedrockProvider(ModelProvider):
