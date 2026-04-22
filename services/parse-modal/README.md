@@ -48,10 +48,12 @@ The first build takes ~10 min — Docling + torch-cpu is a ~5 GB image
 and model weights are pre-baked into the image. Subsequent deploys that
 only touch Python source are seconds.
 
-The deployed function is invocable as:
+The deployed app exposes two entry points:
 
-- Python: `modal.Function.lookup("koji-parse", "parse").remote(...)`
-- JavaScript / Node: `modal.Function.lookup("koji-parse", "parse").remote(...)` via `@modal-labs/modal` (what platform-60 will use)
+- **SDK function** — `modal.Function.lookup("koji-parse", "parse").remote(...)` in Python. Direct byte-in / dict-out.
+- **HTTP endpoint** — `parse_http` is a `@modal.fastapi_endpoint(requires_proxy_auth=True)` wrapper around the same function. Modal prints the generated URL at deploy time (something like `https://<workspace>--koji-parse-parse-http.modal.run`). The Node API client (see `api/src/parse/modal.ts`) hits this endpoint with a multipart POST.
+
+The HTTP endpoint is what the platform uses — Modal's Python SDK has no stable Node equivalent for remote-invoking a function, so we go through HTTP instead.
 
 ## Local smoke test
 
@@ -88,16 +90,61 @@ Returns:
 ```
 
 The docker service's `/parse` endpoint returns the same fields plus
-`filename` and `elapsed_seconds`. The Modal client (platform-60) adds
-those back in the adapter layer so the API shape the rest of the
-platform sees stays identical.
+`filename` and `elapsed_seconds`. The HTTP wrapper below adds those
+back in so the response shape matches the docker service 1:1.
+
+### HTTP endpoint contract
+
+```
+POST https://<workspace>--koji-parse-parse-http.modal.run
+Modal-Key: <proxy-auth-token-id>
+Modal-Secret: <proxy-auth-token-secret>
+Content-Type: multipart/form-data
+
+fields:
+  file       - the document bytes (required)
+  filename   - original filename (required)
+  mime_type  - optional MIME type
+```
+
+Returns `{filename, markdown, pages, elapsed_seconds, ocr_skipped}` on
+success or `{error, filename}` with status 422 on parse failures.
+
+#### `curl` smoke test
+
+```bash
+curl -sS -X POST "$KOJI_PARSE_MODAL_URL" \
+  -H "Modal-Key: $MODAL_TOKEN_ID" \
+  -H "Modal-Secret: $MODAL_TOKEN_SECRET" \
+  -F "file=@sample.pdf" \
+  -F "filename=sample.pdf" \
+  -F "mime_type=application/pdf"
+```
 
 ### Error handling
 
-Modal surfaces exceptions from `parse.remote(...)` to the caller. The
-client adapter (platform-60) is responsible for mapping them to the
-same 422 shape the docker `/parse` endpoint returns (`{error,
-filename}`). No error mapping is done here.
+Modal surfaces exceptions from `parse.remote(...)` / `parse.local(...)`
+to the caller. The HTTP wrapper (`parse_http`) catches them and returns
+the 422 `{error, filename}` shape the docker `/parse` endpoint uses, so
+the Node adapter can treat both providers identically.
+
+## Wiring the API
+
+The platform API (`koji/api`) reads these env vars:
+
+| Var | Meaning |
+|-----|---------|
+| `KOJI_PARSE_BACKEND=modal` | Switch the factory to `ModalParseProvider`. Default is `docker`. |
+| `KOJI_PARSE_MODAL_URL` | The `parse_http` endpoint URL printed by `modal deploy`. |
+| `MODAL_TOKEN_ID` | Proxy-auth token ID, sent as `Modal-Key` header. |
+| `MODAL_TOKEN_SECRET` | Proxy-auth token secret, sent as `Modal-Secret` header. |
+
+Deploy flow:
+
+1. `modal deploy app.py` — builds the image, pushes the functions, prints the `parse-http` URL.
+2. Copy that URL into `KOJI_PARSE_MODAL_URL` in the API's env (Cloudflare Worker secret / `.env` / etc.).
+3. Create a proxy-auth token in the Modal dashboard (Settings → Proxy Auth Tokens) and set `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` to the generated values. These are **not** the same as the CLI account tokens — proxy-auth tokens are specifically for protecting web endpoints.
+4. Restart the API.
 
 ## Tuning
 
