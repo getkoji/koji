@@ -201,12 +201,13 @@ async def parallel_extract(
     max_concurrent: int = 3,
     relevant_categories: set[str] | None = None,
     classify_mode: str = "keywords",
+    endpoint_cfg=None,  # EndpointConfig from main.py; see providers.create_provider
 ) -> dict:
     """Split → classify → filter → extract in parallel → merge."""
     from .classify import classify_chunks, filter_relevant
     from .providers import create_provider
 
-    provider = create_provider(model)
+    provider = create_provider(model, endpoint_cfg=endpoint_cfg)
 
     all_chunks = split_into_chunks(markdown)
     print(f"[koji-extract] Split: {len(all_chunks)} chunks")

@@ -888,6 +888,7 @@ async def intelligent_extract(
     model: str,
     max_concurrent: int = 5,
     classify_config: dict | None = None,
+    endpoint_cfg=None,  # EndpointConfig from main.py; forward-referenced to avoid circular import
 ) -> dict:
     """Run the full intelligent extraction pipeline.
 
@@ -921,7 +922,7 @@ async def intelligent_extract(
     byte-identical to the pre-classifier pipeline.
     """
     start = time.time()
-    provider = create_provider(model)
+    provider = create_provider(model, endpoint_cfg=endpoint_cfg)
     schema_name = schema_def.get("name", "document")
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -1101,7 +1102,12 @@ async def intelligent_extract(
         )
 
     classify_model = classify_config.get("model") or model
-    classify_provider = create_provider(classify_model)
+    # The classifier reuses the same tenant endpoint as the main extract
+    # unless the schema explicitly overrides the model string — in which
+    # case endpoint_cfg no longer applies (different model, potentially
+    # different provider) and we fall back to env-var routing.
+    classify_endpoint_cfg = endpoint_cfg if classify_config.get("model") is None else None
+    classify_provider = create_provider(classify_model, endpoint_cfg=classify_endpoint_cfg)
     types = classify_config.get("types") or []
     short_doc_chunks = classify_config.get("short_doc_chunks")
     coalesce_threshold = classify_config.get("coalesce_other_threshold")
