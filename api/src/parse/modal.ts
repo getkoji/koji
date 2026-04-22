@@ -21,11 +21,23 @@
  * Tokens) and plumb it into the API as `MODAL_TOKEN_ID` /
  * `MODAL_TOKEN_SECRET`. Modal checks the `Modal-Key` and `Modal-Secret`
  * request headers against the proxy token.
+ *
+ * Modal's fastapi_endpoint proxy has a 150s response-write deadline.
+ * If the function is still running when that deadline hits, Modal
+ * returns 303 redirecting to a polling URL (same path + a
+ * `__modal_function_call_id=fc-...` query param). We have to follow
+ * that redirect manually: the RFC says 303 after POST converts to GET
+ * (fetch's default does that correctly), but then the POLL URL also
+ * returns 303s repeatedly until the function settles, and fetch's
+ * default redirect-follow gives up after 20 hops AND has no way to
+ * reattach our auth headers cross-origin. So we disable auto-follow
+ * and drive the loop ourselves.
  */
 
 import type { ParseProvider, ParseResponse } from "./provider";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — covers L4 cold start + full OCR of large scanned PDFs
+const MAX_POLLS = 80; // 80 × 150s = 200 min hard ceiling; real limit is timeoutMs
 
 interface RawParseResponse {
   filename?: string;
@@ -75,20 +87,85 @@ export class ModalParseProvider implements ParseProvider {
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
     const { filename, mimeType, fileBuffer } = input;
+    const deadline = Date.now() + this.timeoutMs;
 
     const form = new FormData();
     form.append("file", new Blob([fileBuffer], { type: mimeType }), filename);
     form.append("filename", filename);
     form.append("mime_type", mimeType);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // Initial POST. Disable fetch's built-in redirect follow — we drive
+    // the 303 polling loop manually so we can reattach auth headers on
+    // each hop and cap total wait time against our own deadline.
+    let resp = await this.fetchNoFollow(this.url, {
+      method: "POST",
+      body: form,
+      deadline,
+    });
 
-    let resp: Response;
+    // Follow the 303 → poll → 303 → ... → 200 chain.
+    let pollUrl: string | null = null;
+    for (let hop = 0; hop < MAX_POLLS; hop++) {
+      if (resp.status === 200) {
+        return this.readResponse(resp);
+      }
+
+      if (resp.status === 303 || resp.status === 302) {
+        const loc = resp.headers.get("location");
+        if (!loc) {
+          throw new Error(`parse (modal): ${resp.status} with no Location header`);
+        }
+        // Location can be relative. Resolve against the last URL we spoke to.
+        pollUrl = new URL(loc, pollUrl ?? this.url).toString();
+        // Drain the body to free the connection.
+        await resp.arrayBuffer().catch(() => undefined);
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `parse timeout after ${this.timeoutMs}ms (modal, stuck polling at ${pollUrl})`,
+          );
+        }
+        resp = await this.fetchNoFollow(pollUrl, { method: "GET", deadline });
+        continue;
+      }
+
+      // Any other status is terminal.
+      const body = await resp.text().catch(() => "");
+      throw new Error(
+        `parse ${resp.status} (modal): ${body.slice(0, 300) || "(empty body)"}`,
+      );
+    }
+
+    throw new Error(
+      `parse (modal): redirect loop exceeded ${MAX_POLLS} hops at ${pollUrl ?? this.url}`,
+    );
+  }
+
+  /**
+   * fetch() wrapper that (a) disables auto-redirect so we can drive the
+   * poll loop ourselves, (b) attaches Modal proxy-auth headers on every
+   * request, and (c) times out each individual hop against the overall
+   * deadline so a hung Modal backend can't wedge us forever.
+   */
+  private async fetchNoFollow(
+    url: string,
+    opts: { method: "GET" | "POST"; body?: FormData; deadline: number },
+  ): Promise<Response> {
+    const remaining = opts.deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error("parse timeout (modal) — deadline exceeded before request");
+    }
+    // Per-hop timeout: cap at remaining budget, but don't exceed 160s
+    // (Modal's own proxy deadline is 150s, so anything longer than ~160
+    // on a single hop means the server is stuck, not just working).
+    const hopTimeout = Math.min(remaining, 160_000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), hopTimeout);
+
     try {
-      resp = await fetch(this.url, {
-        method: "POST",
-        body: form,
+      return await fetch(url, {
+        method: opts.method,
+        body: opts.body,
+        redirect: "manual",
         headers: {
           "Modal-Key": this.tokenId,
           "Modal-Secret": this.tokenSecret,
@@ -97,7 +174,9 @@ export class ModalParseProvider implements ParseProvider {
       });
     } catch (err) {
       if ((err as { name?: string }).name === "AbortError") {
-        throw new Error(`parse timeout after ${this.timeoutMs}ms (modal)`);
+        throw new Error(
+          `parse (modal) hop timeout: no response from ${url} within ${hopTimeout}ms`,
+        );
       }
       throw new Error(
         `parse request failed (modal): ${(err as Error).message ?? String(err)}`,
@@ -105,12 +184,9 @@ export class ModalParseProvider implements ParseProvider {
     } finally {
       clearTimeout(timer);
     }
+  }
 
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`parse ${resp.status} (modal): ${body.slice(0, 300)}`);
-    }
-
+  private async readResponse(resp: Response): Promise<ParseResponse> {
     const result = (await resp.json()) as RawParseResponse;
     if (!result.markdown) {
       if (result.error) {
