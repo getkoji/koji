@@ -557,7 +557,7 @@ function DocumentRow({
         {formatDuration(doc.durationMs)}
       </span>
       <div className="flex items-center justify-end gap-2 font-mono text-[10px] text-ink-3 group-hover:text-vermillion-2 transition-colors">
-        {isFailed && (
+        {status !== "extracting" && (
           <button
             type="button"
             onClick={handleRerun}
