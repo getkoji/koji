@@ -78,6 +78,23 @@ export default function TraceViewPage() {
   // Clamp selected index to stages length so a short trace doesn't blow up.
   const [selectedStage, setSelectedStage] = useState(0);
   const [copiedTrace, setCopiedTrace] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
+
+  const handleRerun = useCallback(async () => {
+    if (!data) return;
+    setRerunning(true);
+    try {
+      await jobsApi.rerunDocument(jobSlug, documentId);
+      // Polling loop (every 3s) will pick up the status flip to `extracting`,
+      // but kick a refetch immediately so the UI feels responsive.
+      await refetch();
+    } catch {
+      // Swallow — the refetch below will surface the real state, and the
+      // button falls back to "Rerun" so the user can try again.
+    } finally {
+      setRerunning(false);
+    }
+  }, [data, jobSlug, documentId, refetch]);
 
   const handleCopyTrace = useCallback(() => {
     const id = data?.trace?.traceExternalId;
@@ -190,6 +207,24 @@ export default function TraceViewPage() {
         }
         actions={
           <>
+            <GhostButton
+              onClick={handleRerun}
+              disabled={
+                rerunning ||
+                data.status === "extracting" ||
+                data.status === "delivered" ||
+                data.status === "review"
+              }
+              title={
+                data.status === "extracting"
+                  ? "Document is currently processing"
+                  : data.status === "delivered" || data.status === "review"
+                    ? "Document already settled"
+                    : "Re-queue this document for extraction"
+              }
+            >
+              {rerunning ? "Re-queueing…" : "Rerun"}
+            </GhostButton>
             <GhostButton
               onClick={handleCopyTrace}
               disabled={!data.trace?.traceExternalId}

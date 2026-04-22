@@ -148,7 +148,12 @@ export default function JobDetailPage() {
             : "No documents match this filter."}
         </div>
       ) : (
-        <DocumentsGrid documents={sortedDocs} tenantSlug={tenantSlug} jobSlug={job.slug} />
+        <DocumentsGrid
+          documents={sortedDocs}
+          tenantSlug={tenantSlug}
+          jobSlug={job.slug}
+          onRerun={refetchDocs}
+        />
       )}
     </ListLayout>
   );
@@ -432,10 +437,12 @@ function DocumentsGrid({
   documents,
   tenantSlug,
   jobSlug,
+  onRerun,
 }: {
   documents: JobDocument[];
   tenantSlug: string;
   jobSlug: string;
+  onRerun: () => void;
 }) {
   return (
     <div className="border border-border rounded-sm overflow-hidden bg-cream">
@@ -448,7 +455,13 @@ function DocumentsGrid({
         <ColHead className="text-right">Trace</ColHead>
       </div>
       {documents.map((doc) => (
-        <DocumentRow key={doc.id} doc={doc} tenantSlug={tenantSlug} jobSlug={jobSlug} />
+        <DocumentRow
+          key={doc.id}
+          doc={doc}
+          tenantSlug={tenantSlug}
+          jobSlug={jobSlug}
+          onRerun={onRerun}
+        />
       ))}
     </div>
   );
@@ -474,10 +487,12 @@ function DocumentRow({
   doc,
   tenantSlug,
   jobSlug,
+  onRerun,
 }: {
   doc: JobDocument;
   tenantSlug: string;
   jobSlug: string;
+  onRerun: () => void;
 }) {
   const status = normalizeDocStatus(doc.status);
   const isFailed = status === "failed";
@@ -494,6 +509,26 @@ function DocumentRow({
     : isReview
     ? "bg-[#B6861A]/[0.08] hover:bg-[#B6861A]/[0.14]"
     : "hover:bg-cream-2/60";
+
+  const [rerunning, setRerunning] = useState(false);
+
+  const handleRerun = useCallback(
+    async (e: React.MouseEvent<HTMLButtonElement>) => {
+      // The row itself is a <Link> — stop the click from navigating.
+      e.preventDefault();
+      e.stopPropagation();
+      setRerunning(true);
+      try {
+        await jobsApi.rerunDocument(jobSlug, doc.id);
+        onRerun();
+      } catch {
+        // Refetch will pick up the real state; no modal, no alert.
+      } finally {
+        setRerunning(false);
+      }
+    },
+    [jobSlug, doc.id, onRerun],
+  );
 
   return (
     <Link
@@ -521,9 +556,21 @@ function DocumentRow({
       <span className="text-right font-mono text-[11px] text-ink-3">
         {formatDuration(doc.durationMs)}
       </span>
-      <div className="flex items-center justify-end gap-0.5 font-mono text-[10px] text-ink-3 group-hover:text-vermillion-2 transition-colors">
-        view
-        <ChevronRight className="w-3 h-3" />
+      <div className="flex items-center justify-end gap-2 font-mono text-[10px] text-ink-3 group-hover:text-vermillion-2 transition-colors">
+        {isFailed && (
+          <button
+            type="button"
+            onClick={handleRerun}
+            disabled={rerunning}
+            className="font-mono text-[10px] text-ink-3 hover:text-vermillion-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {rerunning ? "…" : "Rerun"}
+          </button>
+        )}
+        <span className="flex items-center gap-0.5">
+          view
+          <ChevronRight className="w-3 h-3" />
+        </span>
       </div>
     </Link>
   );
