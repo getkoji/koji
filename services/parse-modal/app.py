@@ -84,19 +84,21 @@ image = (
         "fastapi[standard]==0.115.6",
         extra_index_url="https://download.pytorch.org/whl/cu121",
     )
-    # Pre-download the Docling layout/OCR model weights at image build
-    # time. Without this, the first invocation on a cold container stalls
-    # for 20-40s pulling weights from HuggingFace, which defeats the
-    # point of keeping a warm container.
+    # Pre-download model weights at image build time so cold starts
+    # don't stall pulling from HuggingFace or EasyOCR's weight host
+    # mid-request — the latter is the one that actually matters in
+    # production because its download host has been flaky (connection
+    # reset mid-fetch → first scanned-PDF invocation 422s).
     #
-    # ``StandardPdfPipeline.download_models_hf()`` (Docling 2.x) fetches
-    # the layout + tableformer weights. EasyOCR weights are fetched
-    # lazily by EasyOCR itself the first time OCR runs; those get cached
-    # on the first real invocation. Acceptable today — revisit if the
-    # first-scan latency shows up in user-facing metrics.
+    # Docling: ``StandardPdfPipeline.download_models_hf()`` grabs the
+    # layout + tableformer weights. EasyOCR: instantiating a
+    # ``Reader(['en'])`` triggers the detector + recognizer download.
+    # We bake both into the image so the first scanned-PDF invocation
+    # is compute-only, not network-bound.
     .run_commands(
         "python -c 'from docling.pipeline.standard_pdf_pipeline import "
-        "StandardPdfPipeline; StandardPdfPipeline.download_models_hf()'"
+        "StandardPdfPipeline; StandardPdfPipeline.download_models_hf()'",
+        "python -c 'import easyocr; easyocr.Reader([\"en\"], gpu=False, download_enabled=True)'",
     )
 )
 
