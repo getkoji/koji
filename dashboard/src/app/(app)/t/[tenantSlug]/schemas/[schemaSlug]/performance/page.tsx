@@ -1,10 +1,12 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import Link from "next/link";
+import { useParams, usePathname } from "next/navigation";
 import { useCallback, useState } from "react";
-import { BarChart3 } from "lucide-react";
+import { BarChart3, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { EmptyState } from "@/components/shared/EmptyState";
 
 // ── Types ──
 
@@ -156,9 +158,11 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
 
 export default function PerformancePage() {
   const params = useParams();
+  const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+  const tenantSlug = (params.tenantSlug as string | undefined) ?? pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
-  const { data, loading } = useApi(
+  const { data, loading, error } = useApi(
     useCallback(() => api.get<PerformanceData>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
@@ -167,6 +171,44 @@ export default function PerformancePage() {
   const runs = data?.runs ?? [];
   const perRunFieldAccuracy = data?.perRunFieldAccuracy ?? [];
   const corpusCount = data?.corpusCount ?? 0;
+
+  // ── Not found / API error ──
+  // Branch before the "no validate runs" empty state — a 404 on the
+  // schema itself would otherwise masquerade as "no runs yet", which
+  // lies about the breadcrumb.
+  if (error) {
+    const notFound = error.message.toLowerCase().includes("not found");
+    return (
+      <div className="flex flex-col h-[calc(100vh-60px)]">
+        <div className="px-8 pt-5 pb-4 border-b border-border shrink-0">
+          <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-2">
+            <span className="text-ink-3">{schemaSlug}</span>
+            <span className="text-cream-4">/</span>
+            <span className="text-ink font-medium">Performance</span>
+          </nav>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState
+            icon={<FileQuestion className="w-10 h-10" />}
+            title={notFound ? "Schema not found" : "Cannot reach API"}
+            description={
+              notFound
+                ? `No schema with slug "${schemaSlug}" exists in this workspace.`
+                : error.message
+            }
+            action={
+              <Link
+                href={`/t/${tenantSlug}`}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+              >
+                Back to schemas
+              </Link>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
 
   // ── Empty state ──
   if (!loading && runs.length === 0) {
