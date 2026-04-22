@@ -295,6 +295,115 @@ def parse(
 
 
 # ---------------------------------------------------------------------------
+# HTTP entry point for the Node API client (platform-60)
+# ---------------------------------------------------------------------------
+# Modal's mature SDK is Python-only — there is no stable Node client for
+# remote-invoking an ``@app.function``. So we expose a thin HTTP wrapper
+# here and let the platform Node API call it with a plain ``fetch``.
+#
+# ``requires_proxy_auth=True`` tells Modal to reject any request that is
+# not carrying a valid ``Modal-Key`` / ``Modal-Secret`` header pair. The
+# secrets are generated in the Modal dashboard (Settings → Proxy Auth
+# Tokens) and plumbed into the API as ``MODAL_TOKEN_ID`` /
+# ``MODAL_TOKEN_SECRET`` env vars — same naming the Python CLI uses for
+# its own account tokens, so ops only has to learn one convention.
+#
+# The endpoint calls ``parse.local(...)`` rather than ``parse.remote(...)``
+# so the work runs in-process inside the ``parse_http`` container instead
+# of hopping to a second container. Same image, same warm converter cache
+# — no extra cold-start, no extra network hop.
+
+
+# Use Starlette's raw ``Request`` rather than FastAPI's parameter
+# injection (``File(...)``/``Form(...)``). FastAPI's injection markers
+# (``File(...)``, ``Form(...)``) are evaluated at function *definition*
+# time, which is awkward given we want to avoid pulling them into this
+# module's top-level import path. Parsing the multipart body by hand is
+# a few lines and keeps the module layout simple.
+#
+# ``starlette`` is a transitive dep of ``modal`` (Modal uses FastAPI for
+# its web-endpoint runtime), so the import is safe both locally during
+# ``modal deploy`` and inside the deployed container.
+from starlette.requests import Request  # noqa: E402
+
+
+@app.function(
+    timeout=600,
+    min_containers=1,
+    memory=4096,
+    cpu=2.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def parse_http(request: Request):
+    """HTTP wrapper around :func:`parse`.
+
+    Accepts a multipart form with:
+
+    - ``file`` — the document bytes (required)
+    - ``filename`` — original filename (optional; falls back to ``file.filename``)
+    - ``mime_type`` — optional MIME type string (falls back to ``file.content_type``)
+
+    Returns JSON matching the docker ``/parse`` response shape:
+    ``{filename, markdown, pages, elapsed_seconds, ocr_skipped}``.
+    """
+    import time
+    import traceback
+
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        # Not JSONResponse-wrapped — Starlette renders this as plain JSON.
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse(
+            {"error": "missing 'file' field in multipart body"},
+            status_code=400,
+        )
+
+    # Resolve the effective filename / MIME type. Prefer the explicit
+    # form fields so the Node client controls them, but fall back to
+    # the upload's own metadata for ad-hoc curl usage.
+    filename = form.get("filename") or getattr(upload, "filename", None) or ""
+    mime_type = form.get("mime_type") or getattr(upload, "content_type", None) or None
+
+    if not filename:
+        return JSONResponse(
+            {"error": "missing 'filename' field in multipart body"},
+            status_code=400,
+        )
+
+    start = time.time()
+    try:
+        file_bytes = await upload.read()
+        # ``parse.local()`` invokes the same-container function directly
+        # (no cross-container RPC) since we live in the same Modal app.
+        result = parse.local(filename, mime_type, file_bytes)
+        elapsed = round(time.time() - start, 2)
+        return JSONResponse(
+            {
+                "filename": filename,
+                "markdown": result["markdown"],
+                "pages": result["pages"],
+                "elapsed_seconds": elapsed,
+                "ocr_skipped": result["ocr_skipped"],
+            }
+        )
+    except Exception as e:
+        print(
+            f"[koji-parse-modal] error processing {filename}:\n"
+            f"{traceback.format_exc()}"
+        )
+        return JSONResponse(
+            {"error": str(e), "filename": filename},
+            status_code=422,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Local entry point — ``modal run app.py --filename foo.pdf --file-bytes @foo.pdf``
 # ---------------------------------------------------------------------------
 # Convenience wrapper so humans can smoke-test without writing a client.
