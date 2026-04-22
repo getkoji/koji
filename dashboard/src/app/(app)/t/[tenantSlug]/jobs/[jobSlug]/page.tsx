@@ -445,24 +445,26 @@ function DocumentsGrid({
   onRerun: () => void;
 }) {
   return (
-    <div className="border border-border rounded-sm overflow-hidden bg-cream">
-      <div className="grid grid-cols-[minmax(220px,1.8fr)_110px_80px_1fr_72px_100px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
-        <ColHead>Filename</ColHead>
-        <ColHead>Status</ColHead>
-        <ColHead className="text-right">Pages</ColHead>
-        <ColHead>Confidence</ColHead>
-        <ColHead className="text-right">Duration</ColHead>
-        <ColHead className="text-right">Trace</ColHead>
+    <div className="border border-border rounded-sm bg-cream overflow-x-auto">
+      <div className="min-w-[880px]">
+        <div className="grid grid-cols-[minmax(220px,1.8fr)_110px_80px_1fr_72px_100px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
+          <ColHead>Filename</ColHead>
+          <ColHead>Status</ColHead>
+          <ColHead className="text-right">Pages</ColHead>
+          <ColHead>Confidence</ColHead>
+          <ColHead className="text-right">Duration</ColHead>
+          <ColHead className="text-right">Trace</ColHead>
+        </div>
+        {documents.map((doc) => (
+          <DocumentRow
+            key={doc.id}
+            doc={doc}
+            tenantSlug={tenantSlug}
+            jobSlug={jobSlug}
+            onRerun={onRerun}
+          />
+        ))}
       </div>
-      {documents.map((doc) => (
-        <DocumentRow
-          key={doc.id}
-          doc={doc}
-          tenantSlug={tenantSlug}
-          jobSlug={jobSlug}
-          onRerun={onRerun}
-        />
-      ))}
     </div>
   );
 }
