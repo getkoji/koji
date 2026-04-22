@@ -420,10 +420,7 @@ async def parse_http(request: Request):
             }
         )
     except Exception as e:
-        print(
-            f"[koji-parse-modal] error processing {filename}:\n"
-            f"{traceback.format_exc()}"
-        )
+        print(f"[koji-parse-modal] error processing {filename}:\n{traceback.format_exc()}")
         return JSONResponse(
             {"error": str(e), "filename": filename},
             status_code=422,
