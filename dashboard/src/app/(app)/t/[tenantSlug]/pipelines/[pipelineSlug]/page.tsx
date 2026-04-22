@@ -21,8 +21,10 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import {
   pipelines as pipelinesApi,
   sources as sourcesApi,
+  DEFAULT_RETRY_POLICY,
   type PipelineDetail,
   type PipelineRecentJob,
+  type RetryPolicy,
   type SchemaVersion,
 } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -216,6 +218,7 @@ export default function PipelineDetailPage() {
           onOpenDeploy={() => setDeployOpen(true)}
         />
         <ConfigurationSection pipeline={pipeline} tenantSlug={tenantSlug} />
+        <RetryPolicySection pipeline={pipeline} canWrite={canWrite} onSaved={refetch} />
         <ConnectedSourcesSection
           pipeline={pipeline}
           tenantSlug={tenantSlug}
@@ -506,6 +509,179 @@ function ConfigRow({
       </span>
       <span className="text-[12.5px] min-w-0">{children}</span>
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Retry policy
+
+function RetryPolicySection({
+  pipeline,
+  canWrite,
+  onSaved,
+}: {
+  pipeline: PipelineDetail;
+  canWrite: boolean;
+  onSaved: () => void | Promise<unknown>;
+}) {
+  const persisted = pipeline.retryPolicy;
+  const initial = persisted ?? DEFAULT_RETRY_POLICY;
+
+  const [maxAttempts, setMaxAttempts] = useState<string>(String(initial.maxAttempts));
+  const [backoffBaseMs, setBackoffBaseMs] = useState<string>(String(initial.backoffBaseMs));
+  const [backoffMaxMs, setBackoffMaxMs] = useState<string>(String(initial.backoffMaxMs));
+  const [retryTransient, setRetryTransient] = useState<boolean>(initial.retryTransient);
+
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const usingDefaults = persisted === null;
+
+  function validate(): RetryPolicy | string {
+    const ma = Number(maxAttempts);
+    const bb = Number(backoffBaseMs);
+    const bm = Number(backoffMaxMs);
+    if (!Number.isFinite(ma) || !Number.isInteger(ma) || ma < 1 || ma > 50) {
+      return "Max attempts must be an integer between 1 and 50.";
+    }
+    if (!Number.isFinite(bb) || bb <= 0) return "Backoff base must be a positive number.";
+    if (!Number.isFinite(bm) || bm <= 0) return "Backoff max must be a positive number.";
+    if (bm < bb) return "Backoff max must be greater than or equal to backoff base.";
+    return { maxAttempts: ma, backoffBaseMs: bb, backoffMaxMs: bm, retryTransient };
+  }
+
+  async function handleSave() {
+    if (!canWrite || saving) return;
+    const parsed = validate();
+    if (typeof parsed === "string") {
+      setErr(parsed);
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await pipelinesApi.setRetryPolicy(pipeline.slug, parsed);
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!canWrite || saving) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await pipelinesApi.setRetryPolicy(pipeline.slug, null);
+      setMaxAttempts(String(DEFAULT_RETRY_POLICY.maxAttempts));
+      setBackoffBaseMs(String(DEFAULT_RETRY_POLICY.backoffBaseMs));
+      setBackoffMaxMs(String(DEFAULT_RETRY_POLICY.backoffMaxMs));
+      setRetryTransient(DEFAULT_RETRY_POLICY.retryTransient);
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Reset failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Section
+      title="Retry policy"
+      action={
+        <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
+          {usingDefaults ? "platform defaults" : "custom"}
+        </span>
+      }
+    >
+      <div className="divide-y divide-dotted divide-border">
+        <ConfigRow label="Max attempts">
+          <input
+            type="number"
+            min={1}
+            max={50}
+            step={1}
+            value={maxAttempts}
+            disabled={!canWrite || saving}
+            onChange={(e) => setMaxAttempts(e.target.value)}
+            placeholder={String(DEFAULT_RETRY_POLICY.maxAttempts)}
+            className="h-[28px] w-[96px] rounded-sm border border-input bg-white px-2 font-mono text-[12px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+          />
+          <span className="font-mono text-[10px] text-ink-4 ml-2">
+            1–50; default {DEFAULT_RETRY_POLICY.maxAttempts}
+          </span>
+        </ConfigRow>
+        <ConfigRow label="Backoff base (ms)">
+          <input
+            type="number"
+            min={1}
+            step={100}
+            value={backoffBaseMs}
+            disabled={!canWrite || saving}
+            onChange={(e) => setBackoffBaseMs(e.target.value)}
+            placeholder={String(DEFAULT_RETRY_POLICY.backoffBaseMs)}
+            className="h-[28px] w-[120px] rounded-sm border border-input bg-white px-2 font-mono text-[12px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+          />
+          <span className="font-mono text-[10px] text-ink-4 ml-2">
+            starting delay; default {DEFAULT_RETRY_POLICY.backoffBaseMs.toLocaleString()}
+          </span>
+        </ConfigRow>
+        <ConfigRow label="Backoff max (ms)">
+          <input
+            type="number"
+            min={1}
+            step={1000}
+            value={backoffMaxMs}
+            disabled={!canWrite || saving}
+            onChange={(e) => setBackoffMaxMs(e.target.value)}
+            placeholder={String(DEFAULT_RETRY_POLICY.backoffMaxMs)}
+            className="h-[28px] w-[140px] rounded-sm border border-input bg-white px-2 font-mono text-[12px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+          />
+          <span className="font-mono text-[10px] text-ink-4 ml-2">
+            upper cap; default {DEFAULT_RETRY_POLICY.backoffMaxMs.toLocaleString()}
+          </span>
+        </ConfigRow>
+        <ConfigRow label="Retry transient">
+          <label className="inline-flex items-center gap-2 text-[12.5px] text-ink-2">
+            <input
+              type="checkbox"
+              checked={retryTransient}
+              disabled={!canWrite || saving}
+              onChange={(e) => setRetryTransient(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Auto-retry transient errors (network blips, 5xx, rate limits).
+          </label>
+        </ConfigRow>
+      </div>
+      {err && (
+        <div className="px-4 py-2 font-mono text-[11.5px] text-vermillion-2 bg-vermillion-3/50 border-t border-border">
+          {err}
+        </div>
+      )}
+      {canWrite && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-border bg-cream-2/30">
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={saving || usingDefaults}
+            className="font-mono text-[11px] text-ink-3 hover:text-vermillion-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Reset to defaults
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      )}
+    </Section>
   );
 }
 

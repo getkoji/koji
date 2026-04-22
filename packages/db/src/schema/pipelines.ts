@@ -26,6 +26,10 @@ export const pipelines = pgTable(
     activeSchemaVersionId: uuid("active_schema_version_id"),
     modelProviderId: uuid("model_provider_id"),
     configJson: jsonb("config_json").notNull().default(sql`'{}'::jsonb`),
+    // Per-pipeline retry policy override. NULL = fall back to platform defaults
+    // (see RetryPolicy in @koji/types/db). Wired to the motor/queue in a
+    // follow-up once the transient-error classifier (platform-53) lands.
+    retryPolicyJson: jsonb("retry_policy_json"),
     reviewThreshold: varchar("review_threshold", { length: 8 }).notNull().default("0.9"),
     yamlSource: text("yaml_source").notNull().default(""),
     parsedJson: jsonb("parsed_json").notNull().default(sql`'{}'::jsonb`),

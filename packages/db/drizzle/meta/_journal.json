@@ -8,6 +8,13 @@
       "when": 1776519051291,
       "tag": "0000_initial",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776819556915,
+      "tag": "0002_pipelines_retry_policy",
+      "breakpoints": true
     }
   ]
 }
