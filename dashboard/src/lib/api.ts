@@ -244,10 +244,17 @@ export const schemas = {
 };
 
 export const jobs = {
-  list: (params?: { status?: string; pipeline?: string; limit?: number }) => {
+  list: (params?: {
+    status?: string;
+    pipeline?: string;
+    /** Shorthand (`today` | `7d` | `30d` | `all`) or ISO timestamp. Absent = no date filter. */
+    since?: string;
+    limit?: number;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.pipeline) qs.set("pipeline", params.pipeline);
+    if (params?.since) qs.set("since", params.since);
     if (params?.limit) qs.set("limit", String(params.limit));
     const q = qs.toString();
     return api.get<{ data: JobRow[] }>(`/api/jobs${q ? `?${q}` : ""}`).then((r) => r.data);

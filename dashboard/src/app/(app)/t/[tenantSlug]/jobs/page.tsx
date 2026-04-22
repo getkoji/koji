@@ -66,9 +66,12 @@ export default function JobsPage() {
         jobsApi.list({
           status: apiStatus,
           pipeline: pipelineFilter === "all" ? undefined : pipelineFilter,
+          // Skip the query param when "all" is selected — the API treats the
+          // absence of `since` as "no date filter," which is what we want.
+          since: dateFilter === "all" ? undefined : dateFilter,
           limit: 100,
         }),
-      [apiStatus, pipelineFilter],
+      [apiStatus, pipelineFilter, dateFilter],
     ),
   );
 
@@ -94,14 +97,13 @@ export default function JobsPage() {
     return () => clearInterval(h);
   }, [hasRunning, refetch]);
 
+  // Status + pipeline + date filtering happens server-side via the list()
+  // query params. Only the free-text search still needs to run in the browser.
   const filtered = useMemo(() => {
-    const cutoff = dateCutoff(dateFilter);
-    return (jobs ?? []).filter((j) => {
-      if (cutoff && new Date(j.createdAt).getTime() < cutoff) return false;
-      if (search && !j.slug.toLowerCase().includes(search.toLowerCase())) return false;
-      return true;
-    });
-  }, [jobs, dateFilter, search]);
+    if (!search) return jobs ?? [];
+    const needle = search.toLowerCase();
+    return (jobs ?? []).filter((j) => j.slug.toLowerCase().includes(needle));
+  }, [jobs, search]);
 
   const metrics = useMemo(() => {
     const all = jobs ?? [];
@@ -534,16 +536,3 @@ function uiStatusToApi(ui: UiJobStatus): string {
   }
 }
 
-function dateCutoff(d: DateRange): number | null {
-  const now = Date.now();
-  switch (d) {
-    case "today":
-      return new Date(new Date().setHours(0, 0, 0, 0)).getTime();
-    case "7d":
-      return now - 7 * 24 * 60 * 60 * 1000;
-    case "30d":
-      return now - 30 * 24 * 60 * 60 * 1000;
-    case "all":
-      return null;
-  }
-}
