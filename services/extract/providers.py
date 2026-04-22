@@ -15,13 +15,14 @@ Current adapters:
 - :class:`AzureOpenAIProvider` — Azure OpenAI with deployment routing
 - :class:`AnthropicProvider` — native Anthropic Messages API
   (``/v1/messages`` with ``x-api-key`` + ``anthropic-version`` headers)
-
-Planned (stubbed here; implemented in platform-78):
-- :class:`BedrockProvider` — AWS Bedrock with SigV4 signing
+- :class:`BedrockProvider` — AWS Bedrock via the Converse API with
+  SigV4-signed requests (model IDs are vendor-qualified, e.g.
+  ``anthropic.claude-3-5-sonnet-20241022-v2:0`` or ``amazon.titan-*``).
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -220,12 +221,28 @@ class AzureOpenAIProvider(ModelProvider):
 
 
 class BedrockProvider(ModelProvider):
-    """AWS Bedrock. Implemented in platform-78.
+    """AWS Bedrock via the Converse API.
 
-    Uses SigV4-signed requests against the regional endpoint
-    (``bedrock-runtime.<region>.amazonaws.com``). Model IDs are
-    vendor-qualified, e.g. ``anthropic.claude-3-5-sonnet-20241022-v2:0``.
+    Uses SigV4-signed requests (via ``botocore``) against the regional
+    runtime endpoint ``bedrock-runtime.<region>.amazonaws.com``. The
+    Converse API (``POST /model/{modelId}/converse``) gives a uniform
+    request/response shape across all Bedrock-hosted model families
+    (Anthropic Claude, Amazon Titan, Meta Llama, Mistral, Cohere), so
+    one adapter covers every vendor-qualified model ID.
+
+    JSON mode is not a first-class feature of Converse — when requested
+    we append a short suffix to the user prompt instructing the model
+    to return a JSON object (matching the OpenAI stopgap behaviour).
+
+    Tool-use on Bedrock has its own ``toolConfig`` shape (tool specs +
+    tool result messages) and isn't wired here yet — a chat() call with
+    ``tools`` will raise ``NotImplementedError`` pointing at the
+    follow-up task.
     """
+
+    # Appended to user prompts when json_mode=True. Converse has no
+    # "response_format=json_object" equivalent, so we steer via prompt.
+    _JSON_MODE_SUFFIX = "\n\nRespond with ONLY a JSON object."
 
     def __init__(
         self,
@@ -240,15 +257,139 @@ class BedrockProvider(ModelProvider):
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
         self.session_token = session_token
+        self._endpoint = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def _signed_headers(self, url: str, body: bytes) -> dict[str, str]:
+        """Build SigV4-signed headers for a Bedrock Converse POST.
+
+        botocore is the pragmatic choice here: hand-rolling SigV4
+        against stdlib (``hmac``/``hashlib``) is ~50 lines of fiddly
+        canonical-request assembly that breaks if headers are re-cased
+        or the body is rehashed. ``SigV4Auth.add_auth`` handles both.
+        """
+        # Imported lazily so that providers.py stays importable in
+        # environments where botocore isn't installed (e.g. unit tests
+        # that never exercise the Bedrock path).
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+        from botocore.credentials import Credentials
+
+        creds = Credentials(
+            access_key=self.access_key_id,
+            secret_key=self.secret_access_key,
+            token=self.session_token,  # may be None; botocore handles it
+        )
+        aws_req = AWSRequest(
+            method="POST",
+            url=url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        # Service name is "bedrock" for both control-plane and runtime.
+        SigV4Auth(creds, "bedrock", self.region).add_auth(aws_req)
+        return dict(aws_req.headers.items())
+
+    def _messages_to_converse(
+        self, messages: list[dict]
+    ) -> tuple[list[dict], list[dict] | None]:
+        """Convert OpenAI-shape messages to Bedrock Converse shape.
+
+        Rules:
+        - Leading ``role: system`` messages become the top-level
+          ``system`` field (array of ``{text: ...}``).
+        - Subsequent ``system`` messages are inlined as user text (rare
+          but we don't want to silently drop them).
+        - ``user`` / ``assistant`` messages become
+          ``{"role": ..., "content": [{"text": ...}]}``.
+        """
+        system_parts: list[dict] = []
+        converse_msgs: list[dict] = []
+        seen_non_system = False
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            raw_content = msg.get("content", "")
+            # OpenAI occasionally hands us a list of content parts; we
+            # flatten to text because Converse's text blocks are all we
+            # support here.
+            if isinstance(raw_content, list):
+                text = "".join(
+                    part.get("text", "")
+                    for part in raw_content
+                    if isinstance(part, dict)
+                )
+            else:
+                text = str(raw_content)
+
+            if role == "system" and not seen_non_system:
+                system_parts.append({"text": text})
+                continue
+
+            seen_non_system = True
+            # Bedrock only understands user/assistant at this layer; coerce
+            # trailing system messages into user turns so nothing is lost.
+            if role not in ("user", "assistant"):
+                role = "user"
+            converse_msgs.append({"role": role, "content": [{"text": text}]})
+
+        return converse_msgs, (system_parts or None)
+
+    async def _converse(
+        self,
+        messages: list[dict],
+        system: list[dict] | None = None,
+    ) -> dict:
+        """POST to /model/{modelId}/converse and return the parsed body."""
+        url = f"{self._endpoint}/model/{self.model}/converse"
+        payload: dict = {
+            "messages": messages,
+            "inferenceConfig": {"temperature": 0, "maxTokens": 4096},
+        }
+        if system:
+            payload["system"] = system
+
+        body = json.dumps(payload).encode("utf-8")
+        headers = self._signed_headers(url, body)
+
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(url, content=body, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+    @staticmethod
+    def _extract_text(converse_response: dict) -> str:
+        """Pull the assistant text out of a Converse response envelope."""
+        message = converse_response.get("output", {}).get("message", {})
+        parts = message.get("content", []) or []
+        return "".join(part.get("text", "") for part in parts if isinstance(part, dict))
 
     async def generate(self, prompt: str, json_mode: bool = True) -> str:
-        raise NotImplementedError(
-            "BedrockProvider is stubbed — see platform-78 for the full "
-            "SigV4-signed implementation."
-        )
+        effective_prompt = prompt + self._JSON_MODE_SUFFIX if json_mode else prompt
+        messages = [{"role": "user", "content": [{"text": effective_prompt}]}]
+        response = await self._converse(messages=messages)
+        return self._extract_text(response)
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        raise NotImplementedError("BedrockProvider — see platform-78")
+        if tools:
+            # Bedrock Converse supports tool use via a separate
+            # toolConfig (tool specs) + assistant/user toolUse/toolResult
+            # content blocks. That's a larger surface — deferred to a
+            # follow-up task; callers that need tool-use on Bedrock
+            # today should route via OpenAIProvider against a
+            # Bedrock-compatible proxy.
+            raise NotImplementedError(
+                "BedrockProvider does not yet support tool use — the "
+                "Converse API's toolConfig shape is a separate work item. "
+                "Pass tools=None or use a different provider until the "
+                "tool-use adapter lands."
+            )
+
+        converse_msgs, system = self._messages_to_converse(messages)
+        response = await self._converse(messages=converse_msgs, system=system)
+        text = self._extract_text(response)
+        # Mirror OpenAIProvider.chat()'s return shape so callers that
+        # only read ``content`` (and sometimes ``role``) work unchanged.
+        return {"role": "assistant", "content": text}
 
 
 class AnthropicProvider(ModelProvider):

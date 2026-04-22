@@ -6,7 +6,8 @@ RUN pip install --no-cache-dir \
     fastapi>=0.115 \
     uvicorn>=0.30 \
     pydantic>=2.0 \
-    httpx>=0.27
+    httpx>=0.27 \
+    botocore>=1.35.0
 
 COPY services/extract/ /app/services/extract/
 
