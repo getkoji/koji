@@ -175,8 +175,7 @@ class AzureOpenAIProvider(ModelProvider):
 
     def _url(self) -> str:
         return (
-            f"{self.base_url}/openai/deployments/{self.deployment_name}"
-            f"/chat/completions?api-version={self.api_version}"
+            f"{self.base_url}/openai/deployments/{self.deployment_name}/chat/completions?api-version={self.api_version}"
         )
 
     async def generate(self, prompt: str, json_mode: bool = True) -> str:
@@ -289,9 +288,7 @@ class BedrockProvider(ModelProvider):
         SigV4Auth(creds, "bedrock", self.region).add_auth(aws_req)
         return dict(aws_req.headers.items())
 
-    def _messages_to_converse(
-        self, messages: list[dict]
-    ) -> tuple[list[dict], list[dict] | None]:
+    def _messages_to_converse(self, messages: list[dict]) -> tuple[list[dict], list[dict] | None]:
         """Convert OpenAI-shape messages to Bedrock Converse shape.
 
         Rules:
@@ -313,11 +310,7 @@ class BedrockProvider(ModelProvider):
             # flatten to text because Converse's text blocks are all we
             # support here.
             if isinstance(raw_content, list):
-                text = "".join(
-                    part.get("text", "")
-                    for part in raw_content
-                    if isinstance(part, dict)
-                )
+                text = "".join(part.get("text", "") for part in raw_content if isinstance(part, dict))
             else:
                 text = str(raw_content)
 
@@ -559,10 +552,7 @@ def build_provider(
             if not f[1]
         ]
         if missing:
-            raise ValueError(
-                f"azure-openai endpoint missing required fields: "
-                f"{', '.join(n for n, _ in missing)}"
-            )
+            raise ValueError(f"azure-openai endpoint missing required fields: {', '.join(n for n, _ in missing)}")
         return AzureOpenAIProvider(
             model=model,
             api_key=endpoint_cfg.api_key,
@@ -581,10 +571,7 @@ def build_provider(
             if not f[1]
         ]
         if missing:
-            raise ValueError(
-                f"bedrock endpoint missing required fields: "
-                f"{', '.join(n for n, _ in missing)}"
-            )
+            raise ValueError(f"bedrock endpoint missing required fields: {', '.join(n for n, _ in missing)}")
         return BedrockProvider(
             model=model,
             region=endpoint_cfg.aws_region,

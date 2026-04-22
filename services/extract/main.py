@@ -119,9 +119,7 @@ async def extract(req: ExtractionRequest):
     model = (req.endpoint.model if req.endpoint else None) or req.model or DEFAULT_MODEL
     strategy = req.strategy or DEFAULT_STRATEGY
     start = time.time()
-    endpoint_label = (
-        f"endpoint.provider={req.endpoint.provider!r}" if req.endpoint else "endpoint=None"
-    )
+    endpoint_label = f"endpoint.provider={req.endpoint.provider!r}" if req.endpoint else "endpoint=None"
     print(
         f"[koji-extract] Request: model={model!r} {endpoint_label}, strategy={strategy}, "
         f"markdown={len(req.markdown)} chars, fields={list(req.schema_def.get('fields', {}).keys())}"

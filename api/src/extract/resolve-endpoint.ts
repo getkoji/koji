@@ -85,6 +85,23 @@ export async function resolveExtractEndpoint(
   const auth = (endpoint.authJson ?? null) as AuthBlob | null;
   const masterKey = getMasterKey();
 
+  // No auth configured for this endpoint. We DO NOT send a partial
+  // payload — the Python adapter treats `provider=openai` etc. as a
+  // full config and rejects it with `openai endpoint requires api_key`
+  // if credentials are missing, which then retries the entire
+  // extraction in a tight loop (the error is not transient). Returning
+  // null puts us on the env-var fallback path (OPENAI_API_KEY /
+  // ANTHROPIC_API_KEY from the extract container's environment), which
+  // is the historic default and what the seed pipelines expect.
+  if (!auth) return null;
+  if (!masterKey) {
+    console.warn(
+      "[resolve-endpoint] KOJI_MASTER_KEY is not set; skipping credential decryption. " +
+        "Extract will fall back to env defaults.",
+    );
+    return null;
+  }
+
   const payload: ExtractEndpointPayload = {
     provider: endpoint.provider,
     model: endpoint.model,
@@ -93,15 +110,6 @@ export async function resolveExtractEndpoint(
   if (cfg.deployment_name) payload.deployment_name = cfg.deployment_name;
   if (cfg.api_version) payload.api_version = cfg.api_version;
   if (cfg.aws_region) payload.aws_region = cfg.aws_region;
-
-  if (!auth) return payload; // endpoint with no secret (managed IAM etc.)
-  if (!masterKey) {
-    console.warn(
-      "[resolve-endpoint] KOJI_MASTER_KEY is not set; skipping credential decryption. " +
-        "Extract will fall back to env defaults.",
-    );
-    return null;
-  }
 
   try {
     if (endpoint.provider === "bedrock") {

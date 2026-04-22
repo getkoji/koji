@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from services.extract.providers import (
+    AnthropicProvider,
     OllamaProvider,
     OpenAIProvider,
     create_provider,
@@ -35,10 +36,15 @@ class TestCreateProvider:
         assert isinstance(p, OllamaProvider)
         assert p.model == "mistral"
 
-    def test_unknown_prefix_uses_openai(self):
+    def test_anthropic_prefix_uses_anthropic(self):
         p = create_provider("anthropic/claude-3-haiku")
-        assert isinstance(p, OpenAIProvider)
+        assert isinstance(p, AnthropicProvider)
         assert p.model == "claude-3-haiku"
+
+    def test_unknown_prefix_uses_openai(self):
+        p = create_provider("deepseek/deepseek-r1")
+        assert isinstance(p, OpenAIProvider)
+        assert p.model == "deepseek-r1"
 
     def test_model_with_multiple_slashes(self):
         # e.g. "openai/ft:gpt-4o-mini:custom" — split on first slash only
