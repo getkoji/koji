@@ -5,6 +5,11 @@ import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 import { randomBytes } from "node:crypto";
 import type { AuthAdapter, Principal, Session } from "../auth/adapter";
 import type { Env } from "../env";
+import {
+  validateCreatePayload,
+  buildConfigJson,
+  buildAuthJson,
+} from "./model-providers";
 
 const MASTER_KEY = randomBytes(32).toString("hex");
 
@@ -161,5 +166,162 @@ describe("credential encryption behavior", () => {
   it("tenant A cannot decrypt tenant B's credentials", () => {
     const blob = encrypt("sk-secret", MASTER_KEY, "tenant-a");
     expect(() => decrypt(blob, MASTER_KEY, "tenant-b")).toThrow();
+  });
+});
+
+describe("validateCreatePayload", () => {
+  it("azure-openai requires base_url, deployment_name, api_version", () => {
+    expect(validateCreatePayload({ provider: "azure-openai" })).toMatch(/base_url/);
+    expect(
+      validateCreatePayload({
+        provider: "azure-openai",
+        base_url: "https://x.openai.azure.com",
+      }),
+    ).toMatch(/deployment_name/);
+    expect(
+      validateCreatePayload({
+        provider: "azure-openai",
+        base_url: "https://x.openai.azure.com",
+        deployment_name: "gpt4",
+      }),
+    ).toMatch(/api_version/);
+    expect(
+      validateCreatePayload({
+        provider: "azure-openai",
+        base_url: "https://x.openai.azure.com",
+        deployment_name: "gpt4",
+        api_version: "2024-02-15-preview",
+      }),
+    ).toBeNull();
+  });
+
+  it("ollama requires base_url", () => {
+    expect(validateCreatePayload({ provider: "ollama" })).toMatch(/base_url/);
+    expect(validateCreatePayload({ provider: "ollama", base_url: "http://localhost:11434" })).toBeNull();
+  });
+
+  it("bedrock requires region + access key id + secret", () => {
+    expect(validateCreatePayload({ provider: "bedrock" })).toMatch(/aws_region/);
+    expect(validateCreatePayload({ provider: "bedrock", aws_region: "us-east-1" })).toMatch(/aws_access_key_id/);
+    expect(
+      validateCreatePayload({
+        provider: "bedrock",
+        aws_region: "us-east-1",
+        aws_access_key_id: "AKIA",
+      }),
+    ).toMatch(/aws_secret_access_key/);
+    expect(
+      validateCreatePayload({
+        provider: "bedrock",
+        aws_region: "us-east-1",
+        aws_access_key_id: "AKIA",
+        aws_secret_access_key: "supersecret",
+      }),
+    ).toBeNull();
+  });
+
+  it("openai/anthropic/custom have no strict required fields", () => {
+    expect(validateCreatePayload({ provider: "openai" })).toBeNull();
+    expect(validateCreatePayload({ provider: "anthropic" })).toBeNull();
+    expect(validateCreatePayload({ provider: "custom" })).toBeNull();
+  });
+});
+
+describe("buildConfigJson", () => {
+  it("openai keeps only base_url", () => {
+    const cfg = buildConfigJson("openai", {
+      base_url: "https://api.openai.com/v1",
+      deployment_name: "should-not-appear",
+      api_version: "should-not-appear",
+      aws_region: "should-not-appear",
+    });
+    expect(cfg).toEqual({ base_url: "https://api.openai.com/v1" });
+  });
+
+  it("azure-openai keeps base_url, deployment_name, api_version", () => {
+    const cfg = buildConfigJson("azure-openai", {
+      base_url: "https://x.openai.azure.com",
+      deployment_name: "prod-gpt4o",
+      api_version: "2024-02-15-preview",
+      aws_region: "should-not-appear",
+    });
+    expect(cfg).toEqual({
+      base_url: "https://x.openai.azure.com",
+      deployment_name: "prod-gpt4o",
+      api_version: "2024-02-15-preview",
+    });
+  });
+
+  it("bedrock keeps only aws_region and drops base_url", () => {
+    const cfg = buildConfigJson("bedrock", {
+      base_url: "should-not-appear",
+      deployment_name: "should-not-appear",
+      api_version: "should-not-appear",
+      aws_region: "us-east-1",
+    });
+    expect(cfg).toEqual({ aws_region: "us-east-1" });
+  });
+});
+
+describe("buildAuthJson — stored shape matches resolve-endpoint expectations", () => {
+  const tenantId = "tenant-test-uuid";
+
+  it("single-key provider stores key_blob (not encrypted_key)", () => {
+    const auth = buildAuthJson("openai", { api_key: "sk-abcd1234" }, MASTER_KEY, tenantId);
+    expect(auth).not.toBeNull();
+    expect(auth!.key_hint).toBe("1234");
+    expect(auth!.key_blob).toBeDefined();
+    // resolve-endpoint.ts reads from `key_blob`, so the field name is
+    // load-bearing and must not regress to `encrypted_key`.
+    expect((auth as Record<string, unknown>).encrypted_key).toBeUndefined();
+    expect(decrypt(auth!.key_blob!, MASTER_KEY, tenantId)).toBe("sk-abcd1234");
+  });
+
+  it("bedrock stores access_key_id plaintext + secret/session blobs encrypted", () => {
+    const auth = buildAuthJson(
+      "bedrock",
+      {
+        aws_access_key_id: "AKIAEXAMPLE1234",
+        aws_secret_access_key: "secret-40-chars",
+        aws_session_token: "session-token-xyz",
+      },
+      MASTER_KEY,
+      tenantId,
+    );
+    expect(auth).not.toBeNull();
+    expect(auth!.aws_access_key_id).toBe("AKIAEXAMPLE1234");
+    expect(auth!.key_hint).toBe("1234"); // last 4 of access key id
+    expect(auth!.aws_secret_access_key_blob).toBeDefined();
+    expect(auth!.aws_session_token_blob).toBeDefined();
+    // plaintext secret must not leak into the stored blob
+    expect(auth!.aws_secret_access_key_blob).not.toContain("secret-40-chars");
+    // both secrets roundtrip through decrypt
+    expect(decrypt(auth!.aws_secret_access_key_blob!, MASTER_KEY, tenantId)).toBe("secret-40-chars");
+    expect(decrypt(auth!.aws_session_token_blob!, MASTER_KEY, tenantId)).toBe("session-token-xyz");
+  });
+
+  it("bedrock without session token omits the session blob", () => {
+    const auth = buildAuthJson(
+      "bedrock",
+      {
+        aws_access_key_id: "AKIAEXAMPLE1234",
+        aws_secret_access_key: "secret",
+      },
+      MASTER_KEY,
+      tenantId,
+    );
+    expect(auth!.aws_session_token_blob).toBeUndefined();
+  });
+
+  it("returns null when single-key provider has no api_key", () => {
+    expect(buildAuthJson("ollama", {}, MASTER_KEY, tenantId)).toBeNull();
+    expect(buildAuthJson("openai", {}, MASTER_KEY, tenantId)).toBeNull();
+  });
+
+  it("returns null when bedrock is missing access key id or secret", () => {
+    expect(buildAuthJson("bedrock", { aws_access_key_id: "AKIA" }, MASTER_KEY, tenantId)).toBeNull();
+    expect(
+      buildAuthJson("bedrock", { aws_secret_access_key: "secret" }, MASTER_KEY, tenantId),
+    ).toBeNull();
   });
 });
