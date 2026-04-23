@@ -3,6 +3,10 @@ import { eq } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { getPrincipal } from "../auth/middleware";
+import { createRateLimiter } from "../rate-limit";
+
+// Max 3 tenant creations per IP per day (free-tier abuse protection)
+const tenantCreateLimiter = createRateLimiter({ windowMs: 24 * 60 * 60 * 1000, max: 3 });
 
 export const tenants = new Hono<Env>();
 
@@ -91,6 +95,14 @@ tenants.patch("/:slug", async (c) => {
  * Any authenticated user can create a workspace. They become the owner.
  */
 tenants.post("/", async (c) => {
+  // IP-based signup throttle — max 3 workspaces per IP per day
+  const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? c.req.header("x-real-ip")
+    ?? "unknown";
+  if (!tenantCreateLimiter.check(ip)) {
+    return c.json({ error: "Too many workspace creations. Try again tomorrow." }, 429);
+  }
+
   const db = c.get("db");
   const principal = getPrincipal(c);
   const body = await c.req.json<{
