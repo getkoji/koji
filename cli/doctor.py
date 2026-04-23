@@ -92,10 +92,35 @@ def _port_available(port: int) -> bool:
         return False
 
 
+def _cluster_is_running() -> bool:
+    """Check if a Koji cluster is running in the current directory."""
+    state_path = Path.cwd() / ".koji" / "cluster.json"
+    if not state_path.exists():
+        return False
+    # Verify the compose project is actually running
+    compose_file = Path.cwd() / ".koji" / "docker-compose.yaml"
+    if not compose_file.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "ps", "-q"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def check_ports_available(config: KojiConfig | None = None) -> CheckResult:
     """Check that required ports are not already in use."""
     if config is None:
         config = KojiConfig()
+
+    # If the cluster is already running, these ports are expected to be in use
+    if _cluster_is_running():
+        return CheckResult("pass", "Ports available", "(cluster is running)")
 
     cluster = config.cluster
     ports = {
@@ -117,10 +142,36 @@ def check_ports_available(config: KojiConfig | None = None) -> CheckResult:
     )
 
 
+def _load_dotenv() -> dict[str, str]:
+    """Read key=value pairs from .env in the current directory (or repo root)."""
+    env_vars: dict[str, str] = {}
+    for candidate in [Path.cwd() / ".env", Path(__file__).resolve().parent.parent / ".env"]:
+        if candidate.exists():
+            for line in candidate.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    env_vars[key.strip()] = value.strip().strip('"').strip("'")
+            break
+    return env_vars
+
+
 def check_api_keys() -> CheckResult:
-    """Check whether OPENAI_API_KEY is set."""
+    """Check whether OPENAI_API_KEY is set (in environment or .env)."""
     if os.environ.get("OPENAI_API_KEY"):
         return CheckResult("pass", "OPENAI_API_KEY set")
+
+    # Check .env file as fallback
+    dotenv = _load_dotenv()
+    if dotenv.get("OPENAI_API_KEY"):
+        return CheckResult(
+            "pass",
+            "OPENAI_API_KEY set",
+            '(found in .env — remember to run: eval "$(kdev env)")',
+        )
+
     return CheckResult(
         "warn",
         "OPENAI_API_KEY not set",

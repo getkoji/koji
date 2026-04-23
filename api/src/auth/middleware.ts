@@ -31,6 +31,8 @@ export interface AuthMiddlewareOptions {
 /** Routes that skip auth entirely. */
 const PUBLIC_PATHS = new Set([
   "/health",
+  "/health/ready",
+  "/api/health",
   "/api/setup/status",
   "/api/setup",
   "/api/auth/login",

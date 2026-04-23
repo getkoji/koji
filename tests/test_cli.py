@@ -167,12 +167,12 @@ def test_logs_service_with_follow_and_tail(mock_state, mock_cwd, mock_run, tmp_p
 
 
 def test_valid_services():
-    assert VALID_SERVICES == {"server", "parse", "extract", "ui", "ollama"}
+    assert VALID_SERVICES == {"server", "parse", "extract", "dashboard", "ollama"}
 
 
 def test_service_to_compose_mapping():
-    assert SERVICE_TO_COMPOSE["server"] == "koji-server"
+    assert SERVICE_TO_COMPOSE["server"] == "koji-api"
     assert SERVICE_TO_COMPOSE["parse"] == "koji-parse"
     assert SERVICE_TO_COMPOSE["extract"] == "koji-extract"
-    assert SERVICE_TO_COMPOSE["ui"] == "koji-ui"
+    assert SERVICE_TO_COMPOSE["dashboard"] == "koji-dashboard"
     assert SERVICE_TO_COMPOSE["ollama"] == "ollama"
