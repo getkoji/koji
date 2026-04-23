@@ -6,6 +6,8 @@ import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
+import { requireUploadRateLimit } from "../billing/rate-limits";
+import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
@@ -554,7 +556,7 @@ pipelinesRouter.post("/:idOrSlug/resume", requires("pipeline:write"), async (c) 
  * enqueues the extraction handler. Returns the job slug so the dashboard can
  * navigate to the job detail page and watch it tick.
  */
-pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), async (c) => {
+pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLimit(), requireConcurrencySlot(), async (c) => {
   const db = c.get("db");
   const storage = c.get("storage");
   const queue = c.get("queue");
