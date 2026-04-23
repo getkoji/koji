@@ -106,6 +106,12 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"}
 
 
+def _is_image(filename: str, content_type: str | None = None) -> bool:
+    """Check if a file is an image based on extension or MIME type."""
+    ext = Path(filename).suffix.lower()
+    return ext in IMAGE_EXTENSIONS or (content_type is not None and content_type in IMAGE_MIMETYPES)
+
+
 def classify_input(file_path: str, content_type: str | None = None) -> str:
     ext = Path(file_path).suffix.lower()
     if ext in IMAGE_EXTENSIONS or (content_type and content_type in IMAGE_MIMETYPES):
@@ -114,7 +120,7 @@ def classify_input(file_path: str, content_type: str | None = None) -> str:
         with open(file_path, "rb") as f:
             info = get_pdf_info(f.read())
         return "scanned_pdf" if info["scanned"] else "digital_pdf"
-    return "digital_pdf"
+    return "digital"
 
 
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
@@ -179,7 +185,11 @@ async def parse(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # Detect PDF type
+        # Decide OCR strategy:
+        #   - images         → always OCR (force_full_page)
+        #   - digital PDFs   → skip OCR (trust the text layer)
+        #   - scanned PDFs   → full OCR
+        #   - anything else  → skip OCR (docling handles docx/html/pptx natively)
         skip_ocr = False
         info = {"pages": 0, "scanned": False}
         if suffix.lower() == ".pdf":
@@ -187,6 +197,12 @@ async def parse(file: UploadFile = File(...)):
             skip_ocr = not info["scanned"]
             mode = "digital (OCR skipped)" if skip_ocr else "scanned (full OCR)"
             print(f"[koji-parse] {file.filename}: {info['pages']} pages, {mode}")
+        elif _is_image(file.filename or "doc", file.content_type):
+            skip_ocr = False
+            print(f"[koji-parse] {file.filename}: image, full OCR")
+        else:
+            skip_ocr = True
+            print(f"[koji-parse] {file.filename}: non-PDF/image, OCR skipped")
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
@@ -224,7 +240,7 @@ async def parse_stream(file: UploadFile = File(...)):
         tmp.write(content)
         tmp_path = tmp.name
 
-    # Quick detection phase
+    # Quick detection phase — same OCR routing as /parse
     skip_ocr = False
     info = {"pages": 0, "scanned": False}
     if suffix.lower() == ".pdf":
@@ -232,6 +248,12 @@ async def parse_stream(file: UploadFile = File(...)):
         skip_ocr = not info["scanned"]
         mode = "digital (OCR skipped)" if skip_ocr else "scanned (full OCR)"
         print(f"[koji-parse] {file.filename}: {info['pages']} pages, {mode}")
+    elif _is_image(file.filename or "doc", file.content_type):
+        skip_ocr = False
+        print(f"[koji-parse] {file.filename}: image, full OCR")
+    else:
+        skip_ocr = True
+        print(f"[koji-parse] {file.filename}: non-PDF/image, OCR skipped")
 
     estimated = estimate_seconds(info["pages"], info["scanned"])
 
