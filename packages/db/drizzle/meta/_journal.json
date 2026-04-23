@@ -15,6 +15,13 @@
       "when": 1776819556915,
       "tag": "0002_pipelines_retry_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776898852819,
+      "tag": "0003_broken_pestilence",
+      "breakpoints": true
     }
   ]
 }
