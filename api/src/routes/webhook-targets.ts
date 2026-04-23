@@ -4,6 +4,7 @@ import { randomBytes, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 
 export const webhookTargets = new Hono<Env>();
@@ -38,7 +39,18 @@ webhookTargets.get("/", requires("webhook:read"), async (c) => {
  * POST /api/webhook-targets — create a target.
  * Auto-generates signing secret, encrypts it, returns it ONCE.
  */
-webhookTargets.post("/", requires("webhook:write"), async (c) => {
+webhookTargets.post(
+  "/",
+  requires("webhook:write"),
+  requireQuantityGate("max_webhooks", async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const [row] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ count: sql<number>`count(*)::int` }).from(schema.webhookTargets),
+    );
+    return row?.count ?? 0;
+  }),
+  async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);

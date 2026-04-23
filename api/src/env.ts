@@ -1,6 +1,7 @@
 import type { Db } from "@koji/db";
 import type { AuthAdapter, Principal } from "./auth/adapter";
 import type { Permission } from "./auth/roles";
+import type { BillingAdapter } from "./billing/adapter";
 import type { EmailSender } from "./email/provider";
 import type { QueueProvider } from "./queue/provider";
 import type { StorageProvider } from "./storage/provider";
@@ -43,5 +44,8 @@ export type Env = {
     /** `"local"` on self-hosted, `"clerk"`/`"oidc"` on hosted/enterprise. Used
      *  by setup/me routes to decide which flows to surface. */
     authAdapterKind: string;
+    /** Billing adapter — feature gates, usage tracking, Stripe integration.
+     *  Self-hosted uses NoOpBillingAdapter (all gates pass, no metering). */
+    billing: BillingAdapter;
   };
 };

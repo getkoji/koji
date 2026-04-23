@@ -29,6 +29,8 @@ import { logger as honoLogger } from "hono/logger";
 import type { Db } from "@koji/db";
 import type { AuthAdapter } from "./auth/adapter";
 import { authMiddleware, type AuthMiddlewareOptions } from "./auth/middleware";
+import type { BillingAdapter } from "./billing/adapter";
+import { NoOpBillingAdapter } from "./billing/noop";
 import type { StorageProvider } from "./storage/provider";
 import type { QueueProvider, HandlerMap } from "./queue/provider";
 import type { ParseProvider } from "./parse/provider";
@@ -56,6 +58,7 @@ import { sources } from "./routes/sources";
 import { pipelinesRouter } from "./routes/pipelines";
 import { review } from "./routes/review";
 import { overview } from "./routes/overview";
+import { billing as billingRoutes } from "./routes/billing";
 
 // Background-job wiring
 import { initEmitter } from "./webhooks/emit";
@@ -103,6 +106,10 @@ export interface CreateAppDeps {
   /** Auth middleware options — notably the cookie name Clerk uses
    *  (`__session`) vs the local default (`koji_session`). */
   authMiddleware?: AuthMiddlewareOptions;
+
+  /** Billing adapter. Defaults to NoOpBillingAdapter (all gates pass,
+   *  no usage tracking) for self-hosted / OSS deployments. */
+  billing?: BillingAdapter;
 }
 
 export interface CreateAppResult {
@@ -117,6 +124,8 @@ export interface CreateAppResult {
 }
 
 export function createApp(deps: CreateAppDeps): CreateAppResult {
+  const billing = deps.billing ?? new NoOpBillingAdapter();
+
   // Initialize module-level state that the job handlers read. All three
   // of these are idempotent — calling them more than once just overwrites
   // the previously captured refs, which is the behaviour Workers isolates
@@ -157,6 +166,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     c.set("extractUrl", deps.extractUrl);
     c.set("parseUrl", deps.parseUrl);
     c.set("authAdapterKind", deps.authAdapterKind);
+    c.set("billing", billing);
     await next();
   };
   app.use("*", injectContext);
@@ -187,6 +197,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/pipelines", pipelinesRouter);
   app.route("/api/review", review);
   app.route("/api/overview", overview);
+  app.route("/api/billing", billingRoutes);
 
   const handlers: HandlerMap = {
     "webhook.deliver": handleWebhookDeliver,

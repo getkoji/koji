@@ -4,6 +4,7 @@ import { randomBytes, createHash, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, keyHint } from "../crypto/envelope";
 import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
@@ -70,7 +71,18 @@ sources.get("/:id", requires("endpoint:read"), async (c) => {
 /**
  * POST /api/sources — create a source.
  */
-sources.post("/", requires("source:write"), async (c) => {
+sources.post(
+  "/",
+  requires("source:write"),
+  requireQuantityGate("max_sources", async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const [row] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ count: sql<number>`count(*)::int` }).from(schema.sources).where(sql`deleted_at IS NULL`),
+    );
+    return row?.count ?? 0;
+  }),
+  async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);

@@ -5,6 +5,7 @@ import { schema, withRLS } from "@koji/db";
 import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requireQuantityGate } from "../billing/middleware";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
 
@@ -294,7 +295,18 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
 /**
  * POST /api/pipelines — create a pipeline.
  */
-pipelinesRouter.post("/", requires("pipeline:write"), async (c) => {
+pipelinesRouter.post(
+  "/",
+  requires("pipeline:write"),
+  requireQuantityGate("max_pipelines", async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const [row] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ count: sql<number>`count(*)::int` }).from(schema.pipelines).where(sql`deleted_at IS NULL`),
+    );
+    return row?.count ?? 0;
+  }),
+  async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);
