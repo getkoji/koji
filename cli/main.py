@@ -19,12 +19,35 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
+KOJI_VERSION = "0.1.0"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        print(f"koji {KOJI_VERSION}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="koji",
     help="Documents in. Structured data out.",
     no_args_is_help=True,
 )
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """Documents in. Structured data out."""
 
 
 @app.command()
@@ -159,7 +182,7 @@ def extract(
 
 @app.command()
 def logs(
-    service: str | None = typer.Argument(None, help="Service name: server, parse, extract, ui, ollama"),
+    service: str | None = typer.Argument(None, help="Service name: server, parse, extract, dashboard, ollama"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: int = typer.Option(100, "--tail", "-t", help="Number of lines to show"),
 ):
@@ -698,7 +721,7 @@ def use(
 @app.command()
 def whoami():
     """Show the current CLI profile and server."""
-    from .credentials import load_credentials
+    from .credentials import load_credentials, verify_profile_connectivity
 
     creds = load_credentials()
     p = creds.active_profile()
@@ -712,6 +735,13 @@ def whoami():
     console.print(f"  Key:     {p.api_key[:12]}...{p.api_key[-4:]}")
     if p.project:
         console.print(f"  Project: {p.project}")
+
+    ok, msg = verify_profile_connectivity(p)
+    if ok:
+        console.print("  Status:  [green]connected[/green]")
+    else:
+        console.print(f"  Status:  [red]unreachable[/red] — {msg}")
+
     console.print()
 
 
@@ -749,7 +779,7 @@ def _derive_profile_name(url: str) -> str:
 @app.command()
 def version():
     """Show Koji version."""
-    console.print("koji 0.1.0")
+    console.print(f"koji {KOJI_VERSION}")
 
 
 if __name__ == "__main__":

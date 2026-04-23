@@ -166,6 +166,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
 
   // Routes
   app.route("/health", health);
+  app.route("/api/health", health);
   app.route("/api/auth", createAuthRoutes(deps.auth));
   app.route("/api/auth", passwordReset);
   app.route("/api/schemas", schemas);

@@ -9,14 +9,14 @@ from rich.console import Console
 
 KOJI_DIR = ".koji"
 
-VALID_SERVICES = {"server", "parse", "extract", "ui", "ollama"}
+VALID_SERVICES = {"server", "parse", "extract", "dashboard", "ollama"}
 
 # Maps user-facing service names to docker-compose service names.
 SERVICE_TO_COMPOSE = {
-    "server": "koji-server",
+    "server": "koji-api",
     "parse": "koji-parse",
     "extract": "koji-extract",
-    "ui": "koji-ui",
+    "dashboard": "koji-dashboard",
     "ollama": "ollama",
 }
 

@@ -104,3 +104,24 @@ def get_server_url() -> str | None:
     """Return the active profile's server URL, or None."""
     profile = get_active_profile()
     return profile.url if profile else None
+
+
+def verify_profile_connectivity(profile: Profile) -> tuple[bool, str]:
+    """Check if the profile's server URL is reachable.
+
+    Returns (ok, message).
+    """
+    import httpx
+
+    try:
+        resp = httpx.get(f"{profile.url}/health", timeout=3)
+        if resp.status_code == 200:
+            return True, "server reachable"
+        return False, f"server returned HTTP {resp.status_code}"
+    except httpx.ConnectError:
+        return False, (
+            f"cannot connect to {profile.url} — is the server running? "
+            f"If the port changed, run: koji login {profile.url.rsplit(':', 1)[0]}:<new-port>"
+        )
+    except httpx.TimeoutException:
+        return False, f"connection to {profile.url} timed out"
