@@ -73,7 +73,7 @@ setup.post("/", async (c) => {
   const [tenant] = await db.insert(schema.tenants).values({
     slug: body.workspace_slug,
     displayName: tenantName,
-    plan: "pro",
+    plan: "scale",
   }).returning();
 
   // First user is always owner

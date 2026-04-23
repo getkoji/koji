@@ -4,6 +4,7 @@ import { and, eq, desc, asc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requireFeature } from "../billing/middleware";
 
 export const review = new Hono<Env>();
 
@@ -165,7 +166,7 @@ async function resolveItem(
 }
 
 /** POST /api/review/:id/accept — approve the model's proposal as-is. */
-review.post("/:id/accept", requires("review:act"), async (c) => {
+review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
   const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
   const [item] = await withRLS(c.get("db"), getTenantId(c), (tx) =>
@@ -185,7 +186,7 @@ review.post("/:id/accept", requires("review:act"), async (c) => {
 });
 
 /** POST /api/review/:id/override — approve with edits. */
-review.post("/:id/override", requires("review:act"), async (c) => {
+review.post("/:id/override", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
   const body = await c.req.json<{ value: unknown; note?: string }>();
   if (body.value === undefined) {
@@ -199,7 +200,7 @@ review.post("/:id/override", requires("review:act"), async (c) => {
 });
 
 /** POST /api/review/:id/reject — mark the item failed. */
-review.post("/:id/reject", requires("review:act"), async (c) => {
+review.post("/:id/reject", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
   const body = await c.req.json<{ reason: string }>();
   if (!body.reason) {
@@ -219,7 +220,7 @@ review.post("/:id/reject", requires("review:act"), async (c) => {
  * skipped_at column) will make this server-side. The endpoint exists now so
  * the client contract is stable.
  */
-review.post("/:id/skip", requires("review:act"), async (c) => {
+review.post("/:id/skip", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   return c.body(null, 204);
 });
 

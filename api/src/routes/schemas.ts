@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
 
 const DEFAULT_TEMPLATE = `name: my_schema
@@ -85,7 +86,18 @@ schemas.get("/:slug", requires("schema:read"), async (c) => {
   return c.json({ ...s, latestVersion });
 });
 
-schemas.post("/", requires("schema:write"), async (c) => {
+schemas.post(
+  "/",
+  requires("schema:write"),
+  requireQuantityGate("max_schemas", async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const [row] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ count: sql<number>`count(*)::int` }).from(schema.schemas).where(sql`deleted_at IS NULL`),
+    );
+    return row?.count ?? 0;
+  }),
+  async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);

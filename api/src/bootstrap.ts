@@ -35,7 +35,7 @@ export async function bootstrap(db: Db): Promise<void> {
     id: DEFAULT_TENANT_ID,
     slug: "default",
     displayName: "Default Tenant",
-    plan: "pro",
+    plan: "scale",
   });
 
   // Create default admin user

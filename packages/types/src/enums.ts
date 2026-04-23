@@ -205,7 +205,6 @@ export type Role = (typeof Role)[keyof typeof Role];
 
 export const Plan = {
   Free: "free",
-  Pro: "pro",
   Scale: "scale",
   Enterprise: "enterprise",
 } as const;

@@ -118,7 +118,7 @@ tenants.post("/", async (c) => {
   const [tenant] = await db.insert(schema.tenants).values({
     slug: body.slug,
     displayName: body.display_name,
-    plan: "pro",
+    plan: "scale",
   }).returning();
 
   // Creator becomes owner

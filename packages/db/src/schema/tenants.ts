@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import {
+  decimal,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -29,6 +31,32 @@ export const tenants = pgTable(
     plan: varchar("plan", { length: 32 }).notNull().default("free"),
     billingEmail: varchar("billing_email", { length: 255 }),
     enterpriseContractId: uuid("enterprise_contract_id"),
+
+    // Stripe linkage
+    stripeCustomerId: varchar("stripe_customer_id", { length: 64 }),
+    stripeSubscriptionId: varchar("stripe_subscription_id", { length: 64 }),
+
+    // Per-tenant overrides (grandfathering, custom deals)
+    priceOverrideUsd: decimal("price_override_usd", { precision: 10, scale: 2 }),
+    includedDocsOverride: integer("included_docs_override"),
+    overagePriceOverrideUsd: decimal("overage_price_override_usd", { precision: 10, scale: 4 }),
+
+    // Per-tenant feature + limit overrides. Sparse JSONB — only keys present
+    // are overridden; everything else falls through to the plan default.
+    // Shape: Partial<PlanFeatures & PreflightLimits>
+    // e.g. { "max_schemas": 10, "hitl_review": true, "max_pages": 1000 }
+    planOverridesJson: jsonb("plan_overrides_json"),
+
+    // Plan scheduling (downgrades take effect at period end)
+    planScheduled: varchar("plan_scheduled", { length: 32 }),
+    planScheduledAt: timestamp("plan_scheduled_at", { withTimezone: true, mode: "date" }),
+
+    // Trial
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true, mode: "date" }),
+
+    // Billing alerts config
+    billingAlertsJson: jsonb("billing_alerts_json"),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: deletedAt(),
