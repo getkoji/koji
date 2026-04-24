@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { Bell, User, Settings, LogOut, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
 import { SidebarTrigger } from "@koji/ui";
 import { KojiLogo } from "./KojiLogo";
-import { me as meApi, projectsApi, type ProjectRow } from "@/lib/api";
+import { me as meApi, projectsApi, getSignOutHandler, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { on } from "@/lib/events";
 
@@ -213,6 +213,11 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                   icon={<LogOut className="w-3.5 h-3.5" />}
                   label="Sign out"
                   onClick={async () => {
+                    const customSignOut = getSignOutHandler();
+                    if (customSignOut) {
+                      await customSignOut();
+                      return;
+                    }
                     try {
                       await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/auth/session`, {
                         method: "DELETE",
