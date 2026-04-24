@@ -1,444 +1,298 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import { schema, withRLS } from "@koji/db";
+import { sql } from "drizzle-orm";
+import { withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
 
 export const overview = new Hono<Env>();
 
-type ActivityItem = {
-  type:
-    | "job.completed"
-    | "job.failed"
-    | "schema.versioned"
-    | "review.resolved"
-    | "pipeline.updated"
-    | "corpus.added";
-  timestamp: string;
-  description: string;
-  link: string;
-  status?: "ok" | "warn" | "pending";
-  meta?: string;
-};
-
-type AttentionItem = {
-  severity: "warning" | "info";
-  kind: string;
-  description: string;
-  link: string;
-};
-
 /**
- * GET /api/overview — aggregate tenant-level overview payload.
+ * GET /api/overview — single-query tenant overview.
  *
- * Returns metrics, recent activity, and attention items in a single roundtrip
- * so the overview page lands in one request. Every value comes from live
- * queries; missing data shows as null/0 on the client.
+ * One SQL round-trip returns all metrics, recent activity, attention items,
+ * and onboarding state. The query runs as a CTE pipeline inside withRLS so
+ * tenant isolation is enforced at the row level.
  */
 overview.get("/", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  // ── Metrics ────────────────────────────────────────────────────────────
+  const [result] = await withRLS(db, tenantId, (tx) =>
+    tx.execute(sql`
+      WITH
+        metrics AS (
+          SELECT
+            (SELECT (accuracy * 100)::float FROM schema_runs WHERE status = 'completed' ORDER BY created_at DESC LIMIT 1) AS accuracy,
+            (SELECT count(*)::int FROM documents d JOIN schemas s ON s.id = d.schema_id WHERE s.deleted_at IS NULL) AS documents_processed,
+            (SELECT count(*)::int FROM review_items WHERE status = 'pending') AS review_pending,
+            (SELECT count(*)::int FROM pipelines WHERE status = 'active') AS pipelines_active,
+            (SELECT count(*)::int FROM schemas WHERE deleted_at IS NULL) AS schema_count
+        ),
 
-  const [latestRun] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ accuracy: schema.schemaRuns.accuracy })
-      .from(schema.schemaRuns)
-      .where(eq(schema.schemaRuns.status, "completed"))
-      .orderBy(desc(schema.schemaRuns.createdAt))
-      .limit(1),
+        recent_jobs AS (
+          SELECT slug, status, docs_total, docs_passed,
+                 coalesce(completed_at, created_at) AS ts, created_at
+          FROM jobs ORDER BY created_at DESC LIMIT 5
+        ),
+
+        recent_versions AS (
+          SELECT sv.version_number, sv.commit_message, sv.created_at AS ts,
+                 s.slug AS schema_slug, s.display_name AS schema_name
+          FROM schema_versions sv
+          JOIN schemas s ON s.id = sv.schema_id
+          ORDER BY sv.created_at DESC LIMIT 5
+        ),
+
+        recent_reviews AS (
+          SELECT ri.id, ri.field_name, ri.resolution, ri.resolved_at AS ts,
+                 s.slug AS schema_slug
+          FROM review_items ri
+          JOIN schemas s ON s.id = ri.schema_id
+          WHERE ri.status != 'pending' AND ri.resolved_at IS NOT NULL
+          ORDER BY ri.resolved_at DESC LIMIT 5
+        ),
+
+        recent_corpus AS (
+          SELECT ce.id, ce.filename, ce.created_at AS ts,
+                 s.slug AS schema_slug
+          FROM corpus_entries ce
+          JOIN schemas s ON s.id = ce.schema_id
+          ORDER BY ce.created_at DESC LIMIT 5
+        ),
+
+        attention_failed_jobs AS (
+          SELECT count(*)::int AS count FROM jobs WHERE status = 'failed'
+        ),
+
+        attention_latest_validate AS (
+          SELECT regressions_count, schema_id
+          FROM schema_runs
+          WHERE status = 'completed' AND run_type = 'validate'
+          ORDER BY created_at DESC LIMIT 1
+        ),
+
+        attention_unlinked_pipelines AS (
+          SELECT count(*)::int AS count
+          FROM pipelines
+          WHERE status = 'active' AND active_schema_version_id IS NULL
+        ),
+
+        attention_no_corpus AS (
+          SELECT count(*)::int AS count
+          FROM schemas s
+          WHERE s.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM corpus_entries c WHERE c.schema_id = s.id)
+        ),
+
+        onboarding AS (
+          SELECT
+            (SELECT slug FROM schemas WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1) AS first_schema_slug,
+            (SELECT count(*)::int > 0 FROM corpus_entries) AS has_corpus,
+            (SELECT count(*)::int > 0 FROM extraction_runs) AS has_extraction,
+            (SELECT count(*)::int > 0 FROM corpus_entries
+              WHERE ground_truth_json IS NOT NULL
+                AND jsonb_typeof(ground_truth_json) = 'object'
+                AND ground_truth_json::text != '{}') AS has_ground_truth,
+            (SELECT count(*)::int > 0 FROM schema_runs
+              WHERE status = 'completed' AND run_type = 'validate') AS has_validate,
+            (SELECT count(*)::int > 0 FROM pipelines) AS has_pipeline
+        ),
+
+        failed_recent AS (
+          SELECT count(*)::int AS count
+          FROM jobs
+          WHERE status = 'failed' AND created_at >= now() - interval '24 hours'
+        )
+
+      SELECT jsonb_build_object(
+        'metrics', (SELECT row_to_json(metrics) FROM metrics),
+        'recentJobs', (SELECT coalesce(jsonb_agg(row_to_json(recent_jobs) ORDER BY ts DESC), '[]'::jsonb) FROM recent_jobs),
+        'recentVersions', (SELECT coalesce(jsonb_agg(row_to_json(recent_versions) ORDER BY ts DESC), '[]'::jsonb) FROM recent_versions),
+        'recentReviews', (SELECT coalesce(jsonb_agg(row_to_json(recent_reviews) ORDER BY ts DESC), '[]'::jsonb) FROM recent_reviews),
+        'recentCorpus', (SELECT coalesce(jsonb_agg(row_to_json(recent_corpus) ORDER BY ts DESC), '[]'::jsonb) FROM recent_corpus),
+        'failedJobsCount', (SELECT count FROM attention_failed_jobs),
+        'latestValidate', (SELECT row_to_json(attention_latest_validate) FROM attention_latest_validate),
+        'unlinkedPipelinesCount', (SELECT count FROM attention_unlinked_pipelines),
+        'noCorpusCount', (SELECT count FROM attention_no_corpus),
+        'onboarding', (SELECT row_to_json(onboarding) FROM onboarding),
+        'failedRecentCount', (SELECT count FROM failed_recent)
+      ) AS data
+    `),
   );
-  const accuracy =
-    latestRun?.accuracy != null ? Number(latestRun.accuracy) * 100 : null;
 
-  // Only count documents tied to a schema that still exists. Docs from
-  // soft-deleted schemas hang around in the table but shouldn't inflate the
-  // user-facing throughput metric — the user has already retired the
-  // schema they were produced against.
-  const [docsCount] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.documents)
-      .innerJoin(
-        schema.schemas,
-        eq(schema.schemas.id, schema.documents.schemaId),
-      )
-      .where(isNull(schema.schemas.deletedAt)),
-  );
+  const d = (result as any).data;
+  const m = d.metrics;
 
-  const [pendingReview] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.reviewItems)
-      .where(eq(schema.reviewItems.status, "pending")),
-  );
+  // ── Build activity feed ───────────────────────────────────────────────
 
-  const [activePipelines] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.pipelines)
-      .where(eq(schema.pipelines.status, "active")),
-  );
-
-  const [schemaCount] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.schemas)
-      .where(sql`deleted_at IS NULL`),
-  );
-
-  const metrics = {
-    accuracy,
-    documentsProcessed: docsCount?.count ?? 0,
-    reviewPending: pendingReview?.count ?? 0,
-    pipelinesActive: activePipelines?.count ?? 0,
-    schemaCount: schemaCount?.count ?? 0,
+  type ActivityItem = {
+    type: string;
+    timestamp: string;
+    description: string;
+    link: string;
+    status?: string;
+    meta?: string;
   };
-
-  // ── Recent activity ────────────────────────────────────────────────────
-  // Pull a handful from each source, merge, sort by timestamp desc,
-  // trim to 10.
-
-  const recentJobs = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        slug: schema.jobs.slug,
-        status: schema.jobs.status,
-        docsTotal: schema.jobs.docsTotal,
-        docsPassed: schema.jobs.docsPassed,
-        completedAt: schema.jobs.completedAt,
-        createdAt: schema.jobs.createdAt,
-      })
-      .from(schema.jobs)
-      .orderBy(desc(schema.jobs.createdAt))
-      .limit(5),
-  );
-
-  const recentSchemaVersions = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        versionNumber: schema.schemaVersions.versionNumber,
-        commitMessage: schema.schemaVersions.commitMessage,
-        createdAt: schema.schemaVersions.createdAt,
-        schemaSlug: schema.schemas.slug,
-        schemaName: schema.schemas.displayName,
-      })
-      .from(schema.schemaVersions)
-      .innerJoin(
-        schema.schemas,
-        eq(schema.schemas.id, schema.schemaVersions.schemaId),
-      )
-      .orderBy(desc(schema.schemaVersions.createdAt))
-      .limit(5),
-  );
-
-  const recentReviewResolved = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        id: schema.reviewItems.id,
-        fieldName: schema.reviewItems.fieldName,
-        resolution: schema.reviewItems.resolution,
-        resolvedAt: schema.reviewItems.resolvedAt,
-        schemaSlug: schema.schemas.slug,
-      })
-      .from(schema.reviewItems)
-      .innerJoin(
-        schema.schemas,
-        eq(schema.schemas.id, schema.reviewItems.schemaId),
-      )
-      .where(sql`${schema.reviewItems.status} != 'pending'`)
-      .orderBy(desc(schema.reviewItems.resolvedAt))
-      .limit(5),
-  );
-
-  const recentCorpus = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        createdAt: schema.corpusEntries.createdAt,
-        schemaSlug: schema.schemas.slug,
-      })
-      .from(schema.corpusEntries)
-      .innerJoin(
-        schema.schemas,
-        eq(schema.schemas.id, schema.corpusEntries.schemaId),
-      )
-      .orderBy(desc(schema.corpusEntries.createdAt))
-      .limit(5),
-  );
 
   const activity: ActivityItem[] = [];
 
-  for (const j of recentJobs) {
-    const ts = j.completedAt ?? j.createdAt;
+  for (const j of d.recentJobs) {
     if (j.status === "completed") {
-      const rate = j.docsTotal > 0 ? (j.docsPassed / j.docsTotal) * 100 : 0;
+      const rate = j.docs_total > 0 ? (j.docs_passed / j.docs_total) * 100 : 0;
       activity.push({
         type: "job.completed",
-        timestamp: ts.toISOString(),
+        timestamp: j.ts,
         description: `Job completed: ${j.slug}`,
-        meta: `${j.docsTotal} ${j.docsTotal === 1 ? "doc" : "docs"}, ${rate.toFixed(1)}% pass`,
+        meta: `${j.docs_total} ${j.docs_total === 1 ? "doc" : "docs"}, ${rate.toFixed(1)}% pass`,
         status: "ok",
         link: `/jobs/${j.slug}`,
       });
     } else if (j.status === "failed") {
       activity.push({
         type: "job.failed",
-        timestamp: ts.toISOString(),
+        timestamp: j.ts,
         description: `Job failed: ${j.slug}`,
-        meta: `${j.docsTotal} ${j.docsTotal === 1 ? "doc" : "docs"}`,
+        meta: `${j.docs_total} ${j.docs_total === 1 ? "doc" : "docs"}`,
         status: "warn",
         link: `/jobs/${j.slug}`,
       });
     }
   }
 
-  for (const v of recentSchemaVersions) {
+  for (const v of d.recentVersions) {
     activity.push({
       type: "schema.versioned",
-      timestamp: v.createdAt.toISOString(),
-      description: `Schema ${v.schemaSlug} committed v${v.versionNumber}`,
-      meta: v.commitMessage ?? undefined,
+      timestamp: v.ts,
+      description: `Schema ${v.schema_slug} committed v${v.version_number}`,
+      meta: v.commit_message ?? undefined,
       status: "ok",
-      link: `/schemas/${v.schemaSlug}/build`,
+      link: `/schemas/${v.schema_slug}/build`,
     });
   }
 
-  for (const r of recentReviewResolved) {
-    if (!r.resolvedAt) continue;
+  for (const r of d.recentReviews) {
     activity.push({
       type: "review.resolved",
-      timestamp: r.resolvedAt.toISOString(),
-      description: `Review resolved on ${r.fieldName}`,
+      timestamp: r.ts,
+      description: `Review resolved on ${r.field_name}`,
       meta: r.resolution ?? undefined,
       status: "ok",
       link: `/review`,
     });
   }
 
-  for (const cEntry of recentCorpus) {
+  for (const ce of d.recentCorpus) {
     activity.push({
       type: "corpus.added",
-      timestamp: cEntry.createdAt.toISOString(),
-      description: `Corpus entry added: ${cEntry.filename}`,
+      timestamp: ce.ts,
+      description: `Corpus entry added: ${ce.filename}`,
       status: "ok",
-      link: `/schemas/${cEntry.schemaSlug}/corpus`,
+      link: `/schemas/${ce.schema_slug}/corpus`,
     });
   }
 
   activity.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-  const recentActivity = activity.slice(0, 10);
 
-  // ── Attention items ────────────────────────────────────────────────────
+  // ── Attention items ───────────────────────────────────────────────────
+
+  type AttentionItem = {
+    severity: string;
+    kind: string;
+    description: string;
+    link: string;
+  };
 
   const attention: AttentionItem[] = [];
 
-  if ((pendingReview?.count ?? 0) > 0) {
-    const n = pendingReview!.count;
+  if (m.review_pending > 0) {
     attention.push({
       severity: "warning",
       kind: "Review queue",
-      description: `${n} ${n === 1 ? "document" : "documents"} waiting for review.`,
+      description: `${m.review_pending} ${m.review_pending === 1 ? "document" : "documents"} waiting for review.`,
       link: `/review`,
     });
   }
 
-  const [failedJobs] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.jobs)
-      .where(eq(schema.jobs.status, "failed")),
-  );
-  if ((failedJobs?.count ?? 0) > 0) {
-    const n = failedJobs!.count;
+  if (d.failedJobsCount > 0) {
     attention.push({
       severity: "warning",
       kind: "Failed jobs",
-      description: `${n} ${n === 1 ? "job has" : "jobs have"} failed. Check logs.`,
+      description: `${d.failedJobsCount} ${d.failedJobsCount === 1 ? "job has" : "jobs have"} failed. Check logs.`,
       link: `/jobs?status=failed`,
     });
   }
 
-  const [latestValidate] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({
-        regressionsCount: schema.schemaRuns.regressionsCount,
-        schemaId: schema.schemaRuns.schemaId,
-      })
-      .from(schema.schemaRuns)
-      .where(
-        and(
-          eq(schema.schemaRuns.status, "completed"),
-          eq(schema.schemaRuns.runType, "validate"),
-        ),
-      )
-      .orderBy(desc(schema.schemaRuns.createdAt))
-      .limit(1),
-  );
-  if (latestValidate && latestValidate.regressionsCount > 0) {
+  if (d.latestValidate?.regressions_count > 0) {
+    // Look up schema slug for the validate run
+    const validateSchemaId = d.latestValidate.schema_id;
     const [slugRow] = await withRLS(db, tenantId, (tx) =>
-      tx
-        .select({ slug: schema.schemas.slug })
-        .from(schema.schemas)
-        .where(eq(schema.schemas.id, latestValidate.schemaId))
-        .limit(1),
+      tx.execute(sql`SELECT slug FROM schemas WHERE id = ${validateSchemaId} LIMIT 1`),
     );
     if (slugRow) {
       attention.push({
         severity: "warning",
         kind: "Validate regression",
-        description: `Latest validate run on ${slugRow.slug} caught ${latestValidate.regressionsCount} ${latestValidate.regressionsCount === 1 ? "regression" : "regressions"}.`,
-        link: `/schemas/${slugRow.slug}/validate`,
+        description: `Latest validate run caught ${d.latestValidate.regressions_count} regression(s).`,
+        link: `/schemas/${(slugRow as any).slug}/validate`,
       });
     }
   }
 
-  const pipelinesNoSchema = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.pipelines)
-      .where(
-        and(
-          eq(schema.pipelines.status, "active"),
-          isNull(schema.pipelines.activeSchemaVersionId),
-        ),
-      ),
-  );
-  if ((pipelinesNoSchema[0]?.count ?? 0) > 0) {
-    const n = pipelinesNoSchema[0]!.count;
+  if (d.unlinkedPipelinesCount > 0) {
     attention.push({
       severity: "warning",
       kind: "Unlinked pipeline",
-      description: `${n} active ${n === 1 ? "pipeline has" : "pipelines have"} no deployed schema version.`,
+      description: `${d.unlinkedPipelinesCount} active pipeline(s) have no deployed schema version.`,
       link: `/pipelines`,
     });
   }
 
-  const schemasNoCorpus = await withRLS(db, tenantId, (tx) =>
-    tx.execute(sql`
-      SELECT s.slug FROM schemas s
-      WHERE s.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM corpus_entries c WHERE c.schema_id = s.id
-        )
-    `),
-  );
-  const noCorpusRows = (schemasNoCorpus as unknown as { rows?: { slug: string }[] })
-    .rows ?? (schemasNoCorpus as unknown as { slug: string }[]);
-  const noCorpusCount = Array.isArray(noCorpusRows) ? noCorpusRows.length : 0;
-  if (noCorpusCount > 0) {
+  if (d.noCorpusCount > 0) {
     attention.push({
       severity: "info",
       kind: "Schema needs corpus",
-      description: `${noCorpusCount} ${noCorpusCount === 1 ? "schema has" : "schemas have"} no corpus entries to measure against.`,
+      description: `${d.noCorpusCount} schema(s) have no corpus entries to measure against.`,
       link: `/`,
     });
   }
 
-  // ── Onboarding checklist ───────────────────────────────────────────────
-  // Each step reflects real data. Shown in the UI when the activity feed is
-  // empty, so a fresh project lands on a guided setup instead of a blank
-  // panel.
+  // ── Onboarding ────────────────────────────────────────────────────────
 
-  const [firstSchema] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ slug: schema.schemas.slug })
-      .from(schema.schemas)
-      .where(sql`deleted_at IS NULL`)
-      .orderBy(schema.schemas.createdAt)
-      .limit(1),
-  );
-
-  const [anyCorpus] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.corpusEntries),
-  );
-
-  const [anyExtraction] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.extractionRuns),
-  );
-
-  const [anyGroundTruth] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.corpusEntries)
-      .where(
-        sql`${schema.corpusEntries.groundTruthJson} IS NOT NULL
-            AND jsonb_typeof(${schema.corpusEntries.groundTruthJson}) = 'object'
-            AND ${schema.corpusEntries.groundTruthJson}::text != '{}'`,
-      ),
-  );
-
-  const [anyValidate] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.schemaRuns)
-      .where(
-        and(
-          eq(schema.schemaRuns.status, "completed"),
-          eq(schema.schemaRuns.runType, "validate"),
-        ),
-      ),
-  );
-
-  const [anyPipeline] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.pipelines),
-  );
-
+  const ob = d.onboarding;
   const onboarding = {
-    schemaCreated: (schemaCount?.count ?? 0) > 0,
-    documentUploaded: (anyCorpus?.count ?? 0) > 0,
-    extractionRun: (anyExtraction?.count ?? 0) > 0,
-    corpusEntries: (anyGroundTruth?.count ?? 0) > 0,
-    validateRun: (anyValidate?.count ?? 0) > 0,
-    pipelineConfigured: (anyPipeline?.count ?? 0) > 0,
-    firstSchemaSlug: firstSchema?.slug ?? null,
+    schemaCreated: m.schema_count > 0,
+    documentUploaded: ob.has_corpus,
+    extractionRun: ob.has_extraction,
+    corpusEntries: ob.has_ground_truth,
+    validateRun: ob.has_validate,
+    pipelineConfigured: ob.has_pipeline,
+    firstSchemaSlug: ob.first_schema_slug,
   };
 
-  // ── Editorial accent line ──────────────────────────────────────────────
-  // Dynamic tagline below the project name, driven by real data. Priority
-  // order matters: the first matching state wins so the same project state
-  // always produces the same line.
-
-  const [failedRecent] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.jobs)
-      .where(
-        and(
-          eq(schema.jobs.status, "failed"),
-          sql`${schema.jobs.createdAt} >= now() - interval '24 hours'`,
-        ),
-      ),
-  );
+  // ── Accent line ───────────────────────────────────────────────────────
 
   let accentLine: string;
-  if ((failedRecent?.count ?? 0) > 0) {
+  if (d.failedRecentCount > 0) {
     accentLine = "Something needs attention.";
-  } else if (latestValidate && latestValidate.regressionsCount > 0) {
+  } else if (d.latestValidate?.regressions_count > 0) {
     accentLine = "Regression caught.";
-  } else if ((pendingReview?.count ?? 0) > 0) {
+  } else if (m.review_pending > 0) {
     accentLine = "Waiting on you.";
-  } else if (
-    !onboarding.schemaCreated &&
-    !onboarding.documentUploaded &&
-    (docsCount?.count ?? 0) === 0
-  ) {
+  } else if (!onboarding.schemaCreated && !onboarding.documentUploaded && m.documents_processed === 0) {
     accentLine = "Ready when you are.";
   } else {
     accentLine = "Quietly working.";
   }
 
   return c.json({
-    metrics,
-    recentActivity,
+    metrics: {
+      accuracy: m.accuracy,
+      documentsProcessed: m.documents_processed,
+      reviewPending: m.review_pending,
+      pipelinesActive: m.pipelines_active,
+      schemaCount: m.schema_count,
+    },
+    recentActivity: activity.slice(0, 10),
     needsAttention: attention,
     onboarding,
     accentLine,
