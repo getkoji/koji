@@ -9,6 +9,20 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
 
+/**
+ * Optional auth token provider. When set, every request includes an
+ * `Authorization: Bearer <token>` header instead of relying on cookies.
+ *
+ * The hosted platform sets this to Clerk's `getToken()` so cross-origin
+ * API calls work without shared cookies. OSS (same-origin) never sets
+ * it and continues using `credentials: "include"`.
+ */
+let authTokenProvider: (() => Promise<string | null>) | null = null;
+
+export function setAuthTokenProvider(provider: () => Promise<string | null>) {
+  authTokenProvider = provider;
+}
+
 export class ApiError extends Error {
   status: number;
   detail?: string;
@@ -46,6 +60,15 @@ async function request<T>(path: string, options?: RequestInit & { isFormData?: b
   // Add tenant header for tenant-scoped API calls
   if (tenantSlug) {
     headers["x-koji-tenant"] = tenantSlug;
+  }
+
+  // If an auth token provider is set (hosted/Clerk), send a Bearer token
+  // instead of relying on cross-origin cookies.
+  if (authTokenProvider) {
+    const token = await authTokenProvider();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
   }
 
   const res = await fetch(url, {
