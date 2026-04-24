@@ -23,6 +23,10 @@ export function setAuthTokenProvider(provider: () => Promise<string | null>) {
   authTokenProvider = provider;
 }
 
+export function getAuthTokenProvider(): (() => Promise<string | null>) | null {
+  return authTokenProvider;
+}
+
 /**
  * Optional sign-out handler. When set, the sign-out button calls this
  * instead of the built-in session DELETE. The hosted platform sets this
