@@ -85,7 +85,11 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return c.json({ error: "Authentication required" }, 401);
     }
 
-    const principal = await adapter.resolve(token);
+    // Use the per-request auth adapter from context if available (Workers
+    // injects a fresh one with a per-request DB), falling back to the
+    // closure adapter for Node/self-hosted where the DB is shared.
+    const requestAuth = c.get("auth") ?? adapter;
+    const principal = await requestAuth.resolve(token);
     if (!principal) {
       return c.json({ error: "Invalid or expired session" }, 401);
     }
