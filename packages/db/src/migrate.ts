@@ -82,7 +82,7 @@ async function provisionAppUser(
     `);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (/permission denied|must be superuser|cannot be granted/i.test(msg)) {
+    if (/permission denied|must be superuser|cannot be granted|insecure password/i.test(msg)) {
       console.warn(
         `[migrate] app_user provisioning skipped (${msg}). ` +
           "Provision the role out-of-band — see packages/db/README.md.",
