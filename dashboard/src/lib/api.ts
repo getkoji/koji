@@ -63,17 +63,20 @@ async function request<T>(path: string, options?: RequestInit & { isFormData?: b
   }
 
   // If an auth token provider is set (hosted/Clerk), send a Bearer token
-  // instead of relying on cross-origin cookies.
+  // instead of relying on cross-origin cookies. Skip credentials: "include"
+  // to avoid sending cookies that conflict with Bearer auth on the API.
+  let useCredentials = true;
   if (authTokenProvider) {
     const token = await authTokenProvider();
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
+      useCredentials = false;
     }
   }
 
   const res = await fetch(url, {
     ...options,
-    credentials: "include",
+    ...(useCredentials ? { credentials: "include" as RequestCredentials } : {}),
     headers,
   });
 
