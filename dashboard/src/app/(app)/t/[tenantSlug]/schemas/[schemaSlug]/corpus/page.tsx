@@ -141,9 +141,8 @@ export default function CorpusPage() {
     setUploading(true);
     try {
       const fd = new FormData(); fd.append("file", file);
-      const r = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/schemas/${schemaSlug}/corpus`,
-        { method: "POST", body: fd, credentials: "include", headers: { "x-koji-tenant": tenantSlug } });
-      if (r.ok) { const e = await r.json() as CorpusEntry; refetch(); setSelectedId(e.id); }
+      const e = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, fd);
+      refetch(); setSelectedId(e.id);
     } finally { setUploading(false); }
   }
 

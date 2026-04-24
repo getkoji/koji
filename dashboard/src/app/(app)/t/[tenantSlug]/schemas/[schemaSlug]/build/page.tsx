@@ -423,13 +423,7 @@ export default function BuildPage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const result = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/schemas/${schemaSlug}/corpus`,
-        { method: "POST", body: formData, credentials: "include",
-          headers: { "x-koji-tenant": tenantSlug } },
-      );
-      if (!result.ok) throw new Error(`Upload failed: ${result.status}`);
-      const entry = await result.json() as CorpusEntry;
+      const entry = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, formData);
       refetchCorpus();
       setSelectedDocId(entry.id);
     } catch (err) {
