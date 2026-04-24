@@ -73,6 +73,14 @@ import type { Env } from "./env";
 
 export interface CreateAppDeps {
   db: Db;
+  /** Optional per-request DB factory. When provided, each request gets a
+   *  fresh DB connection instead of reusing `db`. Required for Cloudflare
+   *  Workers where TCP sockets can't be shared across request contexts.
+   *  The static `db` is still used for app initialization. */
+  dbFactory?: () => Db;
+  /** Optional per-request auth adapter factory. When dbFactory is set, the
+   *  auth adapter also needs a fresh DB per request (it queries users). */
+  authFactory?: (db: Db) => AuthAdapter;
   auth: AuthAdapter;
   storage: StorageProvider;
   queue: QueueProvider;
@@ -156,10 +164,12 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   // Per-request injection — adapters + config become available via c.get(...)
   // inside every route handler and downstream middleware.
   const injectContext: MiddlewareHandler<Env> = async (c, next) => {
-    c.set("db", deps.db);
+    const requestDb = deps.dbFactory ? deps.dbFactory() : deps.db;
+    const requestAuth = deps.authFactory ? deps.authFactory(requestDb) : deps.auth;
+    c.set("db", requestDb);
     c.set("storage", deps.storage);
     c.set("queue", deps.queue);
-    c.set("auth", deps.auth);
+    c.set("auth", requestAuth);
     c.set("emailSender", deps.emailSender);
     c.set("masterKey", deps.masterKey);
     c.set("appUrl", deps.appUrl);
