@@ -18,6 +18,16 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 
 export const extract = new Hono<Env>();
 
+/**
+ * Resolve the parse service URL. The Docker sidecar serves at /parse,
+ * but Modal's endpoint serves at the root. If the configured parseUrl
+ * already contains "modal.run", don't append /parse.
+ */
+function resolveParseUrl(baseUrl: string, path = "/parse"): string {
+  if (baseUrl.includes("modal.run")) return baseUrl;
+  return `${baseUrl}${path}`;
+}
+
 
 /** POST multipart/form-data via node:http and read the SSE response as an async iterator. */
 function postMultipartSSE(
@@ -186,7 +196,7 @@ extract.post("/parse", requires("job:run"), async (c) => {
   const formData = new FormData();
   formData.append("file", file);
 
-  const resp = await fetch(`${c.get("parseUrl")}/parse`, {
+  const resp = await fetch(`${resolveParseUrl(c.get("parseUrl"))}`, {
     method: "POST",
     body: formData,
   });
@@ -207,7 +217,7 @@ extract.post("/process", requires("job:run"), async (c) => {
   const parseForm = new FormData();
   parseForm.append("file", file);
 
-  const parseResp = await fetch(`${c.get("parseUrl")}/parse`, {
+  const parseResp = await fetch(`${resolveParseUrl(c.get("parseUrl"))}`, {
     method: "POST",
     body: parseForm,
   });
@@ -351,7 +361,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
       let parseResult: Record<string, unknown> | null = null;
 
       for await (const event of postMultipartSSE(
-        `${c.get("parseUrl")}/parse/stream`,
+        `${resolveParseUrl(c.get("parseUrl"), "/parse/stream")}`,
         entry.filename,
         entry.mimeType,
         fileBuffer,
@@ -478,7 +488,7 @@ async function handleExtractRunJSON(
     // Cache miss — parse and store
     try {
       const resp = await postMultipart(
-        `${c.get("parseUrl")}/parse`,
+        `${resolveParseUrl(c.get("parseUrl"))}`,
         entry.filename,
         entry.mimeType,
         fileBuffer,
