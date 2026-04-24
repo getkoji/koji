@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, getAuthTokenProvider } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
 
@@ -320,14 +320,21 @@ export default function BuildPage() {
 
     const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
     try {
+      // Raw fetch needed for SSE streaming — can't use api.post which parses JSON.
+      // Build auth headers through the same path as api.post.
+      const fetchHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        "x-koji-tenant": tenantSlug,
+      };
+      const tokenProvider = getAuthTokenProvider();
+      if (tokenProvider) {
+        const token = await tokenProvider();
+        if (token) fetchHeaders["Authorization"] = `Bearer ${token}`;
+      }
+
       const resp = await fetch(`${API_BASE}/api/extract/run`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // "Accept": "text/event-stream",  // TODO: re-enable SSE after testing
-          "x-koji-tenant": tenantSlug,
-        },
-        credentials: "include",
+        headers: fetchHeaders,
         body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: yaml, ...(selectedModel ? { model: selectedModel } : {}) }),
       });
 
