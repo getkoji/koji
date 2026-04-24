@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { eq, and, desc } from "drizzle-orm";
 import http from "node:http";
+import https from "node:https";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -40,15 +41,22 @@ function postMultipartSSE(
       const queue: Array<{ event: string; data: string }> = [];
       let done = false;
 
-      const req = http.request(
+      const transport = parsed.protocol === "https:" ? https : http;
+      const authHeaders: Record<string, string> = {};
+      if (process.env.MODAL_TOKEN_ID && parsed.hostname.includes("modal.run")) {
+        authHeaders["Modal-Key"] = process.env.MODAL_TOKEN_ID;
+        authHeaders["Modal-Secret"] = process.env.MODAL_TOKEN_SECRET ?? "";
+      }
+      const req = transport.request(
         {
           hostname: parsed.hostname,
-          port: parsed.port,
+          port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
           path: parsed.pathname,
           method: "POST",
           headers: {
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
             "Content-Length": body.length,
+            ...authHeaders,
           },
         },
         (res) => {
@@ -130,15 +138,23 @@ function postMultipart(
     const body = Buffer.concat([header, fileBuffer, footer]);
 
     const parsed = new URL(url);
-    const req = http.request(
+    const transport = parsed.protocol === "https:" ? https : http;
+    const authHeaders: Record<string, string> = {};
+    // Modal proxy auth — required for hosted parse endpoints
+    if (process.env.MODAL_TOKEN_ID && parsed.hostname.includes("modal.run")) {
+      authHeaders["Modal-Key"] = process.env.MODAL_TOKEN_ID;
+      authHeaders["Modal-Secret"] = process.env.MODAL_TOKEN_SECRET ?? "";
+    }
+    const req = transport.request(
       {
         hostname: parsed.hostname,
-        port: parsed.port,
+        port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
         path: parsed.pathname,
         method: "POST",
         headers: {
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
           "Content-Length": body.length,
+          ...authHeaders,
         },
       },
       (res) => {
