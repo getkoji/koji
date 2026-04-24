@@ -21,18 +21,29 @@ export function createRateLimiter(opts: {
 }): RateLimiter {
   const { windowMs, max } = opts;
   const store = new Map<string, WindowEntry>();
+  let pruneStarted = false;
 
-  // Prune stale entries every 60s to prevent memory growth
-  setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of store) {
-      entry.timestamps = entry.timestamps.filter((t) => now - t < windowMs);
-      if (entry.timestamps.length === 0) store.delete(key);
+  function ensurePruner() {
+    if (pruneStarted) return;
+    pruneStarted = true;
+    // Prune stale entries every 60s to prevent memory growth.
+    // Deferred to first use so the timer isn't created at module-load time,
+    // which Cloudflare Workers disallows in global scope.
+    if (typeof setInterval !== "undefined") {
+      const timer = setInterval(() => {
+        const now = Date.now();
+        for (const [key, entry] of store) {
+          entry.timestamps = entry.timestamps.filter((t) => now - t < windowMs);
+          if (entry.timestamps.length === 0) store.delete(key);
+        }
+      }, 60_000);
+      if (typeof timer === "object" && "unref" in timer) timer.unref();
     }
-  }, 60_000).unref();
+  }
 
   return {
     check(key: string): boolean {
+      ensurePruner();
       const now = Date.now();
       let entry = store.get(key);
       if (!entry) {

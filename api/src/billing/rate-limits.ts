@@ -30,14 +30,24 @@ interface WindowEntry {
 
 const uploadWindows = new Map<string, WindowEntry>();
 
-// Prune stale entries every 60s
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of uploadWindows) {
-    entry.timestamps = entry.timestamps.filter((t) => now - t < 60_000);
-    if (entry.timestamps.length === 0) uploadWindows.delete(key);
+// Prune stale entries every 60s. Deferred to first use so the timer isn't
+// created at module-load time (Cloudflare Workers disallows setInterval in
+// global scope).
+let pruneStarted = false;
+function ensurePruner() {
+  if (pruneStarted) return;
+  pruneStarted = true;
+  if (typeof setInterval !== "undefined") {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of uploadWindows) {
+        entry.timestamps = entry.timestamps.filter((t) => now - t < 60_000);
+        if (entry.timestamps.length === 0) uploadWindows.delete(key);
+      }
+    }, 60_000);
+    if (typeof timer === "object" && "unref" in timer) timer.unref();
   }
-}, 60_000).unref();
+}
 
 /**
  * Middleware that rate-limits uploads per tenant based on their plan tier.
@@ -57,6 +67,7 @@ export function requireUploadRateLimit() {
     const limits = limitsForPlan(result.currentPlan);
 
     const now = Date.now();
+    ensurePruner();
     let entry = uploadWindows.get(tenantId);
     if (!entry) {
       entry = { timestamps: [] };
