@@ -35,6 +35,8 @@ import {
   type ExtractEndpointPayload,
 } from "../extract/resolve-endpoint";
 import { isTransientError } from "./errors";
+import type { BillingAdapter } from "../billing/adapter";
+import { NoOpBillingAdapter } from "../billing/noop";
 
 export interface IngestionHandlerConfig {
   /** Base URL for the extract HTTP service (self-hosted sidecar or hosted proxy). */
@@ -45,6 +47,7 @@ let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
 let _parseProvider: ParseProvider | null = null;
 let _extractUrl: string | null = null;
+let _billing: BillingAdapter = new NoOpBillingAdapter();
 
 export function initIngestionHandler(
   db: Db,
@@ -54,6 +57,10 @@ export function initIngestionHandler(
   _db = db;
   _storage = storage;
   _extractUrl = config.extractUrl;
+}
+
+export function initBilling(adapter: BillingAdapter) {
+  _billing = adapter;
 }
 
 /**
@@ -423,6 +430,25 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     }
     await enqueueWebhookDeliveries(tenantId, prepared, { documentId });
   }
+
+  // Record billable event for the terminal transition (best-effort —
+  // a billing write failure shouldn't un-do the successful delivery).
+  await _billing
+    .recordBillableEvent(tenantId, {
+      kind: "document_processed",
+      documentId,
+      jobId,
+      pipelineId: pipeline.id,
+      schemaVersionId: schemaVersion?.id,
+      disposition: "billable",
+      terminalState: routeToReview ? "review" : "delivered",
+    })
+    .catch((err) => {
+      console.warn(
+        "[ingestion.process] billing event write failed:",
+        err instanceof Error ? err.message : err,
+      );
+    });
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -927,4 +953,21 @@ export async function markDocFailed(
       })
       .where(eq(schema.jobs.id, jobId)),
   );
+
+  // Record billable event for the failure (best-effort)
+  await _billing
+    .recordBillableEvent(tenantId, {
+      kind: "document_processed",
+      documentId,
+      jobId,
+      disposition: "billable",
+      terminalState: "failed",
+      errorCause: "extraction_failed",
+    })
+    .catch((err) => {
+      console.warn(
+        "[ingestion.process] billing event write failed:",
+        err instanceof Error ? err.message : err,
+      );
+    });
 }

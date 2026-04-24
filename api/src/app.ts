@@ -66,6 +66,7 @@ import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
 import {
   initIngestionHandler,
   initParseProvider,
+  initBilling,
   handleIngestionProcess,
 } from "./ingestion/process";
 
@@ -144,6 +145,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initDeliveryHandler(deps.db, deps.masterKey);
   initIngestionHandler(deps.db, deps.storage, { extractUrl: deps.extractUrl });
   initParseProvider(deps.parseProvider);
+  initBilling(billing);
 
   const app = new Hono<Env>();
 
