@@ -23,6 +23,21 @@ export function setAuthTokenProvider(provider: () => Promise<string | null>) {
   authTokenProvider = provider;
 }
 
+/**
+ * Optional sign-out handler. When set, the sign-out button calls this
+ * instead of the built-in session DELETE. The hosted platform sets this
+ * to Clerk's `signOut()`.
+ */
+let signOutHandler: (() => Promise<void>) | null = null;
+
+export function setSignOutHandler(handler: () => Promise<void>) {
+  signOutHandler = handler;
+}
+
+export function getSignOutHandler(): (() => Promise<void>) | null {
+  return signOutHandler;
+}
+
 export class ApiError extends Error {
   status: number;
   detail?: string;
