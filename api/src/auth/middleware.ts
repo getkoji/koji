@@ -39,6 +39,7 @@ const PUBLIC_PATHS = new Set([
   "/api/auth/forgot-password",
   "/api/auth/reset-password",
   "/api/invites/accept",
+  "/api/inngest",
 ]);
 
 /** Routes that require auth but not tenant context. */
