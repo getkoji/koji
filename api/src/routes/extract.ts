@@ -141,9 +141,9 @@ function postMultipart(
     const transport = parsed.protocol === "https:" ? https : http;
     const authHeaders: Record<string, string> = {};
     // Modal proxy auth — required for hosted parse endpoints
-    if (process.env.MODAL_TOKEN_ID && parsed.hostname.includes("modal.run")) {
-      authHeaders["Modal-Key"] = process.env.MODAL_TOKEN_ID;
-      authHeaders["Modal-Secret"] = process.env.MODAL_TOKEN_SECRET ?? "";
+    if (parsed.hostname.includes("modal.run")) {
+      authHeaders["Modal-Key"] = process.env.MODAL_PROXY_KEY ?? process.env.MODAL_TOKEN_ID ?? "";
+      authHeaders["Modal-Secret"] = process.env.MODAL_PROXY_SECRET ?? process.env.MODAL_TOKEN_SECRET ?? "";
     }
     const req = transport.request(
       {
