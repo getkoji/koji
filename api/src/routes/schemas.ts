@@ -304,13 +304,20 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       mimeType: schema.corpusEntries.mimeType,
       source: schema.corpusEntries.source,
       tags: schema.corpusEntries.tags,
+      groundTruthJson: schema.corpusEntries.groundTruthJson,
       createdAt: schema.corpusEntries.createdAt,
     }).from(schema.corpusEntries)
       .where(eq(schema.corpusEntries.schemaId, s.id))
       .orderBy(desc(schema.corpusEntries.createdAt))
   );
 
-  return c.json({ data: rows });
+  const data = rows.map((r) => ({
+    ...r,
+    hasGroundTruth: r.groundTruthJson != null && typeof r.groundTruthJson === "object" && Object.keys(r.groundTruthJson as object).length > 0,
+    groundTruthJson: undefined, // don't send the full payload in the list
+  }));
+
+  return c.json({ data });
 });
 
 /**

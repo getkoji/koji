@@ -12,7 +12,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 
 interface CorpusEntry {
   id: string; filename: string; fileSize: number; mimeType: string;
-  source: string; tags: string[]; createdAt: string;
+  source: string; tags: string[]; createdAt: string; hasGroundTruth?: boolean;
 }
 
 interface SchemaField {
@@ -81,6 +81,7 @@ export default function CorpusPage() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [srcFilter, setSrcFilter] = useState("All");
+  const [gtFilter, setGtFilter] = useState<"all" | "with_gt" | "needs_gt">("all");
   const [search, setSearch] = useState("");
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -102,9 +103,15 @@ export default function CorpusPage() {
 
   const fields = useMemo(() => parseFields(schemaDetail?.latestVersion?.yamlSource ?? null), [schemaDetail]);
 
-  const filtered = (entries ?? []).filter((e) => {
+  const allEntries = entries ?? [];
+  const gtCount = allEntries.filter((e) => e.hasGroundTruth).length;
+  const needsGtCount = allEntries.filter((e) => !e.hasGroundTruth).length;
+
+  const filtered = allEntries.filter((e) => {
     if (srcFilter === "Upload" && e.source !== "upload") return false;
     if (srcFilter === "Pipeline" && e.source === "upload") return false;
+    if (gtFilter === "with_gt" && !e.hasGroundTruth) return false;
+    if (gtFilter === "needs_gt" && e.hasGroundTruth) return false;
     if (search && !e.filename.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -211,12 +218,17 @@ export default function CorpusPage() {
           </nav>
           <h1 className="font-display text-[22px] font-medium leading-none tracking-tight text-ink" style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>Corpus</h1>
           <div className="flex items-center gap-3 mt-1.5 font-mono text-[10px] text-ink-4">
-            <span>{(entries ?? []).length} entries</span>
+            <span>{allEntries.length} entries</span>
             <span>·</span>
-            <span>{(entries ?? []).filter((e) => e.tags.includes("hold-out")).length} hold-out</span>
+            <span className="text-green">{gtCount} with ground truth</span>
             <span>·</span>
-            <span>{(entries ?? []).filter((e) => e.tags.includes("adversarial")).length} adversarial</span>
+            <span className={needsGtCount > 0 ? "text-vermillion-2" : ""}>{needsGtCount} need ground truth</span>
           </div>
+          {needsGtCount > 0 && gtCount === 0 && (
+            <p className="text-[11px] text-vermillion-2 mt-1">
+              No documents have ground truth yet. Go to <Link href={pathname.replace("/corpus", "/build")} className="underline">Build mode</Link> to extract, review, and save ground truth before running Validate.
+            </p>
+          )}
         </div>
         {hasPermission("corpus:write") && (
           <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
@@ -272,7 +284,10 @@ export default function CorpusPage() {
                     className={`w-full text-left px-2 py-2 border-b border-dotted border-border transition-colors ${selectedId === e.id ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
                     <div className="font-mono text-[10px] text-ink truncate">{e.filename}</div>
                     <div className="flex items-center gap-1 mt-0.5">
-                      <span className={`font-mono text-[8px] px-1 py-0.5 rounded-sm uppercase ${e.source === "upload" ? "bg-cream-2 text-ink-4" : "bg-green/10 text-green"}`}>{e.source}</span>
+                      {e.hasGroundTruth
+                        ? <span className="font-mono text-[8px] px-1 py-0.5 rounded-sm uppercase bg-green/15 text-green">ground truth</span>
+                        : <span className="font-mono text-[8px] px-1 py-0.5 rounded-sm uppercase bg-vermillion-3 text-vermillion-2">needs GT</span>
+                      }
                       <span className="font-mono text-[8px] text-ink-4">{timeAgo(e.createdAt)}</span>
                     </div>
                     {e.tags.length > 0 && (
