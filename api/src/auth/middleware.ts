@@ -58,6 +58,7 @@ function matchesNoTenantPath(path: string): boolean {
   if (path === "/api/me" || path.startsWith("/api/me/")) return true;
   if (path === "/api/tenants" || path.startsWith("/api/tenants/")) return true;
   if (path === "/api/cli/authorize") return true;
+  if (path === "/api/projects" || path.startsWith("/api/projects/")) return true;
   return false;
 }
 
