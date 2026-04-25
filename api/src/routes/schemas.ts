@@ -6,6 +6,9 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
+import { createProvider, extractFields } from "../extract";
+import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { and } from "drizzle-orm";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -687,10 +690,29 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   );
   if (!schemaRun) return c.json({ error: "Failed to create schema run" }, 500);
 
-  // Run extraction on each entry via the internal extract/run endpoint
-  const EXTRACT_RUN_URL = `http://localhost:${process.env.PORT ?? "9401"}/api/extract/run`;
-  const sessionCookie = c.req.header("cookie") ?? "";
-  const tenantHeader = c.req.header("x-koji-tenant") ?? "";
+  // Resolve model endpoint for extraction
+  const storage = c.get("storage");
+  let endpointPayload = null;
+  try {
+    const requestedModel = body.model ?? null;
+    const [ep] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model })
+        .from(schema.modelEndpoints)
+        .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel ? [eq(schema.modelEndpoints.model, requestedModel)] : [])))
+        .limit(1));
+    if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
+  } catch {}
+  const extractModel = body.model ?? endpointPayload?.model ?? "gpt-4o-mini";
+  const provider = createProvider(extractModel, endpointPayload);
+
+  // Parse schema YAML for extraction
+  let schemaDef: Record<string, unknown>;
+  try {
+    const { parse: parseYaml } = await import("yaml");
+    schemaDef = parseYaml(schemaYaml);
+  } catch {
+    return c.json({ error: "Invalid schema YAML" }, 422);
+  }
 
   const results: Array<{
     entryId: string;
@@ -700,7 +722,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     confidenceScores: Record<string, number>;
   }> = [];
 
-  // Get previous extraction runs for regression detection (before we create new ones)
+  // Get previous extraction runs for regression detection
   const prevExtractedMap = new Map<string, Record<string, unknown>>();
   for (const entry of entriesWithGT) {
     const [prevRun] = await withRLS(db, tenantId, (tx) =>
@@ -715,35 +737,37 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     }
   }
 
-  // Run extractions (sequentially to avoid overwhelming the extract service)
+  // Run extractions directly (no HTTP loopback — works on Vercel)
   for (const entry of entriesWithGT) {
     try {
-      const resp = await fetch(EXTRACT_RUN_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Cookie": sessionCookie,
-          "x-koji-tenant": tenantHeader,
-        },
-        body: JSON.stringify({
-          corpus_entry_id: entry.id,
-          schema_yaml: schemaYaml,
-          schema_run_id: schemaRun.id,
-          ...(body.model ? { model: body.model } : {}),
-        }),
-        signal: AbortSignal.timeout(300_000),
-      });
+      // Get file from storage
+      const fileResult = await storage.getBuffer(entry.storageKey);
+      if (!fileResult) continue;
 
-      if (resp.ok) {
-        const data = await resp.json() as Record<string, unknown>;
-        results.push({
-          entryId: entry.id,
+      // Parse the document (use parse provider)
+      const parseProvider = c.get("parseProvider") as any;
+      let markdown = "";
+      if (parseProvider) {
+        const parseResult = await parseProvider.parse({
           filename: entry.filename,
-          groundTruth: entry.groundTruthJson as Record<string, unknown>,
-          extracted: (data.extracted as Record<string, unknown>) ?? {},
-          confidenceScores: (data.confidence_scores as Record<string, number>) ?? {},
+          mimeType: entry.mimeType ?? "application/pdf",
+          fileBuffer: fileResult.data,
         });
+        markdown = parseResult.markdown;
       }
+
+      if (!markdown) continue;
+
+      // Extract
+      const extractResult = await extractFields(markdown, schemaDef, provider, extractModel);
+
+      results.push({
+        entryId: entry.id,
+        filename: entry.filename,
+        groundTruth: entry.groundTruthJson as Record<string, unknown>,
+        extracted: (extractResult.extracted as Record<string, unknown>) ?? {},
+        confidenceScores: (extractResult.confidence_scores as Record<string, number>) ?? {},
+      });
     } catch (err) {
       console.warn(`[validate] Failed to extract ${entry.filename}:`, err instanceof Error ? err.message : err);
     }
