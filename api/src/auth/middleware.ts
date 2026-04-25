@@ -49,6 +49,7 @@ const NO_TENANT_PATHS = new Set([
   "/api/me/password",
   "/api/me/can-delete",
   "/api/tenants",
+  "/api/projects",
 ]);
 
 function matchesNoTenantPath(path: string): boolean {
