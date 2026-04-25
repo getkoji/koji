@@ -8,6 +8,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { createProvider, extractFields } from "../extract";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -255,21 +256,15 @@ extract.post("/process", requires("job:run"), async (c) => {
     schemaObj = schemaField;
   }
 
-  const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
-    body: JSON.stringify({
-      markdown: parseResult.markdown,
-      schema_def: schemaObj,
-    }),
-  });
-
-  if (!extractResp.ok) {
-    const err = await extractResp.json().catch(() => ({}));
-    return c.json({ error: "Extract failed", detail: err }, 502);
-  }
-
-  const extractResult = (await extractResp.json()) as Record<string, unknown>;
+  const schemaDef = schemaObj as Record<string, unknown>;
+  const modelStr = (schemaDef.model as string) ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
+  const provider = createProvider(modelStr);
+  const extractResult = await extractFields(
+    parseResult.markdown as string,
+    schemaDef,
+    provider,
+    modelStr,
+  );
 
   return c.json({
     filename: parseResult.filename,
@@ -427,30 +422,14 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         return;
       }
 
-      const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
-        body: JSON.stringify({
-          markdown: parseResult.markdown,
-          schema_def: schemaDef,
-          ...(body.model ? { model: body.model } : {}),
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-
-      if (!extractResp.ok) {
-        const err = await extractResp.json().catch(() => ({}));
-        await stream.writeSSE({
-          event: "error",
-          data: JSON.stringify({ error: "Extract failed", detail: err }),
-        });
-        return;
-      }
-
-      const extractResult = (await extractResp.json()) as Record<
-        string,
-        unknown
-      >;
+      const extractModel = body.model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
+      const extractProvider = createProvider(extractModel);
+      const extractResult = await extractFields(
+        parseResult.markdown as string,
+        schemaDef,
+        extractProvider,
+        extractModel,
+      );
 
       await stream.writeSSE({
         event: "complete",
@@ -581,24 +560,14 @@ async function handleExtractRunJSON(
   }
 
   try {
-    const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
-      body: JSON.stringify({
-        markdown: parseResult.markdown,
-        schema_def: schemaDef,
-        ...(model ? { model } : {}),
-        ...(endpointPayload ? { endpoint: endpointPayload } : {}),
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-
-    if (!extractResp.ok) {
-      const err = await extractResp.json().catch(() => ({}));
-      return c.json({ error: "Extract failed", detail: err }, 502);
-    }
-
-    const extractResult = (await extractResp.json()) as Record<string, unknown>;
+    const extractModel = model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
+    const extractProvider = createProvider(extractModel, endpointPayload);
+    const extractResult = await extractFields(
+      parseResult.markdown as string,
+      schemaDef,
+      extractProvider,
+      extractModel,
+    ) as Record<string, unknown>;
 
     // Persist the run
     const yamlHash = crypto.createHash("sha256").update(schemaYaml).digest("hex");
