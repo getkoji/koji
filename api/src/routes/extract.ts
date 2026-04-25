@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -558,6 +559,27 @@ async function handleExtractRunJSON(
     }, 422);
   }
 
+  // Resolve model endpoint — look up by model name or use the first active one
+  let endpointPayload = null;
+  try {
+    const [ep] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ id: schema.modelEndpoints.id })
+        .from(schema.modelEndpoints)
+        .where(
+          and(
+            eq(schema.modelEndpoints.status, "active"),
+            ...(model ? [eq(schema.modelEndpoints.model, model)] : []),
+          ),
+        )
+        .limit(1),
+    );
+    if (ep) {
+      endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
+    }
+  } catch (err) {
+    console.warn("[extract/run] endpoint resolution failed:", err);
+  }
+
   try {
     const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
       method: "POST",
@@ -566,6 +588,7 @@ async function handleExtractRunJSON(
         markdown: parseResult.markdown,
         schema_def: schemaDef,
         ...(model ? { model } : {}),
+        ...(endpointPayload ? { endpoint: endpointPayload } : {}),
       }),
       signal: AbortSignal.timeout(120_000),
     });
