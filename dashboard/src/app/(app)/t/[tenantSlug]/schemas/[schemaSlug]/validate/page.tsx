@@ -83,14 +83,18 @@ export default function ValidatePage() {
   const hasCorpus = (corpusEntries ?? []).length > 0;
   const hasRuns = runHistory.length > 0;
 
+  const [runError, setRunError] = useState<string | null>(null);
+
   async function handleRun() {
     setResult(null);
+    setRunError(null);
     setRunning(true);
     try {
       const data = await api.post<ValidateResult>(`/api/schemas/${schemaSlug}/validate`, {});
       setResult(data);
     } catch (err: unknown) {
-      console.error("Validate error:", err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : "Validate failed";
+      setRunError(msg);
     } finally {
       setRunning(false);
     }
@@ -229,6 +233,18 @@ export default function ValidatePage() {
             {running ? "Running..." : result ? "Re-run" : "Run validate"}
           </button>
         </div>
+
+        {/* Run error */}
+        {runError && (
+          <div className="mt-4 border border-vermillion/25 rounded-sm p-4 bg-vermillion-3/30">
+            <p className="text-[13px] text-ink">{runError}</p>
+            {runError.includes("ground truth") && (
+              <p className="text-[12px] text-ink-3 mt-1">
+                Go to <Link href={pathname.replace("/validate", "/build")} className="text-vermillion-2 hover:underline">Build mode</Link>, run an extraction, review the results, and click "Save as ground truth".
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Accuracy headline */}
         {result && (
