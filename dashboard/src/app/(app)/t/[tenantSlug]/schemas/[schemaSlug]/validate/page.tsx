@@ -81,6 +81,8 @@ export default function ValidatePage() {
   }, [schemaSlug, loadedFromDb]);
 
   const hasCorpus = (corpusEntries ?? []).length > 0;
+  const gtEntries = (corpusEntries ?? []).filter((e: any) => e.hasGroundTruth);
+  const hasGroundTruth = gtEntries.length > 0;
   const hasRuns = runHistory.length > 0;
 
   const [runError, setRunError] = useState<string | null>(null);
@@ -165,19 +167,25 @@ export default function ValidatePage() {
     );
   }
 
-  // ── Empty state: no corpus ──
-  if (!hasCorpus && !result) {
+  // ── Empty state: no corpus or no ground truth ──
+  if ((!hasCorpus || !hasGroundTruth) && !result) {
+    const noCorpusAtAll = !hasCorpus;
     return (
       <div className="h-[calc(100vh-60px)] flex items-center justify-center">
         <div className="text-center max-w-[400px]">
           <Database className="w-10 h-10 text-ink-4 mx-auto mb-4" />
           <h2 className="font-display text-[20px] font-medium text-ink mb-2" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
-            No corpus entries for this schema
+            {noCorpusAtAll ? "No corpus entries for this schema" : "No ground truth saved yet"}
           </h2>
-          <p className="text-[13px] text-ink-3 mb-4">Add documents to the corpus before running validate.</p>
-          <Link href={pathname.replace("/validate", "/corpus")}
+          <p className="text-[13px] text-ink-3 mb-4">
+            {noCorpusAtAll
+              ? "Add documents to the corpus before running validate."
+              : `You have ${(corpusEntries ?? []).length} documents in the corpus, but none have ground truth. Go to Build mode, run an extraction, review the results, and click "Save as ground truth".`
+            }
+          </p>
+          <Link href={pathname.replace("/validate", noCorpusAtAll ? "/corpus" : "/build")}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
-            Go to Corpus <ExternalLink className="w-3.5 h-3.5" />
+            {noCorpusAtAll ? "Go to Corpus" : "Go to Build mode"} <ExternalLink className="w-3.5 h-3.5" />
           </Link>
         </div>
       </div>
@@ -222,7 +230,7 @@ export default function ValidatePage() {
               </div>
             ) : (
               <p className="text-[13px] text-ink-3 mt-1.5">
-                Run validate to test the current schema version against {(corpusEntries ?? []).length} corpus entries.
+                Run validate to test the current schema version against {(corpusEntries ?? []).filter((e: any) => e.hasGroundTruth).length} corpus entries with ground truth.
               </p>
             )}
           </div>
