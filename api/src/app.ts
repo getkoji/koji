@@ -179,6 +179,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     c.set("parseUrl", deps.parseUrl);
     c.set("authAdapterKind", deps.authAdapterKind);
     c.set("billing", billing);
+    c.set("parseProvider", deps.parseProvider);
     await next();
   };
   app.use("*", injectContext);
