@@ -186,7 +186,7 @@ export default function BuildPage() {
 
   // Model catalog
   const { data: catalogModels } = useApi(
-    useCallback(() => api.get<{ data: Array<{ id: string; provider: string; modelId: string; displayName: string }> }>("/api/model-catalog").then((r) => r.data), []),
+    useCallback(() => api.get<{ data: Array<{ id: string; provider: string; model: string; displayName: string }> }>("/api/model-providers").then((r) => r.data.map(e => ({ ...e, modelId: e.model }))), []),
   );
 
   // Persist model selection
