@@ -825,7 +825,20 @@ export default function BuildPage() {
 
                 {!extractionResult && !extracting && (
                   <div className="h-full flex items-center justify-center">
-                    <div className="text-[12px] text-ink-4">Run extraction to see results here.</div>
+                    {(catalogModels ?? []).length === 0 ? (
+                      <div className="text-center max-w-[300px]">
+                        <div className="text-[13px] text-ink font-medium mb-1">No model endpoint configured</div>
+                        <p className="text-[12px] text-ink-3 mb-3">
+                          Add your OpenAI, Anthropic, or other LLM API key in Settings before running extraction.
+                        </p>
+                        <a href={`/t/${tenantSlug}/settings/model-providers`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors">
+                          Configure model endpoint
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="text-[12px] text-ink-4">Run extraction to see results here.</div>
+                    )}
                   </div>
                 )}
               </div>
@@ -874,7 +887,8 @@ export default function BuildPage() {
                     <option key={m.id} value={m.modelId}>{m.displayName}</option>
                   ))}
                 </select>
-                <button onClick={handleRun} disabled={!selectedDoc || extracting}
+                <button onClick={handleRun} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}
+                  title={(catalogModels ?? []).length === 0 ? "Configure a model endpoint in Settings → Model Providers first" : undefined}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
                   <Play className="w-3 h-3" />
                   {extracting ? "Running..." : "Run"}
