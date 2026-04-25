@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
-import { projectsApi } from "@/lib/api";
+import { api, projectsApi } from "@/lib/api";
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -37,6 +37,19 @@ export default function NewProjectPage() {
 
     setSubmitting(true);
     try {
+      // Try setup first (creates tenant + membership + project for new users)
+      const setupResult = await api.post<{ tenant: { slug: string }; project: { slug: string } }>("/api/projects/setup", {
+        slug,
+        display_name: name,
+        description: description || undefined,
+      }).catch(() => null);
+
+      if (setupResult) {
+        router.push(`/t/${setupResult.tenant.slug}`);
+        return;
+      }
+
+      // If setup fails (user already has a tenant), fall back to regular create
       const project = await projectsApi.create({
         slug,
         display_name: name,
