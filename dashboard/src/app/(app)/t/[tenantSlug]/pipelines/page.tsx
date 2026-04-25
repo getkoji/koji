@@ -331,7 +331,7 @@ function validatePipelineForm(values: {
   else if (!/^[a-z0-9][a-z0-9-]*$/.test(values.slug))
     errors.slug = "Lowercase letters, numbers, and hyphens only";
   if (!values.schemaId) errors.schemaId = "Select a schema";
-  if (!values.modelProviderId) errors.modelProviderId = "Select a model provider";
+  if (!values.modelProviderId) errors.modelProviderId = "Select a model endpoint";
   const t = Number(values.reviewThreshold);
   if (!Number.isFinite(t)) errors.reviewThreshold = "Must be a number";
   else if (t < 0 || t > 1) errors.reviewThreshold = "Must be between 0 and 1";
@@ -491,7 +491,7 @@ function CreatePipelineDialog({
             </select>
           </Field>
 
-          <Field label="Model provider" error={showErrors ? errors.modelProviderId : undefined}>
+          <Field label="Model endpoint" error={showErrors ? errors.modelProviderId : undefined}>
             <select
               value={modelProviderId}
               onChange={(e) => setModelProviderId(e.target.value)}
@@ -501,10 +501,10 @@ function CreatePipelineDialog({
             >
               <option value="">
                 {providersLoading
-                  ? "Loading providers…"
+                  ? "Loading endpoints…"
                   : noProviders
-                  ? "No providers configured"
-                  : "Select a provider…"}
+                  ? "No endpoints configured"
+                  : "Select an endpoint…"}
               </option>
               {(providersList ?? []).map((p) => (
                 <option key={p.id} value={p.id}>

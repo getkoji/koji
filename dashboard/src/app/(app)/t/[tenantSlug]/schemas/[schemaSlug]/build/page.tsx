@@ -884,11 +884,11 @@ export default function BuildPage() {
                 >
                   <option value="">Default model</option>
                   {(catalogModels ?? []).map((m) => (
-                    <option key={m.id} value={m.modelId}>{m.displayName}</option>
+                    <option key={m.id} value={m.modelId}>{m.displayName} ({m.provider})</option>
                   ))}
                 </select>
                 <button onClick={handleRun} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}
-                  title={(catalogModels ?? []).length === 0 ? "Configure a model endpoint in Settings → Model Providers first" : undefined}
+                  title={(catalogModels ?? []).length === 0 ? "Configure a model endpoint in Settings → Model Endpoints first" : undefined}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
                   <Play className="w-3 h-3" />
                   {extracting ? "Running..." : "Run"}

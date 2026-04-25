@@ -439,10 +439,10 @@ function ConfigurationSection({
             <span className="text-ink-4 italic">not set</span>
           )}
         </ConfigRow>
-        <ConfigRow label="Model provider">
+        <ConfigRow label="Model endpoint">
           {pipeline.modelProviderName ? (
             <Link
-              href={`/t/${tenantSlug}/settings/model-catalog`}
+              href={`/t/${tenantSlug}/settings/model-providers`}
               className="text-ink hover:text-vermillion-2 transition-colors"
             >
               {pipeline.modelProviderName}

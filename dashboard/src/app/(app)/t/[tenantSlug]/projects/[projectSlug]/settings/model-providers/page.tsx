@@ -33,6 +33,16 @@ const PROVIDER_TYPES = [
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
 
+/** Common model suggestions per provider, shown in the model ID field. */
+const MODEL_SUGGESTIONS: Record<string, string[]> = {
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
+  anthropic: ["claude-sonnet-4-20250514", "claude-haiku-35-20241022", "claude-3-5-sonnet-20241022"],
+  "azure-openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4"],
+  bedrock: ["anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "amazon.titan-text-express-v1"],
+  ollama: ["llama3.2", "llama3.1", "mistral", "mixtral", "phi3"],
+  custom: [],
+};
+
 /**
  * Compact one-line summary of a provider's non-secret config, shown
  * next to the provider badge in the list row. Stays under ~40 chars.
@@ -64,7 +74,7 @@ export default function ModelProvidersPage() {
   if (loading) {
     return (
       <section>
-        <SectionHeader title="Model Providers" />
+        <SectionHeader title="Model Endpoints" />
         <div className="animate-pulse font-mono text-[11px] text-ink-4 py-8">Loading...</div>
       </section>
     );
@@ -73,7 +83,7 @@ export default function ModelProvidersPage() {
   if (error) {
     return (
       <section>
-        <SectionHeader title="Model Providers" />
+        <SectionHeader title="Model Endpoints" />
         <div className="text-[12.5px] text-vermillion-2 py-4">{error.message}</div>
       </section>
     );
@@ -90,8 +100,8 @@ export default function ModelProvidersPage() {
 
       <section>
         <SectionHeader
-          title="Model Providers"
-          action={hasPermission("endpoint:write") ? { label: "Add provider", onClick: () => setShowAdd(true) } : undefined}
+          title="Model Endpoints"
+          action={hasPermission("endpoint:write") ? { label: "Add endpoint", onClick: () => setShowAdd(true) } : undefined}
         />
 
         {(providers ?? []).length > 0 ? (
@@ -130,7 +140,7 @@ export default function ModelProvidersPage() {
           </SettingsTable>
         ) : (
           <div className="border border-border rounded-sm py-6 text-center text-[12.5px] text-ink-3">
-            No model providers configured. Add one to start running extractions.
+            No model endpoints configured. Add one to start running extractions.
           </div>
         )}
       </section>
@@ -140,7 +150,7 @@ export default function ModelProvidersPage() {
           onClose={() => setShowAdd(false)}
           onCreated={() => {
             setShowAdd(false);
-            setSuccessMessage("Provider added. Your API key has been encrypted and stored. Click \"fetch models\" to populate the model catalog from this provider.");
+            setSuccessMessage("Endpoint added. Your API key has been encrypted and stored.");
             refetch();
           }}
         />
@@ -169,17 +179,10 @@ export default function ModelProvidersPage() {
   );
 }
 
-interface CatalogModel {
-  id: string;
-  provider: string;
-  modelId: string;
-  displayName: string;
-}
-
 function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [providerType, setProviderType] = useState("openai");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(MODEL_SUGGESTIONS["openai"]?.[0] ?? "");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [apiKey, setApiKey] = useState("");
   // Azure-specific
@@ -194,17 +197,11 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch models from catalog filtered by provider
-  const { data: catalogModels } = useApi(
-    useCallback(
-      () => api.get<{ data: CatalogModel[] }>(`/api/model-catalog?provider=${providerType}`).then((r) => r.data),
-      [providerType],
-    ),
-  );
+  const suggestions = MODEL_SUGGESTIONS[providerType] ?? [];
 
   function handleProviderChange(value: string) {
     setProviderType(value);
-    setModel(""); // reset model when switching providers
+    setModel(MODEL_SUGGESTIONS[value]?.[0] ?? ""); // reset model to first suggestion
     // Reset secrets so one provider's key never leaks into another's payload.
     setApiKey("");
     setAwsAccessKeyId("");
@@ -261,15 +258,15 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Add model provider</h2>
+        <h2 className="text-[15px] font-medium text-ink mb-1">Add model endpoint</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Configure a model provider for extractions. Credentials are encrypted at rest.
+          Configure a model endpoint for extractions. Credentials are encrypted at rest.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">Name</label>
-            <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. OpenAI Production" autoFocus
+            <label className="text-[12.5px] font-medium text-ink">Display name</label>
+            <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. GPT-4o-mini" autoFocus
               className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
           </div>
 
@@ -282,18 +279,22 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
               </select>
             </div>
             <div className="space-y-1.5">
-              <label className="text-[12.5px] font-medium text-ink">Default model</label>
-              <select value={model} onChange={(e) => setModel(e.target.value)}
-                className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
-                <option value="">{(catalogModels ?? []).length === 0 ? "No models yet — fetch after adding" : "Select a model..."}</option>
-                {(catalogModels ?? []).map((m) => (
-                  <option key={m.modelId} value={m.modelId}>{m.displayName}</option>
-                ))}
-              </select>
-              {(catalogModels ?? []).length === 0 && (
-                <p className="text-[11px] text-ink-4">
-                  Add the provider first, then use &quot;Fetch models&quot; to populate the catalog.
-                </p>
+              <label className="text-[12.5px] font-medium text-ink">Model ID *</label>
+              {suggestions.length > 0 ? (
+                <>
+                  <select value={suggestions.includes(model) ? model : "__custom__"} onChange={(e) => { if (e.target.value !== "__custom__") setModel(e.target.value); else setModel(""); }}
+                    className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
+                    {suggestions.map((s) => <option key={s} value={s}>{s}</option>)}
+                    <option value="__custom__">Other (type below)</option>
+                  </select>
+                  {!suggestions.includes(model) && (
+                    <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o-mini"
+                      className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+                  )}
+                </>
+              ) : (
+                <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. my-model-v1"
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
               )}
             </div>
           </div>
@@ -427,7 +428,7 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
           <div className="flex items-center justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
             <button type="submit" disabled={creating} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
-              {creating ? "Creating..." : "Add provider"}
+              {creating ? "Creating..." : "Add endpoint"}
             </button>
           </div>
         </form>
@@ -555,7 +556,7 @@ function DeleteProviderDialog({ provider, onClose, onDeleted }: { provider: Mode
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Delete model provider</h2>
+        <h2 className="text-[15px] font-medium text-ink mb-1">Delete model endpoint</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
           Delete <strong className="text-ink">{provider.displayName}</strong>? The encrypted credentials will be permanently removed.
         </p>

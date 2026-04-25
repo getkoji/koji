@@ -46,7 +46,6 @@ import {
   Webhook,
   Users,
   Info,
-  BookOpen,
   ChevronsUpDown,
   BarChart3,
 } from "lucide-react";
@@ -292,7 +291,7 @@ export function AppSidebar({
                       <SubNavItemLink
                         href={`${projectSettingsBase}/model-providers`}
                         icon={<Radio className={SUBICON} />}
-                        label="Model Providers"
+                        label="Model Endpoints"
                       />
                       <SubNavItemLink
                         href={`${projectSettingsBase}/webhooks`}
@@ -480,11 +479,6 @@ export function AppSidebar({
                       href={`${base}/settings/members`}
                       icon={<Users className={SUBICON} />}
                       label="Members"
-                    />
-                    <SubNavItemLink
-                      href={`${base}/settings/model-catalog`}
-                      icon={<BookOpen className={SUBICON} />}
-                      label="Model Catalog"
                     />
                     {settingsExtensions.navItems.map((item) => (
                       <SubNavItemLink
