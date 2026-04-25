@@ -648,6 +648,8 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     tx.select({
       id: schema.corpusEntries.id,
       filename: schema.corpusEntries.filename,
+      storageKey: schema.corpusEntries.storageKey,
+      mimeType: schema.corpusEntries.mimeType,
       groundTruthJson: schema.corpusEntries.groundTruthJson,
     })
       .from(schema.corpusEntries)
