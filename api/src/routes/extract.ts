@@ -257,15 +257,16 @@ extract.post("/process", requires("job:run"), async (c) => {
   }
 
   const schemaDef = schemaObj as Record<string, unknown>;
-  const modelStr = (schemaDef.model as string) ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
   let ep1 = null;
   try {
+    const requestedModel = (schemaDef.model as string) ?? null;
     const [found] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ id: schema.modelEndpoints.id }).from(schema.modelEndpoints)
-        .where(and(eq(schema.modelEndpoints.status, "active"), eq(schema.modelEndpoints.model, modelStr)))
+      tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model }).from(schema.modelEndpoints)
+        .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel ? [eq(schema.modelEndpoints.model, requestedModel)] : [])))
         .limit(1));
     if (found) ep1 = await resolveExtractEndpoint(db, tenantId, found.id);
   } catch {}
+  const modelStr = (schemaDef.model as string) ?? ep1?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
   const provider = createProvider(modelStr, ep1);
   const extractResult = await extractFields(
     parseResult.markdown as string,
@@ -430,15 +431,16 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         return;
       }
 
-      const extractModel = body.model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
       let ep2 = null;
       try {
+        const requestedModel2 = body.model ?? null;
         const [found] = await withRLS(db, tenantId, (tx) =>
-          tx.select({ id: schema.modelEndpoints.id }).from(schema.modelEndpoints)
-            .where(and(eq(schema.modelEndpoints.status, "active"), eq(schema.modelEndpoints.model, extractModel)))
+          tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model }).from(schema.modelEndpoints)
+            .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel2 ? [eq(schema.modelEndpoints.model, requestedModel2)] : [])))
             .limit(1));
         if (found) ep2 = await resolveExtractEndpoint(db, tenantId, found.id);
       } catch {}
+      const extractModel = body.model ?? ep2?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
       const extractProvider = createProvider(extractModel, ep2);
       const extractResult = await extractFields(
         parseResult.markdown as string,
@@ -576,7 +578,7 @@ async function handleExtractRunJSON(
   }
 
   try {
-    const extractModel = model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
+    const extractModel = model ?? endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "llama3.2";
     const extractProvider = createProvider(extractModel, endpointPayload);
     const extractResult = await extractFields(
       parseResult.markdown as string,
