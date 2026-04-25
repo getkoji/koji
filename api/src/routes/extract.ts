@@ -19,13 +19,26 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 export const extract = new Hono<Env>();
 
 /**
- * Resolve the parse service URL. The Docker sidecar serves at /parse,
- * but Modal's endpoint serves at the root. If the configured parseUrl
- * already contains "modal.run", don't append /parse.
+ * Resolve a service URL. Docker sidecars serve at /parse or /extract,
+ * but Modal endpoints serve at the root.
  */
-function resolveParseUrl(baseUrl: string, path = "/parse"): string {
+function resolveServiceUrl(baseUrl: string, path: string): string {
   if (baseUrl.includes("modal.run")) return baseUrl;
   return `${baseUrl}${path}`;
+}
+
+/** Auth headers for Modal proxy-auth endpoints. */
+function modalAuthHeaders(url: string): Record<string, string> {
+  if (!url.includes("modal.run")) return {};
+  return {
+    "Modal-Key": process.env.MODAL_PROXY_KEY ?? process.env.MODAL_TOKEN_ID ?? "",
+    "Modal-Secret": process.env.MODAL_PROXY_SECRET ?? process.env.MODAL_TOKEN_SECRET ?? "",
+  };
+}
+
+// Backwards compat alias
+function resolveParseUrl(baseUrl: string, path = "/parse"): string {
+  return resolveServiceUrl(baseUrl, path);
 }
 
 
@@ -241,9 +254,9 @@ extract.post("/process", requires("job:run"), async (c) => {
     schemaObj = schemaField;
   }
 
-  const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
+  const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
     body: JSON.stringify({
       markdown: parseResult.markdown,
       schema_def: schemaObj,
@@ -413,9 +426,9 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         return;
       }
 
-      const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
+      const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
         body: JSON.stringify({
           markdown: parseResult.markdown,
           schema_def: schemaDef,
@@ -546,9 +559,9 @@ async function handleExtractRunJSON(
   }
 
   try {
-    const extractResp = await fetch(`${c.get("extractUrl")}/extract`, {
+    const extractResp = await fetch(`${resolveServiceUrl(c.get("extractUrl"), "/extract")}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...modalAuthHeaders(c.get("extractUrl")) },
       body: JSON.stringify({
         markdown: parseResult.markdown,
         schema_def: schemaDef,
