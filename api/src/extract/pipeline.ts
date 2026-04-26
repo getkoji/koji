@@ -35,6 +35,8 @@ export interface ExtractionResult {
     ok: boolean;
     issues: Array<{ rule: string; field: string | null; message: string }>;
   };
+  /** All key-value pairs found in the document via pattern matching (no LLM). */
+  kv_pairs?: Array<{ label: string; value: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +398,10 @@ export async function extractFields(
 ): Promise<ExtractionResult> {
   const start = Date.now();
   const schemaName = (schemaDef.name as string) ?? "unknown";
+
+  // Extract KV pairs from markdown (zero-cost, no LLM)
+  const { extractKVPairs } = await import("./kv-pairs");
+  const kvPairs = extractKVPairs(markdown);
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
   const fieldNames = new Set(Object.keys(fields));
 
@@ -420,6 +426,7 @@ export async function extractFields(
       extracted: Object.fromEntries([...fieldNames].map((f) => [f, null])),
       confidence: Object.fromEntries([...fieldNames].map((f) => [f, "not_found"])),
       confidence_scores: Object.fromEntries([...fieldNames].map((f) => [f, 0])),
+      kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
     };
   }
 
@@ -462,5 +469,6 @@ export async function extractFields(
       ok: validationReport.ok,
       issues: validationReport.issues,
     },
+    kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
   };
 }
