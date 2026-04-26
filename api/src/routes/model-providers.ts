@@ -269,6 +269,16 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     return c.json({ error: "name, slug, and provider are required" }, 400);
   }
 
+  if (!body.model || body.model.trim() === "") {
+    return c.json({ error: "model is required — specify a model ID (e.g. gpt-4o-mini, claude-sonnet-4-20250514)" }, 400);
+  }
+
+  // Reject bare provider names used as model IDs — must be a specific model.
+  const bareProviders = ["openai", "anthropic", "azure-openai", "bedrock", "ollama", "custom"];
+  if (bareProviders.includes(body.model.trim().toLowerCase())) {
+    return c.json({ error: "model must be a specific model ID (e.g. gpt-4o-mini), not a provider name" }, 400);
+  }
+
   const validationError = validateCreatePayload(body);
   if (validationError) return c.json({ error: validationError }, 400);
 
@@ -283,7 +293,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
-        model: body.model || "",
+        model: body.model,
         configJson,
         authJson,
         createdBy: principal.userId,

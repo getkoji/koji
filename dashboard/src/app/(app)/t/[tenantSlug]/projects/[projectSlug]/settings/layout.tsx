@@ -6,7 +6,7 @@ import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 const TITLES: Record<string, string> = {
   general: "General",
   "api-keys": "API Keys",
-  "model-providers": "Model Providers",
+  "model-providers": "Model Endpoints",
   webhooks: "Webhooks",
 };
 
