@@ -8,7 +8,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
-import { createProvider, extractFields } from "../extract";
+import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 
 /**
  * Extraction routes — proxies to the parse + extract services.

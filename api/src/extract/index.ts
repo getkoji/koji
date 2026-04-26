@@ -13,3 +13,5 @@ export { normalizeExtracted } from "./normalize";
 export { validateExtracted } from "./validate";
 export { resolveExtractEndpoint } from "./resolve-endpoint";
 export type { ExtractEndpointPayload } from "./resolve-endpoint";
+export { extractKVPairs, kvPairsSummary } from "./kv-pairs";
+export type { KVPair } from "./kv-pairs";
