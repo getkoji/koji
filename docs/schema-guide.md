@@ -1165,3 +1165,65 @@ fields:
 ```
 
 Run extraction again. Iterate until accuracy is where you need it. Hints are surgical -- add them only where the router needs guidance.
+
+## Key-value pair scanning
+
+For documents with structured label-value data (forms, certificates, declarations pages), you can enable automatic key-value pair extraction alongside the schema-driven extraction:
+
+```yaml
+name: insurance_universal_scan
+include_kv_pairs: true
+
+fields:
+  policy_number:
+    type: string
+    nullable: true
+    description: Any policy or certificate number
+
+  named_insured:
+    type: string
+    nullable: true
+    description: Primary named insured or policyholder
+```
+
+When `include_kv_pairs: true` is set, the extraction result includes a `kv_pairs` array alongside the schema-defined fields:
+
+```json
+{
+  "extracted": {
+    "policy_number": "BKS-123456-78",
+    "named_insured": "ABC Corporation"
+  },
+  "kv_pairs": [
+    { "label": "Policy Number", "value": "BKS-123456-78" },
+    { "label": "Named Insured", "value": "ABC Corporation" },
+    { "label": "Effective Date", "value": "04/01/2026" },
+    { "label": "General Aggregate Limit", "value": "$2,000,000" },
+    { "label": "Each Occurrence", "value": "$1,000,000" },
+    ...
+  ]
+}
+```
+
+**Key differences from schema-driven extraction:**
+
+| | Schema fields | KV pairs |
+|---|---|---|
+| **Precision** | High — you define exactly what to extract | Lower — finds all label-value patterns |
+| **Cost** | LLM API call per extraction | Zero — pure pattern matching on parsed markdown |
+| **Coverage** | Only the fields you define | Everything that looks like `Label: Value` |
+| **Use case** | Production pipelines with known document types | Document triage, universal scanning, discovery |
+
+**When to use KV pairs:**
+
+- **Document discovery** — "what's in this document?" before writing a schema
+- **Universal scanning** — extract common identifiers (policy numbers, names, dates) from any document type without a specific schema
+- **Triage and routing** — use KV pair content to classify documents and route them to specialized schemas
+- **Audit** — capture everything the document says alongside the schema-driven extraction for compliance
+
+KV pairs detect these patterns:
+- `Label: Value` (colon-separated, including multi-word labels and values)
+- `**Bold Label**: Value` (markdown bold labels)
+- `| Label | Value |` (markdown table rows)
+
+The default is `include_kv_pairs: false` — KV pairs are not included unless the schema opts in.
