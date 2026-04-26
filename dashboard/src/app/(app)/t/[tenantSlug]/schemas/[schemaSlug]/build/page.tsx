@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -162,12 +162,14 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number } | null>;
     model?: string;
     elapsed_ms?: number;
     parse_seconds?: number;
     ocr_skipped?: boolean;
     error?: string;
   } | null>(null);
+  const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [parseProgress, setParseProgress] = useState<{
     pages: number;
     scanned: boolean;
@@ -775,19 +777,42 @@ export default function BuildPage() {
 
                         {/* Results table */}
                         <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
-                          {Object.entries(extractionResult.extracted).map(([key, value]) => (
-                            <div key={key} className="flex items-start justify-between px-3 py-2 gap-3">
-                              <span className="font-mono text-[11px] text-ink-4 shrink-0">{key}</span>
-                              <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
-                              </span>
-                              {extractionResult.confidence_scores?.[key] !== undefined && (
-                                <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
-                                  {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                          {Object.entries(extractionResult.extracted).map(([key, value]) => {
+                            const prov = extractionResult.provenance?.[key];
+                            const hasProvenance = prov != null;
+                            const isHighlighted = highlightedField === key;
+                            return (
+                              <div
+                                key={key}
+                                className={`flex items-start justify-between px-3 py-2 gap-3 ${hasProvenance ? "cursor-pointer hover:bg-cream-2/80 transition-colors" : ""} ${isHighlighted ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                                onClick={() => {
+                                  if (!hasProvenance) return;
+                                  setHighlightedField(isHighlighted ? null : key);
+                                  // Scroll document preview to show provenance context
+                                  const previewEl = document.querySelector("[data-provenance-preview]");
+                                  if (previewEl) {
+                                    const mark = previewEl.querySelector(`[data-provenance-field="${key}"]`);
+                                    mark?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  }
+                                }}
+                              >
+                                <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
+                                  {hasProvenance && (
+                                    <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
+                                  )}
+                                  {key}
                                 </span>
-                              )}
-                            </div>
-                          ))}
+                                <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                  {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
+                                </span>
+                                {extractionResult.confidence_scores?.[key] !== undefined && (
+                                  <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
+                                    {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
 
                         {/* Save as Ground Truth */}
@@ -947,19 +972,47 @@ export default function BuildPage() {
                     selectedDoc.mimeType === "application/pdf" ? (
                       <iframe
                         src={docPreviewUrl}
-                        className="w-full border border-border rounded-sm flex-1 min-h-0"
+                        className={`w-full border border-border rounded-sm min-h-0 ${highlightedField ? "flex-[3]" : "flex-1"}`}
                         title={selectedDoc.filename}
                       />
                     ) : (
                       <img
                         src={docPreviewUrl}
                         alt={selectedDoc.filename}
-                        className="w-full border border-border rounded-sm flex-1 object-contain"
+                        className={`w-full border border-border rounded-sm object-contain ${highlightedField ? "flex-[3]" : "flex-1"}`}
                       />
                     )
                   ) : (
-                    <div className="flex-1 border border-border rounded-sm flex items-center justify-center">
+                    <div className={`border border-border rounded-sm flex items-center justify-center ${highlightedField ? "flex-[3]" : "flex-1"}`}>
                       <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
+                    </div>
+                  )}
+
+                  {/* Provenance highlight panel */}
+                  {highlightedField && extractionResult?.provenance?.[highlightedField] && (
+                    <div className="mt-2 border border-vermillion-2/30 rounded-sm bg-vermillion-3/10 p-3 shrink-0">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <MapPin className="w-3 h-3 text-vermillion-2" />
+                          <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-vermillion-2">
+                            Source: {highlightedField}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => setHighlightedField(null)}
+                          className="text-[10px] text-ink-4 hover:text-ink font-mono"
+                        >
+                          dismiss
+                        </button>
+                      </div>
+                      <div className="font-mono text-[12px] text-ink bg-cream rounded-sm px-3 py-2 border border-border">
+                        <span className="bg-vermillion-3/40 text-vermillion-2 px-0.5 rounded-sm">
+                          {extractionResult.provenance[highlightedField]!.chunk ?? String(extractionResult.extracted[highlightedField] ?? "")}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[10px] text-ink-4 font-mono">
+                        offset {extractionResult.provenance[highlightedField]!.offset}, {extractionResult.provenance[highlightedField]!.length} chars
+                      </div>
                     </div>
                   )}
                 </div>

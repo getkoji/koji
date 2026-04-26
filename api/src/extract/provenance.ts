@@ -1,0 +1,246 @@
+/**
+ * Field-level text provenance — locates extracted values in source markdown.
+ *
+ * Given the extracted field values and the original markdown, finds the
+ * character offset where each value appears. Supports exact match,
+ * case-insensitive match, and format-aware matching for dollar amounts,
+ * dates, and numbers.
+ */
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ProvenanceSpan {
+  offset: number;
+  length: number;
+  chunk?: string;
+  page?: number;
+}
+
+export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
+
+// ---------------------------------------------------------------------------
+// Normalization helpers
+// ---------------------------------------------------------------------------
+
+/** Strip whitespace runs down to single spaces and trim. */
+function normalizeWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Remove commas and $ from a numeric string. */
+function stripCurrencyFormatting(s: string): string {
+  return s.replace(/[$,]/g, "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Format-aware search strategies
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to find `needle` in `haystack`. Returns the offset and length of the
+ * match in the *original* haystack, or null.
+ */
+function findExact(haystack: string, needle: string): { offset: number; length: number } | null {
+  const idx = haystack.indexOf(needle);
+  if (idx !== -1) return { offset: idx, length: needle.length };
+  return null;
+}
+
+function findCaseInsensitive(haystack: string, needle: string): { offset: number; length: number } | null {
+  const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx !== -1) return { offset: idx, length: needle.length };
+  return null;
+}
+
+function findNormalized(haystack: string, needle: string): { offset: number; length: number } | null {
+  // Normalize both sides for matching, but we need to map back to the
+  // original haystack offset. Use a regex-based approach.
+  const normNeedle = normalizeWhitespace(needle);
+  if (!normNeedle) return null;
+
+  // Build a regex that allows flexible whitespace between words
+  const words = normNeedle.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(words.join("\\s+"), "i");
+  const m = haystack.match(pattern);
+  if (m && m.index !== undefined) {
+    return { offset: m.index, length: m[0].length };
+  }
+  return null;
+}
+
+/**
+ * Search for a dollar amount in multiple representations:
+ * - "$1,000,000" / "$1000000" / "1,000,000" / "1000000"
+ */
+function findDollarAmount(haystack: string, value: number | string): { offset: number; length: number } | null {
+  const num = typeof value === "string" ? parseFloat(stripCurrencyFormatting(value)) : value;
+  if (isNaN(num)) return null;
+
+  // Generate candidate representations
+  const candidates: string[] = [];
+
+  // With commas
+  const formatted = num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const formattedInt = num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
+  candidates.push(`$${formatted}`, formatted, `$${formattedInt}`, formattedInt);
+
+  // Plain number (no commas)
+  const plain = Number.isInteger(num) ? String(num) : num.toFixed(2);
+  candidates.push(`$${plain}`, plain);
+
+  // Two-decimal version
+  const twoDecimal = num.toFixed(2);
+  const twoDecimalFormatted = parseFloat(twoDecimal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  candidates.push(`$${twoDecimalFormatted}`, twoDecimalFormatted, `$${twoDecimal}`, twoDecimal);
+
+  // Deduplicate
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    if (seen.has(c)) continue;
+    seen.add(c);
+    const result = findCaseInsensitive(haystack, c);
+    if (result) return result;
+  }
+
+  return null;
+}
+
+/**
+ * Search for a date in multiple formats:
+ * - YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY, Month DD, YYYY, etc.
+ */
+function findDate(haystack: string, value: string): { offset: number; length: number } | null {
+  // Try the value as-is first
+  const exact = findCaseInsensitive(haystack, value);
+  if (exact) return exact;
+
+  // Parse YYYY-MM-DD
+  const m = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+
+  const [, year, monthStr, dayStr] = m;
+  const month = parseInt(monthStr!, 10);
+  const day = parseInt(dayStr!, 10);
+
+  const monthNames = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const monthAbbr = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+
+  const candidates: string[] = [
+    // MM/DD/YYYY
+    `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${year}`,
+    // M/D/YYYY
+    `${month}/${day}/${year}`,
+    // DD/MM/YYYY
+    `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`,
+    // Month DD, YYYY
+    `${monthNames[month - 1]} ${day}, ${year}`,
+    `${monthNames[month - 1]} ${String(day).padStart(2, "0")}, ${year}`,
+    // DD Month YYYY
+    `${day} ${monthNames[month - 1]} ${year}`,
+    // Mon DD, YYYY
+    `${monthAbbr[month - 1]} ${day}, ${year}`,
+    `${monthAbbr[month - 1]} ${String(day).padStart(2, "0")}, ${year}`,
+    // MM-DD-YYYY
+    `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${year}`,
+  ];
+
+  for (const c of candidates) {
+    const result = findCaseInsensitive(haystack, c);
+    if (result) return result;
+  }
+
+  return null;
+}
+
+/**
+ * Search for a number in the markdown. Tries the plain number and
+ * comma-formatted variants.
+ */
+function findNumber(haystack: string, value: number): { offset: number; length: number } | null {
+  const candidates: string[] = [];
+
+  const plain = Number.isInteger(value) ? String(value) : value.toFixed(2);
+  candidates.push(plain);
+
+  // Comma-formatted
+  const formatted = value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  if (formatted !== plain) candidates.push(formatted);
+
+  // Also try as dollar amount
+  const dollarResult = findDollarAmount(haystack, value);
+  if (dollarResult) return dollarResult;
+
+  for (const c of candidates) {
+    const result = findExact(haystack, c);
+    if (result) return result;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Main resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve text provenance for each extracted field against the source markdown.
+ *
+ * Returns a map of field name -> ProvenanceSpan (offset + length in the
+ * markdown), or null if the value could not be located.
+ */
+export function resolveProvenance(
+  extracted: Record<string, unknown>,
+  markdown: string,
+): ProvenanceMap {
+  const provenance: ProvenanceMap = {};
+
+  for (const [field, value] of Object.entries(extracted)) {
+    if (value == null) {
+      provenance[field] = null;
+      continue;
+    }
+
+    let result: { offset: number; length: number } | null = null;
+
+    if (typeof value === "string") {
+      // Try exact → case-insensitive → normalized whitespace
+      result =
+        findExact(markdown, value) ??
+        findCaseInsensitive(markdown, value) ??
+        findNormalized(markdown, value);
+
+      // If it looks like a date (YYYY-MM-DD), try date formats
+      if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
+        result = findDate(markdown, value);
+      }
+
+      // If it looks like a dollar amount, try currency formats
+      if (!result && /^\$?[\d,.]+$/.test(value)) {
+        result = findDollarAmount(markdown, value);
+      }
+    } else if (typeof value === "number") {
+      result = findNumber(markdown, value);
+    }
+
+    if (result) {
+      provenance[field] = {
+        offset: result.offset,
+        length: result.length,
+        chunk: markdown.slice(result.offset, result.offset + result.length),
+      };
+    } else {
+      provenance[field] = null;
+    }
+  }
+
+  return provenance;
+}

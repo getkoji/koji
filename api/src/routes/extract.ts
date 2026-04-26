@@ -461,6 +461,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           extracted: extractResult.extracted,
           confidence: extractResult.confidence,
           confidence_scores: extractResult.confidence_scores,
+          provenance: extractResult.provenance,
         }),
       });
     } catch (err: unknown) {
@@ -620,6 +621,7 @@ async function handleExtractRunJSON(
         extracted: extractResult.extracted,
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
+        provenance: extractResult.provenance,
       });
     } catch (saveErr) {
       console.warn("[extract/run] Failed to save extraction run:", saveErr);
@@ -635,6 +637,7 @@ async function handleExtractRunJSON(
         extracted: extractResult.extracted,
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
+        provenance: extractResult.provenance,
       });
     }
   } catch (err: unknown) {
