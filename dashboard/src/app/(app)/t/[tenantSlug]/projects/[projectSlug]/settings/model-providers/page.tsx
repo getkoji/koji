@@ -33,15 +33,19 @@ const PROVIDER_TYPES = [
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
 
-/** Common model suggestions per provider, shown in the model ID field. */
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
-  anthropic: ["claude-sonnet-4-20250514", "claude-haiku-35-20241022", "claude-3-5-sonnet-20241022"],
-  "azure-openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4"],
-  bedrock: ["anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "amazon.titan-text-express-v1"],
-  ollama: ["llama3.2", "llama3.1", "mistral", "mixtral", "phi3"],
-  custom: [],
+/** Fallback suggestions when the registry is unavailable. */
+const FALLBACK_SUGGESTIONS: Record<string, string[]> = {
+  openai: ["gpt-4o", "gpt-4o-mini"],
+  anthropic: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
+  ollama: ["llama3.2", "mistral"],
 };
+
+interface RegistryModel {
+  provider: string;
+  modelId: string;
+  displayName: string;
+  isRecommended: boolean;
+}
 
 /**
  * Compact one-line summary of a provider's non-secret config, shown
@@ -182,9 +186,16 @@ export default function ModelProvidersPage() {
 function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [providerType, setProviderType] = useState("openai");
-  const [model, setModel] = useState(MODEL_SUGGESTIONS["openai"]?.[0] ?? "");
+  const [model, setModel] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [apiKey, setApiKey] = useState("");
+
+  // Fetch models from the platform registry
+  const { data: registryModels } = useApi(
+    useCallback(() => api.get<{ data: RegistryModel[] }>("/api/model-registry").then((r) => r.data).catch(() => []), []),
+  );
   // Azure-specific
   const [deploymentName, setDeploymentName] = useState("");
   const [apiVersion, setApiVersion] = useState("");
@@ -197,11 +208,18 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const suggestions = MODEL_SUGGESTIONS[providerType] ?? [];
+  // Filter registry models by provider + search term
+  const providerModels = (registryModels ?? []).filter((m) => m.provider === providerType);
+  const fallback = (FALLBACK_SUGGESTIONS[providerType] ?? []).map((id) => ({ provider: providerType, modelId: id, displayName: id, isRecommended: false }));
+  const availableModels = providerModels.length > 0 ? providerModels : fallback;
+  const filteredModels = modelSearch
+    ? availableModels.filter((m) => m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) || m.displayName.toLowerCase().includes(modelSearch.toLowerCase()))
+    : availableModels;
 
   function handleProviderChange(value: string) {
     setProviderType(value);
-    setModel(MODEL_SUGGESTIONS[value]?.[0] ?? ""); // reset model to first suggestion
+    setModel("");
+    setModelSearch("");
     // Reset secrets so one provider's key never leaks into another's payload.
     setApiKey("");
     setAwsAccessKeyId("");
@@ -278,24 +296,37 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                 {PROVIDER_TYPES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </div>
-            <div className="space-y-1.5">
-              <label className="text-[12.5px] font-medium text-ink">Model ID *</label>
-              {suggestions.length > 0 ? (
-                <>
-                  <select value={suggestions.includes(model) ? model : "__custom__"} onChange={(e) => { if (e.target.value !== "__custom__") setModel(e.target.value); else setModel(""); }}
-                    className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
-                    {suggestions.map((s) => <option key={s} value={s}>{s}</option>)}
-                    <option value="__custom__">Other (type below)</option>
-                  </select>
-                  {!suggestions.includes(model) && (
-                    <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o-mini"
-                      className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
-                  )}
-                </>
-              ) : (
-                <input required value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. my-model-v1"
-                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+            <div className="space-y-1.5 relative">
+              <label className="text-[12.5px] font-medium text-ink">Model *</label>
+              <input
+                required
+                value={model || modelSearch}
+                onChange={(e) => { setModelSearch(e.target.value); setModel(""); setShowModelDropdown(true); }}
+                onFocus={() => setShowModelDropdown(true)}
+                placeholder="Search models..."
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              />
+              {showModelDropdown && filteredModels.length > 0 && (
+                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[200px] overflow-y-auto">
+                  {filteredModels.map((m) => (
+                    <button
+                      key={m.modelId}
+                      type="button"
+                      onClick={() => {
+                        setModel(m.modelId);
+                        setModelSearch("");
+                        setShowModelDropdown(false);
+                        if (!name) setName(m.displayName.replace(/ \(.*\)$/, ""));
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-cream-2 transition-colors flex items-center justify-between ${m.isRecommended ? "font-medium" : ""}`}
+                    >
+                      <span>{m.modelId}</span>
+                      {m.isRecommended && <span className="text-[9px] text-vermillion-2 uppercase tracking-wider">recommended</span>}
+                    </button>
+                  ))}
+                </div>
               )}
+              {model && <p className="text-[10px] text-ink-4 mt-0.5">Selected: {model}</p>}
             </div>
           </div>
 

@@ -50,7 +50,6 @@ const NO_TENANT_PATHS = new Set([
   "/api/me/password",
   "/api/me/can-delete",
   "/api/tenants",
-  "/api/projects",
 ]);
 
 function matchesNoTenantPath(path: string): boolean {
@@ -59,7 +58,7 @@ function matchesNoTenantPath(path: string): boolean {
   if (path === "/api/me" || path.startsWith("/api/me/")) return true;
   if (path === "/api/tenants" || path.startsWith("/api/tenants/")) return true;
   if (path === "/api/cli/authorize") return true;
-  if (path === "/api/projects" || path.startsWith("/api/projects/")) return true;
+  if (path === "/api/projects/setup") return true;
   if (path === "/api/model-registry") return true;
   if (path === "/api/model-registry/refresh") return true;
   return false;
