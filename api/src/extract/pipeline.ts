@@ -399,9 +399,13 @@ export async function extractFields(
   const start = Date.now();
   const schemaName = (schemaDef.name as string) ?? "unknown";
 
-  // Extract KV pairs from markdown (zero-cost, no LLM)
-  const { extractKVPairs } = await import("./kv-pairs");
-  const kvPairs = extractKVPairs(markdown);
+  // Extract KV pairs only if schema opts in
+  const includeKVPairs = Boolean(schemaDef.include_kv_pairs);
+  let kvPairs: Array<{ label: string; value: string }> = [];
+  if (includeKVPairs) {
+    const { extractKVPairs } = await import("./kv-pairs");
+    kvPairs = extractKVPairs(markdown).map(({ label, value }) => ({ label, value }));
+  }
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
   const fieldNames = new Set(Object.keys(fields));
 
@@ -426,7 +430,7 @@ export async function extractFields(
       extracted: Object.fromEntries([...fieldNames].map((f) => [f, null])),
       confidence: Object.fromEntries([...fieldNames].map((f) => [f, "not_found"])),
       confidence_scores: Object.fromEntries([...fieldNames].map((f) => [f, 0])),
-      kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
+      ...(includeKVPairs ? { kv_pairs: kvPairs } : {}),
     };
   }
 
