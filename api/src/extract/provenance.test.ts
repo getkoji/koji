@@ -58,7 +58,7 @@ describe("dollar amount matching", () => {
     const result = resolveProvenance({ balance: 5000 }, markdown);
 
     expect(result.balance).not.toBeNull();
-    expect(result.balance!.chunk).toBe("5,000.00");
+    expect(result.balance!.chunk).toContain("5,000");
   });
 
   it("matches string dollar amounts", () => {

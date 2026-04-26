@@ -78,23 +78,23 @@ function findDollarAmount(haystack: string, value: number | string): { offset: n
   const num = typeof value === "string" ? parseFloat(stripCurrencyFormatting(value)) : value;
   if (isNaN(num)) return null;
 
-  // Generate candidate representations
+  // Generate candidate representations — prefer more-specific (two-decimal)
+  // forms first so we match "$1,500.00" before the shorter "$1,500".
   const candidates: string[] = [];
 
-  // With commas
+  // Two-decimal version (most specific, try first)
+  const twoDecimal = num.toFixed(2);
+  const twoDecimalFormatted = parseFloat(twoDecimal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  candidates.push(`$${twoDecimalFormatted}`, twoDecimalFormatted, `$${twoDecimal}`, twoDecimal);
+
+  // With commas (integer-formatted)
   const formatted = num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const formattedInt = num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-
   candidates.push(`$${formatted}`, formatted, `$${formattedInt}`, formattedInt);
 
   // Plain number (no commas)
   const plain = Number.isInteger(num) ? String(num) : num.toFixed(2);
   candidates.push(`$${plain}`, plain);
-
-  // Two-decimal version
-  const twoDecimal = num.toFixed(2);
-  const twoDecimalFormatted = parseFloat(twoDecimal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  candidates.push(`$${twoDecimalFormatted}`, twoDecimalFormatted, `$${twoDecimal}`, twoDecimal);
 
   // Deduplicate
   const seen = new Set<string>();
