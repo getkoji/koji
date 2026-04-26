@@ -41,6 +41,7 @@ const PUBLIC_PATHS = new Set([
   "/api/invites/accept",
   "/api/inngest",
   "/api/billing/webhooks/stripe",
+  "/api/model-registry/refresh",
 ]);
 
 /** Routes that require auth but not tenant context. */
@@ -59,7 +60,8 @@ function matchesNoTenantPath(path: string): boolean {
   if (path === "/api/tenants" || path.startsWith("/api/tenants/")) return true;
   if (path === "/api/cli/authorize") return true;
   if (path === "/api/projects" || path.startsWith("/api/projects/")) return true;
-  if (path === "/api/model-registry" || path.startsWith("/api/model-registry/")) return true;
+  if (path === "/api/model-registry") return true;
+  if (path === "/api/model-registry/refresh") return true;
   return false;
 }
 
