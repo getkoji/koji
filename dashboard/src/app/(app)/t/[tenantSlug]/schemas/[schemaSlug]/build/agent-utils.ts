@@ -22,7 +22,7 @@ export function parseAgentResponse(raw: string): {
 
   return {
     yaml: yamlMatch?.[1]?.trim() ?? null,
-    explanation: explanationMatch?.[1]?.trim() ?? fallbackExplanation || "Schema updated.",
+    explanation: explanationMatch?.[1]?.trim() ?? (fallbackExplanation || "Schema updated."),
     doc_type: docTypeMatch?.[1]?.trim() ?? null,
   };
 }

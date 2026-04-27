@@ -15,7 +15,7 @@ export async function proxy(request: NextRequest) {
   }
 
   // Public routes pass through
-  if (PUBLIC_PATHS.some((p) => pathname === p)) {
+  if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     return NextResponse.next();
   }
 
