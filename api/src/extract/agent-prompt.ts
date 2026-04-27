@@ -134,7 +134,10 @@ ${kvSample || "  (none detected)"}
 Document excerpt (first 2000 chars):
 ${docContext.markdown_head}
 </document_context>`
-    : "<document_context>\nNo document selected. Help the user design a schema based on their description.\n</document_context>";
+    : `<document_context>
+No document content available yet. Help the user design a schema based on their description.
+If they ask to analyze a document, suggest they select a document and run extraction first.
+</document_context>`;
 
   const schemaBlock = currentYaml.trim()
     ? `<current_schema>
