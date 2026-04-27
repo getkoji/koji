@@ -701,28 +701,49 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
         .limit(1),
     );
     if (entry) {
-      const fileBuffer = await storage.get(entry.storageKey);
-      const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-      const [cached] = await withRLS(db, tenantId, (tx) =>
-        tx.select({ storageKey: schema.parseCache.storageKey })
-          .from(schema.parseCache)
-          .where(and(
-            eq(schema.parseCache.tenantId, tenantId),
-            eq(schema.parseCache.fileHash, fileHash),
-          ))
-          .limit(1),
-      );
-      if (cached) {
-        const cacheData = await storage.get(cached.storageKey);
-        const parseResult = JSON.parse(cacheData.toString());
-        markdown = parseResult.markdown ?? null;
-        const textMap = parseResult.text_map ?? [];
-        const extracted = run.extractedJson as Record<string, unknown>;
-        provenance = resolveProvenance(extracted, markdown ?? "", textMap.length > 0 ? textMap : undefined);
+      // Download the file and compute its hash to look up the parse cache
+      const fileObj = await storage.get(entry.storageKey);
+      if (fileObj) {
+        const chunks: Uint8Array[] = [];
+        const reader = (fileObj.data as ReadableStream).getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const fileBuffer = Buffer.concat(chunks);
+        const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+        const [cached] = await withRLS(db, tenantId, (tx) =>
+          tx.select({ storageKey: schema.parseCache.storageKey })
+            .from(schema.parseCache)
+            .where(and(
+              eq(schema.parseCache.tenantId, tenantId),
+              eq(schema.parseCache.fileHash, fileHash),
+            ))
+            .limit(1),
+        );
+        if (cached) {
+          const cacheObj = await storage.get(cached.storageKey);
+          if (cacheObj) {
+            const cacheChunks: Uint8Array[] = [];
+            const cacheReader = (cacheObj.data as ReadableStream).getReader();
+            while (true) {
+              const { done, value } = await cacheReader.read();
+              if (done) break;
+              cacheChunks.push(value);
+            }
+            const parseResult = JSON.parse(Buffer.concat(cacheChunks).toString());
+            markdown = parseResult.markdown ?? null;
+            const textMap = parseResult.text_map ?? [];
+            const extracted = run.extractedJson as Record<string, unknown>;
+            provenance = resolveProvenance(extracted, markdown ?? "", textMap.length > 0 ? textMap : undefined);
+          }
+        }
       }
     }
   } catch (err) {
-    // Non-fatal — return results without provenance
+    console.warn("[extract/runs] provenance re-resolve failed:", err instanceof Error ? err.message : err);
   }
 
   return c.json({
