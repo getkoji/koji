@@ -22,6 +22,20 @@
       "when": 1776898852819,
       "tag": "0003_broken_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777219874339,
+      "tag": "0004_material_pestilence",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777315763608,
+      "tag": "0005_brown_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

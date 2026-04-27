@@ -8,7 +8,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
-import { createProvider, extractFields, extractKVPairs, kvPairsSummary, resolveProvenance } from "../extract";
+import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -605,6 +605,8 @@ async function handleExtractRunJSON(
           extractedJson: extractResult.extracted,
           confidenceJson: extractResult.confidence,
           confidenceScoresJson: extractResult.confidence_scores,
+          provenanceJson: extractResult.provenance ?? null,
+          markdownText: (parseResult.markdown as string) ?? null,
           parseSeconds: parseResult.elapsed_seconds != null ? String(parseResult.elapsed_seconds) : null,
           extractMs: extractResult.elapsed_ms as number ?? null,
           ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
@@ -671,6 +673,8 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
       extractedJson: schema.extractionRuns.extractedJson,
       confidenceJson: schema.extractionRuns.confidenceJson,
       confidenceScoresJson: schema.extractionRuns.confidenceScoresJson,
+      provenanceJson: schema.extractionRuns.provenanceJson,
+      markdownText: schema.extractionRuns.markdownText,
       parseSeconds: schema.extractionRuns.parseSeconds,
       extractMs: schema.extractionRuns.extractMs,
       ocrSkipped: schema.extractionRuns.ocrSkipped,
@@ -687,65 +691,6 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
     return c.json({ data: null });
   }
 
-  // Re-resolve provenance from the parse cache (cheap string matching, ~1ms).
-  // Requires loading the cached parse result from S3 (~50-100ms).
-  let provenance = null;
-  let markdown = null;
-  try {
-    const storage = c.get("storage");
-    // Look up the corpus entry to get its storage key and file hash
-    const [entry] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ storageKey: schema.corpusEntries.storageKey })
-        .from(schema.corpusEntries)
-        .where(eq(schema.corpusEntries.id, corpusEntryId))
-        .limit(1),
-    );
-    if (entry) {
-      // Download the file and compute its hash to look up the parse cache
-      const fileObj = await storage.get(entry.storageKey);
-      if (fileObj) {
-        const chunks: Uint8Array[] = [];
-        const reader = (fileObj.data as ReadableStream).getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const fileBuffer = Buffer.concat(chunks);
-        const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-
-        const [cached] = await withRLS(db, tenantId, (tx) =>
-          tx.select({ storageKey: schema.parseCache.storageKey })
-            .from(schema.parseCache)
-            .where(and(
-              eq(schema.parseCache.tenantId, tenantId),
-              eq(schema.parseCache.fileHash, fileHash),
-            ))
-            .limit(1),
-        );
-        if (cached) {
-          const cacheObj = await storage.get(cached.storageKey);
-          if (cacheObj) {
-            const cacheChunks: Uint8Array[] = [];
-            const cacheReader = (cacheObj.data as ReadableStream).getReader();
-            while (true) {
-              const { done, value } = await cacheReader.read();
-              if (done) break;
-              cacheChunks.push(value);
-            }
-            const parseResult = JSON.parse(Buffer.concat(cacheChunks).toString());
-            markdown = parseResult.markdown ?? null;
-            const textMap = parseResult.text_map ?? [];
-            const extracted = run.extractedJson as Record<string, unknown>;
-            provenance = resolveProvenance(extracted, markdown ?? "", textMap.length > 0 ? textMap : undefined);
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[extract/runs] provenance re-resolve failed:", err instanceof Error ? err.message : err);
-  }
-
   return c.json({
     data: {
       id: run.id,
@@ -758,8 +703,8 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
       ocr_skipped: run.ocrSkipped === "true",
       cached: run.cached === "true",
       created_at: run.createdAt,
-      provenance,
-      markdown,
+      provenance: run.provenanceJson ?? null,
+      markdown: run.markdownText ?? null,
     },
   });
 });

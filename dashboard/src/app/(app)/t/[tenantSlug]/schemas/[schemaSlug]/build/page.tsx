@@ -226,6 +226,8 @@ export default function BuildPage() {
       extracted: Record<string, unknown>;
       confidence: Record<string, string>;
       confidence_scores: Record<string, number>;
+      provenance: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number } } | null> | null;
+      markdown: string | null;
       parse_seconds: number | null;
       elapsed_ms: number | null;
       ocr_skipped: boolean;
