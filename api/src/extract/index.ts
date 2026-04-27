@@ -16,4 +16,4 @@ export type { ExtractEndpointPayload } from "./resolve-endpoint";
 export { extractKVPairs, kvPairsSummary } from "./kv-pairs";
 export type { KVPair } from "./kv-pairs";
 export { resolveProvenance } from "./provenance";
-export type { ProvenanceSpan, ProvenanceMap } from "./provenance";
+export type { ProvenanceSpan, ProvenanceMap, TextSegment, TextMap, BBox } from "./provenance";

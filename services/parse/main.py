@@ -123,6 +123,47 @@ def classify_input(file_path: str, content_type: str | None = None) -> str:
     return "digital"
 
 
+def _build_text_map(document) -> list[dict]:
+    """Extract text segments with normalized bounding boxes from a DoclingDocument.
+
+    Returns a flat list of {text, page, bbox: {x, y, w, h}} where coordinates
+    are fractions of the page dimensions (0.0–1.0).
+    """
+    try:
+        from docling_core.types.doc.base import CoordOrigin
+
+        segments: list[dict] = []
+        for item, _level in document.iterate_items():
+            text = getattr(item, "text", None)
+            if not text:
+                continue
+            for prov in item.prov or []:
+                page_no = prov.page_no
+                page = document.pages.get(page_no)
+                if page is None or page.size is None:
+                    continue
+                pw, ph = page.size.width, page.size.height
+                if pw <= 0 or ph <= 0:
+                    continue
+                bbox = prov.bbox
+                if bbox.coord_origin == CoordOrigin.BOTTOMLEFT:
+                    bbox = bbox.to_top_left_origin(ph)
+                segments.append({
+                    "text": text,
+                    "page": page_no,
+                    "bbox": {
+                        "x": round(bbox.l / pw, 6),
+                        "y": round(bbox.t / ph, 6),
+                        "w": round((bbox.r - bbox.l) / pw, 6),
+                        "h": round((bbox.b - bbox.t) / ph, 6),
+                    },
+                })
+        return segments
+    except Exception as e:
+        print(f"[koji-parse] Warning: failed to build text_map: {e}")
+        return []
+
+
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
     conv = get_converter(ocr=not skip_ocr)
@@ -131,6 +172,7 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     return {
         "markdown": markdown,
         "pages": result.document.num_pages(),
+        "text_map": _build_text_map(result.document),
     }
 
 
@@ -218,6 +260,7 @@ async def parse(file: UploadFile = File(...)):
                 "pages": result["pages"],
                 "elapsed_seconds": elapsed,
                 "ocr_skipped": skip_ocr,
+                "text_map": result.get("text_map", []),
             }
         )
     except Exception as e:
@@ -323,6 +366,7 @@ async def parse_stream(file: UploadFile = File(...)):
                         "pages": result["pages"],
                         "elapsed_seconds": elapsed,
                         "ocr_skipped": skip_ocr,
+                        "text_map": result.get("text_map", []),
                     }
                 ),
             }

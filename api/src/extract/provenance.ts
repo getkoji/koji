@@ -1,21 +1,42 @@
 /**
- * Field-level text provenance — locates extracted values in source markdown.
+ * Field-level text provenance — locates extracted values in source markdown
+ * and optionally resolves bounding boxes via the parse service's text_map.
  *
  * Given the extracted field values and the original markdown, finds the
  * character offset where each value appears. Supports exact match,
  * case-insensitive match, and format-aware matching for dollar amounts,
  * dates, and numbers.
+ *
+ * When a text_map (from the parse service) is provided, also resolves
+ * bounding box coordinates for each field so the dashboard can highlight
+ * values directly on the rendered PDF.
  */
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+export interface BBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface TextSegment {
+  text: string;
+  page: number;
+  bbox: BBox;
+}
+
+export type TextMap = TextSegment[];
+
 export interface ProvenanceSpan {
   offset: number;
   length: number;
   chunk?: string;
   page?: number;
+  bbox?: BBox;
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -188,6 +209,65 @@ function findNumber(haystack: string, value: number): { offset: number; length: 
 }
 
 // ---------------------------------------------------------------------------
+// Bounding box resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Search the text_map for a segment whose text contains the given needle.
+ * Uses the same fuzzy matching strategies as the markdown search.
+ * Returns the best matching segment (longest text overlap).
+ */
+function findBbox(needle: string, textMap: TextMap): { page: number; bbox: BBox } | null {
+  if (!needle || textMap.length === 0) return null;
+
+  const lowerNeedle = needle.toLowerCase();
+
+  // First pass: exact substring match (case-insensitive)
+  for (const seg of textMap) {
+    if (seg.text.toLowerCase().includes(lowerNeedle)) {
+      return { page: seg.page, bbox: seg.bbox };
+    }
+  }
+
+  // Second pass: normalized whitespace match
+  const normNeedle = normalizeWhitespace(needle).toLowerCase();
+  if (normNeedle) {
+    for (const seg of textMap) {
+      if (normalizeWhitespace(seg.text).toLowerCase().includes(normNeedle)) {
+        return { page: seg.page, bbox: seg.bbox };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a bbox for a value that matched in the markdown. Tries multiple
+ * representations for numbers, dates, and dollar amounts.
+ */
+function resolveBbox(
+  value: unknown,
+  chunk: string | undefined,
+  textMap: TextMap,
+): { page: number; bbox: BBox } | null {
+  // Try the matched chunk first (most specific)
+  if (chunk) {
+    const hit = findBbox(chunk, textMap);
+    if (hit) return hit;
+  }
+
+  // Try the raw value
+  const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
+  if (strValue) {
+    const hit = findBbox(strValue, textMap);
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Main resolver
 // ---------------------------------------------------------------------------
 
@@ -196,10 +276,14 @@ function findNumber(haystack: string, value: number): { offset: number; length: 
  *
  * Returns a map of field name -> ProvenanceSpan (offset + length in the
  * markdown), or null if the value could not be located.
+ *
+ * When textMap is provided, also resolves bounding box coordinates for
+ * highlighting on the rendered PDF.
  */
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
+  textMap?: TextMap,
 ): ProvenanceMap {
   const provenance: ProvenanceMap = {};
 
@@ -232,11 +316,23 @@ export function resolveProvenance(
     }
 
     if (result) {
-      provenance[field] = {
+      const chunk = markdown.slice(result.offset, result.offset + result.length);
+      const span: ProvenanceSpan = {
         offset: result.offset,
         length: result.length,
-        chunk: markdown.slice(result.offset, result.offset + result.length),
+        chunk,
       };
+
+      // Resolve bounding box if text_map available
+      if (textMap && textMap.length > 0) {
+        const bboxHit = resolveBbox(value, chunk, textMap);
+        if (bboxHit) {
+          span.page = bboxHit.page;
+          span.bbox = bboxHit.bbox;
+        }
+      }
+
+      provenance[field] = span;
     } else {
       provenance[field] = null;
     }

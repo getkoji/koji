@@ -14,7 +14,7 @@
 import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
-import { resolveProvenance, type ProvenanceMap } from "./provenance";
+import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -398,6 +398,7 @@ export async function extractFields(
   schemaDef: Record<string, unknown>,
   provider: ModelProvider,
   model: string,
+  textMap?: TextMap,
 ): Promise<ExtractionResult> {
   const start = Date.now();
   const schemaName = (schemaDef.name as string) ?? "unknown";
@@ -458,7 +459,7 @@ export async function extractFields(
   const validationReport = validateExtracted(normalized, schemaDef);
 
   // Resolve field-level text provenance
-  const provenance = resolveProvenance(normalized, markdown);
+  const provenance = resolveProvenance(normalized, markdown, textMap);
 
   const elapsedMs = Date.now() - start;
   console.log(`[koji-extract] Extracted ${Object.keys(normalized).length} fields in ${elapsedMs}ms`);

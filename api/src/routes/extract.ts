@@ -273,6 +273,7 @@ extract.post("/process", requires("job:run"), async (c) => {
     schemaDef,
     provider,
     modelStr,
+    (parseResult.text_map as any[]) ?? undefined,
   );
 
   return c.json({
@@ -447,6 +448,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         schemaDef,
         extractProvider,
         extractModel,
+        (parseResult.text_map as any[]) ?? undefined,
       );
 
       await stream.writeSSE({
@@ -462,6 +464,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           confidence: extractResult.confidence,
           confidence_scores: extractResult.confidence_scores,
           provenance: extractResult.provenance,
+          markdown: parseResult.markdown,
         }),
       });
     } catch (err: unknown) {
@@ -586,6 +589,7 @@ async function handleExtractRunJSON(
       schemaDef,
       extractProvider,
       extractModel,
+      (parseResult.text_map as any[]) ?? undefined,
     ) as Record<string, unknown>;
 
     // Persist the run
@@ -622,6 +626,7 @@ async function handleExtractRunJSON(
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
         provenance: extractResult.provenance,
+        markdown: parseResult.markdown,
       });
     } catch (saveErr) {
       console.warn("[extract/run] Failed to save extraction run:", saveErr);
@@ -638,6 +643,7 @@ async function handleExtractRunJSON(
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
         provenance: extractResult.provenance,
+        markdown: parseResult.markdown,
       });
     }
   } catch (err: unknown) {
