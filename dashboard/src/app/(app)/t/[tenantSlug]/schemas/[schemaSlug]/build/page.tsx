@@ -137,7 +137,9 @@ export default function BuildPage() {
   );
 
   // Editor state
-  const [yaml, setYaml] = useState("");
+  const [yaml, _setYaml] = useState("");
+  const yamlRef = useRef(yaml);
+  const setYaml = (v: string) => { yamlRef.current = v; _setYaml(v); };
   const [initialized, setInitialized] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -331,7 +333,8 @@ export default function BuildPage() {
   }
 
   async function handleRun() {
-    if (!selectedDocId || !yaml) return;
+    const currentYaml = yamlRef.current;
+    if (!selectedDocId || !currentYaml) return;
     setExtracting(true);
     setExtractionResult(null);
     setGtSaved(false);
@@ -354,7 +357,7 @@ export default function BuildPage() {
       const resp = await fetch(`${API_BASE}/api/extract/run`, {
         method: "POST",
         headers: fetchHeaders,
-        body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: yaml, ...(selectedModel ? { model: selectedModel } : {}) }),
+        body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: currentYaml, ...(selectedModel ? { model: selectedModel } : {}) }),
         ...(tokenProvider ? {} : { credentials: "include" as RequestCredentials }),
       });
 
@@ -696,7 +699,13 @@ export default function BuildPage() {
                 tenantSlug={tenantSlug}
                 currentYaml={yaml}
                 selectedDocId={selectedDocId}
-                onYamlUpdate={(newYaml) => setYaml(newYaml)}
+                onYamlUpdate={(newYaml) => {
+                  setYaml(newYaml);
+                  // Auto-run extraction after agent updates YAML
+                  if (selectedDocId) {
+                    setTimeout(() => handleRun(), 200);
+                  }
+                }}
                 onRunExtraction={handleRun}
               />
             )}

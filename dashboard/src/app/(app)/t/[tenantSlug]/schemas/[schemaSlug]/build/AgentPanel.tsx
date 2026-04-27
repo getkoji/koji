@@ -116,10 +116,6 @@ export function AgentPanel({
         onYamlUpdate(resp.yaml!);
         // Auto-save draft to DB so it survives refresh
         api.patch(`/api/schemas/${schemaSlug}`, { draft_yaml: resp.yaml }).catch(() => {});
-        // Auto-run extraction after YAML update
-        if (selectedDocId) {
-          setTimeout(() => onRunExtraction(), 500);
-        }
       }
     } catch (err) {
       setMessages((prev) => [
