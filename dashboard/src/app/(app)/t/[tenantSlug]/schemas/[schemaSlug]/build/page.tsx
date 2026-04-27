@@ -5,12 +5,13 @@ import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
 
 const PdfViewer = dynamic(() => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer), { ssr: false });
+import { AgentPanel } from "./AgentPanel";
 
 // ── Types ──
 
@@ -150,7 +151,7 @@ export default function BuildPage() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
   const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
-  const [editorTab, setEditorTab] = useState<"schema" | "results">("schema");
+  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results">("agent");
   const [savingGT, setSavingGT] = useState(false);
   const [gtSaved, setGtSaved] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -658,6 +659,13 @@ export default function BuildPage() {
             <div className="flex items-center justify-between border-b border-border/50 shrink-0">
               <div className="flex">
                 <button
+                  onClick={() => setEditorTab("agent")}
+                  className={`px-3 py-1.5 font-mono text-[10px] font-medium tracking-[0.08em] uppercase border-b-2 transition-colors flex items-center gap-1 ${editorTab === "agent" ? "text-ink border-vermillion-2" : "text-ink-4 border-transparent hover:text-ink"}`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  Agent
+                </button>
+                <button
                   onClick={() => setEditorTab("schema")}
                   className={`px-3 py-1.5 font-mono text-[10px] font-medium tracking-[0.08em] uppercase border-b-2 transition-colors ${editorTab === "schema" ? "text-ink border-vermillion-2" : "text-ink-4 border-transparent hover:text-ink"}`}
                 >
@@ -680,6 +688,18 @@ export default function BuildPage() {
                 {focusPanel === "editor" ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
               </button>
             </div>
+
+            {/* Agent tab */}
+            {editorTab === "agent" && (
+              <AgentPanel
+                schemaSlug={schemaSlug}
+                tenantSlug={tenantSlug}
+                currentYaml={yaml}
+                selectedDocId={selectedDocId}
+                onYamlUpdate={(newYaml) => setYaml(newYaml)}
+                onRunExtraction={handleRun}
+              />
+            )}
 
             {/* Schema editor tab */}
             {editorTab === "schema" && (

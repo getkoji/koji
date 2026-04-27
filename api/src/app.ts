@@ -41,6 +41,7 @@ import { createAuthRoutes } from "./routes/auth";
 import { passwordReset } from "./routes/password-reset";
 import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
+import { agentRouter } from "./routes/agent";
 import { jobs } from "./routes/jobs";
 import { extract as extractRoutes } from "./routes/extract";
 import { me } from "./routes/me";
@@ -193,6 +194,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/auth", createAuthRoutes(deps.auth));
   app.route("/api/auth", passwordReset);
   app.route("/api/schemas", schemas);
+  app.route("/api/schemas", agentRouter);
   app.route("/api/jobs", jobs);
   app.route("/api", extractRoutes);
   app.route("/api/me", me);
