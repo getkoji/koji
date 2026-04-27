@@ -8,7 +8,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
-import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
+import { createProvider, extractFields, extractKVPairs, kvPairsSummary, resolveProvenance } from "../extract";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -687,6 +687,44 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
     return c.json({ data: null });
   }
 
+  // Re-resolve provenance from the parse cache (cheap string matching, ~1ms).
+  // Requires loading the cached parse result from S3 (~50-100ms).
+  let provenance = null;
+  let markdown = null;
+  try {
+    const storage = c.get("storage");
+    // Look up the corpus entry to get its storage key and file hash
+    const [entry] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ storageKey: schema.corpusEntries.storageKey })
+        .from(schema.corpusEntries)
+        .where(eq(schema.corpusEntries.id, corpusEntryId))
+        .limit(1),
+    );
+    if (entry) {
+      const fileBuffer = await storage.get(entry.storageKey);
+      const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+      const [cached] = await withRLS(db, tenantId, (tx) =>
+        tx.select({ storageKey: schema.parseCache.storageKey })
+          .from(schema.parseCache)
+          .where(and(
+            eq(schema.parseCache.tenantId, tenantId),
+            eq(schema.parseCache.fileHash, fileHash),
+          ))
+          .limit(1),
+      );
+      if (cached) {
+        const cacheData = await storage.get(cached.storageKey);
+        const parseResult = JSON.parse(cacheData.toString());
+        markdown = parseResult.markdown ?? null;
+        const textMap = parseResult.text_map ?? [];
+        const extracted = run.extractedJson as Record<string, unknown>;
+        provenance = resolveProvenance(extracted, markdown ?? "", textMap.length > 0 ? textMap : undefined);
+      }
+    }
+  } catch (err) {
+    // Non-fatal — return results without provenance
+  }
+
   return c.json({
     data: {
       id: run.id,
@@ -699,6 +737,8 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
       ocr_skipped: run.ocrSkipped === "true",
       cached: run.cached === "true",
       created_at: run.createdAt,
+      provenance,
+      markdown,
     },
   });
 });

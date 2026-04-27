@@ -238,6 +238,8 @@ export default function BuildPage() {
           extracted: resp.data.extracted,
           confidence: 0,
           confidence_scores: resp.data.confidence_scores,
+          provenance: resp.data.provenance ?? undefined,
+          markdown: resp.data.markdown ?? undefined,
           model: resp.data.model,
           elapsed_ms: resp.data.elapsed_ms ?? undefined,
           parse_seconds: resp.data.parse_seconds ?? undefined,
