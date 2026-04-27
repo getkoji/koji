@@ -14,6 +14,7 @@
 import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
+import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +36,8 @@ export interface ExtractionResult {
     ok: boolean;
     issues: Array<{ rule: string; field: string | null; message: string }>;
   };
+  /** Field-level text provenance: where each value was found in the source markdown. */
+  provenance?: ProvenanceMap;
   /** All key-value pairs found in the document via pattern matching (no LLM). */
   kv_pairs?: Array<{ label: string; value: string }>;
 }
@@ -395,6 +398,7 @@ export async function extractFields(
   schemaDef: Record<string, unknown>,
   provider: ModelProvider,
   model: string,
+  textMap?: TextMap,
 ): Promise<ExtractionResult> {
   const start = Date.now();
   const schemaName = (schemaDef.name as string) ?? "unknown";
@@ -454,6 +458,9 @@ export async function extractFields(
   // Post-extraction validation
   const validationReport = validateExtracted(normalized, schemaDef);
 
+  // Resolve field-level text provenance
+  const provenance = resolveProvenance(normalized, markdown, textMap);
+
   const elapsedMs = Date.now() - start;
   console.log(`[koji-extract] Extracted ${Object.keys(normalized).length} fields in ${elapsedMs}ms`);
 
@@ -473,6 +480,7 @@ export async function extractFields(
       ok: validationReport.ok,
       issues: validationReport.issues,
     },
+    provenance,
     kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
   };
 }

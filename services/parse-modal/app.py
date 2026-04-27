@@ -222,6 +222,49 @@ def _suffix_for(filename: str, mime_type: str | None) -> str:
     return ".pdf"
 
 
+def _build_text_map(document) -> list[dict]:
+    """Extract text segments with normalized bounding boxes from a DoclingDocument.
+
+    Returns a flat list of {text, page, bbox: {x, y, w, h}} where coordinates
+    are fractions of the page dimensions (0.0-1.0).
+    """
+    try:
+        from docling_core.types.doc.base import CoordOrigin
+
+        segments: list[dict] = []
+        for item, _level in document.iterate_items():
+            text = getattr(item, "text", None)
+            if not text:
+                continue
+            for prov in item.prov or []:
+                page_no = prov.page_no
+                page = document.pages.get(page_no)
+                if page is None or page.size is None:
+                    continue
+                pw, ph = page.size.width, page.size.height
+                if pw <= 0 or ph <= 0:
+                    continue
+                bbox = prov.bbox
+                if bbox.coord_origin == CoordOrigin.BOTTOMLEFT:
+                    bbox = bbox.to_top_left_origin(ph)
+                segments.append(
+                    {
+                        "text": text,
+                        "page": page_no,
+                        "bbox": {
+                            "x": round(bbox.l / pw, 6),
+                            "y": round(bbox.t / ph, 6),
+                            "w": round((bbox.r - bbox.l) / pw, 6),
+                            "h": round((bbox.b - bbox.t) / ph, 6),
+                        },
+                    }
+                )
+        return segments
+    except Exception as e:
+        print(f"[koji-parse-modal] Warning: failed to build text_map: {e}")
+        return []
+
+
 def _convert_bytes(
     filename: str,
     mime_type: str | None,
@@ -231,7 +274,7 @@ def _convert_bytes(
 
     Mirrors ``_convert_sync`` in services/parse/main.py. Returns a dict
     with the fields the client expects: ``markdown``, ``pages``,
-    ``ocr_skipped``.
+    ``ocr_skipped``, ``text_map``.
     """
     import tempfile
     from pathlib import Path
@@ -266,6 +309,7 @@ def _convert_bytes(
             "markdown": markdown,
             "pages": pages,
             "ocr_skipped": skip_ocr,
+            "text_map": _build_text_map(result.document),
         }
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -417,6 +461,7 @@ async def parse_http(request: Request):
                 "pages": result["pages"],
                 "elapsed_seconds": elapsed,
                 "ocr_skipped": result["ocr_skipped"],
+                "text_map": result.get("text_map", []),
             }
         )
     except Exception as e:

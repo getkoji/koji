@@ -3,11 +3,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
+
+const PdfViewer = dynamic(() => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer), { ssr: false });
 
 // ── Types ──
 
@@ -162,12 +165,22 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number } } | null>;
+    markdown?: string;
     model?: string;
     elapsed_ms?: number;
     parse_seconds?: number;
     ocr_skipped?: boolean;
     error?: string;
   } | null>(null);
+  const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
+  const bboxHighlights = useMemo(() =>
+    Object.entries(extractionResult?.provenance ?? {})
+      .filter(([, v]) => v?.bbox != null && v?.page != null)
+      .map(([field, v]) => ({ field, page: v!.page!, bbox: v!.bbox! })),
+    [extractionResult?.provenance]
+  );
   const [parseProgress, setParseProgress] = useState<{
     pages: number;
     scanned: boolean;
@@ -336,6 +349,7 @@ export default function BuildPage() {
         method: "POST",
         headers: fetchHeaders,
         body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: yaml, ...(selectedModel ? { model: selectedModel } : {}) }),
+        ...(tokenProvider ? {} : { credentials: "include" as RequestCredentials }),
       });
 
       if (!resp.ok) {
@@ -775,19 +789,42 @@ export default function BuildPage() {
 
                         {/* Results table */}
                         <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
-                          {Object.entries(extractionResult.extracted).map(([key, value]) => (
-                            <div key={key} className="flex items-start justify-between px-3 py-2 gap-3">
-                              <span className="font-mono text-[11px] text-ink-4 shrink-0">{key}</span>
-                              <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
-                              </span>
-                              {extractionResult.confidence_scores?.[key] !== undefined && (
-                                <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
-                                  {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                          {Object.entries(extractionResult.extracted).map(([key, value]) => {
+                            const prov = extractionResult.provenance?.[key];
+                            const hasProvenance = prov != null;
+                            const isHighlighted = highlightedField === key;
+                            return (
+                              <div
+                                key={key}
+                                className={`flex items-start justify-between px-3 py-2 gap-3 ${hasProvenance ? "cursor-pointer hover:bg-cream-2/80 transition-colors" : ""} ${isHighlighted ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                                onClick={() => {
+                                  if (!hasProvenance) return;
+                                  setHighlightedField(isHighlighted ? null : key);
+                                  // Scroll document preview to show provenance context
+                                  const previewEl = document.querySelector("[data-provenance-preview]");
+                                  if (previewEl) {
+                                    const mark = previewEl.querySelector(`[data-provenance-field="${key}"]`);
+                                    mark?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  }
+                                }}
+                              >
+                                <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
+                                  {hasProvenance && (
+                                    <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
+                                  )}
+                                  {key}
                                 </span>
-                              )}
-                            </div>
-                          ))}
+                                <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                  {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
+                                </span>
+                                {extractionResult.confidence_scores?.[key] !== undefined && (
+                                  <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
+                                    {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
 
                         {/* Save as Ground Truth */}
@@ -942,26 +979,112 @@ export default function BuildPage() {
                 </div>
               ) : (
                 /* Document selected — full-height preview */
-                <div className="p-2 h-full flex flex-col">
-                  {docPreviewUrl ? (
-                    selectedDoc.mimeType === "application/pdf" ? (
-                      <iframe
-                        src={docPreviewUrl}
-                        className="w-full border border-border rounded-sm flex-1 min-h-0"
-                        title={selectedDoc.filename}
-                      />
-                    ) : (
-                      <img
-                        src={docPreviewUrl}
-                        alt={selectedDoc.filename}
-                        className="w-full border border-border rounded-sm flex-1 object-contain"
-                      />
-                    )
-                  ) : (
-                    <div className="flex-1 border border-border rounded-sm flex items-center justify-center">
-                      <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
+                <div className="h-full flex flex-col">
+                  {/* View mode toggle */}
+                  {extractionResult?.markdown && (
+                    <div className="flex items-center gap-1 px-2 pt-2 pb-1 shrink-0">
+                      <button
+                        onClick={() => setDocViewMode("pdf")}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono transition-colors ${
+                          docViewMode === "pdf" ? "bg-ink text-cream" : "text-ink-4 hover:text-ink hover:bg-cream-2"
+                        }`}
+                      >
+                        <Eye className="w-3 h-3" />
+                        PDF
+                      </button>
+                      <button
+                        onClick={() => setDocViewMode("parsed")}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono transition-colors ${
+                          docViewMode === "parsed" ? "bg-ink text-cream" : "text-ink-4 hover:text-ink hover:bg-cream-2"
+                        }`}
+                      >
+                        <FileText className="w-3 h-3" />
+                        Parsed
+                      </button>
                     </div>
                   )}
+
+                  <div className="flex-1 min-h-0 p-2 pt-0">
+                    {docViewMode === "pdf" ? (
+                      /* PDF view */
+                      docPreviewUrl ? (
+                        selectedDoc.mimeType === "application/pdf" ? (
+                          <div className="border border-border rounded-sm h-full overflow-hidden">
+                            <PdfViewer
+                              url={docPreviewUrl}
+                              highlights={bboxHighlights}
+                              activeField={highlightedField}
+                            />
+                          </div>
+                        ) : (
+                          <img
+                            src={docPreviewUrl}
+                            alt={selectedDoc.filename}
+                            className="w-full h-full border border-border rounded-sm object-contain"
+                          />
+                        )
+                      ) : (
+                        <div className="border border-border rounded-sm h-full flex items-center justify-center">
+                          <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
+                        </div>
+                      )
+                    ) : (
+                      /* Parsed markdown view with provenance highlights */
+                      <div
+                        data-provenance-preview
+                        className="border border-border rounded-sm bg-cream h-full overflow-y-auto"
+                      >
+                        {extractionResult?.markdown ? (() => {
+                          const md = extractionResult.markdown!;
+                          const prov = extractionResult.provenance ?? {};
+                          const spans = Object.entries(prov)
+                            .filter(([, v]) => v != null)
+                            .map(([field, v]) => ({ field, ...v! }))
+                            .sort((a, b) => a.offset - b.offset);
+
+                          const fragments: Array<{ text: string; field?: string }> = [];
+                          let cursor = 0;
+                          for (const span of spans) {
+                            if (span.offset > cursor) {
+                              fragments.push({ text: md.slice(cursor, span.offset) });
+                            }
+                            fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field });
+                            cursor = span.offset + span.length;
+                          }
+                          if (cursor < md.length) {
+                            fragments.push({ text: md.slice(cursor) });
+                          }
+
+                          return (
+                            <pre className="p-3 font-mono text-[11px] text-ink-3 whitespace-pre-wrap break-words leading-relaxed">
+                              {fragments.map((frag, i) =>
+                                frag.field ? (
+                                  <mark
+                                    key={i}
+                                    data-provenance-field={frag.field}
+                                    className={`rounded-sm px-0.5 cursor-pointer ${
+                                      frag.field === highlightedField
+                                        ? "bg-vermillion-3/50 text-vermillion-2 ring-1 ring-vermillion-2/40"
+                                        : "bg-cream-2 text-ink-3 hover:bg-cream-3"
+                                    }`}
+                                    onClick={() => setHighlightedField(frag.field === highlightedField ? null : frag.field!)}
+                                  >
+                                    {frag.text}
+                                  </mark>
+                                ) : (
+                                  <span key={i}>{frag.text}</span>
+                                )
+                              )}
+                            </pre>
+                          );
+                        })() : (
+                          <div className="h-full flex items-center justify-center">
+                            <span className="font-mono text-[11px] text-ink-4">Run extraction to see parsed text</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
