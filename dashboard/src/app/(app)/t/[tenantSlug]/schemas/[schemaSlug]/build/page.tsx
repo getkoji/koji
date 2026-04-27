@@ -245,6 +245,7 @@ export default function BuildPage() {
           parse_seconds: resp.data.parse_seconds ?? undefined,
           ocr_skipped: resp.data.ocr_skipped,
         });
+        setEditorTab("results");
         setGtSaved(false);
       })
       .catch(() => {});
