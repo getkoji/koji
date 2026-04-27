@@ -247,16 +247,18 @@ def _build_text_map(document) -> list[dict]:
                 bbox = prov.bbox
                 if bbox.coord_origin == CoordOrigin.BOTTOMLEFT:
                     bbox = bbox.to_top_left_origin(ph)
-                segments.append({
-                    "text": text,
-                    "page": page_no,
-                    "bbox": {
-                        "x": round(bbox.l / pw, 6),
-                        "y": round(bbox.t / ph, 6),
-                        "w": round((bbox.r - bbox.l) / pw, 6),
-                        "h": round((bbox.b - bbox.t) / ph, 6),
-                    },
-                })
+                segments.append(
+                    {
+                        "text": text,
+                        "page": page_no,
+                        "bbox": {
+                            "x": round(bbox.l / pw, 6),
+                            "y": round(bbox.t / ph, 6),
+                            "w": round((bbox.r - bbox.l) / pw, 6),
+                            "h": round((bbox.b - bbox.t) / ph, 6),
+                        },
+                    }
+                )
         return segments
     except Exception as e:
         print(f"[koji-parse-modal] Warning: failed to build text_map: {e}")
