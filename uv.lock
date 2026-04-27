@@ -389,7 +389,7 @@ wheels = [
 ]
 
 [[package]]
-name = "koji-cli"
+name = "koji"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
