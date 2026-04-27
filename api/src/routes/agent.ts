@@ -176,13 +176,13 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
 
   const finalYaml = parsed.yaml ?? proposedYaml;
 
-  // 10. Persist messages (best-effort)
+  // 10. Persist messages sequentially (so created_at ordering is deterministic)
   try {
     await withRLS(db, tenantId, (tx) =>
-      tx.insert(schema.agentMessages).values([
-        { tenantId, sessionId: session.id, role: "user", content: body.message },
-        { tenantId, sessionId: session.id, role: "assistant", content: rawResponse },
-      ]),
+      tx.insert(schema.agentMessages).values({ tenantId, sessionId: session.id, role: "user", content: body.message }),
+    );
+    await withRLS(db, tenantId, (tx) =>
+      tx.insert(schema.agentMessages).values({ tenantId, sessionId: session.id, role: "assistant", content: rawResponse }),
     );
     // Update session timestamp
     await withRLS(db, tenantId, (tx) =>

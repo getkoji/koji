@@ -529,6 +529,7 @@ async function handleExtractRunJSON(
         pages: parseResult.pages,
         elapsed_seconds: parseResult.elapsed_seconds,
         ocr_skipped: parseResult.ocr_skipped,
+        text_map: parseResult.text_map ?? [],
       }));
       await storage.put(cacheKey, cacheData, { contentType: "application/json" });
 

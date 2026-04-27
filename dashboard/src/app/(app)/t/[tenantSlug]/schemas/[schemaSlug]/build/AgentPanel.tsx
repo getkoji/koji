@@ -100,10 +100,11 @@ export function AgentPanel({
         },
       );
 
+      const yamlChanged = resp.yaml && resp.yaml !== currentYaml;
       const assistantMsg: ChatMessage = {
         role: "assistant",
         content: resp.explanation,
-        yaml: resp.yaml,
+        yaml: yamlChanged ? resp.yaml : null,
         explanation: resp.explanation,
         doc_type: resp.doc_type,
       };
@@ -111,8 +112,10 @@ export function AgentPanel({
 
       if (resp.doc_type && !docType) setDocType(resp.doc_type);
 
-      if (resp.yaml && resp.yaml !== currentYaml) {
-        onYamlUpdate(resp.yaml);
+      if (yamlChanged) {
+        onYamlUpdate(resp.yaml!);
+        // Auto-save draft to DB so it survives refresh
+        api.patch(`/api/schemas/${schemaSlug}`, { draft_yaml: resp.yaml }).catch(() => {});
         // Auto-run extraction after YAML update
         if (selectedDocId) {
           setTimeout(() => onRunExtraction(), 500);
@@ -151,7 +154,7 @@ export function AgentPanel({
     dt.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
         <div className="flex items-center gap-1.5">
