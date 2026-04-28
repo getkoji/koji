@@ -1264,7 +1264,13 @@ function RunDialog({
     }
 
     if (jobSlug) {
-      onStarted(jobSlug, files.length);
+      if (errors.length > 0) {
+        // Some files failed — show errors briefly, then navigate
+        setErr(`${errors.length} file(s) failed: ${errors.join("; ")}`);
+        setTimeout(() => onStarted(jobSlug, files.length - errors.length), 2000);
+      } else {
+        onStarted(jobSlug, files.length);
+      }
     } else {
       setSubmitting(false);
       setErr(errors.join("; ") || "All uploads failed");
