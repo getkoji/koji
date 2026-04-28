@@ -255,7 +255,15 @@ export default function PipelineDetailPage() {
           pipeline={pipeline}
           tenantSlug={tenantSlug}
           onClose={() => setRunOpen(false)}
-          onStarted={(jobSlug) => router.push(`/t/${tenantSlug}/jobs/${jobSlug}`)}
+          onStarted={(jobSlug, count) => {
+            if (count === 1) {
+              router.push(`/t/${tenantSlug}/jobs/${jobSlug}`);
+            } else {
+              // Multi-file: stay on pipeline page and refresh to show new jobs
+              setShowRun(false);
+              refetch();
+            }
+          }}
         />
       )}
     </ListLayout>
@@ -1203,7 +1211,7 @@ function RunDialog({
   pipeline: PipelineDetail;
   tenantSlug: string;
   onClose: () => void;
-  onStarted: (jobSlug: string) => void;
+  onStarted: (jobSlug: string, fileCount: number) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -1234,21 +1242,29 @@ function RunDialog({
     setErr(null);
     setProgress({ done: 0, total: files.length, errors: [] });
 
-    let lastJobSlug = "";
+    let jobSlug = "";
+    let jobId = "";
     const errors: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
       try {
-        const result = await pipelinesApi.run(pipeline.slug, files[i]!);
-        lastJobSlug = result.jobSlug;
+        if (i === 0) {
+          // First file creates the job
+          const result = await pipelinesApi.run(pipeline.slug, files[i]!);
+          jobSlug = result.jobSlug;
+          jobId = result.jobId;
+        } else {
+          // Subsequent files are added to the same job
+          await pipelinesApi.addDoc(pipeline.slug, jobId, files[i]!);
+        }
       } catch (e: unknown) {
         errors.push(`${files[i]!.name}: ${e instanceof Error ? e.message : "Failed"}`);
       }
       setProgress({ done: i + 1, total: files.length, errors });
     }
 
-    if (lastJobSlug) {
-      onStarted(lastJobSlug);
+    if (jobSlug) {
+      onStarted(jobSlug, files.length);
     } else {
       setSubmitting(false);
       setErr(errors.join("; ") || "All uploads failed");

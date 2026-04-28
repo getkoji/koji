@@ -533,6 +533,15 @@ export const pipelines = {
       form,
     );
   },
+  /** Add a document to an existing job (batch upload). */
+  addDoc: (idOrSlug: string, jobId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.postForm<{ documentId: string }>(
+      `/api/pipelines/${idOrSlug}/jobs/${jobId}/docs`,
+      form,
+    );
+  },
 };
 
 // ── Sources ──

@@ -9,7 +9,7 @@ import { requireQuantityGate } from "../billing/middleware";
 import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
-import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
+import { createExtractionJob, addDocumentToJob, mimeTypeFor } from "../ingestion/process";
 
 /**
  * Narrow an unknown body into a {@link RetryPolicy}. Returns the validated
@@ -622,4 +622,82 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     { jobId: created.jobId, jobSlug: created.jobSlug, documentId: created.documentId },
     202,
   );
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/jobs/:jobId/docs — add a document to an existing job.
+ *
+ * Used for batch uploads: the client creates a job with the first file via /run,
+ * then adds subsequent files to the same job via this endpoint.
+ */
+pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const queue = c.get("queue");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const jobId = c.req.param("jobId")!;
+
+  // Verify job exists and belongs to this pipeline
+  const [job] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.jobs.id, pipelineId: schema.jobs.pipelineId })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.id, jobId))
+      .limit(1),
+  );
+  if (!job || job.pipelineId !== pipelineId) {
+    return c.json({ error: "Job not found" }, 404);
+  }
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      schemaId: schema.pipelines.schemaId,
+      activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+    })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .limit(1),
+  );
+  if (!pipeline?.schemaId || !pipeline.activeSchemaVersionId) {
+    return c.json({ error: "Pipeline has no deployed schema version" }, 422);
+  }
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) {
+    return c.json({ error: "Missing file in 'file' field" }, 400);
+  }
+
+  const fileBytes = await file.arrayBuffer();
+  const buffer = Buffer.from(fileBytes);
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  const storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
+
+  await storage.put(storageKey, buffer, {
+    contentType: file.type || mimeTypeFor(file.name),
+  });
+
+  const created = await addDocumentToJob({
+    db,
+    tenantId,
+    pipelineId,
+    jobId,
+    schemaId: pipeline.schemaId,
+    schemaVersionId: pipeline.activeSchemaVersionId,
+    storageKey,
+    filename: file.name,
+    fileSize: file.size,
+    mimeType: file.type || mimeTypeFor(file.name),
+    contentHash,
+  });
+
+  await queue.enqueue(
+    "ingestion.process",
+    { documentId: created.documentId },
+    { tenantId },
+  );
+
+  return c.json({ documentId: created.documentId }, 202);
 });

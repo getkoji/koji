@@ -530,6 +530,44 @@ export async function createExtractionJob(
   return { jobId, jobSlug, documentId: createdDoc!.id };
 }
 
+/**
+ * Add a document to an existing job. Used for batch uploads where
+ * multiple files should be grouped under a single job.
+ */
+export async function addDocumentToJob(
+  args: Omit<CreateExtractionJobArgs, "triggerType"> & { jobId: string },
+): Promise<{ documentId: string }> {
+  const [createdDoc] = await withRLS(args.db, args.tenantId, (tx) =>
+    tx
+      .insert(schema.documents)
+      .values({
+        tenantId: args.tenantId,
+        jobId: args.jobId,
+        ingestionId: args.ingestionId ?? null,
+        filename: args.filename,
+        storageKey: args.storageKey,
+        fileSize: args.fileSize,
+        mimeType: args.mimeType,
+        contentHash: args.contentHash,
+        schemaId: args.schemaId,
+        schemaVersionId: args.schemaVersionId,
+        status: "extracting",
+        startedAt: new Date(),
+      })
+      .returning({ id: schema.documents.id }),
+  );
+
+  // Increment docsTotal on the job
+  await withRLS(args.db, args.tenantId, (tx) =>
+    tx
+      .update(schema.jobs)
+      .set({ docsTotal: sql`docs_total + 1` })
+      .where(eq(schema.jobs.id, args.jobId)),
+  );
+
+  return { documentId: createdDoc!.id };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 
 interface ExtractResult {
