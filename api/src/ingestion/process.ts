@@ -268,8 +268,12 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 
   // ── Confidence gate (recorded as the 'validate' stage) ──────────────────
   const validateStart = Date.now();
-  const confidence = numberOr(extractResult.confidence, null);
   const fieldScores = extractResult.confidence_scores ?? {};
+  // Compute overall confidence as average of per-field scores
+  const scoreValues = Object.values(fieldScores).filter((v) => Number.isFinite(v));
+  const confidence = scoreValues.length > 0
+    ? scoreValues.reduce((sum, v) => sum + v, 0) / scoreValues.length
+    : null;
   const threshold = Number(pipeline.reviewThreshold);
   const lowField = findLowestConfidenceField(fieldScores, threshold);
 
