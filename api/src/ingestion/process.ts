@@ -34,29 +34,27 @@ import {
   resolveExtractEndpoint,
   type ExtractEndpointPayload,
 } from "../extract/resolve-endpoint";
+import { createProvider, extractFields } from "../extract";
 import { isTransientError } from "./errors";
 import type { BillingAdapter } from "../billing/adapter";
 import { NoOpBillingAdapter } from "../billing/noop";
 
 export interface IngestionHandlerConfig {
-  /** Base URL for the extract HTTP service (self-hosted sidecar or hosted proxy). */
-  extractUrl: string;
+  // No config needed — extraction runs in-process via extractFields().
 }
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
 let _parseProvider: ParseProvider | null = null;
-let _extractUrl: string | null = null;
 let _billing: BillingAdapter = new NoOpBillingAdapter();
 
 export function initIngestionHandler(
   db: Db,
   storage: StorageProvider,
-  config: IngestionHandlerConfig,
+  _config?: IngestionHandlerConfig,
 ) {
   _db = db;
   _storage = storage;
-  _extractUrl = config.extractUrl;
 }
 
 export function initBilling(adapter: BillingAdapter) {
@@ -77,7 +75,7 @@ interface IngestionProcessPayload {
 }
 
 export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
-  if (!_db || !_storage || !_extractUrl) {
+  if (!_db || !_storage) {
     throw new Error("Ingestion handler not initialized");
   }
   if (!_parseProvider) {
@@ -86,7 +84,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const db = _db;
   const storage = _storage;
   const parseProvider = _parseProvider;
-  const extractUrl = _extractUrl;
+  // extractFields() runs in-process — no external URL needed
 
   const { documentId } = job.payload as unknown as IngestionProcessPayload;
   const tenantId = job.tenantId;
@@ -204,14 +202,17 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     extractResult = await recorder.run(
       "extract",
       async () => {
-        const res = await callExtract(
-          extractUrl,
-          markdown,
-          schemaVersion.yamlSource,
-          endpointPayload,
-        );
+        let schemaDef: Record<string, unknown>;
+        try {
+          schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
+        } catch (err) {
+          throw new TerminalError(`Invalid schema YAML: ${err instanceof Error ? err.message : "yaml parse"}`);
+        }
+        const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
+        const provider = createProvider(modelStr, endpointPayload);
+        const res = await extractFields(markdown, schemaDef, provider, modelStr);
         return {
-          value: res,
+          value: res as ExtractResult,
           summary: {
             model: res.model ?? "unknown",
             fields: Object.keys(
@@ -826,33 +827,7 @@ class TraceRecorder {
   }
 }
 
-async function callExtract(
-  extractUrl: string,
-  markdown: string,
-  schemaYaml: string,
-  endpoint: ExtractEndpointPayload | null,
-): Promise<ExtractResult> {
-  let schemaDef: unknown;
-  try {
-    schemaDef = parseYaml(schemaYaml);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "yaml parse";
-    throw new TerminalError(`Invalid schema YAML: ${msg}`);
-  }
-  const reqBody: Record<string, unknown> = { markdown, schema_def: schemaDef };
-  if (endpoint) reqBody.endpoint = endpoint;
-  const resp = await fetch(`${extractUrl}/extract`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(reqBody),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`extract ${resp.status}: ${body.slice(0, 300)}`);
-  }
-  return (await resp.json()) as ExtractResult;
-}
+// callExtract removed — extraction now runs in-process via extractFields()
 
 function findLowestConfidenceField(
   scores: Record<string, number>,

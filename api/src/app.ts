@@ -144,7 +144,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   // is what we want).
   initEmitter(deps.queue, deps.db);
   initDeliveryHandler(deps.db, deps.masterKey);
-  initIngestionHandler(deps.db, deps.storage, { extractUrl: deps.extractUrl });
+  initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider);
   initBilling(billing);
 
