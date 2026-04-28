@@ -183,9 +183,10 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   // still flush the stages we got to — the trace is more useful with a
   // partial-but-honest timeline than with nothing.
   const recorder = new TraceRecorder();
+  const extractStart = Date.now();
+  await recorder.init(db, tenantId, documentId, jobId, extractStart);
 
   let extractResult: ExtractResult;
-  const extractStart = Date.now();
   try {
     const markdown = await recorder.run(
       "parse",
@@ -683,18 +684,13 @@ async function getOrParse(
 }
 
 /**
- * Captures each motor stage's timing + summary so the trace view has a real
- * timeline. Stages are held in memory during processing, then flushed to the
- * `traces` + `trace_stages` tables on terminal transition (delivered / review
- * / failed). Writing only at the end means a single round trip and keeps the
- * hot path out of the DB during parse/extract.
+ * Captures each stage's timing + summary and writes them to the DB
+ * incrementally so the trace view shows live progress. The trace row is
+ * created upfront; stages are inserted as they start/complete.
  */
 interface StageRecord {
   name: string;
   status: "ok" | "warn" | "fail" | "in_flight";
-  /** When known (completed stages). The Deliver stage is written as
-   *  `in_flight` with `durationMs=null` and is finalised by the webhook
-   *  worker on the last target's terminal outcome. */
   durationMs: number | null;
   summaryJson: Record<string, unknown>;
   errorMessage?: string;
@@ -702,36 +698,90 @@ interface StageRecord {
 
 class TraceRecorder {
   private stages: StageRecord[] = [];
+  private traceId: string | null = null;
+  private db: Db | null = null;
+  private tenantId: string | null = null;
 
   /**
-   * Run an async step, time it, and record a stage row. On success the
-   * caller returns `{ value, summary }` — the summary ends up in
-   * trace_stages.summary_json. On throw we record a fail stage and
-   * re-raise so the caller's catch block can deal with the error.
+   * Create the trace row upfront so stages can be written incrementally.
+   */
+  async init(db: Db, tenantId: string, documentId: string, jobId: string, originMs: number): Promise<void> {
+    this.db = db;
+    this.tenantId = tenantId;
+    try {
+      const [trace] = await withRLS(db, tenantId, (tx) =>
+        tx.insert(schema.traces).values({
+          tenantId,
+          documentId,
+          jobId,
+          traceExternalId: `trc_${randomBytes(8).toString("hex")}`,
+          status: "ok", // will be updated on terminal
+          totalDurationMs: 0,
+          startedAt: new Date(originMs),
+          completedAt: new Date(originMs),
+        }).returning({ id: schema.traces.id }),
+      );
+      this.traceId = trace?.id ?? null;
+    } catch (err) {
+      console.warn("[TraceRecorder] failed to create trace:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Write a single stage row to the DB immediately. */
+  private async writeStage(stage: StageRecord, stageOrder: number, startedAt: Date): Promise<void> {
+    if (!this.traceId || !this.db || !this.tenantId) return;
+    try {
+      const completedAt = stage.durationMs != null ? new Date(startedAt.getTime() + stage.durationMs) : null;
+      await withRLS(this.db, this.tenantId, (tx) =>
+        tx.insert(schema.traceStages).values({
+          tenantId: this.tenantId!,
+          traceId: this.traceId!,
+          stageName: stage.name,
+          stageOrder,
+          status: stage.status,
+          durationMs: stage.durationMs,
+          summaryJson: stage.summaryJson,
+          errorMessage: stage.errorMessage ?? null,
+          startedAt,
+          completedAt,
+        }),
+      );
+    } catch (err) {
+      console.warn(`[TraceRecorder] failed to write stage ${stage.name}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  /**
+   * Run an async step, time it, and write the stage to DB immediately.
    */
   async run<T>(
     name: string,
     fn: () => Promise<{ value: T; summary: Record<string, unknown> }>,
   ): Promise<T> {
     const start = Date.now();
+    const stageOrder = this.stages.length;
     try {
       const { value, summary } = await fn();
-      this.stages.push({
+      const stage: StageRecord = {
         name,
         status: "ok",
         durationMs: Date.now() - start,
         summaryJson: summary,
-      });
+      };
+      this.stages.push(stage);
+      await this.writeStage(stage, stageOrder, new Date(start));
       return value;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.stages.push({
+      const stage: StageRecord = {
         name,
         status: "fail",
         durationMs: Date.now() - start,
         summaryJson: {},
         errorMessage: msg,
-      });
+      };
+      this.stages.push(stage);
+      await this.writeStage(stage, stageOrder, new Date(start));
       throw err;
     }
   }
@@ -744,7 +794,10 @@ class TraceRecorder {
     summaryJson: Record<string, unknown>,
     errorMessage?: string,
   ): void {
-    this.stages.push({ name, status, durationMs, summaryJson, errorMessage });
+    const stage: StageRecord = { name, status, durationMs, summaryJson, errorMessage };
+    this.stages.push(stage);
+    // Fire-and-forget write
+    this.writeStage(stage, this.stages.length - 1, new Date(Date.now() - durationMs)).catch(() => {});
   }
 
   /**
@@ -795,13 +848,11 @@ class TraceRecorder {
   }
 
   /**
-   * Flush to DB: insert a `traces` row, then all buffered `trace_stages`
-   * with laid-out startedAt/completedAt timestamps anchored at `originMs`.
+   * Finalize the trace: update status and total duration. Stages are already
+   * written incrementally via writeStage(). The Deliver stage is written here
+   * if present (it's the last stage and needs the trace to exist first).
    *
-   * Returns `true` on success so the caller knows it's safe to enqueue the
-   * webhook deliveries now that the Deliver trace stage row is in place.
-   * Returns `false` if the insert couldn't be completed — the caller may
-   * choose to still emit (webhook contract beats trace visibility).
+   * Returns `true` on success.
    */
   async flush(
     db: Db,
@@ -811,56 +862,31 @@ class TraceRecorder {
     originMs: number,
     traceStatus: "ok" | "review" | "failed",
   ): Promise<boolean> {
-    if (this.stages.length === 0) return false;
+    if (!this.traceId) {
+      // Trace wasn't created (init failed) — try creating it now with all stages
+      await this.init(db, tenantId, documentId, jobId, originMs);
+      if (!this.traceId) return false;
+      // Write any stages that weren't written yet
+      let cursor = originMs;
+      for (let i = 0; i < this.stages.length; i++) {
+        await this.writeStage(this.stages[i]!, i, new Date(cursor));
+        if (this.stages[i]!.durationMs != null) cursor += this.stages[i]!.durationMs!;
+      }
+    }
 
-    const startedAt = new Date(originMs);
-    // Only completed stages contribute to `total_duration_ms` — the Deliver
-    // stage is in-flight and its duration is still unknown at flush time.
-    const totalMs = this.stages.reduce(
-      (sum, s) => sum + (s.durationMs ?? 0),
-      0,
-    );
-    const completedAt = new Date(originMs + totalMs);
+    const totalMs = this.stages.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
 
-    const [trace] = await withRLS(db, tenantId, (tx) =>
-      tx
-        .insert(schema.traces)
-        .values({
-          tenantId,
-          documentId,
-          jobId,
-          traceExternalId: `trc_${randomBytes(8).toString("hex")}`,
+    // Update the trace with final status and duration
+    await withRLS(db, tenantId, (tx) =>
+      tx.update(schema.traces)
+        .set({
           status: traceStatus,
           totalDurationMs: totalMs,
-          startedAt,
-          completedAt,
+          completedAt: new Date(originMs + totalMs),
         })
-        .returning({ id: schema.traces.id }),
+        .where(eq(schema.traces.id, this.traceId!)),
     );
-    if (!trace) return false;
 
-    let cursor = originMs;
-    const rows = this.stages.map((s, i) => {
-      const stageStart = new Date(cursor);
-      // In-flight stages (Deliver) don't advance the cursor — they have no
-      // known completion time yet. The worker fills these in.
-      const stageEnd = s.durationMs === null ? null : new Date(cursor + s.durationMs);
-      if (s.durationMs !== null) cursor += s.durationMs;
-      return {
-        tenantId,
-        traceId: trace.id,
-        stageName: s.name,
-        stageOrder: i,
-        status: s.status,
-        startedAt: stageStart,
-        completedAt: stageEnd,
-        durationMs: s.durationMs,
-        summaryJson: s.summaryJson,
-        errorMessage: s.errorMessage ?? null,
-      };
-    });
-
-    await withRLS(db, tenantId, (tx) => tx.insert(schema.traceStages).values(rows));
     return true;
   }
 }
