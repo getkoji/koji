@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { Bell, User, Settings, LogOut, HelpCircle, ExternalLink, ChevronsUpDown, Plus } from "lucide-react";
 import { SidebarTrigger } from "@koji/ui";
 import { KojiLogo } from "./KojiLogo";
+import { CommandPalette } from "./CommandPalette";
 import { me as meApi, projectsApi, getSignOutHandler, type ProjectRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { on } from "@/lib/events";
@@ -17,6 +18,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const router = useRouter();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [cmdkOpen, setCmdkOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const { data: user, loading: userLoading } = useApi(useCallback(() => meApi.get(), []));
@@ -24,6 +26,18 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
 
   // Refetch when a project is updated elsewhere
   useEffect(() => on("projects:updated", refetchProjects), [refetchProjects]);
+
+  // Global ⌘K / Ctrl+K shortcut
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCmdkOpen((prev) => !prev);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "";
@@ -136,18 +150,21 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
         )}
       </div>
 
-      {/* Universal trace bar */}
-      <div className="mx-auto w-full max-w-[520px] flex items-center gap-2 px-3.5 py-2 bg-cream-2 border border-border rounded-sm focus-within:border-vermillion-2 focus-within:bg-cream transition-colors">
+      {/* Universal trace bar — opens command palette */}
+      <button
+        type="button"
+        onClick={() => setCmdkOpen(true)}
+        className="mx-auto w-full max-w-[520px] flex items-center gap-2 px-3.5 py-2 bg-cream-2 border border-border rounded-sm hover:border-vermillion-2 hover:bg-cream transition-colors cursor-pointer"
+      >
         <span className="font-mono text-vermillion-2 text-[13px] font-semibold">↳</span>
-        <input
-          type="text"
-          placeholder="paste a doc id, file hash, webhook id, correlation id…"
-          className="flex-1 bg-transparent border-none outline-none font-mono text-xs text-ink placeholder:text-ink-4"
-        />
+        <span className="flex-1 text-left font-mono text-xs text-ink-4">
+          Search schemas, pipelines, jobs…
+        </span>
         <kbd className="font-mono text-[10px] text-ink-4 px-1.5 py-0.5 border border-border rounded-sm bg-cream">
           ⌘K
         </kbd>
-      </div>
+      </button>
+      <CommandPalette open={cmdkOpen} onOpenChange={setCmdkOpen} />
 
       {/* Right side */}
       <div className="flex items-center gap-1.5 shrink-0">
