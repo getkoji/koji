@@ -1205,15 +1205,16 @@ function RunDialog({
   onClose: () => void;
   onStarted: (jobSlug: string) => void;
 }) {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number; errors: string[] }>({ done: 0, total: 0, errors: [] });
   const [err, setErr] = useState<string | null>(null);
-  void tenantSlug; // routing happens in onStarted
+  void tenantSlug;
 
   function handleFiles(list: FileList | null) {
     if (!list || list.length === 0) return;
-    setFile(list[0] ?? null);
+    setFiles((prev) => [...prev, ...Array.from(list)]);
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -1222,17 +1223,35 @@ function RunDialog({
     handleFiles(e.dataTransfer.files);
   }
 
+  function removeFile(idx: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || submitting) return;
+    if (files.length === 0 || submitting) return;
     setSubmitting(true);
     setErr(null);
-    try {
-      const result = await pipelinesApi.run(pipeline.slug, file);
-      onStarted(result.jobSlug);
-    } catch (e: unknown) {
+    setProgress({ done: 0, total: files.length, errors: [] });
+
+    let lastJobSlug = "";
+    const errors: string[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const result = await pipelinesApi.run(pipeline.slug, files[i]!);
+        lastJobSlug = result.jobSlug;
+      } catch (e: unknown) {
+        errors.push(`${files[i]!.name}: ${e instanceof Error ? e.message : "Failed"}`);
+      }
+      setProgress({ done: i + 1, total: files.length, errors });
+    }
+
+    if (lastJobSlug) {
+      onStarted(lastJobSlug);
+    } else {
       setSubmitting(false);
-      setErr(e instanceof Error ? e.message : "Failed to start the run");
+      setErr(errors.join("; ") || "All uploads failed");
     }
   }
 
@@ -1256,9 +1275,9 @@ function RunDialog({
           </button>
         </div>
         <p className="text-[12.5px] text-ink-3 mb-4">
-          Upload a document to run through{" "}
+          Upload documents to run through{" "}
           <strong className="text-ink">{pipeline.displayName}</strong>. Extraction starts
-          immediately and the job page will show progress.
+          immediately for each file.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -1269,46 +1288,72 @@ function RunDialog({
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
-            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 border border-dashed rounded-sm transition-colors ${
+            className={`flex flex-col items-center justify-center gap-2 px-4 py-6 border border-dashed rounded-sm transition-colors ${
               dragOver
                 ? "border-vermillion-2 bg-vermillion-3/20"
                 : "border-border-strong bg-cream-2/40"
             }`}
           >
             <Upload className="w-5 h-5 text-ink-4" />
-            {file ? (
-              <>
-                <span className="font-mono text-[12px] text-ink truncate max-w-[280px]">
-                  {file.name}
-                </span>
-                <span className="font-mono text-[10px] text-ink-4">
-                  {formatBytes(file.size)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setFile(null)}
-                  className="font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors mt-1"
-                >
-                  remove
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="text-[12.5px] text-ink font-medium">
-                  Drop a file or pick one
-                </span>
-                <label className="font-mono text-[11px] text-vermillion-2 hover:text-ink transition-colors cursor-pointer">
-                  Choose file…
-                  <input
-                    type="file"
-                    className="hidden"
-                    onChange={(e) => handleFiles(e.target.files)}
-                  />
-                </label>
-                <span className="font-mono text-[10px] text-ink-4">PDF, PNG, JPG</span>
-              </>
-            )}
+            <span className="text-[12.5px] text-ink font-medium">
+              Drop files or pick them
+            </span>
+            <label className="font-mono text-[11px] text-vermillion-2 hover:text-ink transition-colors cursor-pointer">
+              Choose files…
+              <input
+                type="file"
+                className="hidden"
+                multiple
+                accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                onChange={(e) => handleFiles(e.target.files)}
+              />
+            </label>
+            <span className="font-mono text-[10px] text-ink-4">PDF, PNG, JPG, TIFF</span>
           </div>
+
+          {/* File list */}
+          {files.length > 0 && (
+            <div className="border border-border rounded-sm divide-y divide-border max-h-[200px] overflow-y-auto">
+              {files.map((f, i) => (
+                <div key={`${f.name}-${i}`} className="flex items-center justify-between px-3 py-1.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-mono text-[11px] text-ink truncate">{f.name}</span>
+                    <span className="font-mono text-[9px] text-ink-4 shrink-0">{formatBytes(f.size)}</span>
+                  </div>
+                  {!submitting && (
+                    <button
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      className="text-ink-4 hover:text-vermillion-2 transition-colors shrink-0 ml-2"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Progress */}
+          {submitting && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 animate-spin text-vermillion-2 shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="font-mono text-[11px] text-ink">
+                  Processing {progress.done} of {progress.total}...
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-cream-2 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-vermillion-2 rounded-full transition-all"
+                  style={{ width: `${(progress.done / Math.max(progress.total, 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
 
           {err && (
             <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
@@ -1316,21 +1361,26 @@ function RunDialog({
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!file || submitting}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {submitting ? "Starting…" : "Run"}
-            </button>
+          <div className="flex items-center justify-between pt-1">
+            <span className="font-mono text-[10px] text-ink-4">
+              {files.length > 0 ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : ""}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={files.length === 0 || submitting}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {submitting ? `Processing ${progress.done}/${progress.total}` : `Run ${files.length > 1 ? `${files.length} files` : ""}`}
+              </button>
+            </div>
           </div>
         </form>
       </div>
