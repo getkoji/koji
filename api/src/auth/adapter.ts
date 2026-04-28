@@ -10,6 +10,10 @@ export interface Principal {
   userId: string;
   email: string;
   name: string | null;
+  /** External auth org/group ID (e.g. Clerk org ID), if present in JWT */
+  orgId?: string;
+  /** External auth org role (e.g. "org:admin"), if present in JWT */
+  orgRole?: string;
 }
 
 export interface Session {
