@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import type { TraceStage, TraceField } from "@/lib/types";
 import { Timeline } from "@/components/surfaces/trace/Timeline";
