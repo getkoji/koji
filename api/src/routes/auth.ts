@@ -67,7 +67,7 @@ export function createAuthRoutes(adapter: AuthAdapter) {
 
     setCookie(c, SESSION_COOKIE, session.token, {
       httpOnly: true,
-      secure: false, // TODO: true in production
+      secure: process.env.NODE_ENV === "production" || c.req.url.startsWith("https"),
       sameSite: "Lax",
       path: "/",
       maxAge: COOKIE_MAX_AGE,

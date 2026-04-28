@@ -73,6 +73,14 @@ export default function TraceViewPage() {
     () => (data ? mapStages(data.stages, data.trace?.totalDurationMs ?? null) : []),
     [data],
   );
+
+  // Memoize the preview URL so the PDF viewer doesn't re-mount on every poll.
+  // The URL is a presigned S3 link that changes on each API response, but the
+  // underlying document is the same — keep the first URL until the doc ID changes.
+  const previewUrl = useRef<string | null>(null);
+  if (data?.documentPreviewUrl && !previewUrl.current) {
+    previewUrl.current = data.documentPreviewUrl;
+  }
   const fields = useMemo<TraceField[]>(() => (data ? mapFields(data) : []), [data]);
 
   // Clamp selected index to stages length so a short trace doesn't blow up.
@@ -324,7 +332,7 @@ export default function TraceViewPage() {
         fields={fields}
         jobSlug={jobSlug}
         documentId={documentId}
-        documentPreviewUrl={data.documentPreviewUrl}
+        documentPreviewUrl={previewUrl.current ?? data.documentPreviewUrl}
         documentMimeType={data.mimeType}
       />
     </DetailLayout>
