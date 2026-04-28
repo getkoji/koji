@@ -57,12 +57,18 @@ export const tenants = pgTable(
     // Billing alerts config
     billingAlertsJson: jsonb("billing_alerts_json"),
 
+    // External auth provider org/group ID (Clerk org ID, OIDC group, etc.)
+    externalAuthId: varchar("external_auth_id", { length: 255 }),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: deletedAt(),
   },
   (t) => ({
     slugIdx: uniqueIndex("tenants_slug_idx").on(t.slug).where(sql`deleted_at IS NULL`),
+    externalAuthIdx: uniqueIndex("tenants_external_auth_id_idx")
+      .on(t.externalAuthId)
+      .where(sql`external_auth_id IS NOT NULL AND deleted_at IS NULL`),
   }),
 );
 

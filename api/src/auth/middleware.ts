@@ -41,6 +41,7 @@ const PUBLIC_PATHS = new Set([
   "/api/invites/accept",
   "/api/inngest",
   "/api/billing/webhooks/stripe",
+  "/api/webhooks/clerk",
   "/api/model-registry/refresh",
 ]);
 
@@ -110,18 +111,29 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
 
     // --- Stage 2: Resolve tenant ---
     const tenantSlug = c.req.header("x-koji-tenant");
-    if (!tenantSlug) {
-      return c.json({ error: "Missing x-koji-tenant header" }, 400);
+    const db = c.get("db");
+    let tenant: { id: string } | undefined;
+
+    if (tenantSlug) {
+      // Primary path: resolve by slug (OSS, CLI, API keys)
+      [tenant] = await db
+        .select({ id: schema.tenants.id })
+        .from(schema.tenants)
+        .where(eq(schema.tenants.slug, tenantSlug))
+        .limit(1);
+    } else if (principal.orgId) {
+      // Org-based path: resolve by external auth ID (Clerk org, OIDC group, etc.)
+      [tenant] = await db
+        .select({ id: schema.tenants.id })
+        .from(schema.tenants)
+        .where(eq(schema.tenants.externalAuthId, principal.orgId))
+        .limit(1);
     }
 
-    const db = c.get("db");
-    const [tenant] = await db
-      .select({ id: schema.tenants.id })
-      .from(schema.tenants)
-      .where(eq(schema.tenants.slug, tenantSlug))
-      .limit(1);
-
     if (!tenant) {
+      if (!tenantSlug && !principal.orgId) {
+        return c.json({ error: "Missing x-koji-tenant header" }, 400);
+      }
       return c.json({ error: "Tenant not found" }, 404);
     }
 
