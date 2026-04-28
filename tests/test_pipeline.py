@@ -13,7 +13,8 @@ from services.extract.pipeline import (
     _unwrap_nested_result,
     build_gap_fill_prompt,
     build_group_prompt,
-    compute_confidence_score,
+    compute_field_confidence,
+    compute_provenance_strength,
     intelligent_extract,
     reconcile,
     validate_field,
@@ -689,7 +690,11 @@ class TestReconcile:
             {"policy_number": "BOP123"},
         ]
         schema = {"fields": {"policy_number": {"type": "string"}}}
-        routes = [make_field_route(field_name="policy_number", source="hint")]
+        routes = [make_field_route(
+            field_name="policy_number",
+            source="hint",
+            chunks=[make_chunk(content="Policy Number: BOP123")],
+        )]
         out = reconcile(results, schema, routes=routes)
         assert out["extracted"]["policy_number"] == "BOP123"
         assert out["confidence"]["policy_number"] == "high"
@@ -711,16 +716,23 @@ class TestReconcile:
             {"items": [3]},
         ]
         schema = {"fields": {"items": {"type": "array"}}}
-        routes = [make_field_route(field_name="items", source="hint")]
+        routes = [make_field_route(
+            field_name="items",
+            source="hint",
+            chunks=[make_chunk(content="Items: 1, 2, 3")],
+        )]
         out = reconcile(results, schema, routes=routes)
         assert out["confidence"]["items"] == "high"
 
     def test_single_array_source_high_confidence_with_hint(self):
         results = [{"items": [1, 2]}]
         schema = {"fields": {"items": {"type": "array"}}}
-        routes = [make_field_route(field_name="items", source="hint")]
+        routes = [make_field_route(
+            field_name="items",
+            source="hint",
+            chunks=[make_chunk(content="Items: 1, 2")],
+        )]
         out = reconcile(results, schema, routes=routes)
-        # hint(0.4) + single(0.15) + validation(0.2) = 0.75 => high
         assert out["confidence"]["items"] == "high"
 
     def test_validation_applied_during_reconcile(self):
@@ -1387,161 +1399,117 @@ class TestPipelineMetadata:
 # ── Confidence scoring ─────────────────────────────────────────────────
 
 
-class TestComputeConfidenceScore:
-    """Unit tests for the compute_confidence_score function."""
+class TestComputeFieldConfidence:
+    """Unit tests for the compute_field_confidence function (v2 scoring)."""
 
-    def test_route_source_hint_contributes_0_5(self):
-        score = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=False,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.5
-
-    def test_route_source_signal_inferred_contributes_0_35(self):
-        score = compute_confidence_score(
-            route_source="signal_inferred",
-            multi_source_agree=False,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.35
-
-    def test_route_source_broadened_contributes_0_15(self):
-        score = compute_confidence_score(
-            route_source="broadened",
-            multi_source_agree=False,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.15
-
-    def test_route_source_fallback_contributes_0_1(self):
-        score = compute_confidence_score(
-            route_source="fallback",
-            multi_source_agree=False,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.1
-
-    def test_multi_source_agree_contributes_0_2(self):
-        score = compute_confidence_score(
-            route_source=None,
-            multi_source_agree=True,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.2
-
-    def test_single_source_contributes_0_15(self):
-        score = compute_confidence_score(
-            route_source=None,
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
-        assert score == 0.15
-
-    def test_validation_passed_contributes_0_2(self):
-        score = compute_confidence_score(
-            route_source=None,
-            multi_source_agree=False,
-            single_source=False,
+    def test_all_signals_high_produces_high_score(self):
+        score = compute_field_confidence(
+            llm_confidence=0.95,
+            provenance_strength=1.0,
             validation_passed=True,
-            has_relevant_signals=False,
         )
-        assert score == 0.2
+        assert score == pytest.approx(0.975)
 
-    def test_signal_density_contributes_0_1(self):
-        score = compute_confidence_score(
-            route_source=None,
-            multi_source_agree=False,
-            single_source=False,
-            validation_passed=False,
-            has_relevant_signals=True,
-        )
-        assert score == 0.1
-
-    def test_all_factors_max_score_is_1_0(self):
-        score = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=True,
-            single_source=False,
+    def test_moderate_signals_produce_moderate_score(self):
+        score = compute_field_confidence(
+            llm_confidence=0.70,
+            provenance_strength=0.6,
             validation_passed=True,
-            has_relevant_signals=True,
+        )
+        assert score == pytest.approx(0.71)
+
+    def test_low_confidence_no_provenance_invalid(self):
+        score = compute_field_confidence(
+            llm_confidence=0.40,
+            provenance_strength=0.0,
+            validation_passed=False,
+        )
+        assert score == pytest.approx(0.20)
+
+    def test_fallback_exact_match_valid(self):
+        """Without LLM confidence, uses provenance-heavy fallback weights."""
+        score = compute_field_confidence(
+            llm_confidence=None,
+            provenance_strength=1.0,
+            validation_passed=True,
         )
         assert score == pytest.approx(1.0)
 
-    def test_no_factors_score_is_0(self):
-        score = compute_confidence_score(
-            route_source=None,
-            multi_source_agree=False,
-            single_source=False,
+    def test_fallback_no_provenance_valid(self):
+        score = compute_field_confidence(
+            llm_confidence=None,
+            provenance_strength=0.0,
+            validation_passed=True,
+        )
+        assert score == pytest.approx(0.30)
+
+    def test_fallback_no_provenance_invalid(self):
+        score = compute_field_confidence(
+            llm_confidence=None,
+            provenance_strength=0.0,
             validation_passed=False,
-            has_relevant_signals=False,
         )
-        assert score == 0.0
+        assert score == pytest.approx(0.0)
 
-    def test_hint_routed_scores_higher_than_fallback(self):
-        hint_score = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=True,
-            has_relevant_signals=True,
-        )
-        fallback_score = compute_confidence_score(
-            route_source="fallback",
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=True,
-            has_relevant_signals=True,
-        )
-        assert hint_score > fallback_score
+    def test_llm_confidence_clamped_to_0_1(self):
+        score_high = compute_field_confidence(llm_confidence=1.5, provenance_strength=0.0)
+        score_cap = compute_field_confidence(llm_confidence=1.0, provenance_strength=0.0)
+        assert score_high == score_cap
 
-    def test_multi_source_agreement_boosts_score(self):
-        with_agreement = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=True,
-            single_source=False,
-            validation_passed=True,
-            has_relevant_signals=False,
-        )
-        without_agreement = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=True,
-            has_relevant_signals=False,
-        )
-        assert with_agreement > without_agreement
-        assert with_agreement - without_agreement == pytest.approx(0.05)  # 0.2 - 0.15
+        score_low = compute_field_confidence(llm_confidence=-0.5, provenance_strength=0.0)
+        score_floor = compute_field_confidence(llm_confidence=0.0, provenance_strength=0.0)
+        assert score_low == score_floor
 
     def test_validation_failure_reduces_score(self):
-        valid = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=True,
-            has_relevant_signals=False,
-        )
-        invalid = compute_confidence_score(
-            route_source="hint",
-            multi_source_agree=False,
-            single_source=True,
-            validation_passed=False,
-            has_relevant_signals=False,
-        )
+        valid = compute_field_confidence(llm_confidence=0.9, provenance_strength=0.8, validation_passed=True)
+        invalid = compute_field_confidence(llm_confidence=0.9, provenance_strength=0.8, validation_passed=False)
         assert valid > invalid
-        assert valid - invalid == pytest.approx(0.2)
+        assert valid - invalid == pytest.approx(0.15)
+
+    def test_provenance_strength_matters(self):
+        high_prov = compute_field_confidence(llm_confidence=0.8, provenance_strength=1.0)
+        low_prov = compute_field_confidence(llm_confidence=0.8, provenance_strength=0.0)
+        assert high_prov > low_prov
+        assert high_prov - low_prov == pytest.approx(0.35)
+
+
+class TestComputeProvenanceStrength:
+    """Unit tests for compute_provenance_strength."""
+
+    def _make_chunk(self, content: str):
+        from services.extract.document_map import Chunk
+        return Chunk(index=0, title="test", content=content, signals={}, category="body")
+
+    def test_exact_match_returns_1(self):
+        chunks = [self._make_chunk("Invoice Number: INV-1234")]
+        assert compute_provenance_strength("INV-1234", chunks) == 1.0
+
+    def test_case_insensitive_returns_0_9(self):
+        chunks = [self._make_chunk("Company: acme corp")]
+        assert compute_provenance_strength("Acme Corp", chunks) == 0.9
+
+    def test_normalized_whitespace_returns_0_85(self):
+        chunks = [self._make_chunk("Name:  John   Doe")]
+        assert compute_provenance_strength("John Doe", chunks) == 0.85
+
+    def test_date_format_alternative_returns_0_8(self):
+        chunks = [self._make_chunk("Date: 01/15/2024")]
+        assert compute_provenance_strength("2024-01-15", chunks) == 0.8
+
+    def test_number_format_alternative_returns_0_8(self):
+        chunks = [self._make_chunk("Total: $1,234.56")]
+        assert compute_provenance_strength("1234.56", chunks) == 0.8
+
+    def test_no_match_returns_0(self):
+        chunks = [self._make_chunk("This document has no relevant data")]
+        assert compute_provenance_strength("XYZ-999", chunks) == 0.0
+
+    def test_none_value_returns_0(self):
+        chunks = [self._make_chunk("some text")]
+        assert compute_provenance_strength(None, chunks) == 0.0
+
+    def test_empty_chunks_returns_0(self):
+        assert compute_provenance_strength("test", []) == 0.0
 
 
 class TestScoreLabel:
@@ -1589,29 +1557,31 @@ class TestReconcileConfidenceScores:
         assert out["confidence_scores"]["f"] == 0.0
         assert out["confidence"]["f"] == "not_found"
 
-    def test_hint_route_with_agreement_scores_high(self):
-        results = [{"f": "val"}, {"f": "val"}]
+    def test_provenance_match_boosts_score(self):
+        """Value found in chunk text produces higher confidence."""
+        results = [{"f": "val"}]
         schema = {"fields": {"f": {"type": "string"}}}
+        # Chunk content contains the value — provenance strength = 1.0
         routes = [
             make_field_route(
                 field_name="f",
                 source="hint",
-                chunks=[make_chunk(signals={"has_key_value_pairs": True})],
+                chunks=[make_chunk(content="The value is val here")],
             )
         ]
         out = reconcile(results, schema, routes=routes)
-        # hint(0.4) + multi(0.3) + valid(0.2) + signals(0.1) = 1.0
+        # Fallback: 0.70 * 1.0 (exact match) + 0.30 * 1.0 (valid) = 1.0
         assert out["confidence_scores"]["f"] == pytest.approx(1.0)
         assert out["confidence"]["f"] == "high"
 
-    def test_fallback_route_single_source_low(self):
+    def test_no_provenance_match_gives_low_score(self):
         results = [{"f": "val"}]
         schema = {"fields": {"f": {"type": "string"}}}
         routes = [make_field_route(field_name="f", source="fallback")]
         out = reconcile(results, schema, routes=routes)
-        # fallback(0.1) + single(0.15) + valid(0.2) + no_signals(0.0) = 0.45
-        assert out["confidence_scores"]["f"] == 0.45
-        assert out["confidence"]["f"] == "medium"
+        # Fallback: 0.70 * 0.0 (no match in "Some content") + 0.30 * 1.0 (valid) = 0.30
+        assert out["confidence_scores"]["f"] == pytest.approx(0.30)
+        assert out["confidence"]["f"] == "low"
 
     def test_validation_failure_lowers_score(self):
         results = [{"f": "not-a-date"}]
@@ -1620,12 +1590,12 @@ class TestReconcileConfidenceScores:
             make_field_route(
                 field_name="f",
                 source="hint",
-                chunks=[make_chunk(signals={"has_dates": True})],
+                chunks=[make_chunk(content="Date: not-a-date")],
             )
         ]
         out = reconcile(results, schema, routes=routes)
-        # hint(0.5) + single(0.15) + failed_validation(0.0) + signals(0.1) = 0.75
-        assert out["confidence_scores"]["f"] == 0.75
+        # Fallback: 0.70 * 1.0 (exact match) + 0.30 * 0.0 (failed) = 0.70
+        assert out["confidence_scores"]["f"] == pytest.approx(0.70)
         assert out["confidence"]["f"] == "high"
 
     def test_no_routes_still_works(self):
@@ -1633,25 +1603,25 @@ class TestReconcileConfidenceScores:
         results = [{"f": "val"}]
         schema = {"fields": {"f": {"type": "string"}}}
         out = reconcile(results, schema)
-        # No route: source=None(0.0) + single(0.15) + valid(0.2) = 0.35
-        assert out["confidence_scores"]["f"] == 0.35
+        # No route → empty chunks → provenance 0.0. Fallback: 0.70*0 + 0.30*1 = 0.30
+        assert out["confidence_scores"]["f"] == pytest.approx(0.30)
         assert out["confidence"]["f"] == "low"
 
-    def test_signal_density_boost(self):
-        """Chunk with relevant signals for the field type adds 0.1."""
-        results = [{"amt": 100}]
-        schema = {"fields": {"amt": {"type": "number"}}}
-        chunk_with = make_chunk(signals={"has_dollar_amounts": True})
-        chunk_without = make_chunk(signals={})
-
-        routes_with = [make_field_route(field_name="amt", source="hint", chunks=[chunk_with])]
-        routes_without = [make_field_route(field_name="amt", source="hint", chunks=[chunk_without])]
-
-        out_with = reconcile(results, schema, routes=routes_with)
-        out_without = reconcile(results, schema, routes=routes_without)
-
-        assert out_with["confidence_scores"]["amt"] > out_without["confidence_scores"]["amt"]
-        assert out_with["confidence_scores"]["amt"] - out_without["confidence_scores"]["amt"] == pytest.approx(0.1)
+    def test_llm_confidence_used_when_present(self):
+        """LLM self-reported confidence is extracted from group results."""
+        results = [{"f": "val", "__llm_confidence": {"f": 0.95}}]
+        schema = {"fields": {"f": {"type": "string"}}}
+        routes = [
+            make_field_route(
+                field_name="f",
+                source="hint",
+                chunks=[make_chunk(content="The value is val here")],
+            )
+        ]
+        out = reconcile(results, schema, routes=routes)
+        # 0.50 * 0.95 + 0.35 * 1.0 (exact match) + 0.15 * 1.0 (valid) = 0.975
+        assert out["confidence_scores"]["f"] == pytest.approx(0.975)
+        assert out["confidence"]["f"] == "high"
 
 
 class TestIntelligentExtractConfidenceScores:
