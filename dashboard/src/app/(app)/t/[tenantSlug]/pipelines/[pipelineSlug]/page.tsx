@@ -255,14 +255,8 @@ export default function PipelineDetailPage() {
           pipeline={pipeline}
           tenantSlug={tenantSlug}
           onClose={() => setRunOpen(false)}
-          onStarted={(jobSlug, count) => {
-            if (count === 1) {
-              router.push(`/t/${tenantSlug}/jobs/${jobSlug}`);
-            } else {
-              // Multi-file: stay on pipeline page and refresh to show new jobs
-              setRunOpen(false);
-              refetch();
-            }
+          onStarted={(jobSlug) => {
+            router.push(`/t/${tenantSlug}/jobs/${jobSlug}`);
           }}
         />
       )}
@@ -1211,7 +1205,7 @@ function RunDialog({
   pipeline: PipelineDetail;
   tenantSlug: string;
   onClose: () => void;
-  onStarted: (jobSlug: string, fileCount: number) => void;
+  onStarted: (jobSlug: string) => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -1265,11 +1259,10 @@ function RunDialog({
 
     if (jobSlug) {
       if (errors.length > 0) {
-        // Some files failed — show errors briefly, then navigate
         setErr(`${errors.length} file(s) failed: ${errors.join("; ")}`);
-        setTimeout(() => onStarted(jobSlug, files.length - errors.length), 2000);
+        setTimeout(() => onStarted(jobSlug), 2000);
       } else {
-        onStarted(jobSlug, files.length);
+        onStarted(jobSlug);
       }
     } else {
       setSubmitting(false);
