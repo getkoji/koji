@@ -227,29 +227,6 @@ function unwrapNestedResult(
 // Confidence scoring — matches Python pipeline.reconcile
 // ---------------------------------------------------------------------------
 
-const ROUTE_SOURCE_WEIGHTS: Record<string, number> = {
-  hint: 0.5,
-  signal_inferred: 0.35,
-  broadened: 0.15,
-  fallback: 0.1,
-};
-
-function computeConfidenceScore(opts: {
-  routeSource?: string;
-  multiSourceAgree?: boolean;
-  singleSource?: boolean;
-  validationPassed?: boolean;
-  hasRelevantSignals?: boolean;
-}): number {
-  let score = 0;
-  if (opts.routeSource) score += ROUTE_SOURCE_WEIGHTS[opts.routeSource] ?? 0;
-  if (opts.multiSourceAgree) score += 0.2;
-  else if (opts.singleSource) score += 0.15;
-  if (opts.validationPassed) score += 0.2;
-  if (opts.hasRelevantSignals) score += 0.1;
-  return Math.min(score, 1.0);
-}
-
 function scoreLabel(score: number): string {
   if (score >= 0.7) return "high";
   if (score >= 0.4) return "medium";
@@ -260,25 +237,69 @@ function scoreLabel(score: number): string {
 function buildConfidence(
   extracted: Record<string, unknown>,
   fields: Record<string, Record<string, unknown>>,
+  provenance?: import("./provenance").ProvenanceMap,
+  validation?: { ok: boolean; issues: Array<{ field: string | null; message: string }> },
 ): { confidence: Record<string, string>; confidence_scores: Record<string, number> } {
   const confidence: Record<string, string> = {};
   const confidenceScores: Record<string, number> = {};
 
+  const failedFields = new Set(
+    (validation?.issues ?? []).filter((i) => i.field).map((i) => i.field!),
+  );
+
   for (const fieldName of Object.keys(fields)) {
     const value = extracted[fieldName];
+    const spec = fields[fieldName] ?? {};
+    const prov = provenance?.[fieldName];
+
+    // Null value
     if (value == null) {
-      confidence[fieldName] = "not_found";
+      const isRequired = spec.required === true;
+      confidence[fieldName] = isRequired ? "not_found" : "not_found";
       confidenceScores[fieldName] = 0;
       continue;
     }
-    // Single-pass extraction: treat as hint-routed, single-source,
-    // validation-passed for scoring parity with Python.
-    const score = computeConfidenceScore({
-      routeSource: "hint",
-      singleSource: true,
-      validationPassed: true,
-      hasRelevantSignals: false,
-    });
+
+    let score = 0;
+
+    // 1. Base: value exists (+0.3)
+    score += 0.3;
+
+    // 2. Provenance: found in source text (+0.3), with bbox (+0.1 extra)
+    if (prov) {
+      score += 0.3;
+      if (prov.bbox) score += 0.1;
+    }
+
+    // 3. Type match: value matches the declared type (+0.15)
+    const declaredType = spec.type as string | undefined;
+    if (declaredType) {
+      const typeMatches =
+        (declaredType === "string" && typeof value === "string") ||
+        (declaredType === "number" && typeof value === "number") ||
+        (declaredType === "boolean" && typeof value === "boolean") ||
+        (declaredType === "date" && typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) ||
+        (declaredType === "enum" && typeof value === "string") ||
+        (declaredType === "array" && Array.isArray(value)) ||
+        (declaredType === "object" && typeof value === "object" && !Array.isArray(value));
+      if (typeMatches) score += 0.15;
+    } else {
+      score += 0.1; // no type declared, small bonus
+    }
+
+    // 4. Validation passed: no issues for this field (+0.15)
+    if (!failedFields.has(fieldName)) {
+      score += 0.15;
+    }
+
+    // 5. Value plausibility: penalize suspiciously empty strings
+    if (typeof value === "string" && value.trim().length === 0) {
+      score = Math.max(score - 0.3, 0.05);
+    }
+
+    score = Math.min(score, 1.0);
+    score = Math.round(score * 100) / 100; // clean decimals
+
     confidenceScores[fieldName] = score;
     confidence[fieldName] = scoreLabel(score);
   }
@@ -449,9 +470,6 @@ export async function extractFields(
     extracted[fieldName] = validated;
   }
 
-  // Confidence scoring
-  const { confidence, confidence_scores } = buildConfidence(extracted, fields);
-
   // Post-extraction normalization
   const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);
 
@@ -460,6 +478,9 @@ export async function extractFields(
 
   // Resolve field-level text provenance
   const provenance = resolveProvenance(normalized, markdown, textMap);
+
+  // Confidence scoring — uses provenance, validation, and field specs
+  const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport);
 
   const elapsedMs = Date.now() - start;
   console.log(`[koji-extract] Extracted ${Object.keys(normalized).length} fields in ${elapsedMs}ms`);

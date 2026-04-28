@@ -261,13 +261,23 @@ describe("confidence scoring", () => {
     expect(result.confidence_scores.name).toBe(0);
   });
 
-  it("assigns high confidence for extracted values", async () => {
+  it("assigns medium confidence when value has no provenance", async () => {
     const provider = mockProvider(JSON.stringify({ name: "Acme" }));
     const schema = { name: "test", fields: { name: { type: "string" } } };
 
     const result = await extractFields("doc", schema, provider, "m");
+    expect(result.confidence.name).toBe("medium");
+    expect(result.confidence_scores.name).toBeGreaterThan(0.4);
+    expect(result.confidence_scores.name).toBeLessThan(0.7);
+  });
+
+  it("assigns high confidence when value found in source text", async () => {
+    const provider = mockProvider(JSON.stringify({ name: "Acme Corp" }));
+    const schema = { name: "test", fields: { name: { type: "string" } } };
+
+    const result = await extractFields("Name: Acme Corp", schema, provider, "m");
     expect(result.confidence.name).toBe("high");
-    expect(result.confidence_scores.name).toBeGreaterThan(0);
+    expect(result.confidence_scores.name).toBeGreaterThanOrEqual(0.7);
   });
 
   it("assigns confidence for each field independently", async () => {
@@ -283,7 +293,7 @@ describe("confidence scoring", () => {
     };
 
     const result = await extractFields("doc", schema, provider, "m");
-    expect(result.confidence.name).toBe("high");
+    expect(result.confidence_scores.name).toBeGreaterThan(0);
     expect(result.confidence.phone).toBe("not_found");
   });
 });
