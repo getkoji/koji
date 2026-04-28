@@ -786,9 +786,7 @@ def compute_provenance_strength(
                     return 0.8
 
     # Number format alternatives (strip commas, try with $)
-    if isinstance(value, (int, float)) or (
-        isinstance(value, str) and re.match(r"^[\d,.]+$", value)
-    ):
+    if isinstance(value, (int, float)) or (isinstance(value, str) and re.match(r"^[\d,.]+$", value)):
         numeric_str = str(value).replace(",", "")
         source_stripped = source.replace(",", "")
         if numeric_str in source_stripped:
@@ -887,9 +885,7 @@ def reconcile(
 
         # LLM confidence: average if reported by multiple groups
         llm_conf_values = llm_conf_map.get(field_name)
-        llm_conf = (
-            sum(llm_conf_values) / len(llm_conf_values) if llm_conf_values else None
-        )
+        llm_conf = sum(llm_conf_values) / len(llm_conf_values) if llm_conf_values else None
 
         if field_type == "array":
             # Concatenate and deduplicate arrays
@@ -1133,7 +1129,9 @@ async def intelligent_extract(
                     accumulated["extracted"][field_name] = value
                     llm_conf = gap_result.get("__llm_confidence", {}).get(field_name)
                     prov = compute_provenance_strength(
-                        value, b_chunks, field_spec.get("type", "string"),
+                        value,
+                        b_chunks,
+                        field_spec.get("type", "string"),
                     )
                     gap_score = compute_field_confidence(
                         llm_confidence=llm_conf,

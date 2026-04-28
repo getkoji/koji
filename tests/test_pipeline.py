@@ -690,11 +690,13 @@ class TestReconcile:
             {"policy_number": "BOP123"},
         ]
         schema = {"fields": {"policy_number": {"type": "string"}}}
-        routes = [make_field_route(
-            field_name="policy_number",
-            source="hint",
-            chunks=[make_chunk(content="Policy Number: BOP123")],
-        )]
+        routes = [
+            make_field_route(
+                field_name="policy_number",
+                source="hint",
+                chunks=[make_chunk(content="Policy Number: BOP123")],
+            )
+        ]
         out = reconcile(results, schema, routes=routes)
         assert out["extracted"]["policy_number"] == "BOP123"
         assert out["confidence"]["policy_number"] == "high"
@@ -716,22 +718,26 @@ class TestReconcile:
             {"items": [3]},
         ]
         schema = {"fields": {"items": {"type": "array"}}}
-        routes = [make_field_route(
-            field_name="items",
-            source="hint",
-            chunks=[make_chunk(content="Items: 1, 2, 3")],
-        )]
+        routes = [
+            make_field_route(
+                field_name="items",
+                source="hint",
+                chunks=[make_chunk(content="Items: 1, 2, 3")],
+            )
+        ]
         out = reconcile(results, schema, routes=routes)
         assert out["confidence"]["items"] == "high"
 
     def test_single_array_source_high_confidence_with_hint(self):
         results = [{"items": [1, 2]}]
         schema = {"fields": {"items": {"type": "array"}}}
-        routes = [make_field_route(
-            field_name="items",
-            source="hint",
-            chunks=[make_chunk(content="Items: 1, 2")],
-        )]
+        routes = [
+            make_field_route(
+                field_name="items",
+                source="hint",
+                chunks=[make_chunk(content="Items: 1, 2")],
+            )
+        ]
         out = reconcile(results, schema, routes=routes)
         assert out["confidence"]["items"] == "high"
 
@@ -1478,6 +1484,7 @@ class TestComputeProvenanceStrength:
 
     def _make_chunk(self, content: str):
         from services.extract.document_map import Chunk
+
         return Chunk(index=0, title="test", content=content, signals={}, category="body")
 
     def test_exact_match_returns_1(self):
