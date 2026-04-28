@@ -261,14 +261,15 @@ describe("confidence scoring", () => {
     expect(result.confidence_scores.name).toBe(0);
   });
 
-  it("assigns medium confidence when value has no provenance", async () => {
+  it("assigns low confidence when value has no provenance and no llm confidence", async () => {
     const provider = mockProvider(JSON.stringify({ name: "Acme" }));
     const schema = { name: "test", fields: { name: { type: "string" } } };
 
     const result = await extractFields("doc", schema, provider, "m");
-    expect(result.confidence.name).toBe("medium");
-    expect(result.confidence_scores.name).toBeGreaterThan(0.4);
-    expect(result.confidence_scores.name).toBeLessThan(0.7);
+    // Fallback: 0.70 * 0 (no provenance) + 0.30 * 1 (valid) = 0.30
+    expect(result.confidence.name).toBe("low");
+    expect(result.confidence_scores.name).toBeGreaterThan(0);
+    expect(result.confidence_scores.name).toBeLessThan(0.4);
   });
 
   it("assigns high confidence when value found in source text", async () => {
@@ -276,8 +277,39 @@ describe("confidence scoring", () => {
     const schema = { name: "test", fields: { name: { type: "string" } } };
 
     const result = await extractFields("Name: Acme Corp", schema, provider, "m");
+    // Fallback: 0.70 * 0.85 (provenance, no bbox) + 0.30 * 1 (valid) = 0.895
     expect(result.confidence.name).toBe("high");
     expect(result.confidence_scores.name).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it("uses LLM self-reported confidence when available", async () => {
+    const response = JSON.stringify({
+      name: "Acme Corp",
+      __confidence: { name: 0.95 },
+    });
+    const provider = mockProvider(response);
+    const schema = { name: "test", fields: { name: { type: "string" } } };
+
+    const result = await extractFields("Name: Acme Corp", schema, provider, "m");
+    // 0.50 * 0.95 + 0.35 * 0.85 (provenance) + 0.15 * 1 (valid) = 0.9225
+    expect(result.confidence.name).toBe("high");
+    expect(result.confidence_scores.name).toBeGreaterThan(0.9);
+    // __confidence should not leak into extracted output
+    expect(result.extracted).not.toHaveProperty("__confidence");
+  });
+
+  it("falls back gracefully when __confidence is malformed", async () => {
+    const response = JSON.stringify({
+      name: "Acme Corp",
+      __confidence: "not a dict",
+    });
+    const provider = mockProvider(response);
+    const schema = { name: "test", fields: { name: { type: "string" } } };
+
+    const result = await extractFields("Name: Acme Corp", schema, provider, "m");
+    // Should still produce a score using fallback weights
+    expect(result.confidence_scores.name).toBeGreaterThan(0);
+    expect(result.extracted).not.toHaveProperty("__confidence");
   });
 
   it("assigns confidence for each field independently", async () => {

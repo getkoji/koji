@@ -409,7 +409,9 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.{extra_block}
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
+
+Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.{extra_block}
 
 JSON:"""
 
@@ -446,6 +448,22 @@ def _unwrap_nested_result(result: dict, expected_fields: set[str]) -> dict:
     return result
 
 
+def _extract_llm_confidence(parsed: dict, expected_fields: set[str]) -> dict[str, float]:
+    """Pop __confidence from a parsed LLM response and return per-field scores.
+
+    Returns a dict mapping field names to floats in [0.0, 1.0].
+    If __confidence is missing or malformed, returns an empty dict.
+    """
+    raw = parsed.pop("__confidence", None)
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, float] = {}
+    for key, val in raw.items():
+        if key in expected_fields and isinstance(val, (int, float)):
+            result[key] = max(0.0, min(1.0, float(val)))
+    return result
+
+
 async def extract_group(
     group: dict,
     schema_name: str,
@@ -476,7 +494,11 @@ async def extract_group(
                     print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
                     return {}
 
-            return _unwrap_nested_result(parsed, expected_fields)
+            llm_conf = _extract_llm_confidence(parsed, expected_fields)
+            result = _unwrap_nested_result(parsed, expected_fields)
+            if llm_conf:
+                result["__llm_confidence"] = llm_conf
+            return result
 
         except Exception as e:
             print(f"[koji-extract] Group {group['fields']} error: {e}")
@@ -555,6 +577,8 @@ def build_gap_fill_prompt(
 
 Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a FLAT JSON object with ONLY the single field — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"{field_name}": ...}}`, not `{{"{schema_name}": {{"{field_name}": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
 
+Also include a "__confidence" key with your confidence (0.0-1.0) that the value is correct. Example: `{{"{field_name}": "value", "__confidence": {{"{field_name}": 0.85}}}}`. Use 0.0 if the field is null.
+
 JSON:"""
 
 
@@ -587,7 +611,11 @@ async def fill_gap(
                     print(f"[koji-extract] Gap fill for {field_name} returned invalid JSON")
                     return {}
 
-            return _unwrap_nested_result(parsed, {field_name})
+            llm_conf = _extract_llm_confidence(parsed, {field_name})
+            result = _unwrap_nested_result(parsed, {field_name})
+            if llm_conf:
+                result["__llm_confidence"] = llm_conf
+            return result
         except Exception as e:
             print(f"[koji-extract] Gap fill for {field_name} error: {e}")
             return {}
@@ -688,55 +716,107 @@ def _score_label(score: float) -> str:
     return "not_found"
 
 
-# Weights for route source quality factor (0.0–0.5)
-ROUTE_SOURCE_WEIGHTS: dict[str, float] = {
-    "hint": 0.5,
-    "signal_inferred": 0.35,
-    "broadened": 0.15,
-    "fallback": 0.1,
-}
+# ---------------------------------------------------------------------------
+# Confidence scoring v2 — LLM self-reported confidence + provenance strength
+# ---------------------------------------------------------------------------
+
+# Weights when LLM confidence is available
+_W_LLM = 0.50
+_W_PROV = 0.35
+_W_VAL = 0.15
+
+# Weights when LLM confidence is missing (fallback)
+_W_PROV_FALLBACK = 0.70
+_W_VAL_FALLBACK = 0.30
 
 
-def compute_confidence_score(
-    *,
-    route_source: str | None,
-    multi_source_agree: bool,
-    single_source: bool,
-    validation_passed: bool,
-    has_relevant_signals: bool,
+def compute_provenance_strength(
+    value,
+    chunks: list[Chunk],
+    field_type: str = "string",
 ) -> float:
-    """Compute a numeric confidence score (0.0-1.0) from individual factors.
+    """Compute how well an extracted value can be found in source text (0.0-1.0).
 
-    Factors:
-      - Route source quality (0.0-0.5): hint=0.5, signal_inferred=0.35,
-        broadened=0.15, fallback=0.1
-      - Source agreement  (0.0-0.2): multi-source agree=0.2, single=0.15
-      - Validation pass   (0.0-0.2): passed=0.2, failed=0.0
-      - Signal density    (0.0-0.1): relevant signals present=0.1
-
-    Typical single-source hint extraction with validation: 0.95
+    Returns a continuous score reflecting match quality:
+      1.0  — exact substring match
+      0.9  — case-insensitive match
+      0.85 — normalized whitespace match
+      0.8  — date/number format alternative found
+      0.0  — not found
     """
-    score = 0.0
+    if value is None:
+        return 0.0
 
-    # Route source quality (0.0-0.5)
-    if route_source is not None:
-        score += ROUTE_SOURCE_WEIGHTS.get(route_source, 0.0)
+    # For arrays, score each item individually and average
+    if isinstance(value, list):
+        if not value:
+            return 0.0
+        item_scores = [compute_provenance_strength(item, chunks, "string") for item in value]
+        return sum(item_scores) / len(item_scores)
 
-    # Source agreement (0.0-0.2)
-    if multi_source_agree:
-        score += 0.2
-    elif single_source:
-        score += 0.15
+    needle = str(value).strip()
+    if not needle:
+        return 0.0
 
-    # Validation pass (0.0-0.2)
-    if validation_passed:
-        score += 0.2
+    source = "\n".join(c.content for c in chunks)
+    if not source:
+        return 0.0
 
-    # Signal density (0.0-0.1)
-    if has_relevant_signals:
-        score += 0.1
+    # Exact substring
+    if needle in source:
+        return 1.0
 
-    return min(score, 1.0)
+    # Case-insensitive
+    if needle.lower() in source.lower():
+        return 0.9
+
+    # Normalized whitespace
+    normalized_needle = " ".join(needle.split()).lower()
+    normalized_source = " ".join(source.split()).lower()
+    if normalized_needle in normalized_source:
+        return 0.85
+
+    # Date format alternatives (YYYY-MM-DD → try common input formats)
+    if isinstance(value, str) and re.match(r"^\d{4}-\d{1,2}-\d{1,2}$", value):
+        parts = value.split("-")
+        if len(parts) == 3:
+            y, m, d = parts
+            for alt in [f"{m}/{d}/{y}", f"{d}/{m}/{y}", f"{m}-{d}-{y}", f"{m}.{d}.{y}"]:
+                if alt in source:
+                    return 0.8
+
+    # Number format alternatives (strip commas, try with $)
+    if isinstance(value, (int, float)) or (isinstance(value, str) and re.match(r"^[\d,.]+$", value)):
+        numeric_str = str(value).replace(",", "")
+        source_stripped = source.replace(",", "")
+        if numeric_str in source_stripped:
+            return 0.8
+
+    return 0.0
+
+
+def compute_field_confidence(
+    *,
+    llm_confidence: float | None = None,
+    provenance_strength: float = 0.0,
+    validation_passed: bool = True,
+) -> float:
+    """Compute confidence score from continuous signals.
+
+    When llm_confidence is available:
+      score = 0.50 * llm + 0.35 * provenance + 0.15 * validation
+    When missing (fallback — provenance + validation only):
+      score = 0.70 * provenance + 0.30 * validation
+    """
+    val_bonus = 1.0 if validation_passed else 0.0
+
+    if llm_confidence is not None:
+        llm_clamped = max(0.0, min(1.0, llm_confidence))
+        score = _W_LLM * llm_clamped + _W_PROV * provenance_strength + _W_VAL * val_bonus
+    else:
+        score = _W_PROV_FALLBACK * provenance_strength + _W_VAL_FALLBACK * val_bonus
+
+    return max(0.0, min(score, 1.0))
 
 
 def _field_has_relevant_signals(field_spec: dict, chunks: list) -> bool:
@@ -777,6 +857,15 @@ def reconcile(
         for route in routes:
             route_map[route.field_name] = route
 
+    # Merge LLM-reported confidence from all group results
+    llm_conf_map: dict[str, list[float]] = {}
+    for result in group_results:
+        llm_conf = result.get("__llm_confidence", {})
+        if isinstance(llm_conf, dict):
+            for k, v in llm_conf.items():
+                if isinstance(v, (int, float)):
+                    llm_conf_map.setdefault(k, []).append(float(v))
+
     for field_name, field_spec in fields.items():
         field_type = field_spec.get("type", "string")
         candidates = []
@@ -792,8 +881,11 @@ def reconcile(
             continue
 
         route = route_map.get(field_name)
-        route_source = route.source if route else None
-        has_signals = _field_has_relevant_signals(field_spec, route.chunks if route else [])
+        route_chunks = route.chunks if route else []
+
+        # LLM confidence: average if reported by multiple groups
+        llm_conf_values = llm_conf_map.get(field_name)
+        llm_conf = sum(llm_conf_values) / len(llm_conf_values) if llm_conf_values else None
 
         if field_type == "array":
             # Concatenate and deduplicate arrays
@@ -808,13 +900,11 @@ def reconcile(
                             all_items.append(item)
             merged[field_name] = all_items
 
-            multi = len(candidates) > 1
-            score = compute_confidence_score(
-                route_source=route_source,
-                multi_source_agree=multi,
-                single_source=not multi,
+            prov = compute_provenance_strength(all_items, route_chunks, field_type)
+            score = compute_field_confidence(
+                llm_confidence=llm_conf,
+                provenance_strength=prov,
                 validation_passed=True,  # arrays skip type validation
-                has_relevant_signals=has_signals,
             )
             confidence_scores[field_name] = score
             confidence[field_name] = _score_label(score)
@@ -824,14 +914,11 @@ def reconcile(
             value, is_valid, issue = validate_field(field_name, value, field_spec)
             merged[field_name] = value
 
-            multi = len(candidates) > 1 and all(str(c) == str(candidates[0]) for c in candidates)
-            single = not multi
-            score = compute_confidence_score(
-                route_source=route_source,
-                multi_source_agree=multi,
-                single_source=single,
+            prov = compute_provenance_strength(value, route_chunks, field_type)
+            score = compute_field_confidence(
+                llm_confidence=llm_conf,
+                provenance_strength=prov,
                 validation_passed=is_valid,
-                has_relevant_signals=has_signals,
             )
             confidence_scores[field_name] = score
             confidence[field_name] = _score_label(score)
@@ -1019,6 +1106,7 @@ async def intelligent_extract(
                 gap_tasks.append(
                     (
                         field_name,
+                        broadened_chunks,
                         fill_gap(
                             field_name,
                             field_spec,
@@ -1031,20 +1119,24 @@ async def intelligent_extract(
                     )
                 )
 
-            gap_results = await asyncio.gather(*[t[1] for t in gap_tasks])
+            gap_results = await asyncio.gather(*[t[2] for t in gap_tasks])
 
-            for (field_name, _), gap_result in zip(gap_tasks, gap_results):
+            for (field_name, b_chunks, _), gap_result in zip(gap_tasks, gap_results):
                 value = gap_result.get(field_name)
                 if value is not None:
                     field_spec = schema_def["fields"][field_name]
                     value, is_valid, issue = validate_field(field_name, value, field_spec)
                     accumulated["extracted"][field_name] = value
-                    gap_score = compute_confidence_score(
-                        route_source="broadened",
-                        multi_source_agree=False,
-                        single_source=True,
+                    llm_conf = gap_result.get("__llm_confidence", {}).get(field_name)
+                    prov = compute_provenance_strength(
+                        value,
+                        b_chunks,
+                        field_spec.get("type", "string"),
+                    )
+                    gap_score = compute_field_confidence(
+                        llm_confidence=llm_conf,
+                        provenance_strength=prov,
                         validation_passed=is_valid,
-                        has_relevant_signals=False,
                     )
                     accumulated["confidence_scores"][field_name] = gap_score
                     accumulated["confidence"][field_name] = _score_label(gap_score)

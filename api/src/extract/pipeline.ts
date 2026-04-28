@@ -174,7 +174,9 @@ ${markdown}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.${extraBlock}
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
+
+Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.${extraBlock}
 
 JSON:`;
 }
@@ -234,11 +236,42 @@ function scoreLabel(score: number): string {
   return "not_found";
 }
 
+// Weights when LLM confidence is available
+const W_LLM = 0.50;
+const W_PROV = 0.35;
+const W_VAL = 0.15;
+
+// Weights when LLM confidence is missing (fallback)
+const W_PROV_FALLBACK = 0.70;
+const W_VAL_FALLBACK = 0.30;
+
+/**
+ * Extract and validate __confidence from a parsed LLM response.
+ * Removes the key from the parsed object so downstream code never sees it.
+ */
+export function extractLlmConfidence(
+  parsed: Record<string, unknown>,
+): Record<string, number> {
+  const raw = parsed.__confidence;
+  delete parsed.__confidence;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "number" && v >= 0 && v <= 1) {
+      result[k] = v;
+    } else if (typeof v === "number") {
+      result[k] = Math.max(0, Math.min(1, v));
+    }
+  }
+  return result;
+}
+
 function buildConfidence(
   extracted: Record<string, unknown>,
   fields: Record<string, Record<string, unknown>>,
   provenance?: import("./provenance").ProvenanceMap,
   validation?: { ok: boolean; issues: Array<{ field: string | null; message: string }> },
+  llmConfidence?: Record<string, number>,
 ): { confidence: Record<string, string>; confidence_scores: Record<string, number> } {
   const confidence: Record<string, string> = {};
   const confidenceScores: Record<string, number> = {};
@@ -249,56 +282,37 @@ function buildConfidence(
 
   for (const fieldName of Object.keys(fields)) {
     const value = extracted[fieldName];
-    const spec = fields[fieldName] ?? {};
     const prov = provenance?.[fieldName];
 
     // Null value
     if (value == null) {
-      const isRequired = spec.required === true;
-      confidence[fieldName] = isRequired ? "not_found" : "not_found";
       confidenceScores[fieldName] = 0;
+      confidence[fieldName] = "not_found";
       continue;
     }
 
-    let score = 0;
-
-    // 1. Base: value exists (+0.3)
-    score += 0.3;
-
-    // 2. Provenance: found in source text (+0.3), with bbox (+0.1 extra)
+    // Provenance strength: continuous 0.0-1.0
+    let provStrength = 0;
     if (prov) {
-      score += 0.3;
-      if (prov.bbox) score += 0.1;
+      provStrength = prov.bbox ? 1.0 : 0.85;
     }
 
-    // 3. Type match: value matches the declared type (+0.15)
-    const declaredType = spec.type as string | undefined;
-    if (declaredType) {
-      const typeMatches =
-        (declaredType === "string" && typeof value === "string") ||
-        (declaredType === "number" && typeof value === "number") ||
-        (declaredType === "boolean" && typeof value === "boolean") ||
-        (declaredType === "date" && typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) ||
-        (declaredType === "enum" && typeof value === "string") ||
-        (declaredType === "array" && Array.isArray(value)) ||
-        (declaredType === "object" && typeof value === "object" && !Array.isArray(value));
-      if (typeMatches) score += 0.15;
+    // Validation bonus
+    const valBonus = failedFields.has(fieldName) ? 0 : 1;
+
+    // LLM-reported confidence
+    const llmConf = llmConfidence?.[fieldName];
+
+    let score: number;
+    if (llmConf != null) {
+      const clamped = Math.max(0, Math.min(1, llmConf));
+      score = W_LLM * clamped + W_PROV * provStrength + W_VAL * valBonus;
     } else {
-      score += 0.1; // no type declared, small bonus
+      score = W_PROV_FALLBACK * provStrength + W_VAL_FALLBACK * valBonus;
     }
 
-    // 4. Validation passed: no issues for this field (+0.15)
-    if (!failedFields.has(fieldName)) {
-      score += 0.15;
-    }
-
-    // 5. Value plausibility: penalize suspiciously empty strings
-    if (typeof value === "string" && value.trim().length === 0) {
-      score = Math.max(score - 0.3, 0.05);
-    }
-
-    score = Math.min(score, 1.0);
-    score = Math.round(score * 100) / 100; // clean decimals
+    score = Math.max(0, Math.min(score, 1));
+    score = Math.round(score * 1000) / 1000; // clean decimals
 
     confidenceScores[fieldName] = score;
     confidence[fieldName] = scoreLabel(score);
@@ -462,6 +476,9 @@ export async function extractFields(
   // Unwrap nested results
   parsed = unwrapNestedResult(parsed, fieldNames);
 
+  // Extract LLM self-reported confidence before field processing
+  const llmConfidence = extractLlmConfidence(parsed);
+
   // Field validation + type normalization
   const extracted: Record<string, unknown> = {};
   for (const [fieldName, spec] of Object.entries(fields)) {
@@ -479,8 +496,8 @@ export async function extractFields(
   // Resolve field-level text provenance
   const provenance = resolveProvenance(normalized, markdown, textMap);
 
-  // Confidence scoring — uses provenance, validation, and field specs
-  const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport);
+  // Confidence scoring — uses LLM confidence, provenance, and validation
+  const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport, llmConfidence);
 
   const elapsedMs = Date.now() - start;
   console.log(`[koji-extract] Extracted ${Object.keys(normalized).length} fields in ${elapsedMs}ms`);
