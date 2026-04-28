@@ -43,9 +43,7 @@ export function PageHeader({
       <div className="flex flex-col gap-1 min-w-0">
         <div className="flex items-baseline gap-3 min-w-0">
           <h1
-            className={`font-display font-medium leading-none tracking-tight text-ink m-0 truncate ${
-              title.length > 40 ? "text-[20px]" : "text-[30px]"
-            }`}
+            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate max-w-[50vw]"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
             title={title}
           >
