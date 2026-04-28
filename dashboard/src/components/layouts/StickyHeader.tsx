@@ -10,16 +10,16 @@ export function StickyHeader({ children }: { children: ReactNode }) {
 
 export function Breadcrumbs({ items }: { items: { label: string; href?: string }[] }) {
   return (
-    <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
+    <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3 min-w-0 max-w-full overflow-hidden">
       {items.map((item, i) => (
         <span key={i} className="contents">
-          {i > 0 && <span className="text-cream-4">/</span>}
+          {i > 0 && <span className="text-cream-4 shrink-0">/</span>}
           {item.href ? (
-            <a href={item.href} className="text-ink-3 hover:text-vermillion-2 transition-colors">
+            <a href={item.href} className="text-ink-3 hover:text-vermillion-2 transition-colors shrink-0">
               {item.label}
             </a>
           ) : (
-            <span className="text-ink font-medium">{item.label}</span>
+            <span className="text-ink font-medium truncate" title={item.label}>{item.label}</span>
           )}
         </span>
       ))}
@@ -43,7 +43,9 @@ export function PageHeader({
       <div className="flex flex-col gap-1 min-w-0">
         <div className="flex items-baseline gap-3 min-w-0">
           <h1
-            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate"
+            className={`font-display font-medium leading-none tracking-tight text-ink m-0 truncate ${
+              title.length > 40 ? "text-[20px]" : "text-[30px]"
+            }`}
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
             title={title}
           >
