@@ -260,7 +260,7 @@ export default function PipelineDetailPage() {
               router.push(`/t/${tenantSlug}/jobs/${jobSlug}`);
             } else {
               // Multi-file: stay on pipeline page and refresh to show new jobs
-              setShowRun(false);
+              setRunOpen(false);
               refetch();
             }
           }}
