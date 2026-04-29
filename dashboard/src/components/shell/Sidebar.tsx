@@ -37,6 +37,7 @@ import {
   Play,
   MessageSquare,
   ArrowDownToLine,
+  ArrowLeftRight,
   FileCode,
   ShieldCheck,
   Database,
@@ -461,6 +462,11 @@ export function AppSidebar({
                         href={`${base}/schemas/${currentSchemaSlug}/corpus`}
                         icon={<Database className={ICON} />}
                         label="Corpus"
+                      />
+                      <NavItemLink
+                        href={`${base}/schemas/${currentSchemaSlug}/compare`}
+                        icon={<ArrowLeftRight className={ICON} />}
+                        label="Compare"
                       />
                       <NavItemLink
                         href={`${base}/schemas/${currentSchemaSlug}/performance`}
