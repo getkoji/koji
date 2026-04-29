@@ -709,3 +709,121 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
     },
   });
 });
+
+/**
+ * POST /api/extract/compare — compare extractions from two documents.
+ *
+ * Accepts two corpus entry IDs, fetches their latest extraction runs,
+ * and returns a field-by-field diff.
+ */
+extract.post("/extract/compare", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const body = await c.req.json<{ entry_a: string; entry_b: string }>();
+
+  if (!body.entry_a || !body.entry_b) {
+    return c.json({ error: "entry_a and entry_b are required" }, 400);
+  }
+
+  // Fetch latest extraction run for each entry
+  const fetchRun = async (entryId: string) => {
+    const [run] = await withRLS(db, tenantId, (tx) =>
+      tx.select({
+        id: schema.extractionRuns.id,
+        extractedJson: schema.extractionRuns.extractedJson,
+        confidenceScoresJson: schema.extractionRuns.confidenceScoresJson,
+        model: schema.extractionRuns.model,
+        createdAt: schema.extractionRuns.createdAt,
+      })
+        .from(schema.extractionRuns)
+        .where(eq(schema.extractionRuns.corpusEntryId, entryId))
+        .orderBy(desc(schema.extractionRuns.createdAt))
+        .limit(1),
+    );
+    return run ?? null;
+  };
+
+  // Fetch corpus entry filenames
+  const fetchEntry = async (entryId: string) => {
+    const [entry] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename })
+        .from(schema.corpusEntries)
+        .where(eq(schema.corpusEntries.id, entryId))
+        .limit(1),
+    );
+    return entry ?? null;
+  };
+
+  const [runA, runB, entryA, entryB] = await Promise.all([
+    fetchRun(body.entry_a),
+    fetchRun(body.entry_b),
+    fetchEntry(body.entry_a),
+    fetchEntry(body.entry_b),
+  ]);
+
+  if (!runA || !runB) {
+    return c.json({
+      error: "Both documents must have extraction runs. Run extraction first.",
+    }, 400);
+  }
+
+  const extractedA = (runA.extractedJson ?? {}) as Record<string, unknown>;
+  const extractedB = (runB.extractedJson ?? {}) as Record<string, unknown>;
+  const confidenceA = (runA.confidenceScoresJson ?? {}) as Record<string, number>;
+  const confidenceB = (runB.confidenceScoresJson ?? {}) as Record<string, number>;
+
+  // Build diff
+  const allFields = new Set([...Object.keys(extractedA), ...Object.keys(extractedB)]);
+  const fields: Array<{
+    field: string;
+    value_a: unknown;
+    value_b: unknown;
+    confidence_a: number | null;
+    confidence_b: number | null;
+    status: "match" | "diff" | "added" | "removed";
+  }> = [];
+
+  for (const field of allFields) {
+    const inA = field in extractedA;
+    const inB = field in extractedB;
+    const valA = extractedA[field] ?? null;
+    const valB = extractedB[field] ?? null;
+
+    let status: "match" | "diff" | "added" | "removed";
+    if (!inA || valA == null) {
+      status = inB && valB != null ? "added" : "match";
+    } else if (!inB || valB == null) {
+      status = "removed";
+    } else if (String(valA) === String(valB)) {
+      status = "match";
+    } else {
+      status = "diff";
+    }
+
+    fields.push({
+      field,
+      value_a: valA,
+      value_b: valB,
+      confidence_a: confidenceA[field] ?? null,
+      confidence_b: confidenceB[field] ?? null,
+      status,
+    });
+  }
+
+  const summary = {
+    total: fields.length,
+    matches: fields.filter((f) => f.status === "match").length,
+    diffs: fields.filter((f) => f.status === "diff").length,
+    added: fields.filter((f) => f.status === "added").length,
+    removed: fields.filter((f) => f.status === "removed").length,
+  };
+
+  return c.json({
+    data: {
+      entry_a: { id: body.entry_a, filename: entryA?.filename ?? "Unknown", model: runA.model, run_id: runA.id },
+      entry_b: { id: body.entry_b, filename: entryB?.filename ?? "Unknown", model: runB.model, run_id: runB.id },
+      fields,
+      summary,
+    },
+  });
+});
