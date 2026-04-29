@@ -76,14 +76,11 @@ async function request<T>(path: string, options?: RequestInit & { isFormData?: b
         ...(options?.headers as Record<string, string>),
       };
 
-  // Add tenant header for tenant-scoped API calls
-  if (tenantSlug) {
-    headers["x-koji-tenant"] = tenantSlug;
-  }
-
   // If an auth token provider is set (hosted/Clerk), send a Bearer token
-  // instead of relying on cross-origin cookies. Skip credentials: "include"
-  // to avoid sending cookies that conflict with Bearer auth on the API.
+  // instead of relying on cross-origin cookies. The JWT carries the org
+  // context, so skip the x-koji-tenant header — the API resolves tenant
+  // from the JWT's orgId claim. Skip credentials: "include" to avoid
+  // sending cookies that conflict with Bearer auth on the API.
   let useCredentials = true;
   if (authTokenProvider) {
     const token = await authTokenProvider();
@@ -91,6 +88,9 @@ async function request<T>(path: string, options?: RequestInit & { isFormData?: b
       headers["Authorization"] = `Bearer ${token}`;
       useCredentials = false;
     }
+  } else if (tenantSlug) {
+    // OSS / self-hosted: no auth token provider, use cookie auth + tenant header
+    headers["x-koji-tenant"] = tenantSlug;
   }
 
   const res = await fetch(url, {
