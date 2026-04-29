@@ -1,0 +1,2 @@
+ALTER TABLE "tenants" ADD COLUMN "external_auth_id" varchar(255);--> statement-breakpoint
+CREATE UNIQUE INDEX "tenants_external_auth_id_idx" ON "tenants" USING btree ("external_auth_id") WHERE external_auth_id IS NOT NULL AND deleted_at IS NULL;

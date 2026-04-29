@@ -36,6 +36,13 @@
       "when": 1777315763608,
       "tag": "0005_brown_dexter_bennett",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777430565949,
+      "tag": "0006_wakeful_jackal",
+      "breakpoints": true
     }
   ]
 }
