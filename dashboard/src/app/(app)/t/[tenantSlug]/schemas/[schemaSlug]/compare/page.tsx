@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus } from "lucide-react";
+import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -36,31 +36,136 @@ const STATUS_CONFIG = {
   removed: { label: "Removed", icon: Minus, color: "text-yellow-600", bg: "bg-yellow-500/10" },
 };
 
+function DocumentPicker({
+  label,
+  entries,
+  value,
+  onChange,
+  onUpload,
+  uploading,
+  uploadedName,
+  schemaSlug,
+}: {
+  label: string;
+  entries: CorpusEntry[];
+  value: string;
+  onChange: (id: string) => void;
+  onUpload: (file: File) => void;
+  uploading: boolean;
+  uploadedName: string | null;
+  schemaSlug: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="flex-1 space-y-1.5">
+      <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 block">
+        {label}
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
+      >
+        <option value="">Select from corpus...</option>
+        {entries.map((e) => (
+          <option key={e.id} value={e.id}>{e.filename}</option>
+        ))}
+      </select>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-ink-4">or</span>
+        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-dashed border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+          <Upload className="w-3 h-3" />
+          {uploading ? "Uploading..." : uploadedName ? uploadedName : "Upload file"}
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+            onChange={(e) => {
+              if (e.target.files?.[0]) onUpload(e.target.files[0]);
+            }}
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export default function ComparePage() {
   const params = useParams();
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
-  const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
   const [entryA, setEntryA] = useState<string>("");
   const [entryB, setEntryB] = useState<string>("");
+  const [uploadingA, setUploadingA] = useState(false);
+  const [uploadingB, setUploadingB] = useState(false);
+  const [uploadedNameA, setUploadedNameA] = useState<string | null>(null);
+  const [uploadedNameB, setUploadedNameB] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "diff" | "match">("all");
 
-  const { data: entries } = useApi(
+  const { data: entries, refetch: refetchEntries } = useApi(
     useCallback(
       () => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data),
       [schemaSlug],
     ),
   );
 
+  async function handleUpload(file: File, side: "a" | "b") {
+    const setUploading = side === "a" ? setUploadingA : setUploadingB;
+    const setEntry = side === "a" ? setEntryA : setEntryB;
+    const setUploadedName = side === "a" ? setUploadedNameA : setUploadedNameB;
+
+    setUploading(true);
+    setResult(null);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const entry = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, fd);
+      setEntry(entry.id);
+      setUploadedName(file.name);
+      refetchEntries();
+    } catch (err: any) {
+      setError(`Upload failed: ${err?.message ?? "Unknown error"}`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function handleCompare() {
     if (!entryA || !entryB) return;
     setComparing(true);
     setError(null);
+    setResult(null);
+
     try {
+      // First, ensure both documents have extraction runs
+      // Run extraction for each if needed
+      setStatus("Checking extractions...");
+
+      const [runA, runB] = await Promise.all([
+        api.get<{ data: unknown | null }>(`/api/extract/runs/${entryA}`).then((r) => r.data),
+        api.get<{ data: unknown | null }>(`/api/extract/runs/${entryB}`).then((r) => r.data),
+      ]);
+
+      if (!runA || !runB) {
+        // Need to extract first — tell the user
+        setError(
+          "Both documents need extraction runs before comparing. " +
+          "Go to Build mode to extract each document first, then return here to compare."
+        );
+        setComparing(false);
+        setStatus(null);
+        return;
+      }
+
+      setStatus("Comparing fields...");
       const resp = await api.post<{ data: CompareResult }>("/api/extract/compare", {
         entry_a: entryA,
         entry_b: entryB,
@@ -70,6 +175,7 @@ export default function ComparePage() {
       setError(err?.message ?? "Comparison failed");
     } finally {
       setComparing(false);
+      setStatus(null);
     }
   }
 
@@ -97,45 +203,41 @@ export default function ComparePage() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {/* Document selectors */}
-        <div className="flex items-end gap-3">
-          <div className="flex-1">
-            <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-1 block">Document A</label>
-            <select
-              value={entryA}
-              onChange={(e) => { setEntryA(e.target.value); setResult(null); }}
-              className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
+        {/* Document selectors with upload */}
+        <div className="flex items-start gap-3">
+          <DocumentPicker
+            label="Document A"
+            entries={entries ?? []}
+            value={entryA}
+            onChange={(id) => { setEntryA(id); setResult(null); setUploadedNameA(null); }}
+            onUpload={(f) => handleUpload(f, "a")}
+            uploading={uploadingA}
+            uploadedName={uploadedNameA}
+            schemaSlug={schemaSlug}
+          />
+
+          <ArrowLeftRight className="w-5 h-5 text-ink-4 shrink-0 mt-7" />
+
+          <DocumentPicker
+            label="Document B"
+            entries={(entries ?? []).filter((e) => e.id !== entryA)}
+            value={entryB}
+            onChange={(id) => { setEntryB(id); setResult(null); setUploadedNameB(null); }}
+            onUpload={(f) => handleUpload(f, "b")}
+            uploading={uploadingB}
+            uploadedName={uploadedNameB}
+            schemaSlug={schemaSlug}
+          />
+
+          <div className="shrink-0 mt-6">
+            <button
+              onClick={handleCompare}
+              disabled={!entryA || !entryB || comparing || uploadingA || uploadingB}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
             >
-              <option value="">Select document...</option>
-              {(entries ?? []).map((e) => (
-                <option key={e.id} value={e.id}>{e.filename}</option>
-              ))}
-            </select>
+              {comparing ? (status ?? "Comparing...") : "Compare"}
+            </button>
           </div>
-
-          <ArrowLeftRight className="w-5 h-5 text-ink-4 shrink-0 mb-1" />
-
-          <div className="flex-1">
-            <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 mb-1 block">Document B</label>
-            <select
-              value={entryB}
-              onChange={(e) => { setEntryB(e.target.value); setResult(null); }}
-              className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
-            >
-              <option value="">Select document...</option>
-              {(entries ?? []).filter((e) => e.id !== entryA).map((e) => (
-                <option key={e.id} value={e.id}>{e.filename}</option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={handleCompare}
-            disabled={!entryA || !entryB || comparing}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30 shrink-0"
-          >
-            {comparing ? "Comparing..." : "Compare"}
-          </button>
         </div>
 
         {error && (
@@ -179,7 +281,6 @@ export default function ComparePage() {
 
             {/* Comparison table */}
             <div className="border border-border rounded-sm overflow-hidden">
-              {/* Table header */}
               <div className="grid grid-cols-[180px_1fr_1fr_80px] bg-cream-2 border-b border-border">
                 <div className="px-3 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Field</div>
                 <div className="px-3 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 border-l border-border truncate" title={result.entry_a.filename}>
@@ -191,7 +292,6 @@ export default function ComparePage() {
                 <div className="px-3 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 border-l border-border">Status</div>
               </div>
 
-              {/* Table body */}
               {(filteredFields ?? []).map((f) => {
                 const cfg = STATUS_CONFIG[f.status];
                 const Icon = cfg.icon;
@@ -231,8 +331,8 @@ export default function ComparePage() {
         {!result && !comparing && (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <ArrowLeftRight className="w-10 h-10 text-ink-4/30 mb-3" />
-            <p className="text-[13px] text-ink-3">Select two documents to compare their extracted fields</p>
-            <p className="text-[11px] text-ink-4 mt-1">Both documents must have been extracted with this schema</p>
+            <p className="text-[13px] text-ink-3">Upload or select two documents to compare</p>
+            <p className="text-[11px] text-ink-4 mt-1">Upload directly or pick from the corpus — both documents must be extracted first</p>
           </div>
         )}
       </div>
