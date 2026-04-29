@@ -470,16 +470,20 @@ export function AppSidebar({
                 </SidebarMenuButton>
                 <CollapsibleContent>
                   <SidebarMenuSub>
-                    <SubNavItemLink
-                      href={`${base}/settings/general`}
-                      icon={<Info className={SUBICON} />}
-                      label="General"
-                    />
-                    <SubNavItemLink
-                      href={`${base}/settings/members`}
-                      icon={<Users className={SUBICON} />}
-                      label="Members"
-                    />
+                    {!settingsExtensions.hideDefaultNav && (
+                      <>
+                        <SubNavItemLink
+                          href={`${base}/settings/general`}
+                          icon={<Info className={SUBICON} />}
+                          label="General"
+                        />
+                        <SubNavItemLink
+                          href={`${base}/settings/members`}
+                          icon={<Users className={SUBICON} />}
+                          label="Members"
+                        />
+                      </>
+                    )}
                     {settingsExtensions.navItems.map((item) => (
                       <SubNavItemLink
                         key={item.href}
