@@ -152,21 +152,20 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
         {/* Bounding box overlays */}
         {canvasRef.current && pageHighlights.length > 0 && (
           <div
-            className="absolute top-0 left-0 pointer-events-none"
+            className="absolute top-0 left-0"
             style={{
               width: canvasRef.current.width,
               height: canvasRef.current.height,
-              // Scale the overlay to match the CSS-scaled canvas
               transformOrigin: "top left",
               transform: `scale(${(containerRef.current?.clientWidth ?? canvasRef.current.width) / canvasRef.current.width})`,
             }}
           >
             {pageHighlights.map((h, i) => {
               const isActive = h.field === activeField;
-              const className = `absolute rounded-sm transition-all ${
+              const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
                 isActive
                   ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
-                  : "bg-cream-3/30 ring-1 ring-ink-4/20"
+                  : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
               }`;
               const cw = canvasRef.current!.width;
               const ch = canvasRef.current!.height;
@@ -176,16 +175,17 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
                 return h.words
                   .filter((w) => w.page === currentPage)
                   .map((w, wi) => (
-                    <div
+                    <HoverBox
                       key={`${h.field}-${i}-w${wi}`}
-                      className={className}
+                      className={boxClass}
                       style={{
                         left: w.x * cw,
                         top: w.y * ch,
                         width: w.w * cw,
                         height: w.h * ch,
                       }}
-                      title={`${h.field}: ${w.text}${h.reasoning ? `\n\n${h.reasoning}` : ""}`}
+                      field={h.field}
+                      reasoning={h.reasoning}
                     />
                   ));
               }
@@ -193,16 +193,17 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
               // Fallback: single enclosing bbox
               if (!h.bbox) return null;
               return (
-                <div
+                <HoverBox
                   key={`${h.field}-${i}`}
-                  className={className}
+                  className={boxClass}
                   style={{
                     left: h.bbox.x * cw,
                     top: h.bbox.y * ch,
                     width: h.bbox.w * cw,
                     height: h.bbox.h * ch,
                   }}
-                  title={`${h.field}${h.reasoning ? `\n\n${h.reasoning}` : ""}`}
+                  field={h.field}
+                  reasoning={h.reasoning}
                 />
               );
             })}
@@ -216,6 +217,46 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Highlight box with a styled popover on hover showing field name + reasoning. */
+function HoverBox({
+  className,
+  style,
+  field,
+  reasoning,
+}: {
+  className: string;
+  style: React.CSSProperties;
+  field: string;
+  reasoning?: string;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div
+      ref={boxRef}
+      className={className}
+      style={style}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {hovered && (
+        <div
+          className="absolute z-50 pointer-events-none"
+          style={{ bottom: "100%", left: 0, marginBottom: 4 }}
+        >
+          <div className="bg-ink text-cream rounded-sm px-2.5 py-1.5 shadow-lg max-w-[280px] whitespace-normal">
+            <div className="font-mono text-[10px] font-medium text-cream/70">{field}</div>
+            {reasoning && (
+              <p className="text-[11px] leading-snug mt-0.5">{reasoning}</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

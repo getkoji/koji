@@ -871,11 +871,6 @@ export default function BuildPage() {
                                     </span>
                                   )}
                                 </div>
-                                {prov?.reasoning && (
-                                  <div className="px-3 pb-2 -mt-0.5">
-                                    <p className="text-[10px] text-ink-4 leading-snug italic">{prov.reasoning}</p>
-                                  </div>
-                                )}
                               </div>
                             );
                           })}
