@@ -143,6 +143,20 @@ export function AppSidebar({
   const projectSettingsBase = `${base}/projects/${projectSlug}/settings`;
   const inProjectSettings = pathname.startsWith(projectSettingsBase);
 
+  // Project list for the project switcher
+  const { data: projectList, refetch: refetchProjects } = useApi(
+    useCallback(
+      () =>
+        api
+          .get<{ data: Array<{ slug: string; displayName: string }> }>("/api/projects")
+          .then((r) => r.data),
+      [],
+    ),
+  );
+  useEffect(() => on("projects:updated", refetchProjects), [refetchProjects]);
+  const currentProject = projectList?.find((p) => p.slug === projectSlug);
+  const currentProjectName = currentProject?.displayName ?? projectSlug;
+
   const inOrgSettings = pathname.startsWith(`${base}/settings`);
   const isAdmin = hasPermission("tenant:admin");
 
@@ -219,8 +233,30 @@ export function AppSidebar({
       <SidebarContent className="gap-5 pt-4">
         {/* Project */}
         <SidebarGroup>
-          <SidebarGroupLabel className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4">
-            Project
+          <SidebarGroupLabel className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 flex items-center justify-between">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-1 hover:text-ink transition-colors text-left">
+                  <span className="truncate max-w-[120px]">{currentProjectName}</span>
+                  <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-50" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-[200px]">
+                {projectList?.map((p) => (
+                  <DropdownMenuItem
+                    key={p.slug}
+                    onClick={() => router.push(`${base}/projects/${p.slug}`)}
+                    className={p.slug === projectSlug ? "bg-cream-2 font-medium" : ""}
+                  >
+                    <span className="truncate">{p.displayName}</span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => router.push("/new-project")}>
+                  + New project
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
