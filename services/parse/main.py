@@ -124,10 +124,15 @@ def classify_input(file_path: str, content_type: str | None = None) -> str:
 
 
 def _build_text_map(document) -> list[dict]:
-    """Extract text segments with normalized bounding boxes from a DoclingDocument.
+    """Extract word-level segments with normalized bounding boxes from a DoclingDocument.
 
-    Returns a flat list of {text, page, bbox: {x, y, w, h}} where coordinates
-    are fractions of the page dimensions (0.0–1.0).
+    Returns a flat list of {text, page, bbox: {x, y, w, h}, level: "word"}
+    where coordinates are fractions of the page dimensions (0.0–1.0).
+
+    Each Docling item (paragraph/line) is split into individual words. Word
+    bounding boxes are estimated by distributing the parent segment's width
+    proportionally across words by character count. This gives approximate
+    per-word highlighting that's good enough for most documents.
     """
     try:
         from docling_core.types.doc.base import CoordOrigin
@@ -148,18 +153,40 @@ def _build_text_map(document) -> list[dict]:
                 bbox = prov.bbox
                 if bbox.coord_origin == CoordOrigin.BOTTOMLEFT:
                     bbox = bbox.to_top_left_origin(ph)
-                segments.append(
-                    {
-                        "text": text,
-                        "page": page_no,
-                        "bbox": {
-                            "x": round(bbox.l / pw, 6),
-                            "y": round(bbox.t / ph, 6),
-                            "w": round((bbox.r - bbox.l) / pw, 6),
-                            "h": round((bbox.b - bbox.t) / ph, 6),
-                        },
-                    }
-                )
+
+                parent_x = bbox.l / pw
+                parent_y = bbox.t / ph
+                parent_w = (bbox.r - bbox.l) / pw
+                parent_h = (bbox.b - bbox.t) / ph
+
+                # Split into words and estimate per-word bboxes
+                words = text.split()
+                if not words:
+                    continue
+
+                total_chars = sum(len(w) for w in words)
+                if total_chars == 0:
+                    continue
+
+                char_offset = 0
+                for word in words:
+                    word_start_frac = char_offset / total_chars
+                    word_end_frac = (char_offset + len(word)) / total_chars
+                    segments.append(
+                        {
+                            "text": word,
+                            "page": page_no,
+                            "bbox": {
+                                "x": round(parent_x + parent_w * word_start_frac, 6),
+                                "y": round(parent_y, 6),
+                                "w": round(parent_w * (word_end_frac - word_start_frac), 6),
+                                "h": round(parent_h, 6),
+                            },
+                            "level": "word",
+                        }
+                    )
+                    char_offset += len(word)
+
         return segments
     except Exception as e:
         print(f"[koji-parse] Warning: failed to build text_map: {e}")

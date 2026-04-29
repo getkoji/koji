@@ -7,10 +7,21 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 // Types
 // ---------------------------------------------------------------------------
 
+export interface WordBox {
+  text: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface BBoxHighlight {
   field: string;
   page: number;
-  bbox: { x: number; y: number; w: number; h: number };
+  bbox?: { x: number; y: number; w: number; h: number };
+  /** Per-word bounding boxes for precise highlighting */
+  words?: WordBox[];
 }
 
 interface PdfViewerProps {
@@ -150,20 +161,46 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
           >
             {pageHighlights.map((h, i) => {
               const isActive = h.field === activeField;
+              const className = `absolute rounded-sm transition-all ${
+                isActive
+                  ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
+                  : "bg-cream-3/30 ring-1 ring-ink-4/20"
+              }`;
+              const cw = canvasRef.current!.width;
+              const ch = canvasRef.current!.height;
+
+              // Per-word boxes (precise highlights)
+              if (h.words && h.words.length > 0) {
+                return h.words
+                  .filter((w) => w.page === currentPage)
+                  .map((w, wi) => (
+                    <div
+                      key={`${h.field}-${i}-w${wi}`}
+                      className={className}
+                      style={{
+                        left: w.x * cw,
+                        top: w.y * ch,
+                        width: w.w * cw,
+                        height: w.h * ch,
+                      }}
+                      title={`${h.field}: ${w.text}`}
+                    />
+                  ));
+              }
+
+              // Fallback: single enclosing bbox
+              if (!h.bbox) return null;
               return (
                 <div
                   key={`${h.field}-${i}`}
-                  className={`absolute rounded-sm transition-all ${
-                    isActive
-                      ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
-                      : "bg-cream-3/30 ring-1 ring-ink-4/20"
-                  }`}
+                  className={className}
                   style={{
-                    left: h.bbox.x * canvasRef.current!.width,
-                    top: h.bbox.y * canvasRef.current!.height,
-                    width: h.bbox.w * canvasRef.current!.width,
-                    height: h.bbox.h * canvasRef.current!.height,
+                    left: h.bbox.x * cw,
+                    top: h.bbox.y * ch,
+                    width: h.bbox.w * cw,
+                    height: h.bbox.h * ch,
                   }}
+                  title={h.field}
                 />
               );
             })}

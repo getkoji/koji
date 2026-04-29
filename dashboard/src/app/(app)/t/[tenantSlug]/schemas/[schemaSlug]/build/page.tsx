@@ -168,7 +168,7 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
-    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number } } | null>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> } | null>;
     markdown?: string;
     model?: string;
     elapsed_ms?: number;
@@ -180,8 +180,13 @@ export default function BuildPage() {
   const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
   const bboxHighlights = useMemo(() =>
     Object.entries(extractionResult?.provenance ?? {})
-      .filter(([, v]) => v?.bbox != null && v?.page != null)
-      .map(([field, v]) => ({ field, page: v!.page!, bbox: v!.bbox! })),
+      .filter(([, v]) => v?.words?.length || (v?.bbox != null && v?.page != null))
+      .map(([field, v]) => ({
+        field,
+        page: v!.words?.[0]?.page ?? v!.page!,
+        bbox: v!.bbox,
+        words: v!.words,
+      })),
     [extractionResult?.provenance]
   );
   const [parseProgress, setParseProgress] = useState<{
