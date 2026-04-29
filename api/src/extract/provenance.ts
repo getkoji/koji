@@ -23,10 +23,20 @@ export interface BBox {
   h: number;
 }
 
+export interface WordBox {
+  text: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface TextSegment {
   text: string;
   page: number;
   bbox: BBox;
+  level?: "word";
 }
 
 export type TextMap = TextSegment[];
@@ -37,6 +47,8 @@ export interface ProvenanceSpan {
   chunk?: string;
   page?: number;
   bbox?: BBox;
+  /** Per-word bounding boxes for precise highlighting */
+  words?: WordBox[];
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -214,8 +226,7 @@ function findNumber(haystack: string, value: number): { offset: number; length: 
 
 /**
  * Search the text_map for a segment whose text contains the given needle.
- * Uses the same fuzzy matching strategies as the markdown search.
- * Returns the best matching segment (longest text overlap).
+ * Returns the best matching segment.
  */
 function findBbox(needle: string, textMap: TextMap): { page: number; bbox: BBox } | null {
   if (!needle || textMap.length === 0) return null;
@@ -243,21 +254,116 @@ function findBbox(needle: string, textMap: TextMap): { page: number; bbox: BBox 
 }
 
 /**
- * Resolve a bbox for a value that matched in the markdown. Tries multiple
- * representations for numbers, dates, and dollar amounts.
+ * Locate per-word bounding boxes for an extracted value by finding
+ * consecutive word-level text_map segments that match the value.
+ *
+ * Matching strategy:
+ * 1. Exact consecutive word match (case-insensitive)
+ * 2. Single-word containment (value within one word)
+ * 3. Falls back to null if no match
+ */
+function locateWords(
+  value: unknown,
+  chunk: string | undefined,
+  textMap: TextMap,
+): WordBox[] | null {
+  const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
+  if (!strValue || textMap.length === 0) return null;
+
+  // Try the matched chunk text first, then the raw value
+  const candidates = chunk ? [chunk, strValue] : [strValue];
+
+  for (const needle of candidates) {
+    const needleWords = needle.trim().split(/\s+/).map((w) => w.toLowerCase());
+    if (needleWords.length === 0) continue;
+
+    // Slide through text_map looking for consecutive word matches
+    for (let i = 0; i <= textMap.length - needleWords.length; i++) {
+      let matched = true;
+      for (let j = 0; j < needleWords.length; j++) {
+        const segText = textMap[i + j]!.text.toLowerCase().replace(/[,.$()]/g, "");
+        const needleWord = needleWords[j]!.replace(/[,.$()]/g, "");
+        if (segText !== needleWord && !segText.includes(needleWord) && !needleWord.includes(segText)) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        return needleWords.map((_, j) => {
+          const seg = textMap[i + j]!;
+          return {
+            text: seg.text,
+            page: seg.page,
+            x: seg.bbox.x,
+            y: seg.bbox.y,
+            w: seg.bbox.w,
+            h: seg.bbox.h,
+          };
+        });
+      }
+    }
+
+    // Single-word containment: value is contained within one text_map word
+    if (needleWords.length === 1) {
+      const lowerNeedle = needleWords[0]!;
+      for (const seg of textMap) {
+        if (seg.text.toLowerCase().replace(/[,.$()]/g, "").includes(lowerNeedle.replace(/[,.$()]/g, ""))) {
+          return [{
+            text: seg.text,
+            page: seg.page,
+            x: seg.bbox.x,
+            y: seg.bbox.y,
+            w: seg.bbox.w,
+            h: seg.bbox.h,
+          }];
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Compute the enclosing bounding box of an array of word boxes. */
+function enclosingBbox(words: WordBox[]): { page: number; bbox: BBox } | null {
+  if (words.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const w of words) {
+    minX = Math.min(minX, w.x);
+    minY = Math.min(minY, w.y);
+    maxX = Math.max(maxX, w.x + w.w);
+    maxY = Math.max(maxY, w.y + w.h);
+  }
+  return {
+    page: words[0]!.page,
+    bbox: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+  };
+}
+
+/**
+ * Resolve bounding boxes for a value. Tries per-word matching first,
+ * falls back to paragraph-level segment matching.
  */
 function resolveBbox(
   value: unknown,
   chunk: string | undefined,
   textMap: TextMap,
-): { page: number; bbox: BBox } | null {
-  // Try the matched chunk first (most specific)
+): { page: number; bbox: BBox; words?: WordBox[] } | null {
+  // Try per-word matching first
+  const words = locateWords(value, chunk, textMap);
+  if (words && words.length > 0) {
+    const enclosing = enclosingBbox(words);
+    if (enclosing) {
+      return { ...enclosing, words };
+    }
+  }
+
+  // Fall back to paragraph-level segment matching
   if (chunk) {
     const hit = findBbox(chunk, textMap);
     if (hit) return hit;
   }
 
-  // Try the raw value
   const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
   if (strValue) {
     const hit = findBbox(strValue, textMap);
@@ -323,12 +429,15 @@ export function resolveProvenance(
         chunk,
       };
 
-      // Resolve bounding box if text_map available
+      // Resolve bounding box + per-word locations if text_map available
       if (textMap && textMap.length > 0) {
         const bboxHit = resolveBbox(value, chunk, textMap);
         if (bboxHit) {
           span.page = bboxHit.page;
           span.bbox = bboxHit.bbox;
+          if (bboxHit.words) {
+            span.words = bboxHit.words;
+          }
         }
       }
 
