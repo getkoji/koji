@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus, Upload } from "lucide-react";
+import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus, Upload, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -62,26 +62,46 @@ function DocumentPicker({
       <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 block">
         {label}
       </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
-      >
-        <option value="">Select from corpus...</option>
-        {entries.map((e) => (
-          <option key={e.id} value={e.id}>{e.filename}</option>
-        ))}
-      </select>
+      {uploading ? (
+        <div className="w-full h-[32px] rounded-sm border border-vermillion-2/30 bg-vermillion-3/10 px-2.5 flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 text-vermillion-2 animate-spin" />
+          <span className="text-[12px] text-vermillion-2 font-medium">Uploading...</span>
+        </div>
+      ) : (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
+        >
+          <option value="">Select from corpus...</option>
+          {entries.map((e) => (
+            <option key={e.id} value={e.id}>{e.filename}</option>
+          ))}
+        </select>
+      )}
       <div className="flex items-center gap-2">
         <span className="text-[10px] text-ink-4">or</span>
-        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-dashed border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
-          <Upload className="w-3 h-3" />
-          {uploading ? "Uploading..." : uploadedName ? uploadedName : "Upload file"}
+        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] border border-dashed transition-colors ${
+          uploading
+            ? "text-vermillion-2 border-vermillion-2/30 cursor-wait"
+            : uploadedName
+              ? "text-green border-green/30"
+              : "text-ink-3 border-border hover:border-ink hover:text-ink cursor-pointer"
+        }`}>
+          {uploading ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : uploadedName ? (
+            <CheckCircle className="w-3 h-3" />
+          ) : (
+            <Upload className="w-3 h-3" />
+          )}
+          {uploading ? "Uploading..." : uploadedName ?? "Upload file"}
           <input
             ref={inputRef}
             type="file"
             className="hidden"
             accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+            disabled={uploading}
             onChange={(e) => {
               if (e.target.files?.[0]) onUpload(e.target.files[0]);
             }}
