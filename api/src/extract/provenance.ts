@@ -49,6 +49,8 @@ export interface ProvenanceSpan {
   bbox?: BBox;
   /** Per-word bounding boxes for precise highlighting */
   words?: WordBox[];
+  /** LLM-provided reasoning for why this value was selected */
+  reasoning?: string;
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;

@@ -176,7 +176,9 @@ ${markdown}
 
 Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
 
-Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.${extraBlock}
+Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.
+
+Also include a "__reasoning" key mapping each field name to a brief one-sentence explanation of where and why you selected that value. Example: {"policy_number": "Found 'ACP BPHK2202901585' labeled as 'Policy Number' on the declarations page", "effective_date": "Extracted '12-04-17' from 'Effective From 12-04-17 To 12-04-18' on the common declarations"}. For null fields, explain why: "Field not found in document".${extraBlock}
 
 JSON:`;
 }
@@ -261,6 +263,25 @@ export function extractLlmConfidence(
       result[k] = v;
     } else if (typeof v === "number") {
       result[k] = Math.max(0, Math.min(1, v));
+    }
+  }
+  return result;
+}
+
+/**
+ * Extract __reasoning from a parsed LLM response.
+ * Removes the key from the parsed object so downstream code never sees it.
+ */
+export function extractLlmReasoning(
+  parsed: Record<string, unknown>,
+): Record<string, string> {
+  const raw = parsed.__reasoning;
+  delete parsed.__reasoning;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") {
+      result[k] = v;
     }
   }
   return result;
@@ -476,8 +497,9 @@ export async function extractFields(
   // Unwrap nested results
   parsed = unwrapNestedResult(parsed, fieldNames);
 
-  // Extract LLM self-reported confidence before field processing
+  // Extract LLM self-reported confidence and reasoning before field processing
   const llmConfidence = extractLlmConfidence(parsed);
+  const llmReasoning = extractLlmReasoning(parsed);
 
   // Field validation + type normalization
   const extracted: Record<string, unknown> = {};
@@ -495,6 +517,16 @@ export async function extractFields(
 
   // Resolve field-level text provenance
   const provenance = resolveProvenance(normalized, markdown, textMap);
+
+  // Attach LLM reasoning to provenance spans
+  for (const [field, reasoning] of Object.entries(llmReasoning)) {
+    if (provenance[field]) {
+      provenance[field]!.reasoning = reasoning;
+    } else if (reasoning) {
+      // Field had no text match but LLM provided reasoning (e.g. derived/inferred)
+      provenance[field] = { offset: -1, length: 0, reasoning };
+    }
+  }
 
   // Confidence scoring — uses LLM confidence, provenance, and validation
   const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport, llmConfidence);
