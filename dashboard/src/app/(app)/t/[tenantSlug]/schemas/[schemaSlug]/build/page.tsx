@@ -168,7 +168,7 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
-    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> } | null>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string } | null>;
     markdown?: string;
     model?: string;
     elapsed_ms?: number;
@@ -186,6 +186,7 @@ export default function BuildPage() {
         page: v!.words?.[0]?.page ?? v!.page!,
         bbox: v!.bbox,
         words: v!.words,
+        reasoning: v!.reasoning,
       })),
     [extractionResult?.provenance]
   );
@@ -842,33 +843,38 @@ export default function BuildPage() {
                             const hasProvenance = prov != null;
                             const isHighlighted = highlightedField === key;
                             return (
-                              <div
-                                key={key}
-                                className={`flex items-start justify-between px-3 py-2 gap-3 ${hasProvenance ? "cursor-pointer hover:bg-cream-2/80 transition-colors" : ""} ${isHighlighted ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
-                                onClick={() => {
-                                  if (!hasProvenance) return;
-                                  setHighlightedField(isHighlighted ? null : key);
-                                  // Scroll document preview to show provenance context
-                                  const previewEl = document.querySelector("[data-provenance-preview]");
-                                  if (previewEl) {
-                                    const mark = previewEl.querySelector(`[data-provenance-field="${key}"]`);
-                                    mark?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                  }
-                                }}
-                              >
-                                <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
-                                  {hasProvenance && (
-                                    <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
-                                  )}
-                                  {key}
-                                </span>
-                                <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                  {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
-                                </span>
-                                {extractionResult.confidence_scores?.[key] !== undefined && (
-                                  <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
-                                    {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                              <div key={key}>
+                                <div
+                                  className={`flex items-start justify-between px-3 py-2 gap-3 ${hasProvenance ? "cursor-pointer hover:bg-cream-2/80 transition-colors" : ""} ${isHighlighted ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                                  onClick={() => {
+                                    if (!hasProvenance) return;
+                                    setHighlightedField(isHighlighted ? null : key);
+                                    const previewEl = document.querySelector("[data-provenance-preview]");
+                                    if (previewEl) {
+                                      const mark = previewEl.querySelector(`[data-provenance-field="${key}"]`);
+                                      mark?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                    }
+                                  }}
+                                >
+                                  <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
+                                    {hasProvenance && (
+                                      <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
+                                    )}
+                                    {key}
                                   </span>
+                                  <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                    {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
+                                  </span>
+                                  {extractionResult.confidence_scores?.[key] !== undefined && (
+                                    <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
+                                      {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                                {prov?.reasoning && (
+                                  <div className="px-3 pb-2 -mt-0.5">
+                                    <p className="text-[10px] text-ink-4 leading-snug italic">{prov.reasoning}</p>
+                                  </div>
                                 )}
                               </div>
                             );

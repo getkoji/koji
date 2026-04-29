@@ -22,6 +22,8 @@ export interface BBoxHighlight {
   bbox?: { x: number; y: number; w: number; h: number };
   /** Per-word bounding boxes for precise highlighting */
   words?: WordBox[];
+  /** LLM reasoning for why this value was selected */
+  reasoning?: string;
 }
 
 interface PdfViewerProps {
@@ -183,7 +185,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
                         width: w.w * cw,
                         height: w.h * ch,
                       }}
-                      title={`${h.field}: ${w.text}`}
+                      title={`${h.field}: ${w.text}${h.reasoning ? `\n\n${h.reasoning}` : ""}`}
                     />
                   ));
               }
@@ -200,7 +202,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
                     width: h.bbox.w * cw,
                     height: h.bbox.h * ch,
                   }}
-                  title={h.field}
+                  title={`${h.field}${h.reasoning ? `\n\n${h.reasoning}` : ""}`}
                 />
               );
             })}
