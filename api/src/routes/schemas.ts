@@ -357,6 +357,22 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
     contentType: file.type || "application/octet-stream",
   });
 
+  // Check if this file already exists in the corpus for this schema
+  const [existing] = await withRLS(db, tenantId, (tx) =>
+    tx.select()
+      .from(schema.corpusEntries)
+      .where(and(
+        eq(schema.corpusEntries.schemaId, s.id),
+        eq(schema.corpusEntries.contentHash, contentHash),
+      ))
+      .limit(1)
+  );
+
+  if (existing) {
+    // Document already in corpus — return the existing entry
+    return c.json(existing, 200);
+  }
+
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
