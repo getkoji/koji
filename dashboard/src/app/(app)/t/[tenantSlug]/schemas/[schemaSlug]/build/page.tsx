@@ -205,10 +205,15 @@ export default function BuildPage() {
     useCallback(() => api.get<{ data: Array<{ id: string; provider: string; model: string; displayName: string }> }>("/api/model-providers").then((r) => r.data.map(e => ({ ...e, modelId: e.model }))), []),
   );
 
-  // Persist model selection
+  // Persist model selection + auto-select first available model
   useEffect(() => {
     if (selectedModel) localStorage.setItem("koji:build:model", selectedModel);
   }, [selectedModel]);
+  useEffect(() => {
+    if (!selectedModel && catalogModels && catalogModels.length > 0) {
+      setSelectedModel(catalogModels[0]!.modelId);
+    }
+  }, [selectedModel, catalogModels]);
 
   // Auto-select first corpus entry
   useEffect(() => {
@@ -957,7 +962,6 @@ export default function BuildPage() {
                   className="h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] font-mono outline-none focus:border-ring min-w-[80px] max-w-[160px] truncate"
                   title="Model for extraction"
                 >
-                  <option value="">Default model</option>
                   {(catalogModels ?? []).map((m) => (
                     <option key={m.id} value={m.modelId}>{m.displayName} ({m.provider})</option>
                   ))}
