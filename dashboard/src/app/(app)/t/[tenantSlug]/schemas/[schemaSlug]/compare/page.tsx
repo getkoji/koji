@@ -58,7 +58,7 @@ function DocumentPicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex-1 min-w-0 space-y-1.5">
+    <div className="flex-1 min-w-0 overflow-hidden space-y-1.5">
       <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 block">
         {label}
       </label>
@@ -71,17 +71,17 @@ function DocumentPicker({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring truncate"
+          className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
         >
           <option value="">Select from corpus...</option>
           {entries.map((e) => (
-            <option key={e.id} value={e.id}>{e.filename.length > 50 ? e.filename.slice(0, 47) + "..." : e.filename}</option>
+            <option key={e.id} value={e.id}>{e.filename.length > 40 ? e.filename.slice(0, 37) + "..." : e.filename}</option>
           ))}
         </select>
       )}
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-ink-4">or</span>
-        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] border border-dashed transition-colors ${
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[10px] text-ink-4 shrink-0">or</span>
+        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] border border-dashed transition-colors max-w-full truncate ${
           uploading
             ? "text-vermillion-2 border-vermillion-2/30 cursor-wait"
             : uploadedName
@@ -89,13 +89,13 @@ function DocumentPicker({
               : "text-ink-3 border-border hover:border-ink hover:text-ink cursor-pointer"
         }`}>
           {uploading ? (
-            <Loader2 className="w-3 h-3 animate-spin" />
+            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
           ) : uploadedName ? (
-            <CheckCircle className="w-3 h-3" />
+            <CheckCircle className="w-3 h-3 shrink-0" />
           ) : (
-            <Upload className="w-3 h-3" />
+            <Upload className="w-3 h-3 shrink-0" />
           )}
-          {uploading ? "Uploading..." : uploadedName ? (uploadedName.length > 30 ? uploadedName.slice(0, 27) + "..." : uploadedName) : "Upload file"}
+          <span className="truncate">{uploading ? "Uploading..." : uploadedName ?? "Upload file"}</span>
           <input
             ref={inputRef}
             type="file"
