@@ -301,7 +301,7 @@ export default function ComparePage() {
 
             {/* Comparison table */}
             <div className="border border-border rounded-sm overflow-hidden">
-              <div className="grid grid-cols-[180px_1fr_1fr_80px] bg-cream-2 border-b border-border">
+              <div className="grid grid-cols-[160px_1fr_1fr_100px] bg-cream-2 border-b border-border">
                 <div className="px-3 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">Field</div>
                 <div className="px-3 py-2 font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 border-l border-border truncate" title={result.entry_a.filename}>
                   {result.entry_a.filename.length > 25 ? result.entry_a.filename.slice(0, 25) + "..." : result.entry_a.filename}
@@ -318,7 +318,7 @@ export default function ComparePage() {
                 return (
                   <div
                     key={f.field}
-                    className={`grid grid-cols-[180px_1fr_1fr_80px] border-b border-dotted border-border last:border-b-0 ${
+                    className={`grid grid-cols-[160px_1fr_1fr_100px] border-b border-dotted border-border last:border-b-0 ${
                       f.status === "diff" ? "bg-vermillion-3/10" : ""
                     }`}
                   >
