@@ -107,14 +107,22 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
     renderPage();
   }, [pdfDoc, currentPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-navigate to highlighted field's page
+  // Auto-navigate to highlighted field's page + scroll to highlight
   useEffect(() => {
     if (!activeField || !highlights.length) return;
     const hit = highlights.find((h) => h.field === activeField);
-    if (hit && hit.page !== currentPage) {
+    if (!hit) return;
+    if (hit.page !== currentPage) {
       setCurrentPage(hit.page);
       onPageChange?.(hit.page);
     }
+    // Scroll to the highlight box after a short delay (allow page render)
+    setTimeout(() => {
+      const el = containerRef.current?.querySelector(`[data-highlight-field="${activeField}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 150);
   }, [activeField]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Filter highlights for current page
@@ -186,6 +194,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
                       }}
                       field={h.field}
                       reasoning={h.reasoning}
+                      isActive={isActive}
                     />
                   ));
               }
@@ -204,6 +213,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
                   }}
                   field={h.field}
                   reasoning={h.reasoning}
+                  isActive={isActive}
                 />
               );
             })}
@@ -227,11 +237,13 @@ function HoverBox({
   style,
   field,
   reasoning,
+  isActive,
 }: {
   className: string;
   style: React.CSSProperties;
   field: string;
   reasoning?: string;
+  isActive?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -239,7 +251,8 @@ function HoverBox({
   return (
     <div
       ref={boxRef}
-      className={className}
+      data-highlight-field={field}
+      className={`${className} ${isActive ? "animate-pulse" : ""}`}
       style={style}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
