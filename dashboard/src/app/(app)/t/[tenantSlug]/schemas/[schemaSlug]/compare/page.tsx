@@ -222,9 +222,9 @@ export default function ComparePage() {
         </h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-w-0">
         {/* Document selectors with upload */}
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-3 min-w-0 overflow-hidden">
           <DocumentPicker
             label="Document A"
             entries={entries ?? []}
