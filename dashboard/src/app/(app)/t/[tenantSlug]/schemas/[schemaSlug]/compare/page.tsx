@@ -58,7 +58,7 @@ function DocumentPicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex-1 min-w-0 overflow-hidden space-y-1.5">
+    <div className="flex-1 min-w-0 overflow-hidden space-y-1.5 w-0">
       <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 block">
         {label}
       </label>
@@ -79,9 +79,9 @@ function DocumentPicker({
           ))}
         </select>
       )}
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 overflow-hidden">
         <span className="text-[10px] text-ink-4 shrink-0">or</span>
-        <label className={`inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] border border-dashed transition-colors max-w-full truncate ${
+        <label className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] border border-dashed transition-colors min-w-0 overflow-hidden ${
           uploading
             ? "text-vermillion-2 border-vermillion-2/30 cursor-wait"
             : uploadedName
@@ -95,7 +95,7 @@ function DocumentPicker({
           ) : (
             <Upload className="w-3 h-3 shrink-0" />
           )}
-          <span className="truncate">{uploading ? "Uploading..." : uploadedName ?? "Upload file"}</span>
+          <span className="truncate block">{uploading ? "Uploading..." : uploadedName ?? "Upload file"}</span>
           <input
             ref={inputRef}
             type="file"
