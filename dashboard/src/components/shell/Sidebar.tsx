@@ -499,7 +499,7 @@ export function AppSidebar({
                   isActive={inOrgSettings}
                   tooltip="Organization"
                 >
-                  <Link href={`${base}/settings/general`}>
+                  <Link href={settingsExtensions.hideDefaultNav && settingsExtensions.navItems[0] ? `${base}${settingsExtensions.navItems[0].href}` : `${base}/settings/general`}>
                     <span
                       className={`flex items-center justify-center ${
                         inOrgSettings ? "text-vermillion-2" : "text-ink-4"
