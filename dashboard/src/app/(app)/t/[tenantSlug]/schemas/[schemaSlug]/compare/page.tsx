@@ -58,7 +58,7 @@ function DocumentPicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="flex-1 space-y-1.5">
+    <div className="flex-1 min-w-0 space-y-1.5">
       <label className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4 block">
         {label}
       </label>
@@ -71,11 +71,11 @@ function DocumentPicker({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring"
+          className="w-full h-[32px] rounded-sm border border-input bg-white px-2.5 text-[12px] outline-none focus:border-ring truncate"
         >
           <option value="">Select from corpus...</option>
           {entries.map((e) => (
-            <option key={e.id} value={e.id}>{e.filename}</option>
+            <option key={e.id} value={e.id}>{e.filename.length > 50 ? e.filename.slice(0, 47) + "..." : e.filename}</option>
           ))}
         </select>
       )}
@@ -95,7 +95,7 @@ function DocumentPicker({
           ) : (
             <Upload className="w-3 h-3" />
           )}
-          {uploading ? "Uploading..." : uploadedName ?? "Upload file"}
+          {uploading ? "Uploading..." : uploadedName ? (uploadedName.length > 30 ? uploadedName.slice(0, 27) + "..." : uploadedName) : "Upload file"}
           <input
             ref={inputRef}
             type="file"

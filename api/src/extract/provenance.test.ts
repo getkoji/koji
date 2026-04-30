@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveProvenance } from "./provenance";
+import { resolveProvenance, type TextMap } from "./provenance";
 
 // ---------------------------------------------------------------------------
 // Exact string match
@@ -223,5 +223,101 @@ describe("multi-field provenance", () => {
     for (let i = 1; i < offsets.length; i++) {
       expect(offsets[i]).toBeGreaterThan(offsets[i - 1]!);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Word-level bounding box matching
+// ---------------------------------------------------------------------------
+
+describe("word-level bbox matching", () => {
+  const textMap: TextMap = [
+    { text: "Invoice", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 } },
+    { text: "Number:", page: 1, bbox: { x: 0.2, y: 0.1, w: 0.1, h: 0.02 } },
+    { text: "INV-2024-001", page: 1, bbox: { x: 0.3, y: 0.1, w: 0.15, h: 0.02 } },
+    { text: "Total:", page: 1, bbox: { x: 0.1, y: 0.2, w: 0.08, h: 0.02 } },
+    { text: "$1,500.00", page: 1, bbox: { x: 0.2, y: 0.2, w: 0.12, h: 0.02 } },
+    { text: "ACME", page: 1, bbox: { x: 0.1, y: 0.3, w: 0.06, h: 0.02 } },
+    { text: "CORPORATION", page: 1, bbox: { x: 0.17, y: 0.3, w: 0.15, h: 0.02 } },
+  ];
+
+  it("returns word-level boxes for a single-word match", () => {
+    const markdown = "Invoice Number: INV-2024-001\nTotal: $1,500.00\nACME CORPORATION";
+    const result = resolveProvenance({ invoice_number: "INV-2024-001" }, markdown, textMap);
+
+    expect(result.invoice_number).not.toBeNull();
+    expect(result.invoice_number!.words).toBeDefined();
+    expect(result.invoice_number!.words!.length).toBe(1);
+    expect(result.invoice_number!.words![0]!.text).toBe("INV-2024-001");
+    expect(result.invoice_number!.words![0]!.page).toBe(1);
+  });
+
+  it("returns multiple word boxes for a multi-word match", () => {
+    const markdown = "Invoice Number: INV-2024-001\nTotal: $1,500.00\nACME CORPORATION";
+    const result = resolveProvenance({ company: "ACME CORPORATION" }, markdown, textMap);
+
+    expect(result.company).not.toBeNull();
+    expect(result.company!.words).toBeDefined();
+    expect(result.company!.words!.length).toBe(2);
+    expect(result.company!.words![0]!.text).toBe("ACME");
+    expect(result.company!.words![1]!.text).toBe("CORPORATION");
+  });
+
+  it("returns page number from word boxes", () => {
+    const markdown = "Invoice Number: INV-2024-001\nTotal: $1,500.00\nACME CORPORATION";
+    const result = resolveProvenance({ company: "ACME CORPORATION" }, markdown, textMap);
+
+    expect(result.company!.page).toBe(1);
+  });
+
+  it("returns enclosing bbox alongside word boxes", () => {
+    const markdown = "Invoice Number: INV-2024-001\nTotal: $1,500.00\nACME CORPORATION";
+    const result = resolveProvenance({ company: "ACME CORPORATION" }, markdown, textMap);
+
+    expect(result.company!.bbox).toBeDefined();
+    // Enclosing bbox should span from ACME's left edge to CORPORATION's right edge
+    expect(result.company!.bbox!.x).toBe(0.1); // ACME's x
+    expect(result.company!.bbox!.w).toBeCloseTo(0.22, 2); // span to end of CORPORATION
+  });
+
+  it("falls back to paragraph-level match when no word match found", () => {
+    // Use a value that exists in markdown but not in word-level textMap
+    const markdown = "Invoice Number: INV-2024-001\nNote: special-value-xyz";
+    const result = resolveProvenance({ note: "special-value-xyz" }, markdown, textMap);
+
+    // Should find in markdown but no word-level boxes (not in textMap)
+    expect(result.note).not.toBeNull();
+    expect(result.note!.chunk).toBe("special-value-xyz");
+    expect(result.note!.words).toBeUndefined();
+  });
+
+  it("works without textMap (backward compat)", () => {
+    const markdown = "Invoice Number: INV-2024-001";
+    const result = resolveProvenance({ invoice_number: "INV-2024-001" }, markdown);
+
+    expect(result.invoice_number).not.toBeNull();
+    expect(result.invoice_number!.chunk).toBe("INV-2024-001");
+    expect(result.invoice_number!.words).toBeUndefined();
+    expect(result.invoice_number!.page).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dollar amount word matching with textMap
+// ---------------------------------------------------------------------------
+
+describe("dollar amount word matching", () => {
+  const textMap: TextMap = [
+    { text: "$1,500.00", page: 1, bbox: { x: 0.5, y: 0.5, w: 0.1, h: 0.02 } },
+  ];
+
+  it("matches a number value to a dollar-formatted word in textMap", () => {
+    const markdown = "Total: $1,500.00";
+    const result = resolveProvenance({ total: 1500 }, markdown, textMap);
+
+    expect(result.total).not.toBeNull();
+    expect(result.total!.words).toBeDefined();
+    expect(result.total!.words!.length).toBe(1);
+    expect(result.total!.words![0]!.text).toBe("$1,500.00");
   });
 });

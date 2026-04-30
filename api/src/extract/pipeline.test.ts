@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -541,5 +541,58 @@ describe("elapsed_ms", () => {
 
     const result = await extractFields("doc", schema, provider, "m");
     expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractLlmReasoning
+// ---------------------------------------------------------------------------
+
+describe("extractLlmReasoning", () => {
+  it("extracts reasoning map and removes it from parsed object", () => {
+    const parsed: Record<string, unknown> = {
+      name: "Acme",
+      __reasoning: {
+        name: "Found 'Acme' on the first page header",
+      },
+    };
+
+    const reasoning = extractLlmReasoning(parsed);
+
+    expect(reasoning.name).toBe("Found 'Acme' on the first page header");
+    expect(parsed.__reasoning).toBeUndefined();
+  });
+
+  it("returns empty object when __reasoning is missing", () => {
+    const parsed: Record<string, unknown> = { name: "Acme" };
+    const reasoning = extractLlmReasoning(parsed);
+
+    expect(Object.keys(reasoning)).toHaveLength(0);
+  });
+
+  it("ignores non-string reasoning values", () => {
+    const parsed: Record<string, unknown> = {
+      __reasoning: { name: "valid", age: 42, active: true },
+    };
+
+    const reasoning = extractLlmReasoning(parsed);
+
+    expect(reasoning.name).toBe("valid");
+    expect(reasoning.age).toBeUndefined();
+    expect(reasoning.active).toBeUndefined();
+  });
+
+  it("returns empty object when __reasoning is null", () => {
+    const parsed: Record<string, unknown> = { __reasoning: null };
+    const reasoning = extractLlmReasoning(parsed);
+
+    expect(Object.keys(reasoning)).toHaveLength(0);
+  });
+
+  it("returns empty object when __reasoning is an array", () => {
+    const parsed: Record<string, unknown> = { __reasoning: ["not", "valid"] };
+    const reasoning = extractLlmReasoning(parsed);
+
+    expect(Object.keys(reasoning)).toHaveLength(0);
   });
 });
