@@ -2,7 +2,9 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   char,
+  decimal,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -31,6 +33,8 @@ export const pipelines = pgTable(
     // follow-up once the transient-error classifier (platform-53) lands.
     retryPolicyJson: jsonb("retry_policy_json"),
     reviewThreshold: varchar("review_threshold", { length: 8 }).notNull().default("0.9"),
+    pipelineType: varchar("pipeline_type", { length: 16 }).notNull().default("simple"),
+    dagJson: jsonb("dag_json"),
     yamlSource: text("yaml_source").notNull().default(""),
     parsedJson: jsonb("parsed_json").notNull().default(sql`'{}'::jsonb`),
     triggerType: varchar("trigger_type", { length: 32 }).notNull().default("manual"),
@@ -123,5 +127,72 @@ export const ingestions = pgTable(
     dedupeIdx: index("ingestions_dedupe_idx")
       .on(t.sourceId, t.contentHash)
       .where(sql`content_hash IS NOT NULL`),
+  }),
+);
+
+export const pipelineVersions = pgTable(
+  "pipeline_versions",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id")
+      .notNull()
+      .references(() => pipelines.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    yamlSource: text("yaml_source").notNull(),
+    dagJson: jsonb("dag_json").notNull(),
+    commitMessage: varchar("commit_message", { length: 500 }),
+    committedBy: uuid("committed_by")
+      .notNull()
+      .references(() => users.id),
+    deployedAt: timestamp("deployed_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pipelineVersionIdx: uniqueIndex("pipeline_versions_pipeline_version_idx").on(
+      t.pipelineId,
+      t.versionNumber,
+    ),
+    pipelineDeployedIdx: index("pipeline_versions_pipeline_deployed_idx").on(
+      t.pipelineId,
+      sql`${t.deployedAt} DESC`,
+    ),
+  }),
+);
+
+/**
+ * Tracks per-step execution state within a document's pipeline run.
+ * Used for crash recovery (skip completed steps on retry) and trace rendering.
+ *
+ * document_id and job_id are plain uuid — FK enforcement is application-layer
+ * to avoid circular references with jobs.ts (same pattern as ingestions).
+ */
+export const pipelineStepRuns = pgTable(
+  "pipeline_step_runs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id").notNull(),
+    jobId: uuid("job_id").notNull(),
+    stepId: varchar("step_id", { length: 64 }).notNull(),
+    stepType: varchar("step_type", { length: 32 }).notNull(),
+    stepOrder: integer("step_order").notNull(),
+    status: varchar("status", { length: 16 }).notNull(),
+    inputJson: jsonb("input_json"),
+    outputJson: jsonb("output_json"),
+    errorMessage: text("error_message"),
+    durationMs: integer("duration_ms"),
+    costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    documentStepIdx: uniqueIndex("pipeline_step_runs_doc_step_idx").on(
+      t.documentId,
+      t.stepId,
+    ),
+    jobIdx: index("pipeline_step_runs_job_idx").on(t.jobId),
+    tenantStatusIdx: index("pipeline_step_runs_tenant_status_idx").on(t.tenantId, t.status),
   }),
 );

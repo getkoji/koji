@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import YAML from "yaml";
 import { schema, withRLS } from "@koji/db";
 import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
@@ -166,6 +167,8 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
+        pipelineType: schema.pipelines.pipelineType,
+        dagJson: schema.pipelines.dagJson,
         configJson: schema.pipelines.configJson,
         retryPolicyJson: schema.pipelines.retryPolicyJson,
         reviewThreshold: schema.pipelines.reviewThreshold,
@@ -316,6 +319,7 @@ pipelinesRouter.post(
   const body = await c.req.json<{
     name: string;
     slug: string;
+    yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
     review_threshold?: number;
@@ -326,6 +330,18 @@ pipelinesRouter.post(
     return c.json({ error: "name and slug are required" }, 400);
   }
 
+  // If yaml is provided, mark as a DAG pipeline and store the source.
+  // Full compilation is deferred to validate/deploy when @koji/pipeline lands.
+  let pipelineType = "simple";
+  let dagJson: Record<string, unknown> | null = null;
+  let yamlSource = "";
+
+  if (body.yaml) {
+    pipelineType = "dag";
+    yamlSource = body.yaml;
+    dagJson = {};
+  }
+
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .insert(schema.pipelines)
@@ -333,6 +349,9 @@ pipelinesRouter.post(
         tenantId,
         slug: body.slug,
         displayName: body.name,
+        pipelineType,
+        yamlSource,
+        dagJson,
         schemaId: body.schema_id ?? null,
         modelProviderId: body.model_provider_id ?? null,
         reviewThreshold: body.review_threshold?.toString() ?? "0.9",
@@ -357,6 +376,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
 
   const body = await c.req.json<{
     name?: string;
+    yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
     review_threshold?: number;
@@ -365,6 +385,11 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name) updates.displayName = body.name;
+  if (body.yaml !== undefined) {
+    updates.yamlSource = body.yaml;
+    updates.pipelineType = "dag";
+    updates.dagJson = {};
+  }
   if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;
   if (body.review_threshold !== undefined)
@@ -419,6 +444,174 @@ pipelinesRouter.patch("/:idOrSlug/retry-policy", requires("pipeline:write"), asy
 
   if (rows.length === 0) return c.json({ error: "Pipeline not found" }, 404);
   return c.json({ retryPolicy: (rows[0]!.retryPolicyJson ?? null) as RetryPolicy | null });
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/validate — validate pipeline YAML without saving.
+ */
+pipelinesRouter.post("/:idOrSlug/validate", requires("pipeline:write"), async (c) => {
+  const body = await c.req.json<{ yaml: string }>();
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+
+  try {
+    const parsed = YAML.parse(body.yaml);
+
+    if (!parsed.pipeline) {
+      return c.json({
+        valid: false,
+        errors: [{ code: "missing_name", message: "pipeline name is required" }],
+      });
+    }
+
+    if (!parsed.steps && !parsed.schema) {
+      return c.json({
+        valid: false,
+        errors: [{ code: "missing_steps", message: "pipeline must have steps or a schema" }],
+      });
+    }
+
+    return c.json({ valid: true, errors: [], parsed });
+  } catch (err) {
+    return c.json({
+      valid: false,
+      errors: [
+        {
+          code: "yaml_parse_error",
+          message: err instanceof Error ? err.message : "Invalid YAML",
+        },
+      ],
+    });
+  }
+});
+
+/**
+ * GET /api/pipelines/:idOrSlug/cost — per-doc cost estimate.
+ */
+pipelinesRouter.get("/:idOrSlug/cost", requires("pipeline:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        pipelineType: schema.pipelines.pipelineType,
+        dagJson: schema.pipelines.dagJson,
+      })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .limit(1),
+  );
+
+  if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
+
+  if (pipeline.pipelineType === "simple") {
+    return c.json({
+      max_cost_per_doc: 0.08,
+      paths: [{ steps: ["extract"], cost: 0.08, description: "Single-schema extraction" }],
+    });
+  }
+
+  // For DAG pipelines, return the compiled DAG's cost estimate if available.
+  // Full cost calculation will be wired when @koji/pipeline lands.
+  const dag = pipeline.dagJson as Record<string, unknown> | null;
+  return c.json({
+    max_cost_per_doc: (dag?.estimatedMaxCostPerDoc as number) ?? 0.08,
+    paths: (dag?.paths as unknown[]) ?? [],
+  });
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/versions — create a pipeline version (draft or deployed).
+ */
+pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const body = await c.req.json<{
+    yaml: string;
+    commit_message?: string;
+    deploy?: boolean;
+  }>();
+
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+
+  // Get the next version number
+  const [latest] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ maxVersion: sql<number>`COALESCE(MAX(version_number), 0)::int` })
+      .from(schema.pipelineVersions)
+      .where(eq(schema.pipelineVersions.pipelineId, pipelineId)),
+  );
+
+  const nextVersion = (latest?.maxVersion ?? 0) + 1;
+
+  // TODO: Compile YAML when @koji/pipeline is available
+  const dagJson = {};
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .insert(schema.pipelineVersions)
+      .values({
+        tenantId,
+        pipelineId,
+        versionNumber: nextVersion,
+        yamlSource: body.yaml,
+        dagJson,
+        commitMessage: body.commit_message ?? null,
+        committedBy: principal.userId,
+        deployedAt: body.deploy ? new Date() : null,
+      })
+      .returning(),
+  );
+
+  // If deploying, update the pipeline's active state
+  if (body.deploy && rows[0]) {
+    await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.pipelines)
+        .set({
+          pipelineType: "dag",
+          yamlSource: body.yaml,
+          dagJson,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.pipelines.id, pipelineId)),
+    );
+  }
+
+  return c.json(rows[0], 201);
+});
+
+/**
+ * GET /api/pipelines/:idOrSlug/versions — list pipeline versions.
+ */
+pipelinesRouter.get("/:idOrSlug/versions", requires("pipeline:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.pipelineVersions.id,
+        versionNumber: schema.pipelineVersions.versionNumber,
+        commitMessage: schema.pipelineVersions.commitMessage,
+        deployedAt: schema.pipelineVersions.deployedAt,
+        createdAt: schema.pipelineVersions.createdAt,
+      })
+      .from(schema.pipelineVersions)
+      .where(eq(schema.pipelineVersions.pipelineId, pipelineId))
+      .orderBy(desc(schema.pipelineVersions.versionNumber))
+      .limit(50),
+  );
+
+  return c.json({ data: rows });
 });
 
 /**
