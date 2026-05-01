@@ -1,6 +1,20 @@
-export { compilePipeline, type CompileResult } from './compiler.js';
-export { parseCondition, evaluateCondition, ConditionParseError } from './condition.js';
-export { calculatePipelineCosts, type PipelinePath } from './cost.js';
-export { expandSugar } from './sugar.js';
-export { validatePipeline } from './validate.js';
-export * from './types.js';
+// Core types
+export type {
+  StepType,
+  CompiledStep,
+  CompiledEdge,
+  ParsedCondition,
+  PipelineSettings,
+  CompiledPipeline,
+} from './types';
+export { StepTypes } from './types';
+
+// Condition evaluator
+export { evaluateCondition } from './condition';
+
+// Executor
+export { executePipeline, type ExecutorDeps, type ExecutionResult } from './executor';
+
+// Step registry and types
+export { registerAllSteps, getStep, hasStep } from './steps';
+export type { StepContext, StepOutput, StepResult, StepImplementation } from './steps/types';

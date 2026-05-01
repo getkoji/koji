@@ -2,7 +2,7 @@
   "name": "@koji/pipeline",
   "version": "0.0.0",
   "private": true,
-  "description": "Pipeline DAG compiler — YAML → validated DAG with cost estimation.",
+  "description": "Pipeline compiler, DAG executor, and step registry for Koji pipelines.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -12,9 +12,6 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
