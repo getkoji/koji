@@ -126,7 +126,7 @@ function layoutNodes(
   const stepNodes = ordered.map((step, i) => ({
     id: step.id,
     type: "step",
-    position: { x: 250, y: (i + 1) * 150 },  // offset by 1 for document input
+    position: { x: 250, y: (i + 1) * 200 },  // offset by 1 for document input, 200px spacing
     data: {
       ...step,
       label: step.id,
@@ -175,10 +175,18 @@ function toFlowEdges(pipelineEdges: PipelineEdge[], edgeStates?: Map<string, Edg
       style: { stroke, strokeWidth, opacity, strokeDasharray },
       labelStyle: {
         fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 11,
+        fontSize: 10,
         fill: state?.matched ? "#C33520" : state?.evaluated ? "#D4CFC5" : "#3A3328",
         fontWeight: state?.matched ? 600 : 400,
       },
+      labelShowBg: true,
+      labelBgStyle: {
+        fill: "#FAF7F0",
+        fillOpacity: 0.9,
+        rx: 3,
+        ry: 3,
+      },
+      labelBgPadding: [4, 6] as [number, number],
     };
   });
 }
