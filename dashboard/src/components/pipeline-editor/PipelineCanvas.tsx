@@ -280,31 +280,26 @@ export function PipelineCanvas({
     }
   }, [steps, selectedNodeId, nodeStates, setNodes]);
 
-  const prevEdgesRef = useRef(pipelineEdges);
-  const prevEdgeStatesRef = useRef(edgeStates);
+  // Rebuild flow edges whenever pipeline edges, edge states, or steps change.
+  // The document input edge always targets the current entry step.
   useEffect(() => {
-    if (prevEdgesRef.current !== pipelineEdges || prevEdgeStatesRef.current !== edgeStates) {
-      prevEdgesRef.current = pipelineEdges;
-      prevEdgeStatesRef.current = edgeStates;
-      const flowEdges = toFlowEdges(pipelineEdges, edgeStates);
-      // Re-add document input → entry step edge
-      if (steps.length > 0) {
-        const withIncoming = new Set(pipelineEdges.map(e => e.to));
-        const entryStepId = steps.find(s => !withIncoming.has(s.id))?.id || steps[0]?.id;
-        if (entryStepId) {
-          flowEdges.unshift({
-            id: "e-__document_input__-entry",
-            source: "__document_input__",
-            target: entryStepId,
-            animated: false,
-            selectable: false,
-            deletable: false,
-            style: { stroke: "#D4CFC5", strokeWidth: 1, strokeDasharray: "4,4" },
-          });
-        }
+    const flowEdges = toFlowEdges(pipelineEdges, edgeStates);
+    if (steps.length > 0) {
+      const withIncoming = new Set(pipelineEdges.map(e => e.to));
+      const entryStepId = steps.find(s => !withIncoming.has(s.id))?.id || steps[0]?.id;
+      if (entryStepId) {
+        flowEdges.unshift({
+          id: "e-__document_input__-entry",
+          source: "__document_input__",
+          target: entryStepId,
+          animated: false,
+          selectable: false,
+          deletable: false,
+          style: { stroke: "#D4CFC5", strokeWidth: 1, strokeDasharray: "4,4" },
+        });
       }
-      setEdges(flowEdges);
     }
+    setEdges(flowEdges);
   }, [pipelineEdges, edgeStates, steps, setEdges]);
 
   // Propagate node position changes back (for drag repositioning)
