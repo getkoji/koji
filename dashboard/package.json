@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.2.5",
+    "@dagrejs/dagre": "^3.0.0",
     "@koji/ui": "workspace:*",
+    "@xyflow/react": "^12.0.0",
     "lucide-react": "^0.510.0",
     "next": "16.2.4",
     "pdfjs-dist": "^5.6.205",
@@ -18,7 +20,6 @@
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "@xyflow/react": "^12.0.0",
     "yaml": "^2.8.3"
   },
   "devDependencies": {

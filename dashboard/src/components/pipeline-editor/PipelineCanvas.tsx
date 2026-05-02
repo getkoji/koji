@@ -66,13 +66,8 @@ interface PipelineCanvasProps {
 }
 
 /**
- * Auto-layout: arrange nodes vertically, centering them on the X axis.
- * For steps that have multiple incoming edges (branches), space them
- * out horizontally.
- */
-/**
- * Layout nodes in topological order (entry step at top, follow edges down).
- * Falls back to array order if no edges exist.
+ * Layout nodes using dagre for proper DAG positioning.
+ * Avoids edge crossings and node overlaps.
  */
 function layoutNodes(
   steps: PipelineStep[],
@@ -80,60 +75,63 @@ function layoutNodes(
   edges?: PipelineEdge[],
   documentInput?: DocumentInputData,
 ): Node[] {
-  // Topological sort: entry step first, then follow edges
-  let ordered = steps;
-  if (edges && edges.length > 0) {
-    const incomingCount = new Map<string, number>();
-    const outgoing = new Map<string, string[]>();
-    for (const s of steps) {
-      incomingCount.set(s.id, 0);
-      outgoing.set(s.id, []);
-    }
-    for (const e of edges) {
-      incomingCount.set(e.to, (incomingCount.get(e.to) ?? 0) + 1);
-      outgoing.get(e.from)?.push(e.to);
-    }
-    // Kahn's algorithm
-    const queue = steps.filter((s) => (incomingCount.get(s.id) ?? 0) === 0).map((s) => s.id);
-    const sorted: string[] = [];
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      sorted.push(id);
-      for (const next of outgoing.get(id) ?? []) {
-        const count = (incomingCount.get(next) ?? 1) - 1;
-        incomingCount.set(next, count);
-        if (count === 0) queue.push(next);
-      }
-    }
-    // Add any steps not reached by edges (disconnected)
-    for (const s of steps) {
-      if (!sorted.includes(s.id)) sorted.push(s.id);
-    }
-    ordered = sorted.map((id) => steps.find((s) => s.id === id)!).filter(Boolean);
+  const dagre = require("@dagrejs/dagre");
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "TB", nodesep: 80, ranksep: 120, marginx: 40, marginy: 40 });
+
+  // Add document input node
+  g.setNode("__document_input__", { width: 200, height: 60 });
+
+  // Add step nodes
+  for (const step of steps) {
+    g.setNode(step.id, { width: 220, height: 120 });
   }
 
-  // Document input node at the top, then steps below it
+  // Add edges — document input to entry step
+  if (steps.length > 0 && edges) {
+    const withIncoming = new Set(edges.map(e => e.to));
+    const entryId = steps.find(s => !withIncoming.has(s.id))?.id || steps[0]?.id;
+    if (entryId) g.setEdge("__document_input__", entryId);
+  } else if (steps.length > 0) {
+    g.setEdge("__document_input__", steps[0]!.id);
+  }
+
+  // Add pipeline edges
+  for (const e of edges || []) {
+    g.setEdge(e.from, e.to);
+  }
+
+  // Run dagre layout
+  dagre.layout(g);
+
+  // Build document input node
+  const docPos = g.node("__document_input__");
   const docInputNode: Node = {
     id: "__document_input__",
     type: "documentInput",
-    position: { x: 275, y: 0 },
+    position: { x: (docPos?.x ?? 275) - 100, y: (docPos?.y ?? 0) - 30 },
     draggable: false,
     selectable: false,
     deletable: false,
     data: (documentInput ?? {}) as Record<string, unknown>,
   };
 
-  const stepNodes = ordered.map((step, i) => ({
-    id: step.id,
-    type: "step",
-    position: { x: 250, y: (i + 1) * 200 },  // offset by 1 for document input, 200px spacing
-    data: {
-      ...step,
-      label: step.id,
-      stepId: step.id,
-      selected: step.id === selectedNodeId,
-    },
-  }));
+  // Build step nodes from dagre positions
+  const stepNodes = steps.map((step) => {
+    const pos = g.node(step.id);
+    return {
+      id: step.id,
+      type: "step",
+      position: { x: (pos?.x ?? 250) - 110, y: (pos?.y ?? 0) - 60 },
+      data: {
+        ...step,
+        label: step.id,
+        stepId: step.id,
+        selected: step.id === selectedNodeId,
+      },
+    };
+  });
 
   return [docInputNode, ...stepNodes];
 }
