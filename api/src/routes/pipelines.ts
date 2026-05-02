@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import YAML from "yaml";
 import { schema, withRLS } from "@koji/db";
+import { compilePipeline, calculatePipelineCosts } from "@koji/pipeline";
 import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
@@ -94,6 +96,7 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
         reviewThreshold: schema.pipelines.reviewThreshold,
+        pipelineType: schema.pipelines.pipelineType,
         status: schema.pipelines.status,
         triggerType: schema.pipelines.triggerType,
         lastRunAt: schema.pipelines.lastRunAt,
@@ -166,6 +169,8 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
+        pipelineType: schema.pipelines.pipelineType,
+        dagJson: schema.pipelines.dagJson,
         configJson: schema.pipelines.configJson,
         retryPolicyJson: schema.pipelines.retryPolicyJson,
         reviewThreshold: schema.pipelines.reviewThreshold,
@@ -316,6 +321,7 @@ pipelinesRouter.post(
   const body = await c.req.json<{
     name: string;
     slug: string;
+    yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
     review_threshold?: number;
@@ -326,6 +332,18 @@ pipelinesRouter.post(
     return c.json({ error: "name and slug are required" }, 400);
   }
 
+  // If yaml is provided, mark as a DAG pipeline and store the source.
+  // Full compilation is deferred to validate/deploy when @koji/pipeline lands.
+  let pipelineType = "simple";
+  let dagJson: Record<string, unknown> | null = null;
+  let yamlSource = "";
+
+  if (body.yaml) {
+    pipelineType = "dag";
+    yamlSource = body.yaml;
+    dagJson = {};
+  }
+
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .insert(schema.pipelines)
@@ -333,6 +351,9 @@ pipelinesRouter.post(
         tenantId,
         slug: body.slug,
         displayName: body.name,
+        pipelineType,
+        yamlSource,
+        dagJson,
         schemaId: body.schema_id ?? null,
         modelProviderId: body.model_provider_id ?? null,
         reviewThreshold: body.review_threshold?.toString() ?? "0.9",
@@ -357,6 +378,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
 
   const body = await c.req.json<{
     name?: string;
+    yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
     review_threshold?: number;
@@ -365,6 +387,13 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name) updates.displayName = body.name;
+  if (body.yaml !== undefined) {
+    updates.yamlSource = body.yaml;
+    updates.pipelineType = "dag";
+    // Compile the YAML and store the compiled DAG
+    const compiled = compilePipeline(body.yaml);
+    updates.dagJson = compiled.ok ? compiled.pipeline : {};
+  }
   if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;
   if (body.review_threshold !== undefined)
@@ -419,6 +448,186 @@ pipelinesRouter.patch("/:idOrSlug/retry-policy", requires("pipeline:write"), asy
 
   if (rows.length === 0) return c.json({ error: "Pipeline not found" }, 404);
   return c.json({ retryPolicy: (rows[0]!.retryPolicyJson ?? null) as RetryPolicy | null });
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/validate — validate pipeline YAML without saving.
+ */
+pipelinesRouter.post("/:idOrSlug/validate", requires("pipeline:write"), async (c) => {
+  const body = await c.req.json<{ yaml: string }>();
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+
+  const result = compilePipeline(body.yaml);
+
+  if (result.ok) {
+    const costs = calculatePipelineCosts(result.pipeline);
+    return c.json({
+      valid: true,
+      errors: [],
+      compiled: {
+        name: result.pipeline.name,
+        steps: result.pipeline.steps.length,
+        entryStepId: result.pipeline.entryStepId,
+        terminalStepIds: result.pipeline.terminalStepIds,
+        estimatedMaxCostPerDoc: result.pipeline.estimatedMaxCostPerDoc,
+        paths: costs.paths,
+      },
+    });
+  }
+
+  return c.json({ valid: false, errors: result.errors });
+});
+
+/**
+ * GET /api/pipelines/:idOrSlug/cost — per-doc cost estimate.
+ */
+pipelinesRouter.get("/:idOrSlug/cost", requires("pipeline:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        pipelineType: schema.pipelines.pipelineType,
+        dagJson: schema.pipelines.dagJson,
+      })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .limit(1),
+  );
+
+  if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
+
+  if (pipeline.pipelineType === "simple") {
+    return c.json({
+      max_cost_per_doc: 0.08,
+      paths: [{ steps: ["extract"], cost: 0.08, description: "Single-schema extraction" }],
+    });
+  }
+
+  // For DAG pipelines, compile the YAML and calculate costs
+  const [full] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ yamlSource: schema.pipelines.yamlSource })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .limit(1),
+  );
+
+  if (full?.yamlSource) {
+    const result = compilePipeline(full.yamlSource);
+    if (result.ok) {
+      const costs = calculatePipelineCosts(result.pipeline);
+      return c.json({
+        max_cost_per_doc: costs.maxCostPerDoc,
+        paths: costs.paths,
+      });
+    }
+  }
+
+  // Fallback if YAML doesn't compile
+  const dag = pipeline.dagJson as Record<string, unknown> | null;
+  return c.json({
+    max_cost_per_doc: (dag?.estimatedMaxCostPerDoc as number) ?? 0.08,
+    paths: [],
+  });
+});
+
+/**
+ * POST /api/pipelines/:idOrSlug/versions — create a pipeline version (draft or deployed).
+ */
+pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const body = await c.req.json<{
+    yaml: string;
+    commit_message?: string;
+    deploy?: boolean;
+  }>();
+
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+
+  // Get the next version number
+  const [latest] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ maxVersion: sql<number>`COALESCE(MAX(version_number), 0)::int` })
+      .from(schema.pipelineVersions)
+      .where(eq(schema.pipelineVersions.pipelineId, pipelineId)),
+  );
+
+  const nextVersion = (latest?.maxVersion ?? 0) + 1;
+
+  // Compile the YAML
+  const compiled = compilePipeline(body.yaml);
+  if (!compiled.ok) {
+    return c.json({ error: "Pipeline YAML is invalid", errors: compiled.errors }, 422);
+  }
+  const dagJson = compiled.pipeline;
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .insert(schema.pipelineVersions)
+      .values({
+        tenantId,
+        pipelineId,
+        versionNumber: nextVersion,
+        yamlSource: body.yaml,
+        dagJson,
+        commitMessage: body.commit_message ?? null,
+        committedBy: principal.userId,
+        deployedAt: body.deploy ? new Date() : null,
+      })
+      .returning(),
+  );
+
+  // If deploying, update the pipeline's active state
+  if (body.deploy && rows[0]) {
+    await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.pipelines)
+        .set({
+          pipelineType: "dag",
+          yamlSource: body.yaml,
+          dagJson,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.pipelines.id, pipelineId)),
+    );
+  }
+
+  return c.json(rows[0], 201);
+});
+
+/**
+ * GET /api/pipelines/:idOrSlug/versions — list pipeline versions.
+ */
+pipelinesRouter.get("/:idOrSlug/versions", requires("pipeline:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.pipelineVersions.id,
+        versionNumber: schema.pipelineVersions.versionNumber,
+        commitMessage: schema.pipelineVersions.commitMessage,
+        deployedAt: schema.pipelineVersions.deployedAt,
+        createdAt: schema.pipelineVersions.createdAt,
+      })
+      .from(schema.pipelineVersions)
+      .where(eq(schema.pipelineVersions.pipelineId, pipelineId))
+      .orderBy(desc(schema.pipelineVersions.versionNumber))
+      .limit(50),
+  );
+
+  return c.json({ data: rows });
 });
 
 /**
@@ -570,17 +779,28 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
         id: schema.pipelines.id,
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+        pipelineType: schema.pipelines.pipelineType,
+        yamlSource: schema.pipelines.yamlSource,
       })
       .from(schema.pipelines)
       .where(eq(schema.pipelines.id, pipelineId))
       .limit(1),
   );
   if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
-  if (!pipeline.schemaId || !pipeline.activeSchemaVersionId) {
-    return c.json(
-      { error: "Pipeline has no deployed schema version. Deploy one first." },
-      422,
-    );
+
+  // DAG pipelines require YAML to be saved
+  // Simple pipelines require a deployed schema version
+  if (pipeline.pipelineType === "simple") {
+    if (!pipeline.schemaId || !pipeline.activeSchemaVersionId) {
+      return c.json(
+        { error: "Pipeline has no deployed schema version. Deploy one first." },
+        422,
+      );
+    }
+  } else if (pipeline.pipelineType === "dag") {
+    if (!pipeline.yamlSource) {
+      return c.json({ error: "Pipeline has no DAG definition. Save one first." }, 422);
+    }
   }
 
   const body = await c.req.parseBody();
@@ -602,8 +822,8 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     db,
     tenantId,
     pipelineId,
-    schemaId: pipeline.schemaId,
-    schemaVersionId: pipeline.activeSchemaVersionId,
+    schemaId: pipeline.schemaId || "",
+    schemaVersionId: pipeline.activeSchemaVersionId || "",
     triggerType: "manual",
     storageKey,
     filename: file.name,
@@ -612,11 +832,20 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     contentHash,
   });
 
-  await queue.enqueue(
-    "ingestion.process",
-    { documentId: created.documentId },
-    { tenantId },
-  );
+  // Route to the appropriate handler based on pipeline type
+  if (pipeline.pipelineType === "dag") {
+    await queue.enqueue(
+      "pipeline.dag.run",
+      { documentId: created.documentId, pipelineId },
+      { tenantId },
+    );
+  } else {
+    await queue.enqueue(
+      "ingestion.process",
+      { documentId: created.documentId },
+      { tenantId },
+    );
+  }
 
   return c.json(
     { jobId: created.jobId, jobSlug: created.jobSlug, documentId: created.documentId },
@@ -700,4 +929,370 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
   );
 
   return c.json({ documentId: created.documentId }, 202);
+});
+
+// ── Pipeline test mode (dry-run) ──
+
+const STEP_COSTS: Record<string, number> = {
+  classify: 0.005, extract: 0.08, ocr: 0.03, split: 0.01,
+  tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
+  redact: 0.005, enrich: 0, validate: 0, summarize: 0.01,
+  compare: 0.005, merge_documents: 0,
+};
+
+function resolveTestDotPath(obj: Record<string, unknown>, path: string): unknown {
+  let current: unknown = obj;
+  for (const part of path.split(".")) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function evalTestCondition(condition: string, context: Record<string, unknown>): boolean {
+  const m = condition.match(/^([\w.]+)\s*(==|!=|>=?|<=?|in)\s*(.+)$/);
+  if (!m) return true;
+  const left = resolveTestDotPath(context, m[1]!);
+  const raw = m[3]!.trim();
+  let right: unknown;
+  if (raw.startsWith("'") && raw.endsWith("'")) right = raw.slice(1, -1);
+  else if (raw.startsWith("[")) { try { right = JSON.parse(raw.replace(/'/g, '"')); } catch { right = raw; } }
+  else if (!isNaN(Number(raw))) right = Number(raw);
+  else right = raw;
+  switch (m[2]) {
+    case "==": return left === right;
+    case "!=": return left !== right;
+    case ">": return (left as number) > (right as number);
+    case ">=": return (left as number) >= (right as number);
+    case "<": return (left as number) < (right as number);
+    case "<=": return (left as number) <= (right as number);
+    case "in": return Array.isArray(right) && right.includes(left);
+    default: return true;
+  }
+}
+
+interface TestEdge { from: string; to: string; when?: string; default?: boolean }
+
+function resolveTestNextStep(edges: TestEdge[], output: Record<string, unknown>): string | null {
+  for (const e of edges) {
+    if (!e.when && !e.default) return e.to;
+    if (e.when && evalTestCondition(e.when, { output })) return e.to;
+  }
+  return edges.find(e => e.default)?.to ?? null;
+}
+
+async function executeTestStep(
+  step: { id: string; type: string; config: Record<string, unknown> },
+  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string },
+  priorOutputs: Record<string, unknown>,
+  ctx?: { db: unknown; tenantId: string; pipelineId: string },
+): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
+  const cost = STEP_COSTS[step.type] ?? 0;
+  switch (step.type) {
+    case "classify": {
+      const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
+      const method = (step.config.method as string) || "keyword_then_llm";
+      const question = (step.config.question as string) || "What type of document is this?";
+
+      // Try keyword classification first
+      if (method === "keyword" || method === "keyword_then_llm") {
+        const text = (docInfo.text || docInfo.filename).toLowerCase();
+        for (const label of labels) {
+          if (!label.keywords?.length) continue;
+          const hits = label.keywords.filter(kw => text.includes(kw.toLowerCase()));
+          if (hits.length >= 2) {
+            return { ok: true, output: { label: label.id, confidence: 1.0, method: "keyword", reasoning: `Matched keywords: ${hits.join(", ")}` }, costUsd: 0 };
+          }
+        }
+        if (method === "keyword") {
+          return { ok: true, output: { label: labels[labels.length - 1]?.id || "unknown", confidence: 0.5, method: "keyword", reasoning: "No keyword match found" }, costUsd: 0 };
+        }
+      }
+
+      // LLM classification — try to resolve model endpoint
+      if (ctx?.db && ctx.tenantId) {
+        try {
+          const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
+          const { createProvider } = await import("../extract/providers");
+          // Look up the pipeline's model provider ID
+          const pipelineRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+            tx.select({ modelProviderId: schema.pipelines.modelProviderId })
+              .from(schema.pipelines)
+              .where(eq(schema.pipelines.id, ctx.pipelineId))
+              .limit(1),
+          ) as Array<{ modelProviderId: string | null }>;
+          const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRows[0]?.modelProviderId ?? null);
+          if (endpoint) {
+            const provider = createProvider(endpoint.model, endpoint);
+            const labelDescriptions = labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n");
+            const docText = (docInfo.text || docInfo.filename).slice(0, 3000);
+            const prompt = `${question}\n\nClassify this document into exactly one of the following categories:\n${labelDescriptions}\n\nDocument text (first 3000 characters):\n${docText}\n\nRespond with JSON only:\n{"label": "<category_id>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}`;
+            const response = await provider.generate(prompt, true);
+            try {
+              const parsed = JSON.parse(response);
+              const validLabel = labels.find(l => l.id === parsed.label);
+              return {
+                ok: true,
+                output: {
+                  label: validLabel?.id || labels[0]?.id || "unknown",
+                  confidence: parsed.confidence ?? 0.8,
+                  method: "llm",
+                  reasoning: parsed.reasoning || "LLM classification",
+                },
+                costUsd: cost,
+              };
+            } catch {
+              return { ok: true, output: { label: labels[0]?.id || "unknown", confidence: 0.5, method: "llm", reasoning: `LLM response not parseable: ${response.slice(0, 200)}` }, costUsd: cost };
+            }
+          }
+        } catch (err) {
+          // Fall through to simulated if endpoint resolution fails
+        }
+      }
+
+      // Fallback: simulated
+      return { ok: true, output: { label: labels[0]?.id || "unknown", confidence: 0.85, method: "simulated", reasoning: "No model endpoint configured — simulated classification" }, costUsd: cost };
+    }
+    case "extract": {
+      const schemaSlug = (step.config.schema as string) || "";
+      if (!schemaSlug) {
+        return { ok: false, output: {}, costUsd: cost, error: "No schema configured on extract step" };
+      }
+      if (!ctx?.db || !ctx.tenantId || !docInfo.text) {
+        return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: docInfo.text ? "No DB context" : "No parsed text available" }, costUsd: cost };
+      }
+      try {
+        // Look up the schema definition
+        const schemaRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({
+            id: schema.schemas.id,
+            currentVersionId: schema.schemas.currentVersionId,
+          })
+          .from(schema.schemas)
+          .where(eq(schema.schemas.slug, schemaSlug))
+          .limit(1),
+        ) as Array<{ id: string; currentVersionId: string | null }>;
+        const schemaRow = schemaRows[0];
+        if (!schemaRow?.currentVersionId) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: `Schema "${schemaSlug}" not found or has no committed version` }, costUsd: cost };
+        }
+        const versionRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({ parsedJson: schema.schemaVersions.parsedJson })
+            .from(schema.schemaVersions)
+            .where(eq(schema.schemaVersions.id, schemaRow.currentVersionId!))
+            .limit(1),
+        ) as Array<{ parsedJson: Record<string, unknown> | null }>;
+        const version = versionRows[0];
+        if (!version?.parsedJson) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Schema version has no parsed definition" }, costUsd: cost };
+        }
+        // Resolve model endpoint
+        const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
+        const { createProvider } = await import("../extract/providers");
+        const { extractFields } = await import("../extract/pipeline");
+        const pRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({ modelProviderId: schema.pipelines.modelProviderId })
+            .from(schema.pipelines)
+            .where(eq(schema.pipelines.id, ctx.pipelineId))
+            .limit(1),
+        ) as Array<{ modelProviderId: string | null }>;
+        const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pRows[0]?.modelProviderId ?? null);
+        if (!endpoint) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "No model endpoint configured — cannot run extraction" }, costUsd: cost };
+        }
+        const provider = createProvider(endpoint.model, endpoint);
+        const schemaDef = version.parsedJson as Record<string, unknown>;
+        const result = await extractFields(docInfo.text, schemaDef, provider, endpoint.model);
+        const fieldNames = Object.keys(result.extracted || {});
+        const nonNullFields = fieldNames.filter(f => (result.extracted as Record<string, unknown>)[f] != null);
+        return {
+          ok: true,
+          output: {
+            schema: schemaSlug,
+            fields: result.extracted || {},
+            fieldCount: nonNullFields.length,
+            totalFields: fieldNames.length,
+            confidence: (() => { const s = Object.values(result.confidence_scores || {}); return s.length ? s.reduce((a, b) => a + b, 0) / s.length : 0; })(),
+            confidenceScores: result.confidence_scores || {},
+            model: result.model,
+            strategy: result.strategy,
+            elapsed_ms: result.elapsed_ms,
+          },
+          costUsd: cost,
+        };
+      } catch (err) {
+        return { ok: false, output: { schema: schemaSlug }, costUsd: cost, error: `Extraction failed: ${(err as Error).message}` };
+      }
+    }
+    case "tag":
+      return { ok: true, output: { tags: (step.config.tags as Record<string, string>) || {} }, costUsd: 0 };
+    case "filter": {
+      const passed = evalTestCondition((step.config.condition as string) || "true", { document: docInfo, steps: priorOutputs });
+      return { ok: true, output: { passed }, costUsd: 0 };
+    }
+    case "webhook":
+      return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
+    case "gate":
+      return { ok: true, output: { reviewed: true, auto_approved: true, reason: "Gates auto-approved in test mode" }, costUsd: 0 };
+    default:
+      return { ok: true, output: { note: `Step type "${step.type}" — simulated in test mode` }, costUsd: cost };
+  }
+}
+
+/**
+ * POST /api/pipelines/:idOrSlug/test — dry-run a document through the pipeline.
+ * No persistence. Supports SSE streaming via ?stream=true.
+ */
+pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const stream = c.req.query("stream") === "true";
+  const mode = c.req.query("mode") || "auto";
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.pipelines.id,
+      yamlSource: schema.pipelines.yamlSource,
+      pipelineType: schema.pipelines.pipelineType,
+      schemaSlug: schema.schemas.slug,
+    })
+    .from(schema.pipelines)
+    .leftJoin(schema.schemas, eq(schema.schemas.id, schema.pipelines.schemaId))
+    .where(eq(schema.pipelines.id, pipelineId))
+    .limit(1),
+  );
+  if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) return c.json({ error: "Missing file in 'file' field" }, 400);
+
+  const fileBytes = await file.arrayBuffer();
+  const mimeType = file.type || "application/octet-stream";
+
+  // ── Implicit parse step: extract text from document ──
+  // Every pipeline starts with parsing. This runs before any user-defined steps.
+  let docText: string | undefined;
+  let pageCount: number | undefined;
+  try {
+    const parseProvider = (c as any).get("parseProvider");
+    if (parseProvider?.parse) {
+      const parseResult = await parseProvider.parse({
+        filename: file.name,
+        mimeType,
+        fileBuffer: Buffer.from(fileBytes),
+      });
+      docText = parseResult.markdown;
+      pageCount = parseResult.pages ?? undefined;
+    }
+  } catch (err) {
+    // Parse failed — fall back to basic text extraction
+    console.error("[test] Parse failed, falling back to basic text extraction:", (err as Error).message);
+  }
+
+  // Fallback for text-based files if parse service didn't run
+  if (!docText && (mimeType.startsWith("text/") || mimeType === "application/json")) {
+    docText = new TextDecoder().decode(fileBytes);
+  }
+
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount };
+  const testCtx = { db, tenantId, pipelineId: pipelineId! };
+
+  // Parse pipeline steps + edges
+  type PStep = { id: string; type: string; config: Record<string, unknown> };
+  let pSteps: PStep[] = [];
+  let pEdges: TestEdge[] = [];
+
+  if (pipeline.pipelineType === "dag" && pipeline.yamlSource) {
+    try {
+      const { parse: parseYaml } = await import("yaml");
+      const parsed = parseYaml(pipeline.yamlSource);
+      if (parsed?.steps) {
+        pSteps = parsed.steps.map((s: any) => ({ id: s.id, type: s.type, config: s.config || {} }));
+        for (const s of parsed.steps) {
+          if (Array.isArray(s.routes)) for (const r of s.routes) { if (r.goto) pEdges.push({ from: s.id, to: r.goto, when: r.when, default: r.default }); }
+          if (s.next) pEdges.push({ from: s.id, to: s.next });
+        }
+        if (pEdges.length === 0 && pSteps.length > 1) for (let i = 0; i < pSteps.length - 1; i++) pEdges.push({ from: pSteps[i]!.id, to: pSteps[i + 1]!.id });
+      }
+    } catch { return c.json({ error: "Failed to parse pipeline YAML" }, 422); }
+  } else {
+    pSteps = [{ id: "extract", type: "extract", config: { schema: pipeline.schemaSlug || "" } }];
+  }
+  if (pSteps.length === 0) return c.json({ error: "Pipeline has no steps" }, 422);
+
+  // Find entry step
+  const withIncoming = new Set(pEdges.map(e => e.to));
+  let currentId: string | null = pSteps.find(s => !withIncoming.has(s.id))?.id || pSteps[0]?.id || null;
+
+  // Resume support for step mode
+  if (mode === "step" && body.resume_from) currentId = body.resume_from as string;
+  const stepOutputs: Record<string, Record<string, unknown>> = {};
+  if (mode === "step" && body.step_outputs) { try { Object.assign(stepOutputs, JSON.parse(body.step_outputs as string)); } catch {} }
+
+  const results: Array<any> = [];
+  const path: string[] = [];
+  let stepOrder = 0;
+
+  // SSE streaming
+  if (stream) {
+    const encoder = new TextEncoder();
+    const readable = new ReadableStream({
+      async start(controller) {
+        const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        while (currentId && stepOrder < 20) {
+          const step = pSteps.find(s => s.id === currentId);
+          if (!step) break;
+          if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
+          stepOrder++;
+          send("step_start", { stepId: step.id, stepType: step.type, stepOrder });
+          const t0 = Date.now();
+          const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+          const ms = Date.now() - t0;
+          const outEdges = pEdges.filter(e => e.from === step.id);
+          const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
+          let nextId: string | null = null;
+          for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
+          if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
+          const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
+          results.push(sr); path.push(step.id);
+          if (result.ok) stepOutputs[step.id] = result.output;
+          send("step_complete", sr);
+          if (!result.ok) break;
+          if (mode === "step") { send("pipeline_paused", { nextStepId: nextId, completedSteps: path, stepOutputs }); controller.close(); return; }
+          currentId = nextId;
+        }
+        send("pipeline_complete", { status: "completed", path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a: number, r: any) => a + r.durationMs, 0), totalCostUsd: results.reduce((a: number, r: any) => a + r.costUsd, 0), documentInfo: { filename: docInfo.filename, pageCount: docInfo.pageCount, mimeType: docInfo.mimeType } });
+        controller.close();
+      },
+    });
+    return new Response(readable, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" } });
+  }
+
+  // Non-streaming
+  while (currentId && stepOrder < 20) {
+    const step = pSteps.find(s => s.id === currentId);
+    if (!step) break;
+    if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
+    stepOrder++;
+    const t0 = Date.now();
+    const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+    const ms = Date.now() - t0;
+    const outEdges = pEdges.filter(e => e.from === step.id);
+    const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
+    let nextId: string | null = null;
+    for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
+    if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
+    results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
+    path.push(step.id);
+    if (result.ok) stepOutputs[step.id] = result.output;
+    if (!result.ok) break;
+    if (mode === "step") return c.json({ status: "paused", currentStep: results[results.length - 1], nextStepId: nextId, completedSteps: path, stepOutputs });
+    currentId = nextId;
+  }
+
+  return c.json({ status: "completed", steps: results, path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a, r) => a + r.durationMs, 0), totalCostUsd: results.reduce((a, r) => a + r.costUsd, 0), documentInfo: docInfo });
 });

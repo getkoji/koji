@@ -535,3 +535,53 @@ jobs.get("/:slug/documents/:docId/deliveries", requires("job:read"), async (c) =
 
   return c.json({ data: rows });
 });
+
+/**
+ * GET /api/jobs/:slug/documents/:docId/steps — pipeline step runs for a document.
+ *
+ * Returns the per-step execution trace for DAG pipelines. Each row represents
+ * one step in the compiled pipeline that was (or will be) executed for this
+ * document. Used by the trace-view UI to render the step-by-step waterfall.
+ */
+jobs.get("/:slug/documents/:docId/steps", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  // Verify the document exists and belongs to this job
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.documents.id })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  );
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.pipelineStepRuns.id,
+        stepId: schema.pipelineStepRuns.stepId,
+        stepType: schema.pipelineStepRuns.stepType,
+        stepOrder: schema.pipelineStepRuns.stepOrder,
+        status: schema.pipelineStepRuns.status,
+        outputJson: schema.pipelineStepRuns.outputJson,
+        errorMessage: schema.pipelineStepRuns.errorMessage,
+        durationMs: schema.pipelineStepRuns.durationMs,
+        costUsd: schema.pipelineStepRuns.costUsd,
+        startedAt: schema.pipelineStepRuns.startedAt,
+        completedAt: schema.pipelineStepRuns.completedAt,
+      })
+      .from(schema.pipelineStepRuns)
+      .where(eq(schema.pipelineStepRuns.documentId, docId))
+      .orderBy(asc(schema.pipelineStepRuns.stepOrder)),
+  );
+
+  return c.json({ data: rows });
+});

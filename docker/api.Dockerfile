@@ -11,6 +11,7 @@ COPY api/package.json api/
 COPY packages/db/package.json packages/db/
 COPY packages/types/package.json packages/types/
 COPY packages/api-spec/package.json packages/api-spec/
+COPY packages/pipeline/package.json packages/pipeline/
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile --filter @koji/api...
@@ -20,6 +21,7 @@ COPY api/ api/
 COPY packages/db/ packages/db/
 COPY packages/types/ packages/types/
 COPY packages/api-spec/ packages/api-spec/
+COPY packages/pipeline/ packages/pipeline/
 
 EXPOSE 9401
 

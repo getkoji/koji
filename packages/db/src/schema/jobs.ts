@@ -152,3 +152,34 @@ export const traceStages = pgTable(
     ),
   }),
 );
+
+export const pipelineStepRuns = pgTable(
+  "pipeline_step_runs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    stepId: varchar("step_id", { length: 64 }).notNull(),
+    stepType: varchar("step_type", { length: 32 }).notNull(),
+    stepOrder: integer("step_order").notNull(),
+    status: varchar("status", { length: 16 }).notNull(),
+    inputJson: jsonb("input_json"),
+    outputJson: jsonb("output_json"),
+    errorMessage: text("error_message"),
+    durationMs: integer("duration_ms"),
+    costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    documentStepIdx: uniqueIndex("pipeline_step_runs_doc_step_idx").on(t.documentId, t.stepId),
+    jobIdx: index("pipeline_step_runs_job_idx").on(t.jobId),
+    tenantStatusIdx: index("pipeline_step_runs_tenant_status_idx").on(t.tenantId, t.status),
+  }),
+);

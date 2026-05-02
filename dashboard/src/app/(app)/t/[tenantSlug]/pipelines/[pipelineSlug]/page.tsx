@@ -15,6 +15,7 @@ import {
   Unlink,
   AlertTriangle,
   Send,
+  PenLine,
 } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -167,6 +168,13 @@ export default function PipelineDetailPage() {
             actions={
               canWrite ? (
                 <>
+                  <Link
+                    href={`/t/${tenantSlug}/pipelines/${pipelineSlug}/editor`}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors"
+                  >
+                    <PenLine className="w-3.5 h-3.5" />
+                    Edit Pipeline
+                  </Link>
                   <button
                     onClick={togglePause}
                     disabled={submitting}

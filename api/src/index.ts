@@ -27,7 +27,7 @@ import { SmtpEmailSender } from "./email/smtp";
 import { markDocFailed } from "./ingestion/process";
 
 const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/koji";
+  process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5434/koji";
 const PORT = parseInt(process.env.PORT ?? "9401", 10);
 const AUTH_ADAPTER = process.env.KOJI_AUTH_ADAPTER ?? "local";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";

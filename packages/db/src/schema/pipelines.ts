@@ -3,6 +3,7 @@ import {
   bigint,
   char,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -36,6 +37,10 @@ export const pipelines = pgTable(
     triggerType: varchar("trigger_type", { length: 32 }).notNull().default("manual"),
     triggerConfigJson: jsonb("trigger_config_json").notNull().default(sql`'{}'::jsonb`),
     targetSchemas: text("target_schemas").array().notNull().default(sql`'{}'::text[]`),
+    pipelineType: varchar("pipeline_type", { length: 16 }).notNull().default("simple"),
+    // "simple" = legacy single-schema pipeline
+    // "dag" = DAG pipeline with steps + edges
+    dagJson: jsonb("dag_json"), // compiled DAG definition (null for simple pipelines)
     status: varchar("status", { length: 16 }).notNull().default("active"),
     lastRunAt: timestamp("last_run_at", { withTimezone: true, mode: "date" }),
     createdBy: uuid("created_by")
@@ -123,5 +128,33 @@ export const ingestions = pgTable(
     dedupeIdx: index("ingestions_dedupe_idx")
       .on(t.sourceId, t.contentHash)
       .where(sql`content_hash IS NOT NULL`),
+  }),
+);
+
+export const pipelineVersions = pgTable(
+  "pipeline_versions",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id")
+      .notNull()
+      .references(() => pipelines.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    yamlSource: text("yaml_source").notNull(),
+    dagJson: jsonb("dag_json").notNull(),
+    commitMessage: varchar("commit_message", { length: 500 }),
+    committedBy: uuid("committed_by")
+      .notNull()
+      .references(() => users.id),
+    deployedAt: timestamp("deployed_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pipelineVersionIdx: uniqueIndex("pipeline_versions_pipeline_version_idx").on(
+      t.pipelineId,
+      t.versionNumber,
+    ),
+    pipelineDeployedIdx: index("pipeline_versions_pipeline_deployed_idx").on(t.pipelineId),
+    tenantIdx: index("pipeline_versions_tenant_idx").on(t.tenantId),
   }),
 );
