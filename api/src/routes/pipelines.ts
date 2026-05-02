@@ -993,7 +993,14 @@ async function executeTestStep(
         try {
           const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
           const { createProvider } = await import("../extract/providers");
-          const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, ctx.pipelineId);
+          // Look up the pipeline's model provider ID
+          const [pipelineRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+            tx.select({ modelProviderId: schema.pipelines.modelProviderId })
+              .from(schema.pipelines)
+              .where(eq(schema.pipelines.id, ctx.pipelineId))
+              .limit(1),
+          );
+          const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRow?.modelProviderId ?? null);
           if (endpoint) {
             const provider = createProvider(endpoint);
             const labelDescriptions = labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n");
