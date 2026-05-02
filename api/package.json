@@ -17,6 +17,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1032.0",
     "@hono/node-server": "^1.13.0",
     "@koji/db": "workspace:*",
+    "@koji/pipeline": "workspace:^",
     "@koji/types": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

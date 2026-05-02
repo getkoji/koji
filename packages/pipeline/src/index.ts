@@ -9,6 +9,10 @@ export type {
 } from './types';
 export { StepTypes } from './types';
 
+// Compiler
+export { compilePipeline, type CompileResult } from './compiler';
+export { calculatePipelineCosts, type PipelinePath } from './cost';
+
 // Condition evaluator
 export { evaluateCondition } from './condition';
 

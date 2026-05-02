@@ -31,6 +31,9 @@ importers:
       '@koji/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@koji/pipeline':
+        specifier: workspace:^
+        version: link:../packages/pipeline
       '@koji/types':
         specifier: workspace:*
         version: link:../packages/types
