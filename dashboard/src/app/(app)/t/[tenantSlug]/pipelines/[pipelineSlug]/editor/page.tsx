@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { PipelineCanvas, type PipelineEdge } from "@/components/pipeline-editor/PipelineCanvas";
+import { PipelineCanvas, type PipelineEdge, type NodeState, type EdgeState } from "@/components/pipeline-editor/PipelineCanvas";
 import { Toolbar } from "@/components/pipeline-editor/Toolbar";
 import {
   StepConfigPanel,
@@ -12,6 +12,8 @@ import {
 } from "@/components/pipeline-editor/StepConfigPanel";
 import { YamlView } from "@/components/pipeline-editor/YamlView";
 import { AddStepModal } from "@/components/pipeline-editor/AddStepModal";
+import { TestModeControls } from "@/components/pipeline-editor/TestModeControls";
+import { TestResultsPanel, type StepTestResult } from "@/components/pipeline-editor/TestResultsPanel";
 import { pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -208,6 +210,14 @@ export default function PipelineEditorPage() {
   const [costEstimate] = useState<number | null>(null);
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
 
+  // Test mode state
+  const [testMode, setTestMode] = useState(false);
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResults, setTestResults] = useState<StepTestResult[]>([]);
+  const [nodeStates, setNodeStates] = useState<Map<string, NodeState>>(new Map());
+  const [edgeStates, setEdgeStates] = useState<Map<string, EdgeState>>(new Map());
+  const [testPath, setTestPath] = useState<string[]>([]);
+
   // Initialize from pipeline data
   if (pipeline && !initialized) {
     setSteps(initialGraph.steps);
@@ -374,6 +384,74 @@ export default function PipelineEditorPage() {
     router.push(`/t/${tenantSlug}/pipelines/${pipelineSlug}`);
   }
 
+  // ── Test mode handlers ──
+
+  function handleTestStart() {
+    setTestRunning(true);
+    setTestResults([]);
+    setTestPath([]);
+    const ns = new Map<string, NodeState>();
+    for (const step of steps) {
+      ns.set(step.id, { executionState: "waiting" });
+    }
+    setNodeStates(ns);
+    setEdgeStates(new Map());
+  }
+
+  function handleStepEvent(event: { type: string; data: Record<string, unknown> }) {
+    if (event.type === "step_start") {
+      setNodeStates(prev => {
+        const next = new Map(prev);
+        next.set(event.data.stepId as string, { executionState: "running" });
+        return next;
+      });
+    }
+    if (event.type === "step_complete") {
+      const result = event.data as unknown as StepTestResult;
+      setTestResults(prev => [...prev, result]);
+      setTestPath(prev => [...prev, result.stepId]);
+      setNodeStates(prev => {
+        const next = new Map(prev);
+        next.set(result.stepId, {
+          executionState: result.status === "completed" ? "completed" : "failed",
+          output: result.output,
+          durationMs: result.durationMs,
+          costUsd: result.costUsd,
+        });
+        return next;
+      });
+      if (result.edgeEvaluations) {
+        setEdgeStates(prev => {
+          const next = new Map(prev);
+          for (const edge of result.edgeEvaluations) {
+            next.set(`e-${result.stepId}-${edge.to}`, { matched: edge.matched, evaluated: true });
+          }
+          return next;
+        });
+      }
+    }
+  }
+
+  function handleTestComplete(data: Record<string, unknown>) {
+    setTestRunning(false);
+    const skipped = (data.skippedSteps as string[]) || [];
+    setNodeStates(prev => {
+      const next = new Map(prev);
+      for (const stepId of skipped) {
+        next.set(stepId, { executionState: "skipped" });
+      }
+      return next;
+    });
+  }
+
+  function handleTestReset() {
+    setTestRunning(false);
+    setTestResults([]);
+    setNodeStates(new Map());
+    setEdgeStates(new Map());
+    setTestPath([]);
+  }
+
   // ── Render ──
 
   if (error) {
@@ -410,19 +488,74 @@ export default function PipelineEditorPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#FAF7F0" }}>
-      <Toolbar
-        pipelineName={pipeline.displayName}
-        costEstimate={costEstimate}
-        onAddStep={() => setShowAddStep(true)}
-        onValidate={handleValidate}
-        onDeploy={handleDeploy}
-        onToggleYaml={() => setShowYaml(!showYaml)}
-        showYaml={showYaml}
-        stepCount={steps.length}
-        dirty={dirty}
-        onSave={handleSave}
-        saving={saving}
-      />
+      {/* Edit / Test toggle */}
+      <div className="flex items-center gap-2 px-5 py-2" style={{ background: "#F4EEE2", borderBottom: "1px solid #E8E0D0" }}>
+        <button
+          onClick={() => { setTestMode(false); handleTestReset(); }}
+          style={{
+            padding: "4px 14px",
+            fontSize: "12px",
+            fontWeight: 500,
+            borderRadius: "4px",
+            border: "none",
+            cursor: "pointer",
+            background: !testMode ? "#171410" : "transparent",
+            color: !testMode ? "#F4EEE2" : "#3A3328",
+            fontFamily: "'Instrument Sans', sans-serif",
+          }}
+        >
+          Edit
+        </button>
+        <button
+          onClick={() => setTestMode(true)}
+          style={{
+            padding: "4px 14px",
+            fontSize: "12px",
+            fontWeight: 500,
+            borderRadius: "4px",
+            border: "none",
+            cursor: "pointer",
+            background: testMode ? "#C33520" : "transparent",
+            color: testMode ? "#F4EEE2" : "#3A3328",
+            fontFamily: "'Instrument Sans', sans-serif",
+          }}
+        >
+          Test
+        </button>
+      </div>
+
+      {!testMode ? (
+        <Toolbar
+          pipelineName={pipeline.displayName}
+          costEstimate={costEstimate}
+          onAddStep={() => setShowAddStep(true)}
+          onValidate={handleValidate}
+          onDeploy={handleDeploy}
+          onToggleYaml={() => setShowYaml(!showYaml)}
+          showYaml={showYaml}
+          stepCount={steps.length}
+          dirty={dirty}
+          onSave={handleSave}
+          saving={saving}
+        />
+      ) : null}
+
+      {testMode ? (
+        <TestModeControls
+          pipelineSlug={pipelineSlug}
+          onTestStart={handleTestStart}
+          onStepEvent={handleStepEvent}
+          onTestComplete={handleTestComplete}
+          onTestError={(err) => setValidationMsg(err)}
+          onReset={handleTestReset}
+          isRunning={testRunning}
+          completedStepCount={testResults.length}
+          totalStepCount={steps.length}
+          totalDurationMs={testResults.reduce((a, r) => a + r.durationMs, 0)}
+          totalCostUsd={testResults.reduce((a, r) => a + r.costUsd, 0)}
+          path={testPath}
+        />
+      ) : null}
 
       {/* Validation message bar */}
       {validationMsg && (
@@ -458,10 +591,18 @@ export default function PipelineEditorPage() {
           onEdgesChange={handleEdgesChange}
           onNodeSelect={setSelectedNode}
           selectedNodeId={selectedNode}
+          nodeStates={testMode ? nodeStates : undefined}
+          edgeStates={testMode ? edgeStates : undefined}
+          readOnly={testMode}
         />
 
         {/* Config panel */}
-        {selectedStep && (
+        {testMode && selectedNode && testResults.find(r => r.stepId === selectedNode) ? (
+          <TestResultsPanel
+            result={testResults.find(r => r.stepId === selectedNode)!}
+            onClose={() => setSelectedNode(null)}
+          />
+        ) : !testMode && selectedStep ? (
           <StepConfigPanel
             step={selectedStep}
             onUpdate={handleUpdateStep}
@@ -469,7 +610,7 @@ export default function PipelineEditorPage() {
             onDelete={handleDeleteStep}
             schemas={schemasList ?? []}
           />
-        )}
+        ) : null}
 
         {/* YAML view overlay */}
         {showYaml && (

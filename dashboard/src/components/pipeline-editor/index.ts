@@ -8,3 +8,4 @@ export { StepNode } from "./StepNode";
 export type { ExecutionState } from "./StepNode";
 export { TestResultsPanel } from "./TestResultsPanel";
 export type { StepTestResult } from "./TestResultsPanel";
+export { TestModeControls } from "./TestModeControls";
