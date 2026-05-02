@@ -894,3 +894,211 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
 
   return c.json({ documentId: created.documentId }, 202);
 });
+
+// ── Pipeline test mode (dry-run) ──
+
+const STEP_COSTS: Record<string, number> = {
+  classify: 0.005, extract: 0.08, ocr: 0.03, split: 0.01,
+  tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
+  redact: 0.005, enrich: 0, validate: 0, summarize: 0.01,
+  compare: 0.005, merge_documents: 0,
+};
+
+function resolveTestDotPath(obj: Record<string, unknown>, path: string): unknown {
+  let current: unknown = obj;
+  for (const part of path.split(".")) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function evalTestCondition(condition: string, context: Record<string, unknown>): boolean {
+  const m = condition.match(/^([\w.]+)\s*(==|!=|>=?|<=?|in)\s*(.+)$/);
+  if (!m) return true;
+  const left = resolveTestDotPath(context, m[1]!);
+  const raw = m[3]!.trim();
+  let right: unknown;
+  if (raw.startsWith("'") && raw.endsWith("'")) right = raw.slice(1, -1);
+  else if (raw.startsWith("[")) { try { right = JSON.parse(raw.replace(/'/g, '"')); } catch { right = raw; } }
+  else if (!isNaN(Number(raw))) right = Number(raw);
+  else right = raw;
+  switch (m[2]) {
+    case "==": return left === right;
+    case "!=": return left !== right;
+    case ">": return (left as number) > (right as number);
+    case ">=": return (left as number) >= (right as number);
+    case "<": return (left as number) < (right as number);
+    case "<=": return (left as number) <= (right as number);
+    case "in": return Array.isArray(right) && right.includes(left);
+    default: return true;
+  }
+}
+
+interface TestEdge { from: string; to: string; when?: string; default?: boolean }
+
+function resolveTestNextStep(edges: TestEdge[], output: Record<string, unknown>): string | null {
+  for (const e of edges) {
+    if (!e.when && !e.default) return e.to;
+    if (e.when && evalTestCondition(e.when, { output })) return e.to;
+  }
+  return edges.find(e => e.default)?.to ?? null;
+}
+
+async function executeTestStep(
+  step: { id: string; type: string; config: Record<string, unknown> },
+  _docInfo: { filename: string; mimeType: string; fileSize: number },
+  _priorOutputs: Record<string, unknown>,
+): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
+  const cost = STEP_COSTS[step.type] ?? 0;
+  switch (step.type) {
+    case "classify": {
+      const labels = (step.config.labels as Array<{ id: string }>) || [];
+      return { ok: true, output: { label: labels[0]?.id || "unknown", confidence: 0.85, method: "simulated", reasoning: "Test mode — simulated classification" }, costUsd: cost };
+    }
+    case "extract":
+      return { ok: true, output: { _delegate: "extraction_pipeline", schema: step.config.schema || "unknown", fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Test mode — extraction simulated" }, costUsd: cost };
+    case "tag":
+      return { ok: true, output: { tags: (step.config.tags as Record<string, string>) || {} }, costUsd: 0 };
+    case "filter": {
+      const passed = evalTestCondition((step.config.condition as string) || "true", { document: _docInfo, steps: _priorOutputs });
+      return { ok: true, output: { passed }, costUsd: 0 };
+    }
+    case "webhook":
+      return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
+    case "gate":
+      return { ok: true, output: { reviewed: true, auto_approved: true, reason: "Gates auto-approved in test mode" }, costUsd: 0 };
+    default:
+      return { ok: true, output: { note: `Step type "${step.type}" — simulated in test mode` }, costUsd: cost };
+  }
+}
+
+/**
+ * POST /api/pipelines/:idOrSlug/test — dry-run a document through the pipeline.
+ * No persistence. Supports SSE streaming via ?stream=true.
+ */
+pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
+
+  const stream = c.req.query("stream") === "true";
+  const mode = c.req.query("mode") || "auto";
+
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.pipelines.id,
+      yamlSource: schema.pipelines.yamlSource,
+      pipelineType: schema.pipelines.pipelineType,
+      schemaSlug: schema.schemas.slug,
+    })
+    .from(schema.pipelines)
+    .leftJoin(schema.schemas, eq(schema.schemas.id, schema.pipelines.schemaId))
+    .where(eq(schema.pipelines.id, pipelineId))
+    .limit(1),
+  );
+  if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) return c.json({ error: "Missing file in 'file' field" }, 400);
+
+  const fileBytes = await file.arrayBuffer();
+  const docInfo = { filename: file.name, mimeType: file.type || "application/octet-stream", fileSize: fileBytes.byteLength };
+
+  // Parse pipeline steps + edges
+  type PStep = { id: string; type: string; config: Record<string, unknown> };
+  let pSteps: PStep[] = [];
+  let pEdges: TestEdge[] = [];
+
+  if (pipeline.pipelineType === "dag" && pipeline.yamlSource) {
+    try {
+      const { parse: parseYaml } = await import("yaml");
+      const parsed = parseYaml(pipeline.yamlSource);
+      if (parsed?.steps) {
+        pSteps = parsed.steps.map((s: any) => ({ id: s.id, type: s.type, config: s.config || {} }));
+        for (const s of parsed.steps) {
+          if (Array.isArray(s.routes)) for (const r of s.routes) { if (r.goto) pEdges.push({ from: s.id, to: r.goto, when: r.when, default: r.default }); }
+          if (s.next) pEdges.push({ from: s.id, to: s.next });
+        }
+        if (pEdges.length === 0 && pSteps.length > 1) for (let i = 0; i < pSteps.length - 1; i++) pEdges.push({ from: pSteps[i]!.id, to: pSteps[i + 1]!.id });
+      }
+    } catch { return c.json({ error: "Failed to parse pipeline YAML" }, 422); }
+  } else {
+    pSteps = [{ id: "extract", type: "extract", config: { schema: pipeline.schemaSlug || "" } }];
+  }
+  if (pSteps.length === 0) return c.json({ error: "Pipeline has no steps" }, 422);
+
+  // Find entry step
+  const withIncoming = new Set(pEdges.map(e => e.to));
+  let currentId: string | null = pSteps.find(s => !withIncoming.has(s.id))?.id || pSteps[0]?.id || null;
+
+  // Resume support for step mode
+  if (mode === "step" && body.resume_from) currentId = body.resume_from as string;
+  const stepOutputs: Record<string, Record<string, unknown>> = {};
+  if (mode === "step" && body.step_outputs) { try { Object.assign(stepOutputs, JSON.parse(body.step_outputs as string)); } catch {} }
+
+  const results: Array<any> = [];
+  const path: string[] = [];
+  let stepOrder = 0;
+
+  // SSE streaming
+  if (stream) {
+    const encoder = new TextEncoder();
+    const readable = new ReadableStream({
+      async start(controller) {
+        const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        while (currentId && stepOrder < 20) {
+          const step = pSteps.find(s => s.id === currentId);
+          if (!step) break;
+          if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
+          stepOrder++;
+          send("step_start", { stepId: step.id, stepType: step.type, stepOrder });
+          const t0 = Date.now();
+          const result = await executeTestStep(step, docInfo, stepOutputs);
+          const ms = Date.now() - t0;
+          const outEdges = pEdges.filter(e => e.from === step.id);
+          const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
+          let nextId: string | null = null;
+          for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
+          if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
+          const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
+          results.push(sr); path.push(step.id);
+          if (result.ok) stepOutputs[step.id] = result.output;
+          send("step_complete", sr);
+          if (!result.ok) break;
+          if (mode === "step") { send("pipeline_paused", { nextStepId: nextId, completedSteps: path, stepOutputs }); controller.close(); return; }
+          currentId = nextId;
+        }
+        send("pipeline_complete", { status: "completed", path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a: number, r: any) => a + r.durationMs, 0), totalCostUsd: results.reduce((a: number, r: any) => a + r.costUsd, 0) });
+        controller.close();
+      },
+    });
+    return new Response(readable, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" } });
+  }
+
+  // Non-streaming
+  while (currentId && stepOrder < 20) {
+    const step = pSteps.find(s => s.id === currentId);
+    if (!step) break;
+    if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
+    stepOrder++;
+    const t0 = Date.now();
+    const result = await executeTestStep(step, docInfo, stepOutputs);
+    const ms = Date.now() - t0;
+    const outEdges = pEdges.filter(e => e.from === step.id);
+    const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
+    let nextId: string | null = null;
+    for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
+    if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
+    results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
+    path.push(step.id);
+    if (result.ok) stepOutputs[step.id] = result.output;
+    if (!result.ok) break;
+    if (mode === "step") return c.json({ status: "paused", currentStep: results[results.length - 1], nextStepId: nextId, completedSteps: path, stepOutputs });
+    currentId = nextId;
+  }
+
+  return c.json({ status: "completed", steps: results, path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a, r) => a + r.durationMs, 0), totalCostUsd: results.reduce((a, r) => a + r.costUsd, 0), documentInfo: docInfo });
+});

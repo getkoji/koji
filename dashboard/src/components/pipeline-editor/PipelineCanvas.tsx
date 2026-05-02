@@ -15,7 +15,7 @@ import {
   type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { StepNode } from "./StepNode";
+import { StepNode, type ExecutionState } from "./StepNode";
 import type { PipelineStep } from "./StepConfigPanel";
 
 const nodeTypes: NodeTypes = {
@@ -29,6 +29,18 @@ export interface PipelineEdge {
   default?: boolean;
 }
 
+export interface EdgeState {
+  matched: boolean;
+  evaluated: boolean;
+}
+
+export interface NodeState {
+  executionState: ExecutionState;
+  output?: Record<string, unknown>;
+  durationMs?: number;
+  costUsd?: number;
+}
+
 interface PipelineCanvasProps {
   steps: PipelineStep[];
   edges: PipelineEdge[];
@@ -36,6 +48,9 @@ interface PipelineCanvasProps {
   onEdgesChange: (edges: PipelineEdge[]) => void;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
+  nodeStates?: Map<string, NodeState>;
+  edgeStates?: Map<string, EdgeState>;
+  readOnly?: boolean;
 }
 
 /**
@@ -57,23 +72,49 @@ function layoutNodes(steps: PipelineStep[], selectedNodeId: string | null): Node
   }));
 }
 
-function toFlowEdges(pipelineEdges: PipelineEdge[]): Edge[] {
-  return pipelineEdges.map((edge) => ({
-    id: `e-${edge.from}-${edge.to}`,
-    source: edge.from,
-    target: edge.to,
-    label: edge.when || (edge.default ? "default" : undefined),
-    animated: false,
-    style: {
-      stroke: edge.default ? "#8A847B" : "#C33520",
-      strokeWidth: 2,
-    },
-    labelStyle: {
-      fontFamily: "'JetBrains Mono', monospace",
-      fontSize: 11,
-      fill: "#3A3328",
-    },
-  }));
+function toFlowEdges(pipelineEdges: PipelineEdge[], edgeStates?: Map<string, EdgeState>): Edge[] {
+  return pipelineEdges.map((edge) => {
+    const edgeId = `e-${edge.from}-${edge.to}`;
+    const state = edgeStates?.get(edgeId);
+
+    let stroke = edge.default ? "#8A847B" : "#C33520";
+    let strokeWidth = 2;
+    let opacity = 1;
+    let animated = false;
+    let strokeDasharray: string | undefined;
+
+    if (state) {
+      if (state.matched) {
+        stroke = "#C33520";
+        strokeWidth = 3;
+        animated = true;
+      } else if (state.evaluated) {
+        stroke = "#D4CFC5";
+        strokeWidth = 1;
+        opacity = 0.5;
+        strokeDasharray = "5,5";
+      }
+    }
+
+    return {
+      id: edgeId,
+      source: edge.from,
+      target: edge.to,
+      label: edge.when || (edge.default ? "default" : undefined),
+      animated,
+      selectable: true,
+      interactionWidth: 20,
+      focusable: true,
+      className: "koji-edge",
+      style: { stroke, strokeWidth, opacity, strokeDasharray },
+      labelStyle: {
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 11,
+        fill: state?.matched ? "#C33520" : state?.evaluated ? "#D4CFC5" : "#3A3328",
+        fontWeight: state?.matched ? 600 : 400,
+      },
+    };
+  });
 }
 
 export function PipelineCanvas({
@@ -83,14 +124,38 @@ export function PipelineCanvas({
   onEdgesChange,
   onNodeSelect,
   selectedNodeId,
+  nodeStates,
+  edgeStates,
+  readOnly,
 }: PipelineCanvasProps) {
-  const initialNodes = useMemo(
-    () => layoutNodes(steps, selectedNodeId),
-    [steps, selectedNodeId],
-  );
+  const initialNodes = useMemo(() => {
+    const nodes = layoutNodes(steps, selectedNodeId);
+    if (nodeStates) {
+      return nodes.map((n) => {
+        const state = nodeStates.get(n.id);
+        if (state) {
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              executionState: state.executionState,
+              executionOutput: state.output,
+              executionDuration: state.durationMs,
+              executionCost: state.costUsd,
+            },
+          };
+        }
+        return {
+          ...n,
+          data: { ...n.data, executionState: nodeStates.size > 0 ? "waiting" : "idle" },
+        };
+      });
+    }
+    return nodes;
+  }, [steps, selectedNodeId, nodeStates]);
   const initialFlowEdges = useMemo(
-    () => toFlowEdges(pipelineEdges),
-    [pipelineEdges],
+    () => toFlowEdges(pipelineEdges, edgeStates),
+    [pipelineEdges, edgeStates],
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -98,20 +163,49 @@ export function PipelineCanvas({
 
   // Keep flow nodes in sync with step changes from outside (add/remove/update)
   const prevStepsRef = useRef(steps);
+  const prevNodeStatesRef = useRef(nodeStates);
   useEffect(() => {
-    if (prevStepsRef.current !== steps) {
+    if (prevStepsRef.current !== steps || prevNodeStatesRef.current !== nodeStates) {
       prevStepsRef.current = steps;
-      setNodes(layoutNodes(steps, selectedNodeId));
+      prevNodeStatesRef.current = nodeStates;
+      const nodes = layoutNodes(steps, selectedNodeId);
+      if (nodeStates) {
+        setNodes(
+          nodes.map((n) => {
+            const state = nodeStates.get(n.id);
+            if (state) {
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  executionState: state.executionState,
+                  executionOutput: state.output,
+                  executionDuration: state.durationMs,
+                  executionCost: state.costUsd,
+                },
+              };
+            }
+            return {
+              ...n,
+              data: { ...n.data, executionState: nodeStates.size > 0 ? "waiting" : "idle" },
+            };
+          }),
+        );
+      } else {
+        setNodes(nodes);
+      }
     }
-  }, [steps, selectedNodeId, setNodes]);
+  }, [steps, selectedNodeId, nodeStates, setNodes]);
 
   const prevEdgesRef = useRef(pipelineEdges);
+  const prevEdgeStatesRef = useRef(edgeStates);
   useEffect(() => {
-    if (prevEdgesRef.current !== pipelineEdges) {
+    if (prevEdgesRef.current !== pipelineEdges || prevEdgeStatesRef.current !== edgeStates) {
       prevEdgesRef.current = pipelineEdges;
-      setEdges(toFlowEdges(pipelineEdges));
+      prevEdgeStatesRef.current = edgeStates;
+      setEdges(toFlowEdges(pipelineEdges, edgeStates));
     }
-  }, [pipelineEdges, setEdges]);
+  }, [pipelineEdges, edgeStates, setEdges]);
 
   // Propagate node position changes back (for drag repositioning)
   const onNodesChangeWrapped = useCallback(
@@ -179,6 +273,31 @@ export function PipelineCanvas({
 
   return (
     <div className="w-full h-full" style={{ background: "#FAF7F0" }}>
+      <style>{`
+        .react-flow__edge.selected .react-flow__edge-path,
+        .react-flow__edge:focus .react-flow__edge-path,
+        .react-flow__edge:focus-visible .react-flow__edge-path {
+          stroke: #C33520 !important;
+          stroke-width: 4px !important;
+          filter: drop-shadow(0 0 4px rgba(195, 53, 32, 0.4));
+        }
+        .react-flow__edge:hover .react-flow__edge-path {
+          stroke-width: 3px !important;
+          cursor: pointer;
+        }
+        .react-flow__edge.selected .react-flow__edge-text,
+        .react-flow__edge:focus .react-flow__edge-text {
+          fill: #C33520 !important;
+          font-weight: 600 !important;
+        }
+        @keyframes koji-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(195, 53, 32, 0.4); }
+          50% { box-shadow: 0 0 0 8px rgba(195, 53, 32, 0); }
+        }
+        .koji-node-running {
+          animation: koji-pulse 1.5s ease-in-out infinite;
+        }
+      `}</style>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -190,9 +309,12 @@ export function PipelineCanvas({
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
         nodeTypes={nodeTypes}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        elementsSelectable={!readOnly}
         fitView
         proOptions={{ hideAttribution: true }}
-        deleteKeyCode="Delete"
+        deleteKeyCode={readOnly ? [] : ["Delete", "Backspace"]}
       >
         <Background color="#E8E0D0" gap={20} />
         <Controls

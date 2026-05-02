@@ -12,7 +12,7 @@ import {
 } from "@/components/pipeline-editor/StepConfigPanel";
 import { YamlView } from "@/components/pipeline-editor/YamlView";
 import { AddStepModal } from "@/components/pipeline-editor/AddStepModal";
-import { pipelines as pipelinesApi, type PipelineDetail } from "@/lib/api";
+import { pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 // ── YAML <-> editor state conversion ──
@@ -163,11 +163,39 @@ export default function PipelineEditorPage() {
     useCallback(() => pipelinesApi.get(pipelineSlug), [pipelineSlug]),
   );
 
-  // Parse YAML into graph state once pipeline loads
-  const initialGraph = useMemo(
-    () => (pipeline ? parseGraph(pipeline.yamlSource) : { steps: [], edges: [] }),
-    [pipeline],
+  // Fetch available schemas for the extract step config dropdown
+  const { data: schemasList } = useApi(
+    useCallback(() => schemasApi.list(), []),
   );
+
+  // Parse YAML into graph state once pipeline loads.
+  // If the pipeline has no yamlSource but has a deployed schema,
+  // generate a default single-step extract graph so the editor
+  // isn't empty.
+  const initialGraph = useMemo(() => {
+    if (!pipeline) return { steps: [], edges: [] };
+
+    // If there's YAML, parse it
+    if (pipeline.yamlSource && pipeline.yamlSource.trim()) {
+      return parseGraph(pipeline.yamlSource);
+    }
+
+    // Simple pipeline with a deployed schema — show as a single extract node
+    if (pipeline.schemaSlug || pipeline.schemaId) {
+      return {
+        steps: [{
+          id: "extract",
+          type: "extract",
+          config: {
+            schema: pipeline.schemaSlug || pipeline.schemaId || "",
+          },
+        }],
+        edges: [],
+      };
+    }
+
+    return { steps: [], edges: [] };
+  }, [pipeline]);
 
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   const [edges, setEdges] = useState<PipelineEdge[]>([]);
@@ -439,6 +467,7 @@ export default function PipelineEditorPage() {
             onUpdate={handleUpdateStep}
             onClose={() => setSelectedNode(null)}
             onDelete={handleDeleteStep}
+            schemas={schemasList ?? []}
           />
         )}
 

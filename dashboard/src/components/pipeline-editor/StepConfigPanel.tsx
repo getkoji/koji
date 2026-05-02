@@ -6,14 +6,20 @@ export interface PipelineStep {
   config: Record<string, unknown>;
 }
 
+interface SchemaOption {
+  slug: string;
+  displayName: string;
+}
+
 interface StepConfigPanelProps {
   step: PipelineStep;
   onUpdate: (stepId: string, updates: Partial<PipelineStep>) => void;
   onClose: () => void;
   onDelete: (stepId: string) => void;
+  schemas?: SchemaOption[];
 }
 
-export function StepConfigPanel({ step, onUpdate, onClose, onDelete }: StepConfigPanelProps) {
+export function StepConfigPanel({ step, onUpdate, onClose, onDelete, schemas = [] }: StepConfigPanelProps) {
   if (!step) return null;
 
   return (
@@ -83,7 +89,7 @@ export function StepConfigPanel({ step, onUpdate, onClose, onDelete }: StepConfi
         <ClassifyConfig step={step} onUpdate={onUpdate} />
       )}
       {step.type === "extract" && (
-        <ExtractConfig step={step} onUpdate={onUpdate} />
+        <ExtractConfig step={step} onUpdate={onUpdate} schemas={schemas} />
       )}
       {step.type === "tag" && (
         <TagConfig step={step} onUpdate={onUpdate} />
@@ -194,23 +200,44 @@ function ClassifyConfig({
 function ExtractConfig({
   step,
   onUpdate,
+  schemas = [],
 }: {
   step: PipelineStep;
   onUpdate: (id: string, u: Partial<PipelineStep>) => void;
+  schemas?: SchemaOption[];
 }) {
   const config = step.config || {};
+  const currentSchema = (config.schema as string) || "";
+
   return (
     <div className="mb-4">
       <label style={labelStyle}>Schema</label>
-      <input
-        type="text"
-        value={(config.schema as string) || ""}
-        onChange={(e) =>
-          onUpdate(step.id, { config: { ...config, schema: e.target.value } })
-        }
-        style={inputStyle}
-        placeholder="commercial_policy"
-      />
+      {schemas.length > 0 ? (
+        <select
+          value={currentSchema}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, schema: e.target.value } })
+          }
+          style={inputStyle}
+        >
+          <option value="">Select a schema...</option>
+          {schemas.map((s) => (
+            <option key={s.slug} value={s.slug}>
+              {s.displayName || s.slug}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="text"
+          value={currentSchema}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, schema: e.target.value } })
+          }
+          style={inputStyle}
+          placeholder="commercial_policy"
+        />
+      )}
     </div>
   );
 }
