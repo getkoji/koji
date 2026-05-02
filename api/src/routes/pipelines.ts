@@ -821,8 +821,8 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     db,
     tenantId,
     pipelineId,
-    schemaId: pipeline.schemaId ?? undefined,
-    schemaVersionId: pipeline.activeSchemaVersionId ?? undefined,
+    schemaId: pipeline.schemaId || "",
+    schemaVersionId: pipeline.activeSchemaVersionId || "",
     triggerType: "manual",
     storageKey,
     filename: file.name,
@@ -1014,15 +1014,15 @@ async function executeTestStep(
           const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
           const { createProvider } = await import("../extract/providers");
           // Look up the pipeline's model provider ID
-          const [pipelineRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          const pipelineRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
             tx.select({ modelProviderId: schema.pipelines.modelProviderId })
               .from(schema.pipelines)
               .where(eq(schema.pipelines.id, ctx.pipelineId))
               .limit(1),
-          );
-          const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRow?.modelProviderId ?? null);
+          ) as Array<{ modelProviderId: string | null }>;
+          const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRows[0]?.modelProviderId ?? null);
           if (endpoint) {
-            const provider = createProvider(endpoint);
+            const provider = createProvider(endpoint.model, endpoint);
             const labelDescriptions = labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n");
             const docText = (docInfo.text || docInfo.filename).slice(0, 3000);
             const prompt = `${question}\n\nClassify this document into exactly one of the following categories:\n${labelDescriptions}\n\nDocument text (first 3000 characters):\n${docText}\n\nRespond with JSON only:\n{"label": "<category_id>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}`;
@@ -1062,7 +1062,7 @@ async function executeTestStep(
       }
       try {
         // Look up the schema definition
-        const [schemaRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+        const schemaRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
           tx.select({
             id: schema.schemas.id,
             currentVersionId: schema.schemas.currentVersionId,
@@ -1070,16 +1070,18 @@ async function executeTestStep(
           .from(schema.schemas)
           .where(eq(schema.schemas.slug, schemaSlug))
           .limit(1),
-        );
+        ) as Array<{ id: string; currentVersionId: string | null }>;
+        const schemaRow = schemaRows[0];
         if (!schemaRow?.currentVersionId) {
           return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: `Schema "${schemaSlug}" not found or has no committed version` }, costUsd: cost };
         }
-        const [version] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+        const versionRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
           tx.select({ parsedJson: schema.schemaVersions.parsedJson })
             .from(schema.schemaVersions)
-            .where(eq(schema.schemaVersions.id, schemaRow.currentVersionId))
+            .where(eq(schema.schemaVersions.id, schemaRow.currentVersionId!))
             .limit(1),
-        );
+        ) as Array<{ parsedJson: Record<string, unknown> | null }>;
+        const version = versionRows[0];
         if (!version?.parsedJson) {
           return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Schema version has no parsed definition" }, costUsd: cost };
         }
@@ -1087,17 +1089,17 @@ async function executeTestStep(
         const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
         const { createProvider } = await import("../extract/providers");
         const { extractFields } = await import("../extract/pipeline");
-        const [pipelineRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+        const pRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
           tx.select({ modelProviderId: schema.pipelines.modelProviderId })
             .from(schema.pipelines)
             .where(eq(schema.pipelines.id, ctx.pipelineId))
             .limit(1),
-        );
-        const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRow?.modelProviderId ?? null);
+        ) as Array<{ modelProviderId: string | null }>;
+        const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pRows[0]?.modelProviderId ?? null);
         if (!endpoint) {
           return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "No model endpoint configured — cannot run extraction" }, costUsd: cost };
         }
-        const provider = createProvider(endpoint);
+        const provider = createProvider(endpoint.model, endpoint);
         const schemaDef = version.parsedJson as Record<string, unknown>;
         const result = await extractFields(docInfo.text, schemaDef, provider, endpoint.model);
         const fieldNames = Object.keys(result.extracted || {});
@@ -1109,8 +1111,8 @@ async function executeTestStep(
             fields: result.extracted || {},
             fieldCount: nonNullFields.length,
             totalFields: fieldNames.length,
-            confidence: result.overall_confidence ?? 0,
-            confidenceScores: result.confidence || {},
+            confidence: (() => { const s = Object.values(result.confidence_scores || {}); return s.length ? s.reduce((a, b) => a + b, 0) / s.length : 0; })(),
+            confidenceScores: result.confidence_scores || {},
             model: result.model,
             strategy: result.strategy,
             elapsed_ms: result.elapsed_ms,
@@ -1175,7 +1177,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   let docText: string | undefined;
   let pageCount: number | undefined;
   try {
-    const parseProvider = c.get("parseProvider") as any;
+    const parseProvider = (c as any).get("parseProvider");
     if (parseProvider?.parse) {
       const parseResult = await parseProvider.parse({
         filename: file.name,

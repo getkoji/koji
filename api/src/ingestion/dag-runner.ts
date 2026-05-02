@@ -201,7 +201,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
 
           // LLM classification
           if (!classified && method !== "keyword" && endpoint) {
-            const provider = createProvider(endpoint);
+            const provider = createProvider(endpoint.model, endpoint);
             const labelDesc = labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n");
             const prompt = `${question}\n\nClassify into one category:\n${labelDesc}\n\nText:\n${(docText || doc.filename).slice(0, 3000)}\n\nRespond JSON only: {"label":"<id>","confidence":<0-1>,"reasoning":"<why>"}`;
             const raw = await provider.generate(prompt, true);
@@ -220,23 +220,27 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         case "extract": {
           const schemaSlug = (step.config.schema as string) || "";
           if (schemaSlug && docText && endpoint) {
-            const [sr] = await withRLS(db, tenantId, (tx: any) =>
+            const srRows = await withRLS(db, tenantId, (tx) =>
               tx.select({ currentVersionId: schema.schemas.currentVersionId })
                 .from(schema.schemas).where(eq(schema.schemas.slug, schemaSlug)).limit(1),
             );
+            const sr = srRows[0] as { currentVersionId: string | null } | undefined;
             if (sr?.currentVersionId) {
-              const [ver] = await withRLS(db, tenantId, (tx: any) =>
+              const verRows = await withRLS(db, tenantId, (tx) =>
                 tx.select({ parsedJson: schema.schemaVersions.parsedJson })
-                  .from(schema.schemaVersions).where(eq(schema.schemaVersions.id, sr.currentVersionId)).limit(1),
+                  .from(schema.schemaVersions).where(eq(schema.schemaVersions.id, sr.currentVersionId!)).limit(1),
               );
+              const ver = verRows[0] as { parsedJson: Record<string, unknown> | null } | undefined;
               if (ver?.parsedJson) {
-                const provider = createProvider(endpoint);
-                const result = await extractFields(docText, ver.parsedJson as Record<string, unknown>, provider, endpoint.model);
+                const provider = createProvider(endpoint.model, endpoint);
+                const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
                 const fieldNames = Object.keys(result.extracted || {});
-                const nonNull = fieldNames.filter(f => (result.extracted as Record<string, unknown>)[f] != null);
-                output = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: result.overall_confidence ?? 0 };
-                finalExtraction = result.extracted as Record<string, unknown>;
-                finalConfidence = result.overall_confidence ?? null;
+                const nonNull = fieldNames.filter(f => result.extracted[f] != null);
+                const scores = Object.values(result.confidence_scores || {});
+                const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+                output = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
+                finalExtraction = result.extracted;
+                finalConfidence = avgConf;
               }
             }
           }
