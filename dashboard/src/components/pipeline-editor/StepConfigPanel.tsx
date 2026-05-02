@@ -132,6 +132,24 @@ function ClassifyConfig({
   onUpdate: (id: string, u: Partial<PipelineStep>) => void;
 }) {
   const config = step.config || {};
+  const labels = (config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
+
+  function updateLabels(newLabels: typeof labels) {
+    onUpdate(step.id, { config: { ...config, labels: newLabels } });
+  }
+
+  function addLabel() {
+    updateLabels([...labels, { id: "", description: "" }]);
+  }
+
+  function removeLabel(index: number) {
+    updateLabels(labels.filter((_, i) => i !== index));
+  }
+
+  function updateLabel(index: number, updates: Partial<typeof labels[0]>) {
+    updateLabels(labels.map((l, i) => i === index ? { ...l, ...updates } : l));
+  }
+
   return (
     <>
       <div className="mb-4">
@@ -141,44 +159,98 @@ function ClassifyConfig({
           onChange={(e) =>
             onUpdate(step.id, { config: { ...config, question: e.target.value } })
           }
-          style={{ ...inputStyle, minHeight: "80px", resize: "vertical" }}
+          style={{ ...inputStyle, minHeight: "60px", resize: "vertical" }}
           placeholder="Is this an insurance-related document?"
         />
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          The question asked to classify the document. Used as the LLM prompt.
+        </p>
       </div>
+
       <div className="mb-4">
-        <label style={labelStyle}>Labels (one per line: id - description)</label>
-        <textarea
-          value={(
-            (config.labels as Array<{ id: string; description?: string }>) || []
-          )
-            .map(
-              (l) =>
-                `${l.id}${l.description ? ` - ${l.description}` : ""}`,
-            )
-            .join("\n")}
-          onChange={(e) => {
-            const labels = e.target.value
-              .split("\n")
-              .filter(Boolean)
-              .map((line: string) => {
-                const [id, ...desc] = line.split(" - ");
-                return {
-                  id: (id ?? "").trim(),
-                  description: desc.join(" - ").trim() || undefined,
-                };
-              });
-            onUpdate(step.id, { config: { ...config, labels } });
-          }}
-          style={{
-            ...inputStyle,
-            minHeight: "100px",
-            resize: "vertical",
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: "12px",
-          }}
-          placeholder={"insurance - Any insurance document\nother - Not insurance-related"}
-        />
+        <div className="flex justify-between items-center mb-2">
+          <label style={{ ...labelStyle, marginBottom: 0 }}>Labels</label>
+          <button
+            onClick={addLabel}
+            style={{
+              padding: "2px 8px",
+              fontSize: "11px",
+              fontWeight: 500,
+              border: "1px solid #E8E0D0",
+              borderRadius: "3px",
+              background: "transparent",
+              color: "#C33520",
+              cursor: "pointer",
+              fontFamily: "'Instrument Sans', sans-serif",
+            }}
+          >
+            + Add
+          </button>
+        </div>
+        <p style={{ fontSize: "10px", color: "#8A847B", marginBottom: "8px" }}>
+          Possible classification results. Each label becomes a routing option on outgoing edges.
+        </p>
+        <div className="flex flex-col gap-3">
+          {labels.map((label, i) => (
+            <div key={i} className="p-3 rounded" style={{ border: "1px solid #E8E0D0", background: "#FBF7EB" }}>
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex-1 mr-2">
+                  <div style={{ ...labelStyle, fontSize: "9px" }}>ID</div>
+                  <input
+                    type="text"
+                    value={label.id}
+                    onChange={(e) => updateLabel(i, { id: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })}
+                    style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "12px", padding: "4px 8px" }}
+                    placeholder="insurance"
+                  />
+                </div>
+                <button
+                  onClick={() => removeLabel(i)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "#8A847B",
+                    fontSize: "14px",
+                    padding: "0 4px",
+                    marginTop: "14px",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mb-2">
+                <div style={{ ...labelStyle, fontSize: "9px" }}>Description (helps the LLM)</div>
+                <input
+                  type="text"
+                  value={label.description || ""}
+                  onChange={(e) => updateLabel(i, { description: e.target.value || undefined })}
+                  style={{ ...inputStyle, fontSize: "12px", padding: "4px 8px" }}
+                  placeholder="Any insurance document — policy, certificate, claim"
+                />
+              </div>
+              <div>
+                <div style={{ ...labelStyle, fontSize: "9px" }}>Keywords (for keyword matching, comma-separated)</div>
+                <input
+                  type="text"
+                  value={(label.keywords || []).join(", ")}
+                  onChange={(e) => updateLabel(i, {
+                    keywords: e.target.value.split(",").map(k => k.trim()).filter(Boolean),
+                  })}
+                  style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 8px" }}
+                  placeholder="insurance, policy, certificate, claim, ACORD"
+                />
+              </div>
+            </div>
+          ))}
+          {labels.length === 0 ? (
+            <p style={{ fontSize: "12px", color: "#8A847B", fontStyle: "italic", textAlign: "center" as const, padding: "12px" }}>
+              No labels yet. Add at least two labels (e.g., "insurance" and "other").
+            </p>
+          ) : null}
+        </div>
       </div>
+
       <div className="mb-4">
         <label style={labelStyle}>Method</label>
         <select
@@ -188,10 +260,17 @@ function ClassifyConfig({
           }
           style={inputStyle}
         >
-          <option value="keyword">Keyword only (free)</option>
-          <option value="llm">LLM only</option>
-          <option value="keyword_then_llm">Keyword first, LLM fallback</option>
+          <option value="keyword">Keyword only (free — no model calls)</option>
+          <option value="llm">LLM only (always calls model)</option>
+          <option value="keyword_then_llm">Keyword first, LLM fallback (recommended)</option>
         </select>
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          {(config.method as string) === "keyword"
+            ? "Matches keywords only. Free but can't handle ambiguous cases."
+            : (config.method as string) === "llm"
+            ? "Always calls the model. Most accurate but costs tokens."
+            : "Tries keyword matching first (free). Falls back to the model if no keywords match."}
+        </p>
       </div>
     </>
   );
