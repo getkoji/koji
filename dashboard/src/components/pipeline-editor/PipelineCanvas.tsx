@@ -340,6 +340,22 @@ export function PipelineCanvas({
     onNodeSelect(null);
   }, [onNodeSelect]);
 
+  // Allow dragging edge endpoints to different nodes
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: { source: string | null; target: string | null }) => {
+      if (!newConnection.source || !newConnection.target) return;
+      // Update the pipeline edge
+      const updatedEdges = pipelineEdges.map(e => {
+        if (e.from === oldEdge.source && e.to === oldEdge.target) {
+          return { ...e, from: newConnection.source!, to: newConnection.target! };
+        }
+        return e;
+      });
+      onEdgesChange(updatedEdges);
+    },
+    [pipelineEdges, onEdgesChange],
+  );
+
   const onEdgeClickHandler = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
       // Extract from/to from the edge ID format "e-{from}-{to}"
@@ -414,6 +430,7 @@ export function PipelineCanvas({
         onNodesChange={onNodesChangeWrapped}
         onEdgesChange={onEdgesChangeInternal}
         onConnect={onConnect}
+        onReconnect={onReconnect}
         onNodeClick={onNodeClick}
         onEdgeClick={onEdgeClickHandler}
         onPaneClick={onPaneClick}
@@ -422,6 +439,7 @@ export function PipelineCanvas({
         nodeTypes={nodeTypes}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
+        edgesReconnectable={!readOnly}
         elementsSelectable={!readOnly}
         fitView
         proOptions={{ hideAttribution: true }}
