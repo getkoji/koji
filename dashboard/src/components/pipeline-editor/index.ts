@@ -6,3 +6,5 @@ export { YamlView } from "./YamlView";
 export { AddStepModal } from "./AddStepModal";
 export { StepNode } from "./StepNode";
 export type { ExecutionState } from "./StepNode";
+export { TestResultsPanel } from "./TestResultsPanel";
+export type { StepTestResult } from "./TestResultsPanel";
