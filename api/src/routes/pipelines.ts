@@ -1175,7 +1175,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
           if (mode === "step") { send("pipeline_paused", { nextStepId: nextId, completedSteps: path, stepOutputs }); controller.close(); return; }
           currentId = nextId;
         }
-        send("pipeline_complete", { status: "completed", path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a: number, r: any) => a + r.durationMs, 0), totalCostUsd: results.reduce((a: number, r: any) => a + r.costUsd, 0) });
+        send("pipeline_complete", { status: "completed", path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a: number, r: any) => a + r.durationMs, 0), totalCostUsd: results.reduce((a: number, r: any) => a + r.costUsd, 0), documentInfo: { filename: docInfo.filename, pageCount: docInfo.pageCount, mimeType: docInfo.mimeType } });
         controller.close();
       },
     });

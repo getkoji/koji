@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 
 interface TestModeControlsProps {
   pipelineSlug: string;
-  onTestStart: () => void;
+  onTestStart: (filename?: string) => void;
   onStepEvent: (event: { type: string; data: Record<string, unknown> }) => void;
   onTestComplete: (result: Record<string, unknown>) => void;
   onTestError: (error: string) => void;
@@ -39,7 +39,7 @@ export function TestModeControls({
 
   const runTest = useCallback(async (file: File) => {
     setFileName(file.name);
-    onTestStart();
+    onTestStart(file.name);
 
     const formData = new FormData();
     formData.append("file", file);

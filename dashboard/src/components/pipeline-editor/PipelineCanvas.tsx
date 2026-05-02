@@ -16,10 +16,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { StepNode, type ExecutionState } from "./StepNode";
+import { DocumentInputNode } from "./DocumentInputNode";
 import type { PipelineStep } from "./StepConfigPanel";
 
 const nodeTypes: NodeTypes = {
   step: StepNode,
+  documentInput: DocumentInputNode,
 };
 
 export interface PipelineEdge {
@@ -41,6 +43,13 @@ export interface NodeState {
   costUsd?: number;
 }
 
+export interface DocumentInputData {
+  filename?: string;
+  pageCount?: number;
+  parseDurationMs?: number;
+  parseStatus?: "idle" | "parsing" | "parsed" | "failed";
+}
+
 interface PipelineCanvasProps {
   steps: PipelineStep[];
   edges: PipelineEdge[];
@@ -51,6 +60,7 @@ interface PipelineCanvasProps {
   nodeStates?: Map<string, NodeState>;
   edgeStates?: Map<string, EdgeState>;
   readOnly?: boolean;
+  documentInput?: DocumentInputData;
 }
 
 /**
@@ -66,6 +76,7 @@ function layoutNodes(
   steps: PipelineStep[],
   selectedNodeId: string | null,
   edges?: PipelineEdge[],
+  documentInput?: DocumentInputData,
 ): Node[] {
   // Topological sort: entry step first, then follow edges
   let ordered = steps;
@@ -99,10 +110,21 @@ function layoutNodes(
     ordered = sorted.map((id) => steps.find((s) => s.id === id)!).filter(Boolean);
   }
 
-  return ordered.map((step, i) => ({
+  // Document input node at the top, then steps below it
+  const docInputNode: Node = {
+    id: "__document_input__",
+    type: "documentInput",
+    position: { x: 275, y: 0 },
+    draggable: false,
+    selectable: false,
+    deletable: false,
+    data: (documentInput ?? {}) as Record<string, unknown>,
+  };
+
+  const stepNodes = ordered.map((step, i) => ({
     id: step.id,
     type: "step",
-    position: { x: 250, y: i * 150 },
+    position: { x: 250, y: (i + 1) * 150 },  // offset by 1 for document input
     data: {
       ...step,
       label: step.id,
@@ -110,6 +132,8 @@ function layoutNodes(
       selected: step.id === selectedNodeId,
     },
   }));
+
+  return [docInputNode, ...stepNodes];
 }
 
 function toFlowEdges(pipelineEdges: PipelineEdge[], edgeStates?: Map<string, EdgeState>): Edge[] {
@@ -167,9 +191,10 @@ export function PipelineCanvas({
   nodeStates,
   edgeStates,
   readOnly,
+  documentInput,
 }: PipelineCanvasProps) {
   const initialNodes = useMemo(() => {
-    const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges);
+    const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges, documentInput);
     if (nodeStates) {
       return nodes.map((n) => {
         const state = nodeStates.get(n.id);
@@ -193,10 +218,26 @@ export function PipelineCanvas({
     }
     return nodes;
   }, [steps, selectedNodeId, nodeStates]);
-  const initialFlowEdges = useMemo(
-    () => toFlowEdges(pipelineEdges, edgeStates),
-    [pipelineEdges, edgeStates],
-  );
+  const initialFlowEdges = useMemo(() => {
+    const flowEdges = toFlowEdges(pipelineEdges, edgeStates);
+    // Add edge from document input to the entry step (first step with no incoming edges)
+    if (steps.length > 0) {
+      const withIncoming = new Set(pipelineEdges.map(e => e.to));
+      const entryStepId = steps.find(s => !withIncoming.has(s.id))?.id || steps[0]?.id;
+      if (entryStepId) {
+        flowEdges.unshift({
+          id: "e-__document_input__-entry",
+          source: "__document_input__",
+          target: entryStepId,
+          animated: false,
+          selectable: false,
+          deletable: false,
+          style: { stroke: "#D4CFC5", strokeWidth: 1, strokeDasharray: "4,4" },
+        });
+      }
+    }
+    return flowEdges;
+  }, [pipelineEdges, edgeStates, steps]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChangeInternal] = useEdgesState(initialFlowEdges);
@@ -208,7 +249,7 @@ export function PipelineCanvas({
     if (prevStepsRef.current !== steps || prevNodeStatesRef.current !== nodeStates) {
       prevStepsRef.current = steps;
       prevNodeStatesRef.current = nodeStates;
-      const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges);
+      const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges, documentInput);
       if (nodeStates) {
         setNodes(
           nodes.map((n) => {

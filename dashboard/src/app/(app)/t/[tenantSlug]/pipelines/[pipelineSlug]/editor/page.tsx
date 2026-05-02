@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { PipelineCanvas, type PipelineEdge, type NodeState, type EdgeState } from "@/components/pipeline-editor/PipelineCanvas";
+import { PipelineCanvas, type PipelineEdge, type NodeState, type EdgeState, type DocumentInputData } from "@/components/pipeline-editor/PipelineCanvas";
 import { Toolbar } from "@/components/pipeline-editor/Toolbar";
 import {
   StepConfigPanel,
@@ -217,6 +217,7 @@ export default function PipelineEditorPage() {
   const [nodeStates, setNodeStates] = useState<Map<string, NodeState>>(new Map());
   const [edgeStates, setEdgeStates] = useState<Map<string, EdgeState>>(new Map());
   const [testPath, setTestPath] = useState<string[]>([]);
+  const [documentInput, setDocumentInput] = useState<DocumentInputData>({});
 
   // Initialize from pipeline data
   if (pipeline && !initialized) {
@@ -377,10 +378,11 @@ export default function PipelineEditorPage() {
 
   // ── Test mode handlers ──
 
-  function handleTestStart() {
+  function handleTestStart(filename?: string) {
     setTestRunning(true);
     setTestResults([]);
     setTestPath([]);
+    setDocumentInput({ filename, parseStatus: "parsing" });
     const ns = new Map<string, NodeState>();
     for (const step of steps) {
       ns.set(step.id, { executionState: "waiting" });
@@ -391,6 +393,11 @@ export default function PipelineEditorPage() {
 
   function handleStepEvent(event: { type: string; data: Record<string, unknown> }) {
     if (event.type === "step_start") {
+      // First step_start means parse completed — update document input
+      setDocumentInput(prev => prev.parseStatus === "parsing"
+        ? { ...prev, parseStatus: "parsed" }
+        : prev
+      );
       setNodeStates(prev => {
         const next = new Map(prev);
         next.set(event.data.stepId as string, { executionState: "running" });
@@ -425,6 +432,16 @@ export default function PipelineEditorPage() {
 
   function handleTestComplete(data: Record<string, unknown>) {
     setTestRunning(false);
+    // Update document input with final info
+    const docInfo = data.documentInfo as { filename?: string; pageCount?: number } | undefined;
+    if (docInfo) {
+      setDocumentInput(prev => ({
+        ...prev,
+        filename: docInfo.filename,
+        pageCount: docInfo.pageCount,
+        parseStatus: "parsed" as const,
+      }));
+    }
     const skipped = (data.skippedSteps as string[]) || [];
     setNodeStates(prev => {
       const next = new Map(prev);
@@ -441,6 +458,7 @@ export default function PipelineEditorPage() {
     setNodeStates(new Map());
     setEdgeStates(new Map());
     setTestPath([]);
+    setDocumentInput({});
   }
 
   // ── Render ──
@@ -585,6 +603,7 @@ export default function PipelineEditorPage() {
           nodeStates={testMode ? nodeStates : undefined}
           edgeStates={testMode ? edgeStates : undefined}
           readOnly={testMode}
+          documentInput={documentInput}
         />
 
         {/* Config panel */}
