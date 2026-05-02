@@ -389,7 +389,9 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
   if (body.yaml !== undefined) {
     updates.yamlSource = body.yaml;
     updates.pipelineType = "dag";
-    updates.dagJson = {};
+    // Compile the YAML and store the compiled DAG
+    const compiled = compilePipeline(body.yaml);
+    updates.dagJson = compiled.ok ? compiled.pipeline : {};
   }
   if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;

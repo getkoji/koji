@@ -321,7 +321,7 @@ export default function PipelineEditorPage() {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ yaml_source: yaml }),
+          body: JSON.stringify({ yaml }),
         },
       );
       setDirty(false);
