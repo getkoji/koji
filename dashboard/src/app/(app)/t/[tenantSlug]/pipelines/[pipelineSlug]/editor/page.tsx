@@ -554,7 +554,7 @@ export default function PipelineEditorPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen" style={{ background: "#FAF7F0" }}>
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "#FAF7F0" }}>
       {/* Edit / Test toggle */}
       <div className="flex items-center gap-2 px-5 py-2" style={{ background: "#F4EEE2", borderBottom: "1px solid #E8E0D0" }}>
         <button
