@@ -62,6 +62,7 @@ interface PipelineCanvasProps {
   readOnly?: boolean;
   documentInput?: DocumentInputData;
   onEdgeClick?: (from: string, to: string) => void;
+  onDocumentInputEdgeClick?: () => void;
 }
 
 /**
@@ -194,6 +195,7 @@ export function PipelineCanvas({
   readOnly,
   documentInput,
   onEdgeClick,
+  onDocumentInputEdgeClick,
 }: PipelineCanvasProps) {
   const initialNodes = useMemo(() => {
     const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges, documentInput);
@@ -358,17 +360,18 @@ export function PipelineCanvas({
 
   const onEdgeClickHandler = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
-      // Extract from/to from the edge ID format "e-{from}-{to}"
-      const parts = edge.id.replace("e-", "").split("-");
-      if (parts.length >= 2 && onEdgeClick) {
-        // Find the pipeline edge by source/target (more reliable than parsing ID)
-        const pEdge = pipelineEdges.find(e => edge.source === e.from && edge.target === e.to);
-        if (pEdge) {
-          onEdgeClick(pEdge.from, pEdge.to);
-        }
+      // Document input edge clicked — show help tooltip
+      if (edge.id === "e-__document_input__-entry") {
+        onDocumentInputEdgeClick?.();
+        return;
+      }
+      // Find the pipeline edge by source/target
+      const pEdge = pipelineEdges.find(e => edge.source === e.from && edge.target === e.to);
+      if (pEdge && onEdgeClick) {
+        onEdgeClick(pEdge.from, pEdge.to);
       }
     },
-    [onEdgeClick, pipelineEdges],
+    [onEdgeClick, onDocumentInputEdgeClick, pipelineEdges],
   );
 
   // Propagate node deletions

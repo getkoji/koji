@@ -663,6 +663,11 @@ export default function PipelineEditorPage() {
           readOnly={testMode}
           documentInput={documentInput}
           onEdgeClick={handleEdgeClick}
+          onDocumentInputEdgeClick={() => setValidationMsg(
+            "This edge automatically connects to the first step in the pipeline (the entry point). " +
+            "To change which step runs first, add a new step and connect it to the current first step — " +
+            "the document input will follow automatically."
+          )}
         />
 
         {/* Config panel */}
