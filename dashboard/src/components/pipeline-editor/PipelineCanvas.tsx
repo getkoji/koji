@@ -58,8 +58,48 @@ interface PipelineCanvasProps {
  * For steps that have multiple incoming edges (branches), space them
  * out horizontally.
  */
-function layoutNodes(steps: PipelineStep[], selectedNodeId: string | null): Node[] {
-  return steps.map((step, i) => ({
+/**
+ * Layout nodes in topological order (entry step at top, follow edges down).
+ * Falls back to array order if no edges exist.
+ */
+function layoutNodes(
+  steps: PipelineStep[],
+  selectedNodeId: string | null,
+  edges?: PipelineEdge[],
+): Node[] {
+  // Topological sort: entry step first, then follow edges
+  let ordered = steps;
+  if (edges && edges.length > 0) {
+    const incomingCount = new Map<string, number>();
+    const outgoing = new Map<string, string[]>();
+    for (const s of steps) {
+      incomingCount.set(s.id, 0);
+      outgoing.set(s.id, []);
+    }
+    for (const e of edges) {
+      incomingCount.set(e.to, (incomingCount.get(e.to) ?? 0) + 1);
+      outgoing.get(e.from)?.push(e.to);
+    }
+    // Kahn's algorithm
+    const queue = steps.filter((s) => (incomingCount.get(s.id) ?? 0) === 0).map((s) => s.id);
+    const sorted: string[] = [];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      sorted.push(id);
+      for (const next of outgoing.get(id) ?? []) {
+        const count = (incomingCount.get(next) ?? 1) - 1;
+        incomingCount.set(next, count);
+        if (count === 0) queue.push(next);
+      }
+    }
+    // Add any steps not reached by edges (disconnected)
+    for (const s of steps) {
+      if (!sorted.includes(s.id)) sorted.push(s.id);
+    }
+    ordered = sorted.map((id) => steps.find((s) => s.id === id)!).filter(Boolean);
+  }
+
+  return ordered.map((step, i) => ({
     id: step.id,
     type: "step",
     position: { x: 250, y: i * 150 },
@@ -129,7 +169,7 @@ export function PipelineCanvas({
   readOnly,
 }: PipelineCanvasProps) {
   const initialNodes = useMemo(() => {
-    const nodes = layoutNodes(steps, selectedNodeId);
+    const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges);
     if (nodeStates) {
       return nodes.map((n) => {
         const state = nodeStates.get(n.id);
@@ -168,7 +208,7 @@ export function PipelineCanvas({
     if (prevStepsRef.current !== steps || prevNodeStatesRef.current !== nodeStates) {
       prevStepsRef.current = steps;
       prevNodeStatesRef.current = nodeStates;
-      const nodes = layoutNodes(steps, selectedNodeId);
+      const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges);
       if (nodeStates) {
         setNodes(
           nodes.map((n) => {
