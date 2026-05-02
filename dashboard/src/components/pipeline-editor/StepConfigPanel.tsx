@@ -427,19 +427,126 @@ function WebhookConfig({
   onUpdate: (id: string, u: Partial<PipelineStep>) => void;
 }) {
   const config = step.config || {};
+  const headers = (config.headers as Record<string, string>) || {};
+  const headerEntries = Object.entries(headers);
+
+  function updateHeaders(newHeaders: Record<string, string>) {
+    onUpdate(step.id, { config: { ...config, headers: newHeaders } });
+  }
+
   return (
-    <div className="mb-4">
-      <label style={labelStyle}>URL</label>
-      <input
-        type="text"
-        value={(config.url as string) || ""}
-        onChange={(e) =>
-          onUpdate(step.id, { config: { ...config, url: e.target.value } })
-        }
-        style={inputStyle}
-        placeholder="https://example.com/api/hooks/intake"
-      />
-    </div>
+    <>
+      <div className="mb-4">
+        <label style={labelStyle}>URL</label>
+        <input
+          type="text"
+          value={(config.url as string) || ""}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, url: e.target.value } })
+          }
+          style={inputStyle}
+          placeholder="https://example.com/api/hooks/intake"
+        />
+      </div>
+
+      <div className="mb-4">
+        <label style={labelStyle}>Method</label>
+        <select
+          value={(config.method as string) || "POST"}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, method: e.target.value } })
+          }
+          style={inputStyle}
+        >
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="PATCH">PATCH</option>
+        </select>
+      </div>
+
+      <div className="mb-4">
+        <div className="flex justify-between items-center mb-2">
+          <label style={{ ...labelStyle, marginBottom: 0 }}>Headers</label>
+          <button
+            onClick={() => updateHeaders({ ...headers, "": "" })}
+            style={{
+              padding: "2px 8px",
+              fontSize: "11px",
+              fontWeight: 500,
+              border: "1px solid #E8E0D0",
+              borderRadius: "3px",
+              background: "transparent",
+              color: "#C33520",
+              cursor: "pointer",
+              fontFamily: "'Instrument Sans', sans-serif",
+            }}
+          >
+            + Add
+          </button>
+        </div>
+        <div className="flex flex-col gap-2">
+          {headerEntries.map(([key, value], i) => (
+            <div key={i} className="flex gap-1 items-start">
+              <input
+                type="text"
+                value={key}
+                onChange={(e) => {
+                  const entries = Object.entries(headers);
+                  entries[i] = [e.target.value, value];
+                  updateHeaders(Object.fromEntries(entries));
+                }}
+                style={{ ...inputStyle, flex: "0 0 40%", fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 6px" }}
+                placeholder="Authorization"
+              />
+              <input
+                type="text"
+                value={value}
+                onChange={(e) => {
+                  const newH = { ...headers };
+                  newH[key] = e.target.value;
+                  updateHeaders(newH);
+                }}
+                style={{ ...inputStyle, flex: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 6px" }}
+                placeholder="Bearer token..."
+              />
+              <button
+                onClick={() => {
+                  const newH = { ...headers };
+                  delete newH[key];
+                  updateHeaders(newH);
+                }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#8A847B", fontSize: "14px", padding: "4px", flexShrink: 0 }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {headerEntries.length === 0 ? (
+            <p style={{ fontSize: "11px", color: "#8A847B", fontStyle: "italic" }}>
+              No custom headers. Content-Type: application/json is always included.
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label style={labelStyle}>Payload</label>
+        <select
+          value={(config.payload as string) || "result"}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, payload: e.target.value } })
+          }
+          style={inputStyle}
+        >
+          <option value="result">Extraction result + document info</option>
+          <option value="document">Document metadata only</option>
+          <option value="metadata">All step outputs</option>
+        </select>
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          What to include in the POST body sent to the URL.
+        </p>
+      </div>
+    </>
   );
 }
 

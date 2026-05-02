@@ -262,18 +262,31 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         case "webhook": {
           const webhookUrl = step.config.url as string;
           if (webhookUrl) {
-            // Build payload from upstream extraction
-            const extractOutput = Object.values(stepOutputs).reverse().find(o => o?.fields);
-            const payload = {
-              document_id: documentId,
-              tenant_id: tenantId,
-              extraction: extractOutput || {},
-              document: { filename: doc.filename, mime_type: doc.mimeType },
-            };
+            const method = ((step.config.method as string) || "POST").toUpperCase();
+            const customHeaders = (step.config.headers as Record<string, string>) || {};
+            const payloadMode = (step.config.payload as string) || "result";
+
+            // Build payload based on mode
+            let payload: Record<string, unknown>;
+            if (payloadMode === "document") {
+              payload = { document_id: documentId, filename: doc.filename, mime_type: doc.mimeType };
+            } else if (payloadMode === "metadata") {
+              payload = { document_id: documentId, tenant_id: tenantId, step_outputs: stepOutputs };
+            } else {
+              // "result" — extraction + document info
+              const extractOutput = Object.values(stepOutputs).reverse().find(o => o?.fields);
+              payload = {
+                document_id: documentId,
+                tenant_id: tenantId,
+                extraction: extractOutput || {},
+                document: { filename: doc.filename, mime_type: doc.mimeType, page_count: pageCount },
+              };
+            }
+
             try {
               const resp = await fetch(webhookUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+                method,
+                headers: { "Content-Type": "application/json", ...customHeaders },
                 body: JSON.stringify(payload),
               });
               output = { status_code: resp.status, delivered: resp.ok };
