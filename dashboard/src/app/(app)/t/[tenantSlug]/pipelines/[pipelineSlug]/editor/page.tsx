@@ -282,21 +282,7 @@ export default function PipelineEditorPage() {
   function handleAddStep(type: string, id: string) {
     pushUndo();
     const newStep: PipelineStep = { id, type, config: {} };
-    const newSteps = [...steps, newStep];
-
-    // Auto-connect: if there are existing steps, connect the last one to the new one
-    const newEdges = [...edges];
-    if (steps.length > 0) {
-      const lastStep = steps[steps.length - 1]!;
-      // Only auto-connect if the last step has no outgoing edges
-      const hasOutgoing = edges.some((e) => e.from === lastStep.id);
-      if (!hasOutgoing) {
-        newEdges.push({ from: lastStep.id, to: id });
-      }
-    }
-
-    setSteps(newSteps);
-    setEdges(newEdges);
+    setSteps([...steps, newStep]);
     setDirty(true);
     setSelectedNode(id);
   }
