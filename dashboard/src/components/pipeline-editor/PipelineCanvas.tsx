@@ -61,6 +61,7 @@ interface PipelineCanvasProps {
   edgeStates?: Map<string, EdgeState>;
   readOnly?: boolean;
   documentInput?: DocumentInputData;
+  onEdgeClick?: (from: string, to: string) => void;
 }
 
 /**
@@ -192,6 +193,7 @@ export function PipelineCanvas({
   edgeStates,
   readOnly,
   documentInput,
+  onEdgeClick,
 }: PipelineCanvasProps) {
   const initialNodes = useMemo(() => {
     const nodes = layoutNodes(steps, selectedNodeId, pipelineEdges, documentInput);
@@ -343,6 +345,21 @@ export function PipelineCanvas({
     onNodeSelect(null);
   }, [onNodeSelect]);
 
+  const onEdgeClickHandler = useCallback(
+    (_: React.MouseEvent, edge: Edge) => {
+      // Extract from/to from the edge ID format "e-{from}-{to}"
+      const parts = edge.id.replace("e-", "").split("-");
+      if (parts.length >= 2 && onEdgeClick) {
+        // Find the pipeline edge by source/target (more reliable than parsing ID)
+        const pEdge = pipelineEdges.find(e => edge.source === e.from && edge.target === e.to);
+        if (pEdge) {
+          onEdgeClick(pEdge.from, pEdge.to);
+        }
+      }
+    },
+    [onEdgeClick, pipelineEdges],
+  );
+
   // Propagate node deletions
   const onNodesDelete = useCallback(
     (deleted: Node[]) => {
@@ -403,6 +420,7 @@ export function PipelineCanvas({
         onEdgesChange={onEdgesChangeInternal}
         onConnect={onConnect}
         onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClickHandler}
         onPaneClick={onPaneClick}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}

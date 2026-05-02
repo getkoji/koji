@@ -14,6 +14,7 @@ import { YamlView } from "@/components/pipeline-editor/YamlView";
 import { AddStepModal } from "@/components/pipeline-editor/AddStepModal";
 import { TestModeControls } from "@/components/pipeline-editor/TestModeControls";
 import { TestResultsPanel, type StepTestResult } from "@/components/pipeline-editor/TestResultsPanel";
+import { EdgeConditionPanel } from "@/components/pipeline-editor/EdgeConditionPanel";
 import { api, pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -218,6 +219,7 @@ export default function PipelineEditorPage() {
   const [edgeStates, setEdgeStates] = useState<Map<string, EdgeState>>(new Map());
   const [testPath, setTestPath] = useState<string[]>([]);
   const [documentInput, setDocumentInput] = useState<DocumentInputData>({});
+  const [selectedEdge, setSelectedEdge] = useState<PipelineEdge | null>(null);
 
   // Initialize from pipeline data
   if (pipeline && !initialized) {
@@ -300,6 +302,39 @@ export default function PipelineEditorPage() {
     setSelectedNode(null);
     setDirty(true);
   }
+
+  function handleEdgeClick(from: string, to: string) {
+    const edge = edges.find(e => e.from === from && e.to === to);
+    if (edge && !testMode) {
+      setSelectedEdge(edge);
+      setSelectedNode(null);
+    }
+  }
+
+  function handleEdgeUpdate(from: string, to: string, updates: Partial<PipelineEdge>) {
+    setEdges(prev => prev.map(e =>
+      e.from === from && e.to === to ? { ...e, ...updates } : e
+    ));
+    setSelectedEdge(null);
+    setDirty(true);
+  }
+
+  function handleEdgeDelete(from: string, to: string) {
+    setEdges(prev => prev.filter(e => !(e.from === from && e.to === to)));
+    setSelectedEdge(null);
+    setDirty(true);
+  }
+
+  // Collect classify labels for the edge condition builder
+  const classifyLabels = useMemo(() =>
+    steps
+      .filter(s => s.type === "classify" && s.config?.labels)
+      .map(s => ({
+        stepId: s.id,
+        labels: (s.config.labels as Array<{ id: string }>).map(l => l.id),
+      })),
+    [steps]
+  );
 
   function handleYamlChange(newYaml: string) {
     const graph = parseGraph(newYaml);
@@ -604,6 +639,7 @@ export default function PipelineEditorPage() {
           edgeStates={testMode ? edgeStates : undefined}
           readOnly={testMode}
           documentInput={documentInput}
+          onEdgeClick={handleEdgeClick}
         />
 
         {/* Config panel */}
@@ -619,6 +655,14 @@ export default function PipelineEditorPage() {
             onClose={() => setSelectedNode(null)}
             onDelete={handleDeleteStep}
             schemas={schemasList ?? []}
+          />
+        ) : !testMode && selectedEdge ? (
+          <EdgeConditionPanel
+            edge={selectedEdge}
+            onUpdate={handleEdgeUpdate}
+            onClose={() => setSelectedEdge(null)}
+            onDelete={handleEdgeDelete}
+            classifyLabels={classifyLabels}
           />
         ) : null}
 
