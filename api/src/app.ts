@@ -150,6 +150,12 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
 
   const app = new Hono<Env>();
 
+  app.onError((err, c) => {
+    console.error(`[koji-api] ${c.req.method} ${c.req.path} ERROR:`, err.message);
+    console.error(err.stack?.split("\n").slice(0, 5).join("\n"));
+    return c.text("Internal Server Error", 500);
+  });
+
   if (deps.requestLogger !== false) {
     app.use("*", honoLogger());
   }
