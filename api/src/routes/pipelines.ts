@@ -96,6 +96,7 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
         reviewThreshold: schema.pipelines.reviewThreshold,
+        pipelineType: schema.pipelines.pipelineType,
         status: schema.pipelines.status,
         triggerType: schema.pipelines.triggerType,
         lastRunAt: schema.pipelines.lastRunAt,

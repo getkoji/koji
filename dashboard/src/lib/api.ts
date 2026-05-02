@@ -441,6 +441,7 @@ export interface PipelineRow {
   deployedVersion: number | null;
   modelProviderName: string | null;
   modelProviderModel: string | null;
+  pipelineType?: string;
   docsTotal: number;
   docsPassed: number;
   docsFailed: number;

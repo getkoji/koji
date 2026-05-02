@@ -192,7 +192,12 @@ function PipelineCard({ pipeline, tenantSlug }: { pipeline: PipelineRow; tenantS
           >
             {pipeline.displayName}
           </h2>
-          <code className="font-mono text-[10px] text-ink-4 truncate">{pipeline.slug}</code>
+          <div className="flex items-center gap-2">
+            <code className="font-mono text-[10px] text-ink-4 truncate">{pipeline.slug}</code>
+            {pipeline.pipelineType === "dag" ? (
+              <span className="font-mono text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-vermillion/8 text-vermillion">DAG</span>
+            ) : null}
+          </div>
         </div>
         <StatusBadge status={pipeline.status} undeployed={undeployed} />
       </div>
