@@ -284,9 +284,26 @@ export function PipelineCanvas({
     if (prevEdgesRef.current !== pipelineEdges || prevEdgeStatesRef.current !== edgeStates) {
       prevEdgesRef.current = pipelineEdges;
       prevEdgeStatesRef.current = edgeStates;
-      setEdges(toFlowEdges(pipelineEdges, edgeStates));
+      const flowEdges = toFlowEdges(pipelineEdges, edgeStates);
+      // Re-add document input → entry step edge
+      if (steps.length > 0) {
+        const withIncoming = new Set(pipelineEdges.map(e => e.to));
+        const entryStepId = steps.find(s => !withIncoming.has(s.id))?.id || steps[0]?.id;
+        if (entryStepId) {
+          flowEdges.unshift({
+            id: "e-__document_input__-entry",
+            source: "__document_input__",
+            target: entryStepId,
+            animated: false,
+            selectable: false,
+            deletable: false,
+            style: { stroke: "#D4CFC5", strokeWidth: 1, strokeDasharray: "4,4" },
+          });
+        }
+      }
+      setEdges(flowEdges);
     }
-  }, [pipelineEdges, edgeStates, setEdges]);
+  }, [pipelineEdges, edgeStates, steps, setEdges]);
 
   // Propagate node position changes back (for drag repositioning)
   const onNodesChangeWrapped = useCallback(
