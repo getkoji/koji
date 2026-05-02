@@ -14,7 +14,7 @@ import { YamlView } from "@/components/pipeline-editor/YamlView";
 import { AddStepModal } from "@/components/pipeline-editor/AddStepModal";
 import { TestModeControls } from "@/components/pipeline-editor/TestModeControls";
 import { TestResultsPanel, type StepTestResult } from "@/components/pipeline-editor/TestResultsPanel";
-import { pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
+import { api, pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 // ── YAML <-> editor state conversion ──
@@ -313,17 +313,8 @@ export default function PipelineEditorPage() {
     setSaving(true);
     try {
       // Save as YAML to the pipeline's yamlSource field
-      // This uses the pipeline update API -- we patch the config
       const yaml = toYaml(steps, edges);
-      await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/pipelines/${pipeline.slug}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ yaml }),
-        },
-      );
+      await api.patch(`/api/pipelines/${pipeline.slug}`, { yaml });
       setDirty(false);
     } catch (err) {
       setValidationMsg(
