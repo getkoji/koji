@@ -1032,8 +1032,75 @@ async function executeTestStep(
       // Fallback: simulated
       return { ok: true, output: { label: labels[0]?.id || "unknown", confidence: 0.85, method: "simulated", reasoning: "No model endpoint configured — simulated classification" }, costUsd: cost };
     }
-    case "extract":
-      return { ok: true, output: { _delegate: "extraction_pipeline", schema: step.config.schema || "unknown", fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Test mode — extraction requires full pipeline (coming soon)" }, costUsd: cost };
+    case "extract": {
+      const schemaSlug = (step.config.schema as string) || "";
+      if (!schemaSlug) {
+        return { ok: false, output: {}, costUsd: cost, error: "No schema configured on extract step" };
+      }
+      if (!ctx?.db || !ctx.tenantId || !docInfo.text) {
+        return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: docInfo.text ? "No DB context" : "No parsed text available" }, costUsd: cost };
+      }
+      try {
+        // Look up the schema definition
+        const [schemaRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({
+            id: schema.schemas.id,
+            currentVersionId: schema.schemas.currentVersionId,
+          })
+          .from(schema.schemas)
+          .where(eq(schema.schemas.slug, schemaSlug))
+          .limit(1),
+        );
+        if (!schemaRow?.currentVersionId) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: `Schema "${schemaSlug}" not found or has no committed version` }, costUsd: cost };
+        }
+        const [version] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({ parsedJson: schema.schemaVersions.parsedJson })
+            .from(schema.schemaVersions)
+            .where(eq(schema.schemaVersions.id, schemaRow.currentVersionId))
+            .limit(1),
+        );
+        if (!version?.parsedJson) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Schema version has no parsed definition" }, costUsd: cost };
+        }
+        // Resolve model endpoint
+        const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
+        const { createProvider } = await import("../extract/providers");
+        const { extractFields } = await import("../extract/pipeline");
+        const [pipelineRow] = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+          tx.select({ modelProviderId: schema.pipelines.modelProviderId })
+            .from(schema.pipelines)
+            .where(eq(schema.pipelines.id, ctx.pipelineId))
+            .limit(1),
+        );
+        const endpoint = await resolveExtractEndpoint(ctx.db as any, ctx.tenantId, pipelineRow?.modelProviderId ?? null);
+        if (!endpoint) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "No model endpoint configured — cannot run extraction" }, costUsd: cost };
+        }
+        const provider = createProvider(endpoint);
+        const schemaDef = version.parsedJson as Record<string, unknown>;
+        const result = await extractFields(docInfo.text, schemaDef, provider, endpoint.model);
+        const fieldNames = Object.keys(result.extracted || {});
+        const nonNullFields = fieldNames.filter(f => (result.extracted as Record<string, unknown>)[f] != null);
+        return {
+          ok: true,
+          output: {
+            schema: schemaSlug,
+            fields: result.extracted || {},
+            fieldCount: nonNullFields.length,
+            totalFields: fieldNames.length,
+            confidence: result.overall_confidence ?? 0,
+            confidenceScores: result.confidence || {},
+            model: result.model,
+            strategy: result.strategy,
+            elapsed_ms: result.elapsed_ms,
+          },
+          costUsd: cost,
+        };
+      } catch (err) {
+        return { ok: false, output: { schema: schemaSlug }, costUsd: cost, error: `Extraction failed: ${(err as Error).message}` };
+      }
+    }
     case "tag":
       return { ok: true, output: { tags: (step.config.tags as Record<string, string>) || {} }, costUsd: 0 };
     case "filter": {
