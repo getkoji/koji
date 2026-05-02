@@ -1130,6 +1130,37 @@ async function executeTestStep(
       const passed = evalTestCondition((step.config.condition as string) || "true", { document: docInfo, steps: priorOutputs });
       return { ok: true, output: { passed }, costUsd: 0 };
     }
+    case "transform": {
+      // Apply transform operations to upstream extraction results
+      const ops = (step.config.operations as Array<Record<string, unknown>>) || [];
+      let fields: Record<string, unknown> = {};
+      // Collect fields from upstream extract steps
+      for (const so of Object.values(priorOutputs)) {
+        const out = so as Record<string, unknown>;
+        if (out?.fields && typeof out.fields === "object") {
+          fields = { ...fields, ...(out.fields as Record<string, unknown>) };
+        }
+      }
+      const applied: string[] = [];
+      for (const op of ops) {
+        if (op.rename && typeof op.rename === "object") {
+          const { from: f, to: t } = op.rename as { from: string; to: string };
+          if (f in fields) { fields[t] = fields[f]; delete fields[f]; applied.push(`rename: ${f} → ${t}`); }
+        } else if (op.set && typeof op.set === "object") {
+          const { field: f, value: v } = op.set as { field: string; value: unknown };
+          let resolved = v;
+          if (typeof v === "string") {
+            resolved = v.replace("{{now}}", new Date().toISOString())
+              .replace("{{document.filename}}", docInfo.filename);
+          }
+          fields[f] = resolved; applied.push(`set: ${f}`);
+        } else if (op.remove && typeof op.remove === "object") {
+          const { field: f } = op.remove as { field: string };
+          delete fields[f]; applied.push(`remove: ${f}`);
+        }
+      }
+      return { ok: true, output: { fields, operations_applied: applied, operation_count: applied.length }, costUsd: 0 };
+    }
     case "webhook":
       return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
     case "gate":

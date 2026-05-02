@@ -259,6 +259,59 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           break;
         }
 
+        case "webhook": {
+          const webhookUrl = step.config.url as string;
+          if (webhookUrl) {
+            // Build payload from upstream extraction
+            const extractOutput = Object.values(stepOutputs).reverse().find(o => o?.fields);
+            const payload = {
+              document_id: documentId,
+              tenant_id: tenantId,
+              extraction: extractOutput || {},
+              document: { filename: doc.filename, mime_type: doc.mimeType },
+            };
+            try {
+              const resp = await fetch(webhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              output = { status_code: resp.status, delivered: resp.ok };
+            } catch (err) {
+              output = { status_code: 0, delivered: false, error: (err as Error).message };
+            }
+          } else {
+            output = { skipped: true, reason: "No URL configured" };
+          }
+          break;
+        }
+
+        case "transform": {
+          const ops = (step.config.operations as Array<Record<string, unknown>>) || [];
+          let fields: Record<string, unknown> = {};
+          for (const so of Object.values(stepOutputs)) {
+            if (so?.fields && typeof so.fields === "object") {
+              fields = { ...fields, ...(so.fields as Record<string, unknown>) };
+            }
+          }
+          const applied: string[] = [];
+          for (const op of ops) {
+            if (op.rename && typeof op.rename === "object") {
+              const { from: f, to: t } = op.rename as { from: string; to: string };
+              if (f in fields) { fields[t] = fields[f]; delete fields[f]; applied.push(`rename: ${f} → ${t}`); }
+            } else if (op.set && typeof op.set === "object") {
+              const { field: f, value: v } = op.set as { field: string; value: unknown };
+              fields[f] = typeof v === "string" ? v.replace("{{now}}", new Date().toISOString()) : v;
+              applied.push(`set: ${f}`);
+            } else if (op.remove && typeof op.remove === "object") {
+              const { field: f } = op.remove as { field: string };
+              delete fields[f]; applied.push(`remove: ${f}`);
+            }
+          }
+          output = { fields, operations_applied: applied };
+          break;
+        }
+
         default:
           output = { note: `Step type "${step.type}" executed` };
       }
