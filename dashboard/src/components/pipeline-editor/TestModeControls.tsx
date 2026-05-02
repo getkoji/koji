@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { api } from "@/lib/api";
 
 interface TestModeControlsProps {
   pipelineSlug: string;
@@ -44,17 +45,11 @@ export function TestModeControls({
     formData.append("file", file);
 
     abortRef.current = new AbortController();
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
-
     try {
-      const response = await fetch(
-        `${apiUrl}/api/pipelines/${pipelineSlug}/test?stream=true`,
-        {
-          method: "POST",
-          body: formData,
-          credentials: "include",
-          signal: abortRef.current.signal,
-        }
+      const response = await api.streamForm(
+        `/api/pipelines/${pipelineSlug}/test?stream=true`,
+        formData,
+        abortRef.current.signal,
       );
 
       if (!response.ok) {

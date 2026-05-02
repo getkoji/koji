@@ -122,6 +122,35 @@ export const api = {
 
   delete: (path: string) =>
     request<void>(path, { method: "DELETE" }),
+
+  /**
+   * POST with FormData, returning the raw Response for SSE streaming.
+   * Handles auth headers and tenant context identically to other methods.
+   */
+  streamForm: async (path: string, form: FormData, signal?: AbortSignal): Promise<Response> => {
+    const url = `${API_BASE}${path}`;
+    const tenantSlug = getCurrentTenantSlug();
+    const headers: Record<string, string> = {};
+
+    let useCredentials = true;
+    if (authTokenProvider) {
+      const token = await authTokenProvider();
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+        useCredentials = false;
+      }
+    } else if (tenantSlug) {
+      headers["x-koji-tenant"] = tenantSlug;
+    }
+
+    return fetch(url, {
+      method: "POST",
+      headers,
+      body: form,
+      signal,
+      ...(useCredentials ? { credentials: "include" as RequestCredentials } : {}),
+    });
+  },
 };
 
 // ── Typed endpoints ──
