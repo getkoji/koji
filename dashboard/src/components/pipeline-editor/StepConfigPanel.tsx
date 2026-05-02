@@ -1,5 +1,7 @@
 "use client";
 
+import { useState, useRef } from "react";
+
 export interface PipelineStep {
   id: string;
   type: string;
@@ -231,14 +233,9 @@ function ClassifyConfig({
               </div>
               <div>
                 <div style={{ ...labelStyle, fontSize: "9px" }}>Keywords (for keyword matching, comma-separated)</div>
-                <input
-                  type="text"
-                  value={(label.keywords || []).join(", ")}
-                  onChange={(e) => updateLabel(i, {
-                    keywords: e.target.value.split(",").map(k => k.trim()).filter(Boolean),
-                  })}
-                  style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 8px" }}
-                  placeholder="insurance, policy, certificate, claim, ACORD"
+                <KeywordsInput
+                  keywords={label.keywords || []}
+                  onChange={(kw) => updateLabel(i, { keywords: kw })}
                 />
               </div>
             </div>
@@ -273,6 +270,29 @@ function ClassifyConfig({
         </p>
       </div>
     </>
+  );
+}
+
+function KeywordsInput({ keywords, onChange }: { keywords: string[]; onChange: (kw: string[]) => void }) {
+  const [text, setText] = useState(keywords.join(", "));
+  // Sync from parent when keywords change externally
+  const prevRef = useRef(keywords);
+  if (prevRef.current !== keywords && keywords.join(", ") !== text) {
+    prevRef.current = keywords;
+    setText(keywords.join(", "));
+  }
+  return (
+    <input
+      type="text"
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        const parsed = text.split(",").map(k => k.trim()).filter(Boolean);
+        onChange(parsed);
+      }}
+      style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 8px" }}
+      placeholder="insurance, policy, certificate, claim, ACORD"
+    />
   );
 }
 
