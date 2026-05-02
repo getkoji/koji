@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -235,19 +235,52 @@ export default function PipelineEditorPage() {
 
   const currentYaml = useMemo(() => toYaml(steps, edges), [steps, edges]);
 
+  // ── Undo stack ──
+  const undoStackRef = useRef<Array<{ steps: PipelineStep[]; edges: PipelineEdge[] }>>([]);
+  const MAX_UNDO = 30;
+
+  function pushUndo() {
+    undoStackRef.current.push({ steps: structuredClone(steps), edges: structuredClone(edges) });
+    if (undoStackRef.current.length > MAX_UNDO) undoStackRef.current.shift();
+  }
+
+  function handleUndo() {
+    const prev = undoStackRef.current.pop();
+    if (prev) {
+      setSteps(prev.steps);
+      setEdges(prev.edges);
+      setDirty(true);
+    }
+  }
+
+  // Listen for Ctrl+Z / Cmd+Z
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   // ── Handlers ──
 
   function handleStepsChange(newSteps: PipelineStep[]) {
+    pushUndo();
     setSteps(newSteps);
     setDirty(true);
   }
 
   function handleEdgesChange(newEdges: PipelineEdge[]) {
+    pushUndo();
     setEdges(newEdges);
     setDirty(true);
   }
 
   function handleAddStep(type: string, id: string) {
+    pushUndo();
     const newStep: PipelineStep = { id, type, config: {} };
     const newSteps = [...steps, newStep];
 
@@ -269,6 +302,7 @@ export default function PipelineEditorPage() {
   }
 
   function handleUpdateStep(stepId: string, updates: Partial<PipelineStep>) {
+    pushUndo();
     setSteps((prev) => {
       const idx = prev.findIndex((s) => s.id === stepId);
       if (idx === -1) return prev;
@@ -295,6 +329,7 @@ export default function PipelineEditorPage() {
   }
 
   function handleDeleteStep(stepId: string) {
+    pushUndo();
     setSteps((prev) => prev.filter((s) => s.id !== stepId));
     setEdges((prev) =>
       prev.filter((e) => e.from !== stepId && e.to !== stepId),
@@ -312,6 +347,7 @@ export default function PipelineEditorPage() {
   }
 
   function handleEdgeUpdate(from: string, to: string, updates: Partial<PipelineEdge>) {
+    pushUndo();
     setEdges(prev => prev.map(e =>
       e.from === from && e.to === to ? { ...e, ...updates } : e
     ));
@@ -320,6 +356,7 @@ export default function PipelineEditorPage() {
   }
 
   function handleEdgeDelete(from: string, to: string) {
+    pushUndo();
     setEdges(prev => prev.filter(e => !(e.from === from && e.to === to)));
     setSelectedEdge(null);
     setDirty(true);
