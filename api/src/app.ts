@@ -70,6 +70,7 @@ import {
   initBilling,
   handleIngestionProcess,
 } from "./ingestion/process";
+import { initDagRunner, setDagParseProvider, handleDagRun } from "./ingestion/dag-runner";
 
 import type { Env } from "./env";
 
@@ -146,6 +147,8 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initDeliveryHandler(deps.db, deps.masterKey);
   initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider);
+  initDagRunner(deps.db, deps.storage);
+  setDagParseProvider(deps.parseProvider);
   initBilling(billing);
 
   const app = new Hono<Env>();
@@ -223,6 +226,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   const handlers: HandlerMap = {
     "webhook.deliver": handleWebhookDeliver,
     "ingestion.process": handleIngestionProcess,
+    "pipeline.dag.run": handleDagRun,
   };
 
   return { app, handlers };

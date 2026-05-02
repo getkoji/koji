@@ -778,17 +778,28 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
         id: schema.pipelines.id,
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+        pipelineType: schema.pipelines.pipelineType,
+        yamlSource: schema.pipelines.yamlSource,
       })
       .from(schema.pipelines)
       .where(eq(schema.pipelines.id, pipelineId))
       .limit(1),
   );
   if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
-  if (!pipeline.schemaId || !pipeline.activeSchemaVersionId) {
-    return c.json(
-      { error: "Pipeline has no deployed schema version. Deploy one first." },
-      422,
-    );
+
+  // DAG pipelines require YAML to be saved
+  // Simple pipelines require a deployed schema version
+  if (pipeline.pipelineType === "simple") {
+    if (!pipeline.schemaId || !pipeline.activeSchemaVersionId) {
+      return c.json(
+        { error: "Pipeline has no deployed schema version. Deploy one first." },
+        422,
+      );
+    }
+  } else if (pipeline.pipelineType === "dag") {
+    if (!pipeline.yamlSource) {
+      return c.json({ error: "Pipeline has no DAG definition. Save one first." }, 422);
+    }
   }
 
   const body = await c.req.parseBody();
@@ -810,8 +821,8 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     db,
     tenantId,
     pipelineId,
-    schemaId: pipeline.schemaId,
-    schemaVersionId: pipeline.activeSchemaVersionId,
+    schemaId: pipeline.schemaId ?? undefined,
+    schemaVersionId: pipeline.activeSchemaVersionId ?? undefined,
     triggerType: "manual",
     storageKey,
     filename: file.name,
@@ -820,11 +831,20 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     contentHash,
   });
 
-  await queue.enqueue(
-    "ingestion.process",
-    { documentId: created.documentId },
-    { tenantId },
-  );
+  // Route to the appropriate handler based on pipeline type
+  if (pipeline.pipelineType === "dag") {
+    await queue.enqueue(
+      "pipeline.dag.run",
+      { documentId: created.documentId, pipelineId },
+      { tenantId },
+    );
+  } else {
+    await queue.enqueue(
+      "ingestion.process",
+      { documentId: created.documentId },
+      { tenantId },
+    );
+  }
 
   return c.json(
     { jobId: created.jobId, jobSlug: created.jobSlug, documentId: created.documentId },
