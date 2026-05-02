@@ -7,7 +7,7 @@ export type {
   PipelineSettings,
   CompiledPipeline,
 } from './types';
-export { StepTypes } from './types';
+export { STEP_TYPES, STEP_COSTS, DEFAULT_SETTINGS } from './types';
 
 // Compiler
 export { compilePipeline, type CompileResult } from './compiler';
