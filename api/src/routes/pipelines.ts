@@ -1081,15 +1081,34 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   if (!(file instanceof File)) return c.json({ error: "Missing file in 'file' field" }, 400);
 
   const fileBytes = await file.arrayBuffer();
-  // Extract text from file for classification (basic: works for text-based files)
-  let docText: string | undefined;
   const mimeType = file.type || "application/octet-stream";
-  if (mimeType.startsWith("text/") || mimeType === "application/json") {
+
+  // ── Implicit parse step: extract text from document ──
+  // Every pipeline starts with parsing. This runs before any user-defined steps.
+  let docText: string | undefined;
+  let pageCount: number | undefined;
+  try {
+    const parseProvider = c.get("parseProvider") as any;
+    if (parseProvider?.parse) {
+      const parseResult = await parseProvider.parse({
+        filename: file.name,
+        mimeType,
+        fileBuffer: Buffer.from(fileBytes),
+      });
+      docText = parseResult.markdown;
+      pageCount = parseResult.pages ?? undefined;
+    }
+  } catch (err) {
+    // Parse failed — fall back to basic text extraction
+    console.error("[test] Parse failed, falling back to basic text extraction:", (err as Error).message);
+  }
+
+  // Fallback for text-based files if parse service didn't run
+  if (!docText && (mimeType.startsWith("text/") || mimeType === "application/json")) {
     docText = new TextDecoder().decode(fileBytes);
   }
-  // For PDFs, the parse service would extract text — for now use filename as fallback
 
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText };
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
