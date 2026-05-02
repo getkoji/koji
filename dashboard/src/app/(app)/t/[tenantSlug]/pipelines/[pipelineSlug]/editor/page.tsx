@@ -523,7 +523,7 @@ export default function PipelineEditorPage() {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen gap-4" style={{ background: "#FAF7F0" }}>
+      <div className="flex flex-col items-center justify-center h-full gap-4" style={{ background: "#FAF7F0" }}>
         <p className="text-[13px] text-[#C33520]">
           {error.message.includes("not found") ? "Pipeline not found" : error.message}
         </p>
@@ -540,7 +540,7 @@ export default function PipelineEditorPage() {
   if (!pipeline || loading || !initialized) {
     return (
       <div
-        className="flex items-center justify-center h-screen"
+        className="flex items-center justify-center h-full"
         style={{
           background: "#FAF7F0",
           fontFamily: "'JetBrains Mono', monospace",
@@ -554,7 +554,7 @@ export default function PipelineEditorPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "#FAF7F0" }}>
+    <div className="flex flex-col overflow-hidden" style={{ background: "#FAF7F0", height: "calc(100dvh - 49px)" }}>
       {/* Edit / Test toggle */}
       <div className="flex items-center gap-2 px-5 py-2" style={{ background: "#F4EEE2", borderBottom: "1px solid #E8E0D0" }}>
         <button
