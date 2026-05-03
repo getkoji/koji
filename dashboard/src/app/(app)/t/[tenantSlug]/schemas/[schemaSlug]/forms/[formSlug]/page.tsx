@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Save, Trash2, CheckCircle, Circle, MousePointer2 } from "lucide-react";
+import { Save, Trash2, CheckCircle, Circle, MousePointer2, Play, Upload, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { parse as parseYaml } from "yaml";
@@ -58,6 +58,11 @@ export default function FormAnnotationPage() {
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
+  const [mode, setMode] = useState<"annotate" | "test">("annotate");
+  const [testFile, setTestFile] = useState<File | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState<Record<string, { value: string | null; error?: string }> | null>(null);
+  const [testWarning, setTestWarning] = useState<string | null>(null);
 
   // Load form details
   const { data: form, loading: formLoading } = useApi(
@@ -206,6 +211,32 @@ export default function FormAnnotationPage() {
     }
   }
 
+  async function handleTest() {
+    if (!testFile) return;
+    setTesting(true);
+    setTestResults(null);
+    setTestWarning(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", testFile);
+      const resp = await api.postForm<{
+        data: {
+          extracted: Record<string, { value: string | null; error?: string }>;
+          has_text_layer: boolean;
+          warning?: string;
+        };
+      }>(`/api/forms/${formSlug}/test`, fd);
+      if (resp.data.warning) {
+        setTestWarning(resp.data.warning);
+      }
+      setTestResults(resp.data.extracted);
+    } catch (err: any) {
+      setTestWarning(err?.message ?? "Test failed");
+    } finally {
+      setTesting(false);
+    }
+  }
+
   const fieldColorMap = new Map<string, typeof FIELD_COLORS[0]>();
   Object.keys(mappings).forEach((field, i) => {
     fieldColorMap.set(field, FIELD_COLORS[i % FIELD_COLORS.length]!);
@@ -223,31 +254,44 @@ export default function FormAnnotationPage() {
             <span className="text-cream-4">/</span>
             <span className="text-ink font-medium truncate max-w-[200px]">{form?.displayName ?? formSlug}</span>
           </nav>
-          <h1 className="font-display text-[22px] font-medium leading-none tracking-tight text-ink"
-            style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}>
-            Annotate Form
-          </h1>
+          <div className="flex items-center gap-1 mt-2">
+            {(["annotate", "test"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`font-mono text-[10px] px-2.5 py-1 rounded-sm transition-colors ${
+                  mode === m ? "bg-ink text-cream" : "text-ink-4 hover:bg-cream-2"
+                }`}
+              >
+                {m === "annotate" ? "Annotate" : "Test"}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setDrawMode(!drawMode)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium transition-colors ${
-              drawMode
-                ? "bg-vermillion-2 text-cream"
-                : "bg-cream-2 text-ink-3 border border-border hover:border-ink hover:text-ink"
-            }`}
-          >
-            <MousePointer2 className="w-3.5 h-3.5" />
-            {drawMode ? "Drawing..." : "Draw mode"}
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
-          >
-            <Save className="w-3.5 h-3.5" />
-            {saving ? "Saving..." : "Save"}
-          </button>
+          {mode === "annotate" && (
+            <>
+              <button
+                onClick={() => setDrawMode(!drawMode)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium transition-colors ${
+                  drawMode
+                    ? "bg-vermillion-2 text-cream"
+                    : "bg-cream-2 text-ink-3 border border-border hover:border-ink hover:text-ink"
+                }`}
+              >
+                <MousePointer2 className="w-3.5 h-3.5" />
+                {drawMode ? "Drawing..." : "Draw mode"}
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -370,53 +414,117 @@ export default function FormAnnotationPage() {
           )}
         </div>
 
-        {/* Right: Field list */}
+        {/* Right panel */}
         <div className="overflow-y-auto p-4 space-y-1">
-          <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-3">
-            Schema Fields
-          </div>
-          {schemaFields.map((f) => {
-            const mapped = f.name in mappings;
-            const color = fieldColorMap.get(f.name);
-            return (
-              <div
-                key={f.name}
-                className={`flex items-center justify-between px-2.5 py-2 rounded-sm border transition-colors ${
-                  mapped ? "border-l-2 bg-cream-2/50" : "border-border"
-                }`}
-                style={mapped && color ? { borderLeftColor: color.border } : undefined}
-              >
-                <div className="min-w-0">
-                  <div className="font-mono text-[11px] text-ink truncate">{f.name}</div>
-                  <div className="font-mono text-[9px] text-ink-4">{f.type}</div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {mapped ? (
-                    <>
-                      <CheckCircle className="w-3.5 h-3.5 text-green" />
-                      <button onClick={() => removeMapping(f.name)} className="text-ink-4 hover:text-vermillion-2">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </>
-                  ) : (
-                    <Circle className="w-3.5 h-3.5 text-ink-4/30" />
-                  )}
-                </div>
+          {mode === "annotate" ? (
+            <>
+              <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-3">
+                Schema Fields
               </div>
-            );
-          })}
+              {schemaFields.map((f) => {
+                const mapped = f.name in mappings;
+                const color = fieldColorMap.get(f.name);
+                return (
+                  <div
+                    key={f.name}
+                    className={`flex items-center justify-between px-2.5 py-2 rounded-sm border transition-colors ${
+                      mapped ? "border-l-2 bg-cream-2/50" : "border-border"
+                    }`}
+                    style={mapped && color ? { borderLeftColor: color.border } : undefined}
+                  >
+                    <div className="min-w-0">
+                      <div className="font-mono text-[11px] text-ink truncate">{f.name}</div>
+                      <div className="font-mono text-[9px] text-ink-4">{f.type}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {mapped ? (
+                        <>
+                          <CheckCircle className="w-3.5 h-3.5 text-green" />
+                          <button onClick={() => removeMapping(f.name)} className="text-ink-4 hover:text-vermillion-2">
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </>
+                      ) : (
+                        <Circle className="w-3.5 h-3.5 text-ink-4/30" />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
 
-          {schemaFields.length === 0 && (
-            <p className="text-[11px] text-ink-4 text-center py-4">
-              No fields defined in schema. Add fields in Build mode first.
-            </p>
+              {schemaFields.length === 0 && (
+                <p className="text-[11px] text-ink-4 text-center py-4">
+                  No fields defined in schema. Add fields in Build mode first.
+                </p>
+              )}
+
+              <div className="pt-3 mt-3 border-t border-border font-mono text-[9px] text-ink-4 space-y-1">
+                <div>{Object.keys(mappings).length} / {schemaFields.length} fields mapped</div>
+                <div>v{form?.version ?? 1}</div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-3">
+                Test Extraction
+              </div>
+              <p className="text-[11px] text-ink-4 mb-3">
+                Upload a different instance of this form type to test coordinate extraction.
+              </p>
+
+              {/* Upload test PDF */}
+              <label className={`flex items-center gap-2 px-3 py-2 rounded-sm text-[12px] border border-dashed transition-colors cursor-pointer mb-3 ${
+                testFile ? "text-green border-green/30" : "text-ink-3 border-border hover:border-ink hover:text-ink"
+              }`}>
+                {testFile ? <CheckCircle className="w-3.5 h-3.5 shrink-0" /> : <Upload className="w-3.5 h-3.5 shrink-0" />}
+                <span className="truncate">{testFile?.name ?? "Upload test PDF"}</span>
+                <input type="file" className="hidden" accept=".pdf" onChange={(e) => {
+                  if (e.target.files?.[0]) { setTestFile(e.target.files[0]); setTestResults(null); setTestWarning(null); }
+                }} />
+              </label>
+
+              <button
+                onClick={handleTest}
+                disabled={!testFile || testing || Object.keys(mappings).length === 0}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30 mb-4"
+              >
+                {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                {testing ? "Extracting..." : "Run test"}
+              </button>
+
+              {testWarning && (
+                <div className="border border-vermillion-2/30 bg-vermillion-3/30 rounded-sm px-3 py-2 text-[11px] text-vermillion-2 mb-3">
+                  {testWarning}
+                </div>
+              )}
+
+              {/* Test results */}
+              {testResults && (
+                <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
+                  {Object.entries(testResults).map(([field, result]) => (
+                    <div key={field} className="px-3 py-2">
+                      <div className="font-mono text-[10px] text-vermillion-2 font-medium">{field}</div>
+                      <div className="text-[12px] text-ink mt-0.5">
+                        {result.error ? (
+                          <span className="text-vermillion-2">{result.error}</span>
+                        ) : result.value ? (
+                          result.value
+                        ) : (
+                          <span className="text-ink-4">— empty —</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {Object.keys(mappings).length === 0 && (
+                <p className="text-[11px] text-ink-4 text-center py-4">
+                  No fields mapped yet. Switch to Annotate mode to map fields first.
+                </p>
+              )}
+            </>
           )}
-
-          {/* Stats */}
-          <div className="pt-3 mt-3 border-t border-border font-mono text-[9px] text-ink-4 space-y-1">
-            <div>{Object.keys(mappings).length} / {schemaFields.length} fields mapped</div>
-            <div>v{form?.version ?? 1}</div>
-          </div>
         </div>
       </div>
     </div>
