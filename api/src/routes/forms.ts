@@ -11,6 +11,7 @@ import { eq, and, desc, isNull } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { formExtractToResult, fieldsNeedingLlm } from "../extract/form-extract";
+import { createProvider } from "../extract/providers";
 
 const { formMappings, schemas: schemasTable } = schema;
 
@@ -298,7 +299,8 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
 
   const mappings = form.mappingsJson as Record<string, {
     page: number; x: number; y: number; w: number; h: number;
-    value_type: string; sample_text: string;
+    mapping_type?: string; value_type: string; sample_text: string;
+    llm_prompt?: string; target_fields?: string[];
   }>;
 
   if (!mappings || Object.keys(mappings).length === 0) {
@@ -337,6 +339,58 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
 
     if (coordResult.warning) {
       return c.json({ data: coordResult });
+    }
+
+    // Handle llm_interpret fields — send extracted text to LLM with scoped prompt
+    const llmFields = Object.entries(mappings).filter(([, m]) => m.mapping_type === "llm_interpret");
+    if (llmFields.length > 0) {
+      const model = process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
+      const provider = createProvider(model);
+
+      for (const [fieldName, mapping] of llmFields) {
+        const rawText = coordResult.extracted[fieldName]?.value;
+        if (!rawText) continue;
+
+        const targetFields = mapping.target_fields ?? [fieldName];
+        const userPrompt = mapping.llm_prompt || "Extract the relevant value from this text.";
+
+        const prompt = `You are extracting structured data from a region of a PDF form.
+
+The text in this region reads:
+"""
+${rawText}
+"""
+
+${userPrompt}
+
+Return a JSON object with these fields: ${JSON.stringify(targetFields)}
+Each field value should be a string (or null if not found). Return ONLY the JSON object.`;
+
+        try {
+          const llmResponse = await provider.generate(prompt, true);
+          const parsed = JSON.parse(llmResponse);
+
+          // Merge LLM results into coordinate results under target field names
+          for (const tf of targetFields) {
+            if (parsed[tf] !== undefined) {
+              coordResult.extracted[tf] = {
+                value: parsed[tf],
+                page: coordResult.extracted[fieldName]?.page,
+              };
+            }
+          }
+          // Remove the raw region key if it was a synthetic name (not a schema field)
+          if (!targetFields.includes(fieldName)) {
+            delete coordResult.extracted[fieldName];
+          }
+        } catch {
+          // LLM call failed — leave raw text as fallback
+          coordResult.extracted[fieldName] = {
+            ...coordResult.extracted[fieldName],
+            error: "LLM interpretation failed",
+          };
+        }
+      }
     }
 
     // If we have a schema, run through the normalize → validate pipeline

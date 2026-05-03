@@ -3,12 +3,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Save, Trash2, CheckCircle, Circle, MousePointer2, Play, Upload, Loader2 } from "lucide-react";
+import { Save, Trash2, CheckCircle, Circle, MousePointer2, Play, Upload, Loader2, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { parse as parseYaml } from "yaml";
 
-type MappingType = "text" | "checkbox" | "checkbox_group";
+type MappingType = "text" | "checkbox" | "checkbox_group" | "llm_interpret";
 type ValueType = "string" | "number" | "currency" | "date" | "percentage" | "phone" | "email" | "enum";
 
 interface FieldMapping {
@@ -17,7 +17,7 @@ interface FieldMapping {
   y: number;
   w: number;
   h: number;
-  /** How to read the field: text (default), checkbox, checkbox_group */
+  /** How to read the field: text (default), checkbox, checkbox_group, llm_interpret */
   mapping_type: MappingType;
   /** How to normalize the extracted value */
   value_type: ValueType;
@@ -32,6 +32,10 @@ interface FieldMapping {
   options?: Array<{ x: number; y: number; w: number; h: number; value: string }>;
   /** For enum: allowed values */
   allowed_values?: string[];
+  /** For llm_interpret: prompt to send to the LLM with the extracted text */
+  llm_prompt?: string;
+  /** For llm_interpret: which schema fields this region maps to */
+  target_fields?: string[];
 }
 
 const VALUE_TYPES: { value: ValueType; label: string }[] = [
@@ -87,6 +91,9 @@ export default function FormAnnotationPage() {
   const [pendingValueType, setPendingValueType] = useState<ValueType>("string");
   const [pendingCheckedValue, setPendingCheckedValue] = useState<string>("");
   const [pendingUncheckedValue, setPendingUncheckedValue] = useState<string>("");
+  const [pendingLlmPrompt, setPendingLlmPrompt] = useState<string>("");
+  const [pendingTargetFields, setPendingTargetFields] = useState<string[]>([]);
+  const [editingField, setEditingField] = useState<string | null>(null);
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
@@ -238,13 +245,14 @@ export default function FormAnnotationPage() {
   }
 
   function assignField(fieldName: string) {
-    if (!drawRect || !fieldName) return;
+    const rect = editingField ? mappings[editingField] : drawRect;
+    if (!rect || !fieldName) return;
     const mapping: FieldMapping = {
-      page: currentPage,
-      x: drawRect.x,
-      y: drawRect.y,
-      w: drawRect.w,
-      h: drawRect.h,
+      page: editingField ? mappings[editingField]!.page : currentPage,
+      x: rect.x,
+      y: rect.y,
+      w: rect.w,
+      h: rect.h,
       mapping_type: pendingMappingType,
       value_type: pendingValueType,
       sample_text: "",
@@ -254,7 +262,25 @@ export default function FormAnnotationPage() {
       mapping.checked_value = pendingCheckedValue.trim() || "true";
       mapping.unchecked_value = pendingUncheckedValue.trim() || null;
     }
-    setMappings((prev) => ({ ...prev, [fieldName]: mapping }));
+    if (pendingMappingType === "llm_interpret") {
+      mapping.llm_prompt = pendingLlmPrompt.trim() || undefined;
+      mapping.target_fields = pendingTargetFields.length > 0 ? pendingTargetFields : undefined;
+    }
+    // If editing, remove old field name if it changed
+    if (editingField && editingField !== fieldName) {
+      setMappings((prev) => {
+        const next = { ...prev };
+        delete next[editingField!];
+        next[fieldName] = mapping;
+        return next;
+      });
+    } else {
+      setMappings((prev) => ({ ...prev, [fieldName]: mapping }));
+    }
+    resetPendingState();
+  }
+
+  function resetPendingState() {
     setDrawRect(null);
     setPendingField(null);
     setPendingLabel("");
@@ -262,6 +288,25 @@ export default function FormAnnotationPage() {
     setPendingValueType("string");
     setPendingCheckedValue("");
     setPendingUncheckedValue("");
+    setPendingLlmPrompt("");
+    setPendingTargetFields([]);
+    setEditingField(null);
+  }
+
+  function startEditField(fieldName: string) {
+    const m = mappings[fieldName];
+    if (!m) return;
+    setEditingField(fieldName);
+    setPendingField("");
+    setPendingMappingType(m.mapping_type);
+    setPendingValueType(m.value_type);
+    setPendingLabel(m.label ?? "");
+    setPendingCheckedValue(m.checked_value ?? "");
+    setPendingUncheckedValue(m.unchecked_value ?? "");
+    setPendingLlmPrompt(m.llm_prompt ?? "");
+    setPendingTargetFields(m.target_fields ?? []);
+    // Set drawRect to current position for the popover
+    setDrawRect({ x: m.x, y: m.y, w: m.w, h: m.h });
   }
 
   function removeMapping(fieldName: string) {
@@ -436,11 +481,13 @@ export default function FormAnnotationPage() {
                     marginTop: 8,
                   }}
                 >
-                  <div className="font-mono text-[9px] text-ink-4 uppercase tracking-[0.08em] mb-1">Assign to field</div>
+                  <div className="font-mono text-[9px] text-ink-4 uppercase tracking-[0.08em] mb-1">
+                    {editingField ? `Edit: ${editingField}` : "Assign to field"}
+                  </div>
 
                   {/* Mapping type */}
-                  <div className="flex gap-1 mb-2">
-                    {(["text", "checkbox"] as MappingType[]).map((mt) => (
+                  <div className="flex gap-1 mb-2 flex-wrap">
+                    {([["text", "Text"], ["checkbox", "Checkbox"], ["llm_interpret", "LLM"]] as [MappingType, string][]).map(([mt, label]) => (
                       <button
                         key={mt}
                         onClick={() => setPendingMappingType(mt)}
@@ -448,7 +495,7 @@ export default function FormAnnotationPage() {
                           pendingMappingType === mt ? "bg-ink text-cream" : "text-ink-4 hover:bg-cream-2 border border-border"
                         }`}
                       >
-                        {mt === "text" ? "Text" : "Checkbox"}
+                        {label}
                       </button>
                     ))}
                   </div>
@@ -486,7 +533,47 @@ export default function FormAnnotationPage() {
                     </div>
                   )}
 
+                  {/* LLM interpret options */}
+                  {pendingMappingType === "llm_interpret" && (
+                    <div className="mb-2 space-y-1.5">
+                      <div>
+                        <textarea
+                          value={pendingLlmPrompt}
+                          onChange={(e) => setPendingLlmPrompt(e.target.value)}
+                          placeholder="Prompt: e.g. Extract the insured name only, ignoring the address below it"
+                          rows={3}
+                          className="w-full rounded-sm border border-input bg-white px-2 py-1.5 text-[11px] outline-none focus:border-ring placeholder:text-ink-4 resize-none"
+                        />
+                        <p className="text-[9px] text-ink-4 mt-0.5">The LLM receives the text from this region + your prompt</p>
+                      </div>
+                      <div>
+                        <div className="text-[9px] text-ink-4 mb-1">Target fields (multi-select)</div>
+                        <div className="max-h-[100px] overflow-y-auto border border-input rounded-sm p-1 space-y-0.5">
+                          {schemaFields.map((f) => (
+                            <label key={f.name} className="flex items-center gap-1.5 px-1.5 py-1 text-[11px] rounded-sm hover:bg-cream-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={pendingTargetFields.includes(f.name)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setPendingTargetFields((prev) => [...prev, f.name]);
+                                  } else {
+                                    setPendingTargetFields((prev) => prev.filter((n) => n !== f.name));
+                                  }
+                                }}
+                                className="rounded-sm"
+                              />
+                              <span className="font-mono text-[10px]">{f.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-[9px] text-ink-4 mt-0.5">Which schema fields this region populates</p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Label exclusion */}
+                  {pendingMappingType !== "llm_interpret" && (
                   <div className="mb-2">
                     <input
                       value={pendingLabel}
@@ -496,22 +583,41 @@ export default function FormAnnotationPage() {
                     />
                     <p className="text-[9px] text-ink-4 mt-0.5">Optional — strips this text from extracted values</p>
                   </div>
-                  <div className="max-h-[200px] overflow-y-auto space-y-0.5">
-                    {schemaFields
-                      .filter((f) => !(f.name in mappings))
-                      .map((f) => (
-                        <button
-                          key={f.name}
-                          onClick={() => assignField(f.name)}
-                          className="w-full text-left px-2 py-1.5 text-[12px] rounded-sm hover:bg-cream-2 transition-colors"
-                        >
-                          <span className="font-mono text-vermillion-2">{f.name}</span>
-                          <span className="text-ink-4 ml-1.5 text-[10px]">{f.type}</span>
-                        </button>
-                      ))}
-                  </div>
+                  )}
+                  {/* Field picker — for LLM interpret, assign button instead of field list */}
+                  {pendingMappingType === "llm_interpret" ? (
+                    <button
+                      onClick={() => {
+                        // Use first target field as the mapping key, or a synthetic name
+                        const key = pendingTargetFields[0] || `llm_region_${Object.keys(mappings).length + 1}`;
+                        assignField(key);
+                      }}
+                      disabled={pendingTargetFields.length === 0 && !pendingLlmPrompt.trim()}
+                      className="w-full px-2 py-1.5 text-[12px] font-medium rounded-sm bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
+                    >
+                      {editingField ? "Update mapping" : "Create LLM region"}
+                    </button>
+                  ) : (
+                    <div className="max-h-[200px] overflow-y-auto space-y-0.5">
+                      {schemaFields
+                        .filter((f) => editingField === f.name || !(f.name in mappings))
+                        .map((f) => (
+                          <button
+                            key={f.name}
+                            onClick={() => assignField(f.name)}
+                            className={`w-full text-left px-2 py-1.5 text-[12px] rounded-sm hover:bg-cream-2 transition-colors ${
+                              editingField === f.name ? "bg-cream-2 font-medium" : ""
+                            }`}
+                          >
+                            <span className="font-mono text-vermillion-2">{f.name}</span>
+                            <span className="text-ink-4 ml-1.5 text-[10px]">{f.type}</span>
+                            {editingField === f.name && <span className="text-ink-4 ml-1 text-[9px]">(current)</span>}
+                          </button>
+                        ))}
+                    </div>
+                  )}
                   <button
-                    onClick={() => { setPendingField(null); setDrawRect(null); setPendingLabel(""); }}
+                    onClick={resetPendingState}
                     className="w-full mt-1 px-2 py-1 text-[10px] text-ink-4 hover:text-ink text-center"
                   >
                     Cancel
@@ -574,11 +680,21 @@ export default function FormAnnotationPage() {
                         {mapped && mappings[f.name]?.mapping_type === "checkbox" && (
                           <span className="text-green">☑ {mappings[f.name]!.checked_value}</span>
                         )}
+                        {mapped && mappings[f.name]?.mapping_type === "llm_interpret" && (
+                          <span className="text-purple-600">🤖 LLM</span>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {mapped ? (
                         <>
+                          <button
+                            onClick={() => startEditField(f.name)}
+                            className="text-ink-4 hover:text-ink transition-colors"
+                            title="Edit mapping"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
                           <CheckCircle className="w-3.5 h-3.5 text-green" />
                           <button onClick={() => removeMapping(f.name)} className="text-ink-4 hover:text-vermillion-2">
                             <Trash2 className="w-3 h-3" />
