@@ -1,0 +1,1 @@
+ALTER TABLE "documents" ADD COLUMN "chunks_json" jsonb;

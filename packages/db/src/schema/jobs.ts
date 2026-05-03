@@ -84,6 +84,7 @@ export const documents = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
     emittedAt: timestamp("emitted_at", { withTimezone: true, mode: "date" }),
     groupKey: varchar("group_key", { length: 255 }),
+    chunksJson: jsonb("chunks_json"),
     referencesJson: jsonb("references_json"),
     createdAt: createdAt(),
   },
