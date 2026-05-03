@@ -372,7 +372,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
         // Build field descriptions so the LLM knows what each field means
         const fieldDescriptions = targetFields.map((f) => {
           const spec = schemaFields[f];
-          const parts = [`  "${f}"`;
+          const parts = [`  "${f}"`];
           if (spec?.type) parts.push(`(type: ${spec.type})`);
           if (spec?.extraction_guidance) parts.push(`— ${spec.extraction_guidance}`);
           if (spec?.required) parts.push("[required]");
