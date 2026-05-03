@@ -478,6 +478,53 @@ async def parse_http(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _extract_words_in_box(page, x0: float, y0: float, x1: float, y1: float) -> str:
+    """Extract text from a PDF page region using word-level spatial filtering.
+
+    Instead of page.crop().extract_text() which garbles text in form PDFs
+    with overlapping text layers, this:
+    1. Gets all words with their coordinates
+    2. Filters to words whose center falls inside the box
+    3. Groups into lines by Y proximity
+    4. Sorts left-to-right within each line
+    5. Joins into clean multi-line text
+    """
+    words = page.extract_words(keep_blank_chars=False, extra_attrs=["top", "bottom"])
+
+    # Filter words whose center point falls inside the box
+    inside = []
+    for w in words:
+        cx = (w["x0"] + w["x1"]) / 2
+        cy = (w["top"] + w["bottom"]) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            inside.append(w)
+
+    if not inside:
+        return ""
+
+    # Sort by vertical position first
+    inside.sort(key=lambda w: (w["top"], w["x0"]))
+
+    # Group into lines: words within 3px vertical distance are same line
+    lines: list[list] = []
+    current_line: list = [inside[0]]
+    for w in inside[1:]:
+        if abs(w["top"] - current_line[0]["top"]) < 3:
+            current_line.append(w)
+        else:
+            lines.append(current_line)
+            current_line = [w]
+    lines.append(current_line)
+
+    # Sort each line left-to-right and join
+    result_lines = []
+    for line in lines:
+        line.sort(key=lambda w: w["x0"])
+        result_lines.append(" ".join(w["text"] for w in line))
+
+    return "\n".join(result_lines)
+
+
 @app.function(
     timeout=60,
     memory=512,
@@ -559,8 +606,7 @@ async def extract_coordinates(request: Request):
                 y1 = (mapping["y"] + mapping["h"]) * ph
 
                 try:
-                    cropped = page.crop((x0, y0, x1, y1))
-                    text = (cropped.extract_text() or "").strip()
+                    text = _extract_words_in_box(page, x0, y0, x1, y1)
                     result[field_name] = {
                         "value": text if text else None,
                         "page": page_num,
