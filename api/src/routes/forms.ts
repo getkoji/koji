@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
+import { formExtractToResult, fieldsNeedingLlm } from "../extract/form-extract";
 
 const { formMappings, schemas: schemasTable } = schema;
 
@@ -319,17 +320,47 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     return c.json({ error: "Parse provider does not support coordinate extraction" }, 500);
   }
 
+  // Also fetch the schema definition for normalization/validation
+  const [schemaRow] = schemaId ? await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      draftYaml: schemasTable.draftYaml,
+    }).from(schemasTable)
+      .where(eq(schemasTable.id, schemaId))
+      .limit(1),
+  ) : [null];
+
   try {
-    const result = await parseProvider.extractCoordinates({
+    const coordResult = await parseProvider.extractCoordinates({
       fileBuffer,
       mappings,
     });
 
-    if (result.warning) {
-      return c.json({ data: result });
+    if (coordResult.warning) {
+      return c.json({ data: coordResult });
     }
 
-    return c.json({ data: result });
+    // If we have a schema, run through the normalize → validate pipeline
+    if (schemaRow?.draftYaml) {
+      try {
+        const { parse: parseYaml } = await import("yaml");
+        const schemaDef = parseYaml(schemaRow.draftYaml);
+        const extractionResult = formExtractToResult(coordResult.extracted, schemaDef);
+        const needsLlm = fieldsNeedingLlm(extractionResult, schemaDef);
+
+        return c.json({
+          data: {
+            ...extractionResult,
+            coordinate_results: coordResult.extracted,
+            needs_llm: needsLlm,
+            has_text_layer: coordResult.has_text_layer,
+          },
+        });
+      } catch {
+        // Schema parse failed — return raw coordinate results
+      }
+    }
+
+    return c.json({ data: coordResult });
   } catch (err: any) {
     return c.json({ error: `Coordinate extraction failed: ${err?.message}` }, 502);
   }

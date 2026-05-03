@@ -346,7 +346,7 @@ function buildConfidence(
 // Validate field (matches Python pipeline.validate_field)
 // ---------------------------------------------------------------------------
 
-function validateField(
+export function validateField(
   name: string,
   value: unknown,
   spec: Record<string, unknown>,

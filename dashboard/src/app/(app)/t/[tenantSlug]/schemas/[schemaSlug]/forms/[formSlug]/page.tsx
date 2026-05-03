@@ -94,7 +94,14 @@ export default function FormAnnotationPage() {
   const [testFile, setTestFile] = useState<File | null>(null);
   const [testPdfDoc, setTestPdfDoc] = useState<any>(null);
   const [testing, setTesting] = useState(false);
-  const [testResults, setTestResults] = useState<Record<string, { value: string | null; error?: string }> | null>(null);
+  const [testResults, setTestResults] = useState<{
+    extracted?: Record<string, unknown>;
+    confidence_scores?: Record<string, number>;
+    coordinate_results?: Record<string, { value: unknown }>;
+    needs_llm?: string[];
+    // Legacy raw format
+    [key: string]: unknown;
+  } | null>(null);
   const [testWarning, setTestWarning] = useState<string | null>(null);
 
   // Load form details
@@ -292,7 +299,7 @@ export default function FormAnnotationPage() {
       if (resp.data.warning) {
         setTestWarning(resp.data.warning);
       }
-      setTestResults(resp.data.extracted);
+      setTestResults(resp.data);
     } catch (err: any) {
       setTestWarning(err?.message ?? "Test failed");
     } finally {
@@ -632,24 +639,49 @@ export default function FormAnnotationPage() {
               )}
 
               {/* Test results */}
-              {testResults && (
-                <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
-                  {Object.entries(testResults).map(([field, result]) => (
-                    <div key={field} className="px-3 py-2">
-                      <div className="font-mono text-[10px] text-vermillion-2 font-medium">{field}</div>
-                      <div className="text-[12px] text-ink mt-0.5">
-                        {result.error ? (
-                          <span className="text-vermillion-2">{result.error}</span>
-                        ) : result.value ? (
-                          result.value
-                        ) : (
-                          <span className="text-ink-4">— empty —</span>
-                        )}
+              {testResults && (() => {
+                const extracted = testResults.extracted ?? testResults.coordinate_results ?? testResults;
+                const scores = testResults.confidence_scores as Record<string, number> | undefined;
+                const needsLlm = testResults.needs_llm as string[] | undefined;
+                const needsLlmSet = new Set(needsLlm ?? []);
+
+                return (
+                  <>
+                    {needsLlm && needsLlm.length > 0 && (
+                      <div className="border border-yellow-500/30 bg-yellow-500/10 rounded-sm px-3 py-2 text-[11px] text-yellow-700 mb-2">
+                        {needsLlm.length} field(s) may need LLM interpretation: {needsLlm.join(", ")}
                       </div>
+                    )}
+                    <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
+                      {Object.entries(extracted as Record<string, unknown>).map(([field, value]) => {
+                        const score = scores?.[field];
+                        const needsInterpretation = needsLlmSet.has(field);
+                        return (
+                          <div key={field} className={`px-3 py-2 ${needsInterpretation ? "bg-yellow-500/5" : ""}`}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono text-[10px] text-vermillion-2 font-medium">{field}</span>
+                              {score !== undefined && (
+                                <span className={`font-mono text-[9px] ${score >= 0.9 ? "text-green" : score >= 0.5 ? "text-yellow-600" : "text-vermillion-2"}`}>
+                                  {(score * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[12px] text-ink mt-0.5">
+                              {value != null ? (
+                                typeof value === "boolean" ? (value ? "✓ Yes" : "✗ No") :
+                                typeof value === "object" ? JSON.stringify(value) :
+                                String(value)
+                              ) : (
+                                <span className="text-ink-4">— empty —</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
-              )}
+                  </>
+                );
+              })()}
 
               {Object.keys(mappings).length === 0 && (
                 <p className="text-[11px] text-ink-4 text-center py-4">
