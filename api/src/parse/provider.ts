@@ -12,10 +12,22 @@ export interface ParseResponse {
   ocr_skipped: boolean;
 }
 
+export interface CoordinateExtractionResult {
+  extracted: Record<string, { value: string | null; page?: number; error?: string }>;
+  has_text_layer: boolean;
+  warning?: string;
+}
+
 export interface ParseProvider {
   parse(input: {
     filename: string;
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<ParseResponse>;
+
+  /** Extract text at PDF coordinates. Optional — not all providers support it. */
+  extractCoordinates?(input: {
+    fileBuffer: Buffer;
+    mappings: Record<string, { page: number; x: number; y: number; w: number; h: number }>;
+  }): Promise<CoordinateExtractionResult>;
 }
