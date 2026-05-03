@@ -6,8 +6,8 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
-import { createProvider, extractFields } from "../extract";
-import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { extractFields } from "../extract";
+import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { and } from "drizzle-orm";
 
 const DEFAULT_TEMPLATE = `name: my_schema
@@ -710,18 +710,9 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 
   // Resolve model endpoint for extraction
   const storage = c.get("storage");
-  let endpointPayload = null;
-  try {
-    const requestedModel = body.model ?? null;
-    const [ep] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model })
-        .from(schema.modelEndpoints)
-        .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel ? [eq(schema.modelEndpoints.model, requestedModel)] : [])))
-        .limit(1));
-    if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
-  } catch {}
-  const extractModel = body.model ?? endpointPayload?.model ?? "gpt-4o-mini";
-  const provider = createProvider(extractModel, endpointPayload);
+  const { provider, model: extractModel } = await resolveTenantProvider(db, tenantId, {
+    preferModel: body.model ?? null,
+  });
 
   // Parse schema YAML for extraction
   let schemaDef: Record<string, unknown>;

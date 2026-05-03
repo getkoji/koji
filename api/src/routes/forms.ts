@@ -11,7 +11,8 @@ import { eq, and, desc, isNull } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { formExtractToResult, fieldsNeedingLlm } from "../extract/form-extract";
-import { createProvider } from "../extract/providers";
+import { resolveTenantProvider } from "../extract/resolve-endpoint";
+import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 
 const { formMappings, schemas: schemasTable } = schema;
 
@@ -347,8 +348,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     // direct field mappings.
     const llmRegions = Object.entries(mappings).filter(([, m]) => m.mapping_type === "llm_interpret");
     if (llmRegions.length > 0) {
-      const model = process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
-      const provider = createProvider(model);
+      const { provider } = await resolveTenantProvider(db, tenantId);
 
       // Parse schema YAML to get field descriptions for the prompt
       let schemaFields: Record<string, { type?: string; extraction_guidance?: string; required?: boolean }> = {};

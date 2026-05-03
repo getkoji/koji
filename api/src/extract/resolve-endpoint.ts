@@ -19,10 +19,12 @@
  *     defaults instead of a hard 500).
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
+import { createProvider } from "./providers";
+import type { ModelProvider } from "./providers";
 
 export interface ExtractEndpointPayload {
   provider: string;
@@ -136,4 +138,51 @@ export async function resolveExtractEndpoint(
   }
 
   return payload;
+}
+
+/**
+ * Resolve the tenant's active model endpoint and return a ready-to-use
+ * ModelProvider. This is the standard way to get an LLM provider for
+ * build-time features (schema agent, form test, extract preview, etc.)
+ * that don't have a pipeline context.
+ *
+ * Looks up the first active model endpoint for the tenant, decrypts
+ * credentials, and creates the provider. Falls back to env-var defaults
+ * (KOJI_EXTRACT_MODEL / OPENAI_API_KEY) if no endpoint is configured.
+ *
+ * Optionally accepts a specific modelProviderId to use instead of the
+ * tenant's default.
+ */
+export async function resolveTenantProvider(
+  db: Db,
+  tenantId: string,
+  opts?: {
+    /** Use a specific endpoint by ID (e.g. from a pipeline's modelProviderId) */
+    modelProviderId?: string | null;
+    /** Prefer this model string — filters active endpoints by model name */
+    preferModel?: string | null;
+  },
+): Promise<{ provider: ModelProvider; model: string }> {
+  let endpointPayload: ExtractEndpointPayload | null = null;
+
+  try {
+    if (opts?.modelProviderId) {
+      endpointPayload = await resolveExtractEndpoint(db, tenantId, opts.modelProviderId);
+    } else {
+      const conditions = [eq(schema.modelEndpoints.status, "active")];
+      if (opts?.preferModel) {
+        conditions.push(eq(schema.modelEndpoints.model, opts.preferModel));
+      }
+      const [ep] = await withRLS(db, tenantId, (tx) =>
+        tx.select({ id: schema.modelEndpoints.id })
+          .from(schema.modelEndpoints)
+          .where(and(...conditions))
+          .limit(1),
+      );
+      if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
+    }
+  } catch {}
+
+  const model = endpointPayload?.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
+  return { provider: createProvider(model, endpointPayload), model };
 }

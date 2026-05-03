@@ -11,7 +11,7 @@ export { extractFields } from "./pipeline";
 export type { ExtractionResult } from "./pipeline";
 export { normalizeExtracted } from "./normalize";
 export { validateExtracted } from "./validate";
-export { resolveExtractEndpoint } from "./resolve-endpoint";
+export { resolveExtractEndpoint, resolveTenantProvider } from "./resolve-endpoint";
 export type { ExtractEndpointPayload } from "./resolve-endpoint";
 export { extractKVPairs, kvPairsSummary } from "./kv-pairs";
 export type { KVPair } from "./kv-pairs";

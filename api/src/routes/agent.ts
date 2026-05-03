@@ -11,8 +11,7 @@ import { eq, and, desc, lt } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { createProvider } from "../extract/providers";
-import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { extractKVPairs } from "../extract/kv-pairs";
 import { classifyDocType, getTemplate } from "../extract/schema-templates";
 import { buildAgentPrompt, parseAgentResponse, type AgentMessage } from "../extract/agent-prompt";
@@ -117,19 +116,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   }
 
   // 6. Resolve model endpoint
-  let endpointPayload = null;
-  try {
-    const [ep] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ id: schema.modelEndpoints.id })
-        .from(schema.modelEndpoints)
-        .where(eq(schema.modelEndpoints.status, "active"))
-        .limit(1),
-    );
-    if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
-  } catch {}
-
-  const modelStr = endpointPayload?.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
-  const provider = createProvider(modelStr, endpointPayload);
+  const { provider } = await resolveTenantProvider(db, tenantId);
 
   // 7. Build prompt and call LLM
   const prompt = buildAgentPrompt(
