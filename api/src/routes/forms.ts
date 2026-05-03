@@ -341,55 +341,82 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
       return c.json({ data: coordResult });
     }
 
-    // Handle llm_interpret fields — send extracted text to LLM with scoped prompt
-    const llmFields = Object.entries(mappings).filter(([, m]) => m.mapping_type === "llm_interpret");
-    if (llmFields.length > 0) {
+    // Handle llm_interpret regions — read text at coordinates, then ask LLM
+    // to parse it into the target schema fields.
+    // LLM regions use synthetic keys (__llm_*) so they don't collide with
+    // direct field mappings.
+    const llmRegions = Object.entries(mappings).filter(([, m]) => m.mapping_type === "llm_interpret");
+    if (llmRegions.length > 0) {
       const model = process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
       const provider = createProvider(model);
 
-      for (const [fieldName, mapping] of llmFields) {
-        const rawText = coordResult.extracted[fieldName]?.value;
+      // Parse schema YAML to get field descriptions for the prompt
+      let schemaFields: Record<string, { type?: string; extraction_guidance?: string; required?: boolean }> = {};
+      if (schemaRow?.draftYaml) {
+        try {
+          const { parse: parseYaml } = await import("yaml");
+          const parsed = parseYaml(schemaRow.draftYaml);
+          schemaFields = (parsed?.fields ?? {}) as typeof schemaFields;
+        } catch { /* ignore parse errors */ }
+      }
+
+      for (const [regionKey, mapping] of llmRegions) {
+        const rawText = coordResult.extracted[regionKey]?.value;
         if (!rawText) continue;
 
-        const targetFields = mapping.target_fields ?? [fieldName];
-        const userPrompt = mapping.llm_prompt || "Extract the relevant value from this text.";
+        const targetFields = mapping.target_fields ?? [];
+        if (targetFields.length === 0) continue;
+
+        const userPrompt = mapping.llm_prompt?.trim() || "";
+
+        // Build field descriptions so the LLM knows what each field means
+        const fieldDescriptions = targetFields.map((f) => {
+          const spec = schemaFields[f];
+          const parts = [`  "${f}"`;
+          if (spec?.type) parts.push(`(type: ${spec.type})`);
+          if (spec?.extraction_guidance) parts.push(`— ${spec.extraction_guidance}`);
+          if (spec?.required) parts.push("[required]");
+          return parts.join(" ");
+        }).join("\n");
 
         const prompt = `You are extracting structured data from a region of a PDF form.
 
-The text in this region reads:
+The raw text from this region:
 """
 ${rawText}
 """
 
-${userPrompt}
+Extract values for these fields:
+${fieldDescriptions}
 
-Return a JSON object with these fields: ${JSON.stringify(targetFields)}
-Each field value should be a string (or null if not found). Return ONLY the JSON object.`;
+${userPrompt ? `Additional instructions: ${userPrompt}\n` : ""}Return a JSON object with exactly these keys: ${JSON.stringify(targetFields)}
+Each value should be a string, number, or null if not found. Return ONLY valid JSON, no explanation.`;
 
         try {
           const llmResponse = await provider.generate(prompt, true);
           const parsed = JSON.parse(llmResponse);
 
-          // Merge LLM results into coordinate results under target field names
+          // Write LLM results into coordResult under the target field names
           for (const tf of targetFields) {
             if (parsed[tf] !== undefined) {
               coordResult.extracted[tf] = {
                 value: parsed[tf],
-                page: coordResult.extracted[fieldName]?.page,
+                page: coordResult.extracted[regionKey]?.page,
               };
             }
           }
-          // Remove the raw region key if it was a synthetic name (not a schema field)
-          if (!targetFields.includes(fieldName)) {
-            delete coordResult.extracted[fieldName];
+        } catch (err) {
+          // LLM call failed — write error on each target field
+          for (const tf of targetFields) {
+            coordResult.extracted[tf] = {
+              value: null,
+              error: `LLM interpretation failed: ${(err as Error)?.message ?? "unknown"}`,
+            };
           }
-        } catch {
-          // LLM call failed — leave raw text as fallback
-          coordResult.extracted[fieldName] = {
-            ...coordResult.extracted[fieldName],
-            error: "LLM interpretation failed",
-          };
         }
+
+        // Always remove the synthetic region key from results
+        delete coordResult.extracted[regionKey];
       }
     }
 

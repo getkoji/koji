@@ -533,7 +533,7 @@ export default function FormAnnotationPage() {
                         className="absolute -top-5 left-0 text-[9px] font-mono font-medium px-1 py-0.5 rounded-sm whitespace-nowrap"
                         style={{ backgroundColor: color.border, color: "#fff" }}
                       >
-                        {field}
+                        {field.startsWith("__llm_") ? `LLM → ${m.target_fields?.join(", ") ?? "?"}` : field}
                       </span>
                       {/* Resize handles — visible when selected */}
                       {isSelected && (
@@ -694,11 +694,13 @@ export default function FormAnnotationPage() {
                   {pendingMappingType === "llm_interpret" ? (
                     <button
                       onClick={() => {
-                        // Use first target field as the mapping key, or a synthetic name
-                        const key = pendingTargetFields[0] || `llm_region_${Object.keys(mappings).length + 1}`;
+                        // Always use synthetic key so LLM regions never collide with direct field mappings
+                        const key = editingField?.startsWith("__llm_")
+                          ? editingField
+                          : `__llm_${Date.now()}`;
                         assignField(key);
                       }}
-                      disabled={pendingTargetFields.length === 0 && !pendingLlmPrompt.trim()}
+                      disabled={pendingTargetFields.length === 0}
                       className="w-full px-2 py-1.5 text-[12px] font-medium rounded-sm bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
                     >
                       {editingField ? "Update mapping" : "Create LLM region"}
@@ -764,14 +766,21 @@ export default function FormAnnotationPage() {
               </div>
               {schemaFields.map((f) => {
                 const mapped = f.name in mappings;
+                const coveredByLlm = Object.values(mappings).some(
+                  (m) => m.mapping_type === "llm_interpret" && m.target_fields?.includes(f.name),
+                );
                 const color = fieldColorMap.get(f.name);
                 return (
                   <div
                     key={f.name}
                     className={`flex items-center justify-between px-2.5 py-2 rounded-sm border transition-colors ${
-                      mapped ? "border-l-2 bg-cream-2/50" : "border-border"
+                      mapped ? "border-l-2 bg-cream-2/50" : coveredByLlm ? "border-l-2 bg-purple-50/50" : "border-border"
                     }`}
-                    style={mapped && color ? { borderLeftColor: color.border } : undefined}
+                    style={
+                      mapped && color ? { borderLeftColor: color.border }
+                      : coveredByLlm ? { borderLeftColor: "#9333ea" }
+                      : undefined
+                    }
                   >
                     <div className="min-w-0">
                       <div className="font-mono text-[11px] text-ink truncate">{f.name}</div>
@@ -786,8 +795,8 @@ export default function FormAnnotationPage() {
                         {mapped && mappings[f.name]?.mapping_type === "checkbox" && (
                           <span className="text-green">☑ {mappings[f.name]!.checked_value}</span>
                         )}
-                        {mapped && mappings[f.name]?.mapping_type === "llm_interpret" && (
-                          <span className="text-purple-600">🤖 LLM</span>
+                        {!mapped && coveredByLlm && (
+                          <span className="text-purple-600">via LLM region</span>
                         )}
                       </div>
                     </div>
@@ -806,6 +815,8 @@ export default function FormAnnotationPage() {
                             <Trash2 className="w-3 h-3" />
                           </button>
                         </>
+                      ) : coveredByLlm ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-purple-400" />
                       ) : (
                         <Circle className="w-3.5 h-3.5 text-ink-4/30" />
                       )}
@@ -820,8 +831,55 @@ export default function FormAnnotationPage() {
                 </p>
               )}
 
+              {/* LLM Regions */}
+              {(() => {
+                const llmRegions = Object.entries(mappings).filter(([k]) => k.startsWith("__llm_"));
+                if (llmRegions.length === 0) return null;
+                return (
+                  <div className="mt-4 pt-3 border-t border-border">
+                    <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-2">
+                      LLM Regions
+                    </div>
+                    {llmRegions.map(([key, m]) => {
+                      const color = fieldColorMap.get(key);
+                      return (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between px-2.5 py-2 rounded-sm border border-l-2 bg-purple-50/50 mb-1"
+                          style={color ? { borderLeftColor: color.border } : { borderLeftColor: "#9333ea" }}
+                        >
+                          <div className="min-w-0">
+                            <div className="font-mono text-[10px] text-purple-600 truncate">
+                              → {m.target_fields?.join(", ") || "no targets"}
+                            </div>
+                            <div className="text-[9px] text-ink-4 truncate mt-0.5">
+                              {m.llm_prompt ? m.llm_prompt.slice(0, 60) + (m.llm_prompt.length > 60 ? "..." : "") : "No prompt"}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => startEditField(key)}
+                              className="text-ink-4 hover:text-ink transition-colors"
+                              title="Edit region"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button onClick={() => removeMapping(key)} className="text-ink-4 hover:text-vermillion-2">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
               <div className="pt-3 mt-3 border-t border-border font-mono text-[9px] text-ink-4 space-y-1">
-                <div>{Object.keys(mappings).length} / {schemaFields.length} fields mapped</div>
+                <div>{Object.keys(mappings).filter((k) => !k.startsWith("__llm_")).length} / {schemaFields.length} fields mapped</div>
+                {Object.keys(mappings).filter((k) => k.startsWith("__llm_")).length > 0 && (
+                  <div>{Object.keys(mappings).filter((k) => k.startsWith("__llm_")).length} LLM region(s)</div>
+                )}
                 <div>v{form?.version ?? 1}</div>
               </div>
             </>
