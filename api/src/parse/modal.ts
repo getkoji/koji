@@ -206,4 +206,33 @@ export class ModalParseProvider implements ParseProvider {
       ocr_skipped: result.ocr_skipped ?? false,
     };
   }
+
+  async extractCoordinates(input: {
+    fileBuffer: Buffer;
+    mappings: Record<string, { page: number; x: number; y: number; w: number; h: number }>;
+  }): Promise<import("./provider").CoordinateExtractionResult> {
+    // Derive the extract-coordinates URL from the parse URL
+    const extractUrl = this.url.replace("parse-http", "extract-coordinates");
+
+    const fd = new FormData();
+    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "test.pdf");
+    fd.append("mappings", JSON.stringify(input.mappings));
+
+    const resp = await fetch(extractUrl, {
+      method: "POST",
+      body: fd,
+      headers: {
+        "Modal-Key": this.tokenId,
+        "Modal-Secret": this.tokenSecret,
+      },
+      redirect: "follow",
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => "Unknown error");
+      throw new Error(`Coordinate extraction failed: ${err}`);
+    }
+
+    return resp.json();
+  }
 }

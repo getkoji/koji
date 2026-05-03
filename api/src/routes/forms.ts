@@ -283,51 +283,24 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
 
   const fileBuffer = Buffer.from(await file.arrayBuffer());
 
-  // Use the parse service to extract text at coordinates
-  const parseUrl = c.get("parseUrl") as string | undefined;
-  if (!parseUrl) {
-    return c.json({ error: "Parse service URL not configured" }, 500);
-  }
-
-  // Build auth headers for Modal proxy (if applicable)
-  const headers: Record<string, string> = {};
-  const modalTokenId = process.env.MODAL_TOKEN_ID ?? process.env.MODAL_PROXY_KEY;
-  const modalTokenSecret = process.env.MODAL_TOKEN_SECRET ?? process.env.MODAL_PROXY_SECRET;
-  if (modalTokenId && modalTokenSecret) {
-    headers["Modal-Key"] = modalTokenId;
-    headers["Modal-Secret"] = modalTokenSecret;
+  // Use the parse provider's extractCoordinates method (handles auth for Modal/Docker)
+  const parseProvider = c.get("parseProvider") as any;
+  if (!parseProvider?.extractCoordinates) {
+    return c.json({ error: "Parse provider does not support coordinate extraction" }, 500);
   }
 
   try {
-    const fd = new FormData();
-    fd.append("file", new Blob([fileBuffer], { type: "application/pdf" }), file.name);
-    fd.append("mappings", JSON.stringify(mappings));
-
-    // Modal creates separate URLs per endpoint. Derive the extract-coordinates
-    // URL from the parse URL by replacing the function name in the hostname.
-    // e.g. trankly--koji-parse-parse-http.modal.run → trankly--koji-parse-extract-coordinates.modal.run
-    let extractCoordinatesUrl: string;
-    if (parseUrl.includes("modal.run")) {
-      extractCoordinatesUrl = parseUrl.replace("parse-http", "extract-coordinates");
-    } else {
-      // Docker/local: same host, different path
-      extractCoordinatesUrl = `${parseUrl}/extract-coordinates`;
-    }
-
-    const resp = await fetch(extractCoordinatesUrl, {
-      method: "POST",
-      body: fd,
-      headers,
+    const result = await parseProvider.extractCoordinates({
+      fileBuffer,
+      mappings,
     });
 
-    if (!resp.ok) {
-      const err = await resp.text().catch(() => "Unknown error");
-      return c.json({ error: `Coordinate extraction failed: ${err}` }, 502);
+    if (result.warning) {
+      return c.json({ data: result });
     }
 
-    const result = await resp.json();
     return c.json({ data: result });
   } catch (err: any) {
-    return c.json({ error: `Parse service unreachable: ${err?.message}` }, 502);
+    return c.json({ error: `Coordinate extraction failed: ${err?.message}` }, 502);
   }
 });
