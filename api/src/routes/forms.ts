@@ -284,11 +284,18 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
   const fileBuffer = Buffer.from(await file.arrayBuffer());
 
   // Use the parse service to extract text at coordinates
-  // For now, we send the PDF + mappings to the parse service
-  // which uses pdfplumber to read text at each coordinate region
   const parseUrl = c.get("parseUrl") as string | undefined;
   if (!parseUrl) {
     return c.json({ error: "Parse service URL not configured" }, 500);
+  }
+
+  // Build auth headers for Modal proxy (if applicable)
+  const headers: Record<string, string> = {};
+  const modalTokenId = process.env.MODAL_TOKEN_ID ?? process.env.MODAL_PROXY_KEY;
+  const modalTokenSecret = process.env.MODAL_TOKEN_SECRET ?? process.env.MODAL_PROXY_SECRET;
+  if (modalTokenId && modalTokenSecret) {
+    headers["Modal-Key"] = modalTokenId;
+    headers["Modal-Secret"] = modalTokenSecret;
   }
 
   try {
@@ -299,6 +306,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     const resp = await fetch(`${parseUrl}/extract-coordinates`, {
       method: "POST",
       body: fd,
+      headers,
     });
 
     if (!resp.ok) {
