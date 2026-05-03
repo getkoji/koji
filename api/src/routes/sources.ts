@@ -378,6 +378,8 @@ sources.post("/:id/webhook", async (c) => {
         pipelineId: schema.pipelines.id,
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
+        pipelineType: schema.pipelines.pipelineType,
+        yamlSource: schema.pipelines.yamlSource,
       })
       .from(schema.pipelines)
       .where(eq(schema.pipelines.id, source.targetPipelineId ?? ""))
@@ -387,6 +389,11 @@ sources.post("/:id/webhook", async (c) => {
     if (!source.targetPipelineId || !target) {
       failureReason =
         "Source has no target pipeline — connect one on the pipeline page";
+    } else if (target.pipelineType === "dag") {
+      // DAG pipelines need YAML, not a deployed schema version
+      if (!target.yamlSource) {
+        failureReason = "Pipeline has no DAG definition — save one in the editor first";
+      }
     } else if (!target.schemaId || !target.activeSchemaVersionId) {
       failureReason =
         "Pipeline has no deployed schema version — deploy one first";
@@ -416,8 +423,8 @@ sources.post("/:id/webhook", async (c) => {
       db,
       tenantId: source.tenantId,
       pipelineId: target!.pipelineId,
-      schemaId: target!.schemaId!,
-      schemaVersionId: target!.activeSchemaVersionId!,
+      schemaId: target!.schemaId || "",
+      schemaVersionId: target!.activeSchemaVersionId || "",
       triggerType: source.sourceType,
       storageKey,
       filename: file.name,
@@ -432,11 +439,20 @@ sources.post("/:id/webhook", async (c) => {
       .set({ status: "processing", jobId: created.jobId, docId: created.documentId })
       .where(eq(schema.ingestions.id, ingestion!.id));
 
-    await queue.enqueue(
-      "ingestion.process",
-      { documentId: created.documentId },
-      { tenantId: source.tenantId },
-    );
+    // Route to the appropriate handler based on pipeline type
+    if (target!.pipelineType === "dag") {
+      await queue.enqueue(
+        "pipeline.dag.run",
+        { documentId: created.documentId, pipelineId: target!.pipelineId },
+        { tenantId: source.tenantId },
+      );
+    } else {
+      await queue.enqueue(
+        "ingestion.process",
+        { documentId: created.documentId },
+        { tenantId: source.tenantId },
+      );
+    }
   }
 
   // Update last ingested time
