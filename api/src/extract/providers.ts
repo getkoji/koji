@@ -211,11 +211,12 @@ export function createProvider(
 
 function buildFromEndpoint(cfg: ExtractEndpointPayload): ModelProvider {
   const provider = cfg.provider.toLowerCase();
+  const model = cfg.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
 
   switch (provider) {
     case "openai":
       if (!cfg.api_key) throw new Error("openai endpoint requires api_key");
-      return new OpenAIProvider(cfg.model, cfg.api_key, cfg.base_url);
+      return new OpenAIProvider(model, cfg.api_key, cfg.base_url);
 
     case "azure-openai": {
       const missing = (
@@ -231,7 +232,7 @@ function buildFromEndpoint(cfg: ExtractEndpointPayload): ModelProvider {
       if (missing.length > 0)
         throw new Error(`azure-openai endpoint missing: ${missing.join(", ")}`);
       return new AzureOpenAIProvider(
-        cfg.model,
+        model,
         cfg.api_key!,
         cfg.base_url!,
         cfg.deployment_name!,
@@ -241,10 +242,10 @@ function buildFromEndpoint(cfg: ExtractEndpointPayload): ModelProvider {
 
     case "anthropic":
       if (!cfg.api_key) throw new Error("anthropic endpoint requires api_key");
-      return new AnthropicProvider(cfg.model, cfg.api_key, cfg.base_url ?? undefined);
+      return new AnthropicProvider(model, cfg.api_key, cfg.base_url ?? undefined);
 
     case "ollama":
-      return new OllamaProvider(cfg.model, cfg.base_url ?? undefined);
+      return new OllamaProvider(model, cfg.base_url ?? undefined);
 
     default:
       throw new Error(`unknown endpoint provider: ${provider}`);
