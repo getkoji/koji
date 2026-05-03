@@ -70,7 +70,7 @@ export default function FormAnnotationPage() {
   );
 
   const schemaFields = (() => {
-    const yaml = schemaDetail?.draftYaml ?? schemaDetail?.latestVersion?.yamlSource;
+    const yaml = schemaDetail?.latestVersion?.yamlSource ?? schemaDetail?.draftYaml;
     if (!yaml) return [];
     try {
       const doc = parseYaml(yaml);
