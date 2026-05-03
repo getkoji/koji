@@ -244,3 +244,71 @@ forms.get("/:slug/sample-url", requires("schema:read"), async (c) => {
   const url = await storage.getSignedUrl(row.sampleStorageKey, 3600);
   return c.json({ url });
 });
+
+/**
+ * POST /api/forms/:slug/test — test coordinate extraction against an uploaded PDF.
+ *
+ * Accepts a PDF file, reads text at each mapped coordinate using the parse
+ * service's text extraction, and returns extracted values.
+ */
+forms.post("/:slug/test", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  // Get the form mappings
+  const [form] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ mappingsJson: formMappings.mappingsJson })
+      .from(formMappings)
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId)))
+      .limit(1),
+  );
+  if (!form) return c.json({ error: "Form mapping not found" }, 404);
+
+  const mappings = form.mappingsJson as Record<string, {
+    page: number; x: number; y: number; w: number; h: number;
+    value_type: string; sample_text: string;
+  }>;
+
+  if (!mappings || Object.keys(mappings).length === 0) {
+    return c.json({ error: "No field mappings defined. Annotate the form first." }, 400);
+  }
+
+  // Get the uploaded test PDF
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) {
+    return c.json({ error: "file is required (multipart form with 'file' field)" }, 400);
+  }
+
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+
+  // Use the parse service to extract text at coordinates
+  // For now, we send the PDF + mappings to the parse service
+  // which uses pdfplumber to read text at each coordinate region
+  const parseUrl = c.get("parseUrl") as string | undefined;
+  if (!parseUrl) {
+    return c.json({ error: "Parse service URL not configured" }, 500);
+  }
+
+  try {
+    const fd = new FormData();
+    fd.append("file", new Blob([fileBuffer], { type: "application/pdf" }), file.name);
+    fd.append("mappings", JSON.stringify(mappings));
+
+    const resp = await fetch(`${parseUrl}/extract-coordinates`, {
+      method: "POST",
+      body: fd,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => "Unknown error");
+      return c.json({ error: `Coordinate extraction failed: ${err}` }, 502);
+    }
+
+    const result = await resp.json();
+    return c.json({ data: result });
+  } catch (err: any) {
+    return c.json({ error: `Parse service unreachable: ${err?.message}` }, 502);
+  }
+});

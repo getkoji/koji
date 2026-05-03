@@ -408,3 +408,87 @@ async def parse_stream(file: UploadFile = File(...)):
             Path(tmp_path).unlink(missing_ok=True)
 
     return EventSourceResponse(event_generator())
+
+
+@app.post("/extract-coordinates")
+async def extract_coordinates(
+    file: UploadFile = File(...),
+    mappings: str = "",
+):
+    """Extract text at specified PDF coordinates.
+
+    Accepts a PDF file + JSON mappings (field → {page, x, y, w, h}).
+    Returns extracted text at each coordinate region using pdfplumber.
+    Coordinates are normalized (0.0–1.0 fractions of page dimensions).
+    """
+    import pdfplumber
+
+    if not mappings:
+        return JSONResponse({"error": "mappings JSON is required"}, status_code=400)
+
+    try:
+        field_mappings = json.loads(mappings)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid mappings JSON"}, status_code=400)
+
+    suffix = Path(file.filename or "doc.pdf").suffix or ".pdf"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        result = {}
+        has_text = True
+
+        with pdfplumber.open(tmp_path) as pdf:
+            # Check if the PDF has extractable text (not a scan)
+            if pdf.pages:
+                first_page_text = pdf.pages[0].extract_text() or ""
+                if len(first_page_text.strip()) < 20:
+                    has_text = False
+
+            if not has_text:
+                return JSONResponse(
+                    {
+                        "warning": "This PDF appears to be scanned. Coordinate-based extraction requires a digital PDF with a text layer.",
+                        "extracted": {},
+                        "has_text_layer": False,
+                    }
+                )
+
+            for field_name, mapping in field_mappings.items():
+                page_num = mapping.get("page", 1)
+                if page_num < 1 or page_num > len(pdf.pages):
+                    result[field_name] = {"value": None, "error": f"Page {page_num} out of range"}
+                    continue
+
+                page = pdf.pages[page_num - 1]
+                pw, ph = float(page.width), float(page.height)
+
+                # Denormalize coordinates
+                x0 = mapping["x"] * pw
+                y0 = mapping["y"] * ph
+                x1 = (mapping["x"] + mapping["w"]) * pw
+                y1 = (mapping["y"] + mapping["h"]) * ph
+
+                try:
+                    cropped = page.crop((x0, y0, x1, y1))
+                    text = (cropped.extract_text() or "").strip()
+                    result[field_name] = {
+                        "value": text if text else None,
+                        "page": page_num,
+                        "bbox": {"x": mapping["x"], "y": mapping["y"], "w": mapping["w"], "h": mapping["h"]},
+                    }
+                except Exception as e:
+                    result[field_name] = {"value": None, "error": str(e)}
+
+        return JSONResponse(
+            {
+                "extracted": result,
+                "has_text_layer": has_text,
+                "pages": len(pdfplumber.open(tmp_path).pages),
+            }
+        )
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
