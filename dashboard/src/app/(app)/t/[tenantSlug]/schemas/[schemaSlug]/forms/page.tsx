@@ -222,7 +222,7 @@ export default function FormsListPage() {
                 onClick={async () => {
                   setDeleting(true);
                   try {
-                    await api.delete(`/api/forms/${deleteTarget.slug}`);
+                    await api.delete(`/api/forms/${deleteTarget.slug}?schema=${schemaSlug}`);
                     setDeleteTarget(null);
                     refetch();
                   } finally {

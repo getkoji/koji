@@ -99,7 +99,7 @@ export default function FormAnnotationPage() {
 
   // Load form details
   const { data: form, loading: formLoading } = useApi(
-    useCallback(() => api.get<FormDetail>(`/api/forms/${formSlug}`), [formSlug]),
+    useCallback(() => api.get<FormDetail>(`/api/forms/${formSlug}?schema=${schemaSlug}`), [formSlug, schemaSlug]),
   );
 
   // Load schema fields
@@ -123,7 +123,7 @@ export default function FormAnnotationPage() {
   const { data: sampleUrl } = useApi(
     useCallback(() =>
       form?.sampleStorageKey
-        ? api.get<{ url: string }>(`/api/forms/${formSlug}/sample-url`).then((r) => r.url)
+        ? api.get<{ url: string }>(`/api/forms/${formSlug}/sample-url?schema=${schemaSlug}`).then((r) => r.url)
         : Promise.resolve(null),
       [form?.sampleStorageKey, formSlug],
     ),
@@ -268,7 +268,7 @@ export default function FormAnnotationPage() {
   async function handleSave() {
     setSaving(true);
     try {
-      await api.patch(`/api/forms/${formSlug}`, { mappings_json: mappings });
+      await api.patch(`/api/forms/${formSlug}?schema=${schemaSlug}`, { mappings_json: mappings });
     } finally {
       setSaving(false);
     }
@@ -288,7 +288,7 @@ export default function FormAnnotationPage() {
           has_text_layer: boolean;
           warning?: string;
         };
-      }>(`/api/forms/${formSlug}/test`, fd);
+      }>(`/api/forms/${formSlug}/test?schema=${schemaSlug}`, fd);
       if (resp.data.warning) {
         setTestWarning(resp.data.warning);
       }
