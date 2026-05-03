@@ -150,6 +150,7 @@ forms.get("/:slug", requires("schema:read"), async (c) => {
       .where(and(
         eq(formMappings.slug, slug),
         eq(formMappings.tenantId, tenantId),
+        isNull(formMappings.deletedAt),
       ))
       .limit(1),
   );
@@ -188,7 +189,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   const [current] = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: formMappings.id, version: formMappings.version })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId)))
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)))
       .limit(1),
   );
   if (!current) return c.json({ error: "Form mapping not found" }, 404);
@@ -218,7 +219,7 @@ forms.delete("/:slug", requires("schema:write"), async (c) => {
   await withRLS(db, tenantId, (tx) =>
     tx.update(formMappings)
       .set({ deletedAt: new Date() })
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId))),
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt))),
   );
 
   return c.json({ ok: true });
@@ -236,7 +237,7 @@ forms.get("/:slug/sample-url", requires("schema:read"), async (c) => {
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx.select({ sampleStorageKey: formMappings.sampleStorageKey })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId)))
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)))
       .limit(1),
   );
 
@@ -261,7 +262,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
   const [form] = await withRLS(db, tenantId, (tx) =>
     tx.select({ mappingsJson: formMappings.mappingsJson })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId)))
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)))
       .limit(1),
   );
   if (!form) return c.json({ error: "Form mapping not found" }, 404);
