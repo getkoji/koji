@@ -64,6 +64,13 @@
       "when": 1777771150004,
       "tag": "0009_sleepy_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777815024691,
+      "tag": "0010_smart_wasp",
+      "breakpoints": true
     }
   ]
 }

@@ -38,6 +38,7 @@ import {
   MessageSquare,
   ArrowDownToLine,
   ArrowLeftRight,
+  ClipboardList,
   FileCode,
   ShieldCheck,
   Database,
@@ -462,6 +463,11 @@ export function AppSidebar({
                         href={`${base}/schemas/${currentSchemaSlug}/corpus`}
                         icon={<Database className={ICON} />}
                         label="Corpus"
+                      />
+                      <NavItemLink
+                        href={`${base}/schemas/${currentSchemaSlug}/forms`}
+                        icon={<ClipboardList className={ICON} />}
+                        label="Forms"
                       />
                       <NavItemLink
                         href={`${base}/schemas/${currentSchemaSlug}/compare`}
