@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ClipboardList, Plus, Upload } from "lucide-react";
+import { ClipboardList, Plus, Upload, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -174,9 +174,23 @@ export default function FormsListPage() {
                 {f.description && (
                   <p className="text-[11px] text-ink-4 mt-1 line-clamp-2">{f.description}</p>
                 )}
-                <div className="flex items-center gap-3 mt-3 font-mono text-[9px] text-ink-4">
-                  <span>{f.fieldCount} fields mapped</span>
-                  <span>v{f.version}</span>
+                <div className="flex items-center justify-between mt-3">
+                  <div className="flex items-center gap-3 font-mono text-[9px] text-ink-4">
+                    <span>{f.fieldCount} fields mapped</span>
+                    <span>v{f.version}</span>
+                  </div>
+                  <button
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!confirm(`Delete "${f.displayName}"?`)) return;
+                      await api.delete(`/api/forms/${f.slug}`);
+                      refetch();
+                    }}
+                    className="text-ink-4 hover:text-vermillion-2 transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </Link>
             ))}
