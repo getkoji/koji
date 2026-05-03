@@ -83,6 +83,8 @@ export const documents = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
     emittedAt: timestamp("emitted_at", { withTimezone: true, mode: "date" }),
+    groupKey: varchar("group_key", { length: 255 }),
+    referencesJson: jsonb("references_json"),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -94,6 +96,7 @@ export const documents = pgTable(
     tenantStatusIdx: index("documents_tenant_status_idx").on(t.tenantId, t.status),
     schemaIdx: index("documents_schema_idx").on(t.schemaId),
     contentHashIdx: index("documents_content_hash_idx").on(t.tenantId, t.contentHash),
+    groupKeyIdx: index("documents_group_key_idx").on(t.tenantId, t.groupKey),
   }),
 );
 

@@ -870,6 +870,7 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
   if (!(file instanceof File)) {
     return c.json({ error: "Missing file in 'file' field" }, 400);
   }
+  const groupKey = (body.group as string) || c.req.header("X-Koji-Group") || null;
 
   const fileBytes = await file.arrayBuffer();
   const buffer = Buffer.from(fileBytes);
@@ -888,6 +889,7 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     schemaVersionId: pipeline.activeSchemaVersionId || "",
     triggerType: "manual",
     storageKey,
+    groupKey,
     filename: file.name,
     fileSize: file.size,
     mimeType: file.type || mimeTypeFor(file.name),

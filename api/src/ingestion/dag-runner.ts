@@ -88,6 +88,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       storageKey: schema.documents.storageKey,
       mimeType: schema.documents.mimeType,
       fileSize: schema.documents.fileSize,
+      groupKey: schema.documents.groupKey,
     })
     .from(schema.documents)
     .where(eq(schema.documents.id, documentId))
@@ -343,6 +344,94 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
             }
           }
           output = { fields, operations_applied: applied };
+          break;
+        }
+
+        case "resolve_references": {
+          // Find all other documents in the same group
+          const groupKeyVal = doc.groupKey as string | null;
+          if (!groupKeyVal) {
+            output = { references: [], contradictions: [], note: "No group key — skipping reference resolution" };
+            break;
+          }
+
+          // Get all other completed documents in the same group
+          const groupDocs = await withRLS(db, tenantId, (tx) =>
+            tx.select({
+              id: schema.documents.id,
+              filename: schema.documents.filename,
+              extractionJson: schema.documents.extractionJson,
+            })
+            .from(schema.documents)
+            .where(
+              and(
+                eq(schema.documents.groupKey, groupKeyVal),
+                sql`${schema.documents.id} != ${documentId}`,
+                sql`${schema.documents.extractionJson} IS NOT NULL`,
+              ),
+            ),
+          ) as Array<{ id: string; filename: string; extractionJson: Record<string, unknown> | null }>;
+
+          if (groupDocs.length === 0) {
+            output = { references: [], contradictions: [], note: "No other documents in this group yet" };
+            break;
+          }
+
+          // Build context for LLM reference detection
+          const currentExtraction = finalExtraction || {};
+          const currentText = docText?.slice(0, 2000) || "";
+          const otherDocs = groupDocs.map(d => ({
+            filename: d.filename,
+            fields: d.extractionJson ? Object.keys(d.extractionJson) : [],
+            preview: JSON.stringify(d.extractionJson).slice(0, 500),
+          }));
+
+          // Use LLM to detect references and contradictions
+          if (endpoint) {
+            const provider = createProvider(endpoint.model, endpoint);
+            const prompt = `You are analyzing a set of related documents. The current document is "${doc.filename}".
+
+Current document text (first 2000 chars):
+${currentText}
+
+Current document extracted fields:
+${JSON.stringify(currentExtraction, null, 2).slice(0, 1000)}
+
+Other documents in this group:
+${otherDocs.map(d => `- ${d.filename}: fields=${d.fields.join(", ")}; preview=${d.preview}`).join("\n")}
+
+Find:
+1. References in the current document that point to other documents (e.g., "see Bylaws Section 4.2", "per the Master Agreement", "as defined in Exhibit A")
+2. Contradictions between the current document and other documents (conflicting values for the same concept)
+
+Respond with JSON only:
+{
+  "references": [{"text": "reference text from current doc", "target_filename": "matching filename or null", "target_section": "section if mentioned or null", "resolved": true/false}],
+  "contradictions": [{"topic": "what the conflict is about", "current_doc_claim": "what this doc says", "other_doc_filename": "other doc", "other_doc_claim": "what the other doc says", "severity": "contradiction|discrepancy"}]
+}`;
+
+            try {
+              const raw = await provider.generate(prompt, true);
+              const parsed = JSON.parse(raw);
+              output = {
+                references: parsed.references || [],
+                contradictions: parsed.contradictions || [],
+                group_key: groupKeyVal,
+                docs_in_group: groupDocs.length + 1,
+              };
+
+              // Store references on the document row
+              await withRLS(db, tenantId, (tx) =>
+                tx.update(schema.documents)
+                  .set({ referencesJson: output })
+                  .where(eq(schema.documents.id, documentId)),
+              );
+            } catch (err) {
+              output = { references: [], contradictions: [], error: `Reference resolution failed: ${(err as Error).message}` };
+            }
+          } else {
+            output = { references: [], contradictions: [], note: "No model endpoint configured for reference resolution" };
+          }
           break;
         }
 

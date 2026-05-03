@@ -327,6 +327,7 @@ sources.post("/:id/webhook", async (c) => {
   }
 
   const body = await c.req.parseBody();
+  const groupKey = (body.group as string) || c.req.header("X-Koji-Group") || null;
 
   // For now, create ingestions for uploaded files
   const files = Object.values(body).filter((v): v is File => v instanceof File);
@@ -432,6 +433,7 @@ sources.post("/:id/webhook", async (c) => {
       mimeType: file.type || mimeTypeFor(file.name),
       contentHash,
       ingestionId: ingestion!.id,
+      groupKey,
     });
 
     await db

@@ -9,6 +9,7 @@ const stepTypes = [
   { type: "filter", label: "Filter", description: "Conditional guard \u2014 stop or continue", icon: "\u26A1", available: true },
   { type: "webhook", label: "Webhook", description: "Send results to an external URL", icon: "\u{1F517}", available: true },
   { type: "transform", label: "Transform", description: "Rename or compute fields", icon: "\u2699\uFE0F", available: true },
+  { type: "resolve_references", label: "Resolve References", description: "Detect cross-document references and contradictions within a group", icon: "\u{1F517}", available: true },
   { type: "split", label: "Split", description: "Split multi-document packet into sections", icon: "\u2702\uFE0F", available: false },
   { type: "gate", label: "Gate (HITL)", description: "Pause for human review", icon: "\u270B", available: false },
   { type: "ocr", label: "OCR", description: "Extract text from scanned documents", icon: "\u{1F50D}", available: false },

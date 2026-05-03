@@ -473,6 +473,7 @@ export interface CreateExtractionJobArgs {
   mimeType: string;
   contentHash: string;
   ingestionId?: string;
+  groupKey?: string | null;
 }
 
 export interface CreatedExtractionJob {
@@ -526,6 +527,7 @@ export async function createExtractionJob(
         contentHash: args.contentHash,
         schemaId: args.schemaId,
         schemaVersionId: args.schemaVersionId,
+        groupKey: args.groupKey ?? null,
         status: "extracting",
         startedAt: new Date(),
       })
