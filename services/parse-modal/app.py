@@ -76,6 +76,7 @@ image = (
         "huggingface-hub==0.25.2",
         "pillow==10.4.0",
         "pypdfium2==4.30.0",
+        "pdfplumber==0.11.4",
         # Required by @modal.fastapi_endpoint. Modal 1.x removed the
         # implicit fastapi install from runtime images; web endpoints
         # now have to declare it themselves. `fastapi[standard]` pulls
@@ -470,6 +471,118 @@ async def parse_http(request: Request):
             {"error": str(e), "filename": filename},
             status_code=422,
         )
+
+
+# ---------------------------------------------------------------------------
+# Coordinate extraction endpoint — reads text at PDF coordinates
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    timeout=60,
+    memory=512,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def extract_coordinates(request: Request):
+    """Extract text at specified PDF coordinates using pdfplumber.
+
+    Accepts multipart form with:
+    - ``file`` — the PDF bytes
+    - ``mappings`` — JSON string of field → {page, x, y, w, h} mappings
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    import pdfplumber
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    mappings_str = form.get("mappings")
+    if not mappings_str:
+        return JSONResponse({"error": "mappings JSON is required"}, status_code=400)
+
+    try:
+        field_mappings = json.loads(str(mappings_str))
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid mappings JSON"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = {}
+        has_text = True
+
+        with pdfplumber.open(tmp_path) as pdf:
+            if pdf.pages:
+                first_page_text = pdf.pages[0].extract_text() or ""
+                if len(first_page_text.strip()) < 20:
+                    has_text = False
+
+            if not has_text:
+                return JSONResponse(
+                    {
+                        "warning": "This PDF appears to be scanned. Coordinate-based extraction requires a digital PDF with a text layer.",
+                        "extracted": {},
+                        "has_text_layer": False,
+                    }
+                )
+
+            for field_name, mapping in field_mappings.items():
+                page_num = mapping.get("page", 1)
+                if page_num < 1 or page_num > len(pdf.pages):
+                    result[field_name] = {
+                        "value": None,
+                        "error": f"Page {page_num} out of range",
+                    }
+                    continue
+
+                page = pdf.pages[page_num - 1]
+                pw, ph = float(page.width), float(page.height)
+
+                x0 = mapping["x"] * pw
+                y0 = mapping["y"] * ph
+                x1 = (mapping["x"] + mapping["w"]) * pw
+                y1 = (mapping["y"] + mapping["h"]) * ph
+
+                try:
+                    cropped = page.crop((x0, y0, x1, y1))
+                    text = (cropped.extract_text() or "").strip()
+                    result[field_name] = {
+                        "value": text if text else None,
+                        "page": page_num,
+                        "bbox": {
+                            "x": mapping["x"],
+                            "y": mapping["y"],
+                            "w": mapping["w"],
+                            "h": mapping["h"],
+                        },
+                    }
+                except Exception as e:
+                    result[field_name] = {"value": None, "error": str(e)}
+
+        return JSONResponse(
+            {
+                "extracted": result,
+                "has_text_layer": has_text,
+                "pages": len(pdfplumber.open(tmp_path).pages),
+            }
+        )
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

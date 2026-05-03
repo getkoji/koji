@@ -303,7 +303,18 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     fd.append("file", new Blob([fileBuffer], { type: "application/pdf" }), file.name);
     fd.append("mappings", JSON.stringify(mappings));
 
-    const resp = await fetch(`${parseUrl}/extract-coordinates`, {
+    // Modal creates separate URLs per endpoint. Derive the extract-coordinates
+    // URL from the parse URL by replacing the function name in the hostname.
+    // e.g. trankly--koji-parse-parse-http.modal.run → trankly--koji-parse-extract-coordinates.modal.run
+    let extractCoordinatesUrl: string;
+    if (parseUrl.includes("modal.run")) {
+      extractCoordinatesUrl = parseUrl.replace("parse-http", "extract-coordinates");
+    } else {
+      // Docker/local: same host, different path
+      extractCoordinatesUrl = `${parseUrl}/extract-coordinates`;
+    }
+
+    const resp = await fetch(extractCoordinatesUrl, {
       method: "POST",
       body: fd,
       headers,
