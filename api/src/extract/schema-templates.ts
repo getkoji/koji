@@ -51,40 +51,109 @@ fields:
     extraction_guidance: "General aggregate coverage limit"
 `,
 
-  insurance_coi: `name: certificate_of_insurance
-description: ACORD certificate of insurance extraction
+  insurance_coi: `name: acord_25_coi
+description: ACORD 25 Certificate of Liability Insurance
 fields:
-  certificate_number:
+  # Header
+  producer:
     type: string
-  producer_name:
-    type: string
-    extraction_guidance: "Insurance agency or broker name"
+    extraction_guidance: "Insurance agency or broker name and address"
   insured_name:
     type: string
     required: true
-  insurer_name:
+  insured_address:
     type: string
-    required: true
-  policy_number:
-    type: string
-    required: true
-  effective_date:
-    type: date
-    normalize: iso8601
-  expiration_date:
-    type: date
-    normalize: iso8601
-  general_liability_limit:
-    type: number
-  auto_liability_limit:
-    type: number
-  umbrella_limit:
-    type: number
-  workers_comp:
+
+  # General Liability
+  gl_claims_made:
     type: boolean
-    extraction_guidance: "Whether workers compensation coverage is included"
+    extraction_guidance: "Whether General Liability is claims-made (vs occurrence)"
+  gl_occurrence:
+    type: boolean
+    extraction_guidance: "Whether General Liability is occurrence-based"
+  gl_policy_number:
+    type: string
+  gl_eff_date:
+    type: date
+    normalize: iso8601
+  gl_exp_date:
+    type: date
+    normalize: iso8601
+  gl_each_occurrence:
+    type: number
+    extraction_guidance: "General Liability Each Occurrence limit"
+  gl_damage_to_rented:
+    type: number
+    extraction_guidance: "Damage to Rented Premises limit"
+  gl_med_exp:
+    type: number
+    extraction_guidance: "Medical Expense limit (per person)"
+  gl_personal_adv_injury:
+    type: number
+  gl_general_aggregate:
+    type: number
+  gl_products_comp_op:
+    type: number
+    extraction_guidance: "Products-Completed Operations Aggregate limit"
+
+  # Automobile Liability
+  auto_any_auto:
+    type: boolean
+    extraction_guidance: "Whether 'Any Auto' is checked"
+  auto_policy_number:
+    type: string
+  auto_eff_date:
+    type: date
+    normalize: iso8601
+  auto_exp_date:
+    type: date
+    normalize: iso8601
+  auto_combined_single_limit:
+    type: number
+    extraction_guidance: "Combined Single Limit per accident"
+
+  # Umbrella / Excess Liability
+  umbrella_policy_number:
+    type: string
+  umbrella_eff_date:
+    type: date
+    normalize: iso8601
+  umbrella_exp_date:
+    type: date
+    normalize: iso8601
+  umbrella_each_occurrence:
+    type: number
+  umbrella_aggregate:
+    type: number
+
+  # Workers Compensation
+  wc_policy_number:
+    type: string
+  wc_eff_date:
+    type: date
+    normalize: iso8601
+  wc_exp_date:
+    type: date
+    normalize: iso8601
+  wc_statutory:
+    type: boolean
+    extraction_guidance: "Whether statutory limits apply for Workers Comp"
+  wc_each_accident:
+    type: number
+  wc_disease_ea_employee:
+    type: number
+  wc_disease_policy_limit:
+    type: number
+
+  # Certificate info
+  certificate_number:
+    type: string
   certificate_holder:
     type: string
+    extraction_guidance: "Name and address of the certificate holder"
+  description_of_operations:
+    type: string
+    extraction_guidance: "Description of operations, locations, vehicles, or special items"
 `,
 
   invoice: `name: invoice

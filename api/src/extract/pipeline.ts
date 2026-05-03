@@ -174,7 +174,7 @@ ${markdown}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
 
 Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.
 
@@ -366,6 +366,21 @@ function validateField(
       result = `${dateMatch[1]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[3].padStart(2, "0")}`;
     } else {
       issues = `could not parse date: ${result}`;
+    }
+  } else if (fieldType === "boolean") {
+    if (typeof result === "boolean") {
+      // already a boolean
+    } else if (typeof result === "string") {
+      const lower = result.toLowerCase().trim();
+      if (["true", "yes", "y", "1", "x", "✓", "☑"].includes(lower)) {
+        result = true;
+      } else if (["false", "no", "n", "0", "", "☐"].includes(lower)) {
+        result = false;
+      } else {
+        issues = `could not parse boolean: ${result}`;
+      }
+    } else if (typeof result === "number") {
+      result = result !== 0;
     }
   } else if (fieldType === "number") {
     if (typeof result === "string") {
