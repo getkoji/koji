@@ -217,9 +217,8 @@ forms.delete("/:slug", requires("schema:write"), async (c) => {
   const slug = c.req.param("slug")!;
 
   await withRLS(db, tenantId, (tx) =>
-    tx.update(formMappings)
-      .set({ deletedAt: new Date() })
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt))),
+    tx.delete(formMappings)
+      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId))),
   );
 
   return c.json({ ok: true });
