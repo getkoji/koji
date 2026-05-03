@@ -97,6 +97,9 @@ export default function FormAnnotationPage() {
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
+  const [selectedField, setSelectedField] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<{ field: string; startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const [resizing, setResizing] = useState<{ field: string; handle: string; startX: number; startY: number; orig: { x: number; y: number; w: number; h: number } } | null>(null);
   const [mode, setMode] = useState<"annotate" | "test">("annotate");
   const [testFile, setTestFile] = useState<File | null>(null);
   const [testPdfDoc, setTestPdfDoc] = useState<any>(null);
@@ -197,7 +200,7 @@ export default function FormAnnotationPage() {
     }
   }, [form]);
 
-  // Mouse handlers for drawing
+  // Mouse handlers for drawing, moving, and resizing
   function getRelativeCoords(e: React.MouseEvent): { x: number; y: number } | null {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -211,37 +214,110 @@ export default function FormAnnotationPage() {
   }
 
   function handleMouseDown(e: React.MouseEvent) {
-    if (!drawMode) return;
-    const coords = getRelativeCoords(e);
-    if (!coords) return;
-    setDrawing(true);
-    setDrawStart(coords);
-    setDrawRect(null);
+    if (drawMode) {
+      const coords = getRelativeCoords(e);
+      if (!coords) return;
+      setDrawing(true);
+      setDrawStart(coords);
+      setDrawRect(null);
+      setSelectedField(null);
+    } else {
+      // Click on blank area deselects
+      setSelectedField(null);
+    }
   }
 
   function handleMouseMove(e: React.MouseEvent) {
-    if (!drawing || !drawStart) return;
     const coords = getRelativeCoords(e);
     if (!coords) return;
-    setDrawRect({
-      x: Math.min(drawStart.x, coords.x),
-      y: Math.min(drawStart.y, coords.y),
-      w: Math.abs(coords.x - drawStart.x),
-      h: Math.abs(coords.y - drawStart.y),
-    });
+
+    // Drawing new box
+    if (drawing && drawStart) {
+      setDrawRect({
+        x: Math.min(drawStart.x, coords.x),
+        y: Math.min(drawStart.y, coords.y),
+        w: Math.abs(coords.x - drawStart.x),
+        h: Math.abs(coords.y - drawStart.y),
+      });
+      return;
+    }
+
+    // Moving a box
+    if (dragging) {
+      const dx = coords.x - dragging.startX;
+      const dy = coords.y - dragging.startY;
+      setMappings((prev) => ({
+        ...prev,
+        [dragging.field]: {
+          ...prev[dragging.field]!,
+          x: Math.max(0, Math.min(1 - prev[dragging.field]!.w, dragging.origX + dx)),
+          y: Math.max(0, Math.min(1 - prev[dragging.field]!.h, dragging.origY + dy)),
+        },
+      }));
+      return;
+    }
+
+    // Resizing a box
+    if (resizing) {
+      const { field, handle, startX, startY, orig } = resizing;
+      const dx = coords.x - startX;
+      const dy = coords.y - startY;
+      let { x, y, w, h } = orig;
+
+      if (handle.includes("e")) { w = Math.max(0.01, w + dx); }
+      if (handle.includes("w")) { x = x + dx; w = Math.max(0.01, w - dx); }
+      if (handle.includes("s")) { h = Math.max(0.005, h + dy); }
+      if (handle.includes("n")) { y = y + dy; h = Math.max(0.005, h - dy); }
+
+      // Clamp to canvas bounds
+      x = Math.max(0, x);
+      y = Math.max(0, y);
+      if (x + w > 1) w = 1 - x;
+      if (y + h > 1) h = 1 - y;
+
+      setMappings((prev) => ({
+        ...prev,
+        [field]: { ...prev[field]!, x, y, w, h },
+      }));
+      return;
+    }
   }
 
   function handleMouseUp() {
-    if (!drawing || !drawRect || drawRect.w < 0.01 || drawRect.h < 0.005) {
+    if (drawing) {
+      if (!drawRect || drawRect.w < 0.01 || drawRect.h < 0.005) {
+        setDrawing(false);
+        setDrawStart(null);
+        setDrawRect(null);
+        return;
+      }
       setDrawing(false);
       setDrawStart(null);
-      setDrawRect(null);
+      // Show field picker
+      setPendingField("");
       return;
     }
-    setDrawing(false);
-    setDrawStart(null);
-    // Show field picker
-    setPendingField("");
+    if (dragging) { setDragging(null); return; }
+    if (resizing) { setResizing(null); return; }
+  }
+
+  function handleOverlayMouseDown(e: React.MouseEvent, field: string) {
+    if (drawMode) return;
+    e.stopPropagation();
+    const coords = getRelativeCoords(e);
+    if (!coords) return;
+    setSelectedField(field);
+    const m = mappings[field]!;
+    setDragging({ field, startX: coords.x, startY: coords.y, origX: m.x, origY: m.y });
+  }
+
+  function handleResizeMouseDown(e: React.MouseEvent, field: string, handle: string) {
+    e.stopPropagation();
+    const coords = getRelativeCoords(e);
+    if (!coords) return;
+    setSelectedField(field);
+    const m = mappings[field]!;
+    setResizing({ field, handle, startX: coords.x, startY: coords.y, orig: { x: m.x, y: m.y, w: m.w, h: m.h } });
   }
 
   function assignField(fieldName: string) {
@@ -419,14 +495,17 @@ export default function FormAnnotationPage() {
               {formLoading ? "Loading..." : "No sample PDF uploaded"}
             </div>
           ) : (
-            <div className="relative inline-block">
+            <div
+              className="relative inline-block"
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+            >
               <canvas
                 ref={canvasRef}
                 className="block"
-                style={{ cursor: drawMode ? "crosshair" : "default" }}
+                style={{ cursor: drawMode ? "crosshair" : dragging ? "move" : resizing ? "grabbing" : "default" }}
                 onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
               />
 
               {/* Existing mapping overlays */}
@@ -434,19 +513,21 @@ export default function FormAnnotationPage() {
                 .filter(([, m]) => m.page === currentPage)
                 .map(([field, m]) => {
                   const color = fieldColorMap.get(field)!;
+                  const isSelected = selectedField === field && !drawMode;
                   return (
                     <div
                       key={field}
-                      className="absolute pointer-events-none"
+                      className={`absolute ${drawMode ? "pointer-events-none" : "cursor-move"}`}
                       style={{
                         left: `${m.x * 100}%`,
                         top: `${m.y * 100}%`,
                         width: `${m.w * 100}%`,
                         height: `${m.h * 100}%`,
                         backgroundColor: color.bg,
-                        border: `2px solid ${color.border}`,
+                        border: `2px solid ${isSelected ? "#000" : color.border}`,
                         borderRadius: 2,
                       }}
+                      onMouseDown={(e) => handleOverlayMouseDown(e, field)}
                     >
                       <span
                         className="absolute -top-5 left-0 text-[9px] font-mono font-medium px-1 py-0.5 rounded-sm whitespace-nowrap"
@@ -454,6 +535,31 @@ export default function FormAnnotationPage() {
                       >
                         {field}
                       </span>
+                      {/* Resize handles — visible when selected */}
+                      {isSelected && (
+                        <>
+                          {(["nw", "ne", "sw", "se", "n", "s", "e", "w"] as const).map((h) => {
+                            const pos: React.CSSProperties = {};
+                            if (h.includes("n")) pos.top = -4;
+                            if (h.includes("s")) pos.bottom = -4;
+                            if (h.includes("w")) pos.left = -4;
+                            if (h.includes("e")) pos.right = -4;
+                            if (h === "n" || h === "s") { pos.left = "50%"; pos.marginLeft = -4; }
+                            if (h === "e" || h === "w") { pos.top = "50%"; pos.marginTop = -4; }
+                            const cursor = h === "n" || h === "s" ? "ns-resize"
+                              : h === "e" || h === "w" ? "ew-resize"
+                              : h === "nw" || h === "se" ? "nwse-resize" : "nesw-resize";
+                            return (
+                              <div
+                                key={h}
+                                className="absolute w-2 h-2 bg-white border border-ink rounded-full"
+                                style={{ ...pos, cursor }}
+                                onMouseDown={(e) => handleResizeMouseDown(e, field, h)}
+                              />
+                            );
+                          })}
+                        </>
+                      )}
                     </div>
                   );
                 })}
