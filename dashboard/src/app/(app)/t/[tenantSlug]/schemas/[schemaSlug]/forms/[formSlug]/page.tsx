@@ -16,6 +16,8 @@ interface FieldMapping {
   h: number;
   value_type: string;
   sample_text: string;
+  /** Optional label text to exclude from extraction (e.g. "INSURED") */
+  label?: string;
 }
 
 interface FormDetail {
@@ -55,6 +57,7 @@ export default function FormAnnotationPage() {
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [drawRect, setDrawRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [pendingField, setPendingField] = useState<string | null>(null);
+  const [pendingLabel, setPendingLabel] = useState<string>("");
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
@@ -187,11 +190,13 @@ export default function FormAnnotationPage() {
         w: drawRect.w,
         h: drawRect.h,
         value_type: schemaFields.find((f) => f.name === fieldName)?.type ?? "string",
-        sample_text: "", // TODO: extract text at coordinates
+        sample_text: "",
+        label: pendingLabel.trim() || undefined,
       },
     }));
     setDrawRect(null);
     setPendingField(null);
+    setPendingLabel("");
   }
 
   function removeMapping(fieldName: string) {
@@ -367,6 +372,15 @@ export default function FormAnnotationPage() {
                   }}
                 >
                   <div className="font-mono text-[9px] text-ink-4 uppercase tracking-[0.08em] mb-1">Assign to field</div>
+                  <div className="mb-2">
+                    <input
+                      value={pendingLabel}
+                      onChange={(e) => setPendingLabel(e.target.value)}
+                      placeholder="Label to exclude (e.g. INSURED)"
+                      className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4"
+                    />
+                    <p className="text-[9px] text-ink-4 mt-0.5">Optional — strips this text from extracted values</p>
+                  </div>
                   <div className="max-h-[200px] overflow-y-auto space-y-0.5">
                     {schemaFields
                       .filter((f) => !(f.name in mappings))
@@ -382,7 +396,7 @@ export default function FormAnnotationPage() {
                       ))}
                   </div>
                   <button
-                    onClick={() => { setPendingField(null); setDrawRect(null); }}
+                    onClick={() => { setPendingField(null); setDrawRect(null); setPendingLabel(""); }}
                     className="w-full mt-1 px-2 py-1 text-[10px] text-ink-4 hover:text-ink text-center"
                   >
                     Cancel
@@ -434,7 +448,12 @@ export default function FormAnnotationPage() {
                   >
                     <div className="min-w-0">
                       <div className="font-mono text-[11px] text-ink truncate">{f.name}</div>
-                      <div className="font-mono text-[9px] text-ink-4">{f.type}</div>
+                      <div className="font-mono text-[9px] text-ink-4">
+                        {f.type}
+                        {mapped && mappings[f.name]?.label && (
+                          <span className="ml-1.5 text-vermillion-2">exclude: {mappings[f.name]!.label}</span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {mapped ? (
