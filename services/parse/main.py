@@ -410,6 +410,41 @@ async def parse_stream(file: UploadFile = File(...)):
     return EventSourceResponse(event_generator())
 
 
+def _strip_label(text: str, label: str | None, field_name: str) -> str:
+    """Remove form labels from extracted text."""
+    if not text:
+        return text
+
+    lines = text.split("\n")
+    if len(lines) <= 1 and not label:
+        return text
+
+    if label:
+        label_lower = label.strip().lower().rstrip(":")
+        cleaned = []
+        for line in lines:
+            line_lower = line.strip().lower().rstrip(":")
+            if line_lower == label_lower or line_lower in label_lower or label_lower in line_lower:
+                continue
+            cleaned.append(line)
+        if cleaned:
+            return "\n".join(cleaned)
+        return text
+
+    if len(lines) > 1:
+        first = lines[0].strip().rstrip(":")
+        first_lower = first.lower()
+        field_words = field_name.replace("_", " ").lower()
+
+        is_label = len(first.split()) <= 3 and (
+            first == first.upper() or first_lower in field_words or field_words in first_lower
+        )
+        if is_label:
+            return "\n".join(lines[1:])
+
+    return text
+
+
 def _extract_words_in_box(page, x0: float, y0: float, x1: float, y1: float) -> str:
     """Extract text from a PDF page region using word-level spatial filtering.
 
@@ -421,7 +456,22 @@ def _extract_words_in_box(page, x0: float, y0: float, x1: float, y1: float) -> s
     4. Sorts left-to-right within each line
     5. Joins into clean multi-line text
     """
-    words = page.extract_words(keep_blank_chars=False, extra_attrs=["top", "bottom"])
+    # Use layout mode first — handles overlapping text objects in form PDFs
+    try:
+        cropped = page.crop((x0, y0, x1, y1))
+        layout_text = cropped.extract_text(layout=True)
+        if layout_text and layout_text.strip():
+            lines = []
+            for line in layout_text.split("\n"):
+                cleaned = " ".join(line.split())
+                if cleaned:
+                    lines.append(cleaned)
+            return "\n".join(lines)
+    except Exception:
+        pass
+
+    # Fallback to word-level extraction
+    words = page.extract_words(keep_blank_chars=False)
 
     inside = []
     for w in words:
@@ -517,6 +567,8 @@ async def extract_coordinates(
 
                 try:
                     text = _extract_words_in_box(page, x0, y0, x1, y1)
+                    if text:
+                        text = _strip_label(text, mapping.get("label"), field_name)
                     result[field_name] = {
                         "value": text if text else None,
                         "page": page_num,
