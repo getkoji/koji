@@ -183,6 +183,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
+  const schemaId = await resolveSchemaId(c, db, tenantId);
   const body = await c.req.json<{
     display_name?: string;
     description?: string;
@@ -196,17 +197,18 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   if (body.description !== undefined) updates.description = body.description;
   if (body.mappings_json) {
     updates.mappingsJson = body.mappings_json;
-    // Bump version when mappings change
-    updates.version = schema.formMappings.version; // Will be incremented below
+    updates.version = schema.formMappings.version;
   }
   if (body.fingerprint_json) updates.fingerprintJson = body.fingerprint_json;
   if (body.status) updates.status = body.status;
 
-  // Fetch current version to bump
+  const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
+  if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
+
   const [current] = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: formMappings.id, version: formMappings.version })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt), ...(await resolveSchemaId(c, db, tenantId).then(sid => sid ? [eq(formMappings.schemaId, sid)] : []))))
+      .where(and(...conditions))
       .limit(1),
   );
   if (!current) return c.json({ error: "Form mapping not found" }, 404);
@@ -252,11 +254,15 @@ forms.get("/:slug/sample-url", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const storage = c.get("storage");
   const slug = c.req.param("slug")!;
+  const schemaId = await resolveSchemaId(c, db, tenantId);
+
+  const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
+  if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx.select({ sampleStorageKey: formMappings.sampleStorageKey })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt), ...(await resolveSchemaId(c, db, tenantId).then(sid => sid ? [eq(formMappings.schemaId, sid)] : []))))
+      .where(and(...conditions))
       .limit(1),
   );
 
@@ -276,12 +282,15 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
+  const schemaId = await resolveSchemaId(c, db, tenantId);
 
-  // Get the form mappings
+  const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
+  if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
+
   const [form] = await withRLS(db, tenantId, (tx) =>
     tx.select({ mappingsJson: formMappings.mappingsJson })
       .from(formMappings)
-      .where(and(eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt), ...(await resolveSchemaId(c, db, tenantId).then(sid => sid ? [eq(formMappings.schemaId, sid)] : []))))
+      .where(and(...conditions))
       .limit(1),
   );
   if (!form) return c.json({ error: "Form mapping not found" }, 404);
