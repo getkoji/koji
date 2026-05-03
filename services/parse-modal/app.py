@@ -552,7 +552,9 @@ def _extract_words_in_box(page, x0: float, y0: float, x1: float, y1: float) -> s
             doc = pymupdf.open(pdf_path)
             mpage = doc[page.page_number - 1]
             # pymupdf uses different coordinate system — same as pdfplumber (top-left origin)
-            rect = pymupdf.Rect(x0, y0, x1, y1)
+            # Shrink rect by 3pt margin to avoid picking up adjacent text
+            margin = 3
+            rect = pymupdf.Rect(x0 + margin, y0 + margin, x1 - margin, y1 - margin)
             text = mpage.get_textbox(rect)
             doc.close()
             if text and text.strip():
