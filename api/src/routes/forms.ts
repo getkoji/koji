@@ -347,6 +347,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     // LLM regions use synthetic keys (__llm_*) so they don't collide with
     // direct field mappings.
     const llmRegions = Object.entries(mappings).filter(([, m]) => m.mapping_type === "llm_interpret");
+    const llmDebug: Record<string, unknown> = {};
     if (llmRegions.length > 0) {
       const { provider } = await resolveTenantProvider(db, tenantId);
 
@@ -394,6 +395,7 @@ Each value should be a string, number, or null if not found. Return ONLY valid J
 
         try {
           const llmResponse = await provider.generate(prompt, true);
+          console.log(`[forms/test] LLM region ${regionKey} raw response:`, llmResponse);
           const parsed = JSON.parse(llmResponse);
 
           // Write LLM results into coordResult under the target field names
@@ -403,9 +405,12 @@ Each value should be a string, number, or null if not found. Return ONLY valid J
                 value: parsed[tf],
                 page: coordResult.extracted[regionKey]?.page,
               };
+            } else {
+              console.log(`[forms/test] LLM did not return field "${tf}" — keys returned: ${Object.keys(parsed).join(", ")}`);
             }
           }
         } catch (err) {
+          console.error(`[forms/test] LLM interpret failed for region ${regionKey}:`, err);
           // LLM call failed — write error on each target field
           for (const tf of targetFields) {
             coordResult.extracted[tf] = {
