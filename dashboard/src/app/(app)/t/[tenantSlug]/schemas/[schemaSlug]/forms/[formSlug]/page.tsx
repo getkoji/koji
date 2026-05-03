@@ -8,17 +8,42 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { parse as parseYaml } from "yaml";
 
+type MappingType = "text" | "checkbox" | "checkbox_group";
+type ValueType = "string" | "number" | "currency" | "date" | "percentage" | "phone" | "email" | "enum";
+
 interface FieldMapping {
   page: number;
   x: number;
   y: number;
   w: number;
   h: number;
-  value_type: string;
+  /** How to read the field: text (default), checkbox, checkbox_group */
+  mapping_type: MappingType;
+  /** How to normalize the extracted value */
+  value_type: ValueType;
   sample_text: string;
-  /** Optional label text to exclude from extraction (e.g. "INSURED") */
+  /** Optional label text to exclude from extraction */
   label?: string;
+  /** For checkbox: value when checked */
+  checked_value?: string;
+  /** For checkbox: value when unchecked */
+  unchecked_value?: string | null;
+  /** For checkbox_group: array of options with their coordinates */
+  options?: Array<{ x: number; y: number; w: number; h: number; value: string }>;
+  /** For enum: allowed values */
+  allowed_values?: string[];
 }
+
+const VALUE_TYPES: { value: ValueType; label: string }[] = [
+  { value: "string", label: "Text" },
+  { value: "number", label: "Number" },
+  { value: "currency", label: "Currency ($)" },
+  { value: "date", label: "Date" },
+  { value: "percentage", label: "Percentage (%)" },
+  { value: "phone", label: "Phone" },
+  { value: "email", label: "Email" },
+  { value: "enum", label: "Enum (pick list)" },
+];
 
 interface FormDetail {
   id: string;
@@ -58,6 +83,10 @@ export default function FormAnnotationPage() {
   const [drawRect, setDrawRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [pendingField, setPendingField] = useState<string | null>(null);
   const [pendingLabel, setPendingLabel] = useState<string>("");
+  const [pendingMappingType, setPendingMappingType] = useState<MappingType>("text");
+  const [pendingValueType, setPendingValueType] = useState<ValueType>("string");
+  const [pendingCheckedValue, setPendingCheckedValue] = useState<string>("");
+  const [pendingUncheckedValue, setPendingUncheckedValue] = useState<string>("");
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
@@ -203,22 +232,29 @@ export default function FormAnnotationPage() {
 
   function assignField(fieldName: string) {
     if (!drawRect || !fieldName) return;
-    setMappings((prev) => ({
-      ...prev,
-      [fieldName]: {
-        page: currentPage,
-        x: drawRect.x,
-        y: drawRect.y,
-        w: drawRect.w,
-        h: drawRect.h,
-        value_type: schemaFields.find((f) => f.name === fieldName)?.type ?? "string",
-        sample_text: "",
-        label: pendingLabel.trim() || undefined,
-      },
-    }));
+    const mapping: FieldMapping = {
+      page: currentPage,
+      x: drawRect.x,
+      y: drawRect.y,
+      w: drawRect.w,
+      h: drawRect.h,
+      mapping_type: pendingMappingType,
+      value_type: pendingValueType,
+      sample_text: "",
+      label: pendingLabel.trim() || undefined,
+    };
+    if (pendingMappingType === "checkbox") {
+      mapping.checked_value = pendingCheckedValue.trim() || "true";
+      mapping.unchecked_value = pendingUncheckedValue.trim() || null;
+    }
+    setMappings((prev) => ({ ...prev, [fieldName]: mapping }));
     setDrawRect(null);
     setPendingField(null);
     setPendingLabel("");
+    setPendingMappingType("text");
+    setPendingValueType("string");
+    setPendingCheckedValue("");
+    setPendingUncheckedValue("");
   }
 
   function removeMapping(fieldName: string) {
@@ -394,6 +430,56 @@ export default function FormAnnotationPage() {
                   }}
                 >
                   <div className="font-mono text-[9px] text-ink-4 uppercase tracking-[0.08em] mb-1">Assign to field</div>
+
+                  {/* Mapping type */}
+                  <div className="flex gap-1 mb-2">
+                    {(["text", "checkbox"] as MappingType[]).map((mt) => (
+                      <button
+                        key={mt}
+                        onClick={() => setPendingMappingType(mt)}
+                        className={`font-mono text-[9px] px-2 py-0.5 rounded-sm transition-colors ${
+                          pendingMappingType === mt ? "bg-ink text-cream" : "text-ink-4 hover:bg-cream-2 border border-border"
+                        }`}
+                      >
+                        {mt === "text" ? "Text" : "Checkbox"}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Value type (for text fields) */}
+                  {pendingMappingType === "text" && (
+                    <div className="mb-2">
+                      <select
+                        value={pendingValueType}
+                        onChange={(e) => setPendingValueType(e.target.value as ValueType)}
+                        className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring"
+                      >
+                        {VALUE_TYPES.map((vt) => (
+                          <option key={vt.value} value={vt.value}>{vt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Checkbox options */}
+                  {pendingMappingType === "checkbox" && (
+                    <div className="mb-2 space-y-1">
+                      <input
+                        value={pendingCheckedValue}
+                        onChange={(e) => setPendingCheckedValue(e.target.value)}
+                        placeholder="Value when checked (e.g. Claims-Made)"
+                        className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4"
+                      />
+                      <input
+                        value={pendingUncheckedValue}
+                        onChange={(e) => setPendingUncheckedValue(e.target.value)}
+                        placeholder="Value when unchecked (leave empty for null)"
+                        className="w-full h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] outline-none focus:border-ring placeholder:text-ink-4"
+                      />
+                    </div>
+                  )}
+
+                  {/* Label exclusion */}
                   <div className="mb-2">
                     <input
                       value={pendingLabel}
@@ -470,10 +556,16 @@ export default function FormAnnotationPage() {
                   >
                     <div className="min-w-0">
                       <div className="font-mono text-[11px] text-ink truncate">{f.name}</div>
-                      <div className="font-mono text-[9px] text-ink-4">
-                        {f.type}
+                      <div className="font-mono text-[9px] text-ink-4 space-x-1.5">
+                        <span>{mapped ? (mappings[f.name]?.mapping_type ?? "text") : f.type}</span>
+                        {mapped && mappings[f.name]?.value_type && mappings[f.name]!.value_type !== "string" && (
+                          <span className="text-blue-600">{mappings[f.name]!.value_type}</span>
+                        )}
                         {mapped && mappings[f.name]?.label && (
-                          <span className="ml-1.5 text-vermillion-2">exclude: {mappings[f.name]!.label}</span>
+                          <span className="text-vermillion-2">-{mappings[f.name]!.label}</span>
+                        )}
+                        {mapped && mappings[f.name]?.mapping_type === "checkbox" && (
+                          <span className="text-green">☑ {mappings[f.name]!.checked_value}</span>
                         )}
                       </div>
                     </div>

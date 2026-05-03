@@ -479,6 +479,58 @@ async def parse_http(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _normalize_value(text: str, value_type: str) -> str | float | None:
+    """Normalize extracted text based on the declared value type."""
+    import re
+
+    text = text.strip()
+    if not text:
+        return None
+
+    if value_type == "currency":
+        # Strip $, commas, whitespace → parse as float
+        cleaned = re.sub(r"[$,\s]", "", text)
+        try:
+            return float(cleaned)
+        except ValueError:
+            return text
+
+    if value_type == "number":
+        cleaned = re.sub(r"[,\s]", "", text)
+        try:
+            return float(cleaned) if "." in cleaned else int(cleaned)
+        except ValueError:
+            return text
+
+    if value_type == "percentage":
+        cleaned = re.sub(r"[%\s]", "", text)
+        try:
+            return float(cleaned)
+        except ValueError:
+            return text
+
+    if value_type == "date":
+        # Try common date formats → ISO
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                from datetime import datetime
+
+                dt = datetime.strptime(text, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return text
+
+    if value_type == "phone":
+        return re.sub(r"[^\d]", "", text)
+
+    if value_type == "email":
+        return text.lower().strip()
+
+    # string, enum — return as-is
+    return text
+
+
 def _strip_label(text: str, label: str | None, field_name: str) -> str:
     """Remove form labels from extracted text.
 
@@ -695,14 +747,31 @@ async def extract_coordinates(request: Request):
                 y1 = (mapping["y"] + mapping["h"]) * ph
 
                 try:
+                    mapping_type = mapping.get("mapping_type", "text")
+                    value_type = mapping.get("value_type", "string")
                     text = _extract_words_in_box(page, x0, y0, x1, y1)
 
                     # Smart label exclusion
                     if text:
                         text = _strip_label(text, mapping.get("label"), field_name)
 
+                    # Apply mapping type logic
+                    value: str | bool | float | None = text if text else None
+
+                    if mapping_type == "checkbox":
+                        is_checked = bool(text and text.strip())
+                        if is_checked:
+                            value = mapping.get("checked_value", True)
+                        else:
+                            value = mapping.get("unchecked_value")
+
+                    elif mapping_type == "text" and value is not None:
+                        value = _normalize_value(str(value), value_type)
+
                     result[field_name] = {
-                        "value": text if text else None,
+                        "value": value,
+                        "mapping_type": mapping_type,
+                        "value_type": value_type,
                         "page": page_num,
                         "bbox": {
                             "x": mapping["x"],
