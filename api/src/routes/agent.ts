@@ -128,7 +128,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
     if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
   } catch {}
 
-  const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
+  const modelStr = endpointPayload?.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
   const provider = createProvider(modelStr, endpointPayload);
 
   // 7. Build prompt and call LLM
