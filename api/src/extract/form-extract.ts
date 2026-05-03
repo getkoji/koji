@@ -45,11 +45,19 @@ export function formExtractToResult(
   }
 
   // Run field validation (type coercion: string→number, string→date, etc.)
+  // Process schema-defined fields first, then include any extra fields from
+  // coordinate results (e.g. LLM-targeted fields not yet in the schema)
   const extracted: Record<string, unknown> = {};
   for (const [fieldName, spec] of Object.entries(fields)) {
     const rawValue = rawExtracted[fieldName] ?? null;
     const [validated] = validateField(fieldName, rawValue, spec);
     extracted[fieldName] = validated;
+  }
+  // Include fields from coordinate results that aren't in the schema
+  for (const [fieldName, result] of Object.entries(coordinateResults)) {
+    if (!(fieldName in extracted) && result.value != null) {
+      extracted[fieldName] = result.value;
+    }
   }
 
   // Normalize (schema-level transforms like iso8601, mappings, etc.)
@@ -83,7 +91,7 @@ export function formExtractToResult(
     (validationReport.issues ?? []).filter((i) => i.field).map((i) => i.field!),
   );
 
-  for (const fieldName of Object.keys(fields)) {
+  for (const fieldName of Object.keys(normalized)) {
     const value = normalized[fieldName];
     const coordResult = coordinateResults[fieldName];
 
