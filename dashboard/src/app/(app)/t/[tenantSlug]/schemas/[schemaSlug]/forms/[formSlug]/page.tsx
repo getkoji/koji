@@ -280,10 +280,10 @@ export default function FormAnnotationPage() {
                       key={field}
                       className="absolute pointer-events-none"
                       style={{
-                        left: m.x * canvasRef.current!.width,
-                        top: m.y * canvasRef.current!.height,
-                        width: m.w * canvasRef.current!.width,
-                        height: m.h * canvasRef.current!.height,
+                        left: `${m.x * 100}%`,
+                        top: `${m.y * 100}%`,
+                        width: `${m.w * 100}%`,
+                        height: `${m.h * 100}%`,
                         backgroundColor: color.bg,
                         border: `2px solid ${color.border}`,
                         borderRadius: 2,
@@ -300,25 +300,26 @@ export default function FormAnnotationPage() {
                 })}
 
               {/* Drawing rectangle */}
-              {drawRect && canvasRef.current && (
+              {drawRect && (
                 <div
                   className="absolute border-2 border-dashed border-vermillion-2 bg-vermillion-3/20 pointer-events-none"
                   style={{
-                    left: drawRect.x * canvasRef.current.width,
-                    top: drawRect.y * canvasRef.current.height,
-                    width: drawRect.w * canvasRef.current.width,
-                    height: drawRect.h * canvasRef.current.height,
+                    left: `${drawRect.x * 100}%`,
+                    top: `${drawRect.y * 100}%`,
+                    width: `${drawRect.w * 100}%`,
+                    height: `${drawRect.h * 100}%`,
                   }}
                 />
               )}
 
               {/* Field assignment popover */}
-              {pendingField !== null && drawRect && canvasRef.current && (
+              {pendingField !== null && drawRect && (
                 <div
                   className="absolute z-50 bg-white border border-border rounded-sm shadow-lg p-2 min-w-[180px]"
                   style={{
-                    left: drawRect.x * canvasRef.current.width,
-                    top: (drawRect.y + drawRect.h) * canvasRef.current.height + 8,
+                    left: `${drawRect.x * 100}%`,
+                    top: `${(drawRect.y + drawRect.h) * 100}%`,
+                    marginTop: 8,
                   }}
                 >
                   <div className="font-mono text-[9px] text-ink-4 uppercase tracking-[0.08em] mb-1">Assign to field</div>
