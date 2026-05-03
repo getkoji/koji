@@ -17,6 +17,7 @@ import type { ParseProvider } from "../parse/provider";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { createProvider } from "../extract/providers";
 import { extractFields } from "../extract/pipeline";
+import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
 
 let _db: Db | null = null;
@@ -263,7 +264,27 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           const webhookUrl = step.config.url as string;
           if (webhookUrl) {
             const method = ((step.config.method as string) || "POST").toUpperCase();
-            const customHeaders = (step.config.headers as Record<string, string>) || {};
+            let customHeaders = (step.config.headers as Record<string, string>) || {};
+
+            // Decrypt encrypted headers from pipeline configJson
+            const masterKey = getMasterKey();
+            if (masterKey) {
+              const [pipelineCfg] = await withRLS(db, tenantId, (tx) =>
+                tx.select({ configJson: schema.pipelines.configJson })
+                  .from(schema.pipelines)
+                  .where(eq(schema.pipelines.id, pipelineId))
+                  .limit(1),
+              );
+              const cfg = pipelineCfg?.configJson as Record<string, unknown> | null;
+              const encHeaders = (cfg?.encryptedHeaders as Record<string, Record<string, string>> | undefined)?.[step.id];
+              if (encHeaders) {
+                const decrypted: Record<string, string> = {};
+                for (const [key, blob] of Object.entries(encHeaders)) {
+                  try { decrypted[key] = decrypt(blob, masterKey, tenantId); } catch { /* skip if decrypt fails */ }
+                }
+                customHeaders = { ...customHeaders, ...decrypted };
+              }
+            }
             const payloadMode = (step.config.payload as string) || "result";
 
             // Build payload based on mode

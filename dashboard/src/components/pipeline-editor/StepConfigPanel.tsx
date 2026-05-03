@@ -499,7 +499,7 @@ function WebhookConfig({
                 placeholder="Authorization"
               />
               <input
-                type="text"
+                type="password"
                 value={value}
                 onChange={(e) => {
                   const newH = { ...headers };
@@ -508,6 +508,7 @@ function WebhookConfig({
                 }}
                 style={{ ...inputStyle, flex: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 6px" }}
                 placeholder="Bearer token..."
+                autoComplete="off"
               />
               <button
                 onClick={() => {

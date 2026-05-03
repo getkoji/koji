@@ -289,8 +289,32 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
   // field (null = fall back to platform defaults).
   const retryPolicy = (pipeline.retryPolicyJson ?? null) as RetryPolicy | null;
 
+  // Redact webhook header values from the YAML before returning
+  let safeYamlSource = pipeline.yamlSource;
+  if (safeYamlSource) {
+    try {
+      const parsed = YAML.parse(safeYamlSource);
+      if (parsed?.steps) {
+        let redacted = false;
+        for (const step of parsed.steps) {
+          if (step.type === "webhook" && step.config?.headers) {
+            const headers = step.config.headers as Record<string, string>;
+            for (const key of Object.keys(headers)) {
+              if (headers[key] && headers[key] !== "***") {
+                headers[key] = "***";
+                redacted = true;
+              }
+            }
+          }
+        }
+        if (redacted) safeYamlSource = YAML.stringify(parsed);
+      }
+    } catch { /* keep original if parse fails */ }
+  }
+
   return c.json({
     ...pipeline,
+    yamlSource: safeYamlSource,
     retryPolicy,
     deployedVersion,
     connectedSources,
@@ -393,6 +417,44 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
     // Compile the YAML and store the compiled DAG
     const compiled = compilePipeline(body.yaml);
     updates.dagJson = compiled.ok ? compiled.pipeline : {};
+
+    // Encrypt webhook header values — they may contain auth tokens
+    const masterKey = c.get("masterKey") as string | null;
+    if (masterKey) {
+      try {
+        const { encrypt: encryptValue } = await import("../crypto/envelope");
+        const parsed = YAML.parse(body.yaml);
+        const encryptedHeaders: Record<string, Record<string, string>> = {};
+        if (parsed?.steps) {
+          for (const step of parsed.steps) {
+            if (step.type === "webhook" && step.config?.headers) {
+              const headers = step.config.headers as Record<string, string>;
+              const encrypted: Record<string, string> = {};
+              for (const [key, value] of Object.entries(headers)) {
+                if (value && value !== "***") {
+                  encrypted[key] = encryptValue(value, masterKey, tenantId);
+                }
+              }
+              if (Object.keys(encrypted).length > 0) {
+                encryptedHeaders[step.id] = encrypted;
+              }
+            }
+          }
+        }
+        if (Object.keys(encryptedHeaders).length > 0) {
+          // Store encrypted headers alongside the pipeline config
+          const existingConfig = (await withRLS(db, tenantId, (tx) =>
+            tx.select({ configJson: schema.pipelines.configJson })
+              .from(schema.pipelines)
+              .where(eq(schema.pipelines.id, pipelineId))
+              .limit(1),
+          ))[0]?.configJson as Record<string, unknown> || {};
+          updates.configJson = { ...existingConfig, encryptedHeaders };
+        }
+      } catch {
+        // If encryption fails, continue without encrypting — better than blocking save
+      }
+    }
   }
   if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;
