@@ -112,7 +112,46 @@ export function TestResultsPanel({ result, onClose }: TestResultsPanelProps) {
           </div>
         </div>
       ) : null}
-      {!["classify", "extract", "tag", "filter", "webhook", "gate"].includes(result.stepType) ? (
+      {result.stepType === "resolve_references" ? (
+        <div>
+          <div style={sectionLabelStyle}>References Detected</div>
+          {(result.output.references as Array<Record<string, unknown>>)?.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {(result.output.references as Array<Record<string, unknown>>).map((ref, i) => (
+                <div key={i} className="p-2 rounded" style={{ border: "1px solid #E8E0D0", fontSize: "12px" }}>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", color: "#C33520", marginBottom: "2px" }}>
+                    {String(ref.text)}
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#8A847B" }}>
+                    in chunk: {String(ref.source_chunk)} · {ref.resolved ? "resolved" : "unresolved"}
+                  </div>
+                  {ref.target_filename ? (
+                    <div style={{ fontSize: "10px", color: "#2D8A4E" }}>→ {String(ref.target_filename)}{ref.target_section ? ` § ${String(ref.target_section)}` : ""}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: "12px", color: "#8A847B", fontStyle: "italic" }}>No references detected</p>
+          )}
+          {result.output.note ? (
+            <p style={{ fontSize: "11px", color: "#8A847B", marginTop: "8px", fontStyle: "italic" }}>{String(result.output.note)}</p>
+          ) : null}
+          {result.output.contradictions && (result.output.contradictions as unknown[]).length > 0 ? (
+            <div className="mt-4">
+              <div style={sectionLabelStyle}>Contradictions</div>
+              {(result.output.contradictions as Array<Record<string, unknown>>).map((c, i) => (
+                <div key={i} className="p-2 rounded mb-2" style={{ border: "1px solid rgba(220, 38, 38, 0.2)", background: "rgba(220, 38, 38, 0.03)", fontSize: "12px" }}>
+                  <div style={{ fontWeight: 500, color: "#DC2626", marginBottom: "2px" }}>{String(c.topic)}</div>
+                  <div style={{ color: "#3A3328" }}>This doc: {String(c.current_claim || c.current_doc_claim)}</div>
+                  <div style={{ color: "#8A847B" }}>{String(c.other_filename || c.other_doc_filename)}: {String(c.other_claim || c.other_doc_claim)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {!["classify", "extract", "tag", "filter", "webhook", "gate", "resolve_references"].includes(result.stepType) ? (
         <div>
           <div style={sectionLabelStyle}>Output</div>
           <pre style={preStyle}>{JSON.stringify(result.output, null, 2)}</pre>

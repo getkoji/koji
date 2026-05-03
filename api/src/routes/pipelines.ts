@@ -1225,6 +1225,49 @@ async function executeTestStep(
       }
       return { ok: true, output: { fields, operations_applied: applied, operation_count: applied.length }, costUsd: 0 };
     }
+    case "resolve_references": {
+      // In test mode, resolve references using the group key if provided
+      // Test mode can't query the DB for other docs in the group (ephemeral),
+      // but we can show what the step would detect in the current doc
+      const currentChunks = docInfo.chunks || [];
+      if (currentChunks.length === 0) {
+        return { ok: true, output: { references: [], note: "No chunks — document wasn't parsed" }, costUsd: 0.02 };
+      }
+
+      // Regex scan for reference patterns
+      const refPatterns = [
+        /(?:see|refer to|per|pursuant to|in accordance with|as (?:defined|described|set forth) in)\s+(?:the\s+)?(.{3,80}?)(?:\.|,|;|\)|\n|$)/gi,
+        /(?:Section|Article|Exhibit|Schedule|Appendix|Addendum|Amendment)\s+[\d.A-Z]+/gi,
+      ];
+      const detected: Array<{ text: string; source_chunk: string; resolved: boolean; method: string }> = [];
+      for (const chunk of currentChunks) {
+        for (const pattern of refPatterns) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(chunk.content)) !== null) {
+            detected.push({
+              text: match[0].trim(),
+              source_chunk: chunk.title,
+              resolved: false,
+              method: "detected_in_test",
+            });
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        output: {
+          references: detected,
+          references_detected: detected.length,
+          chunks_scanned: currentChunks.length,
+          note: detected.length > 0
+            ? `Found ${detected.length} reference(s) in this document. In production with a group key, these would be resolved against other documents in the group.`
+            : "No cross-document references detected in this document.",
+        },
+        costUsd: 0.02,
+      };
+    }
     case "webhook":
       return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
     case "gate":
@@ -1293,7 +1336,11 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     docText = new TextDecoder().decode(fileBytes);
   }
 
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount };
+  // Chunk the parsed text
+  const { chunkMarkdown } = await import("../extract/chunker");
+  const docChunks = docText ? chunkMarkdown(docText) : [];
+
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges

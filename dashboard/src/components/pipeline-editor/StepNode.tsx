@@ -49,6 +49,7 @@ const stepIcons: Record<string, string> = {
   summarize: "\u{1F4DD}",
   compare: "\u21C4",
   merge_documents: "\u{1F4CE}",
+  resolve_references: "\u{1F50D}",
 };
 
 // Step type to color mapping

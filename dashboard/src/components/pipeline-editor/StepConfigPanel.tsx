@@ -102,6 +102,9 @@ export function StepConfigPanel({ step, onUpdate, onClose, onDelete, schemas = [
       {step.type === "webhook" && (
         <WebhookConfig step={step} onUpdate={onUpdate} />
       )}
+      {step.type === "resolve_references" && (
+        <ResolveReferencesConfig step={step} onUpdate={onUpdate} />
+      )}
 
       {/* Delete */}
       <div className="mt-8 pt-4 border-t border-[#E8E0D0]">
@@ -545,6 +548,54 @@ function WebhookConfig({
         </select>
         <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
           What to include in the POST body sent to the URL.
+        </p>
+      </div>
+    </>
+  );
+}
+
+function ResolveReferencesConfig({
+  step,
+  onUpdate,
+}: {
+  step: PipelineStep;
+  onUpdate: (id: string, u: Partial<PipelineStep>) => void;
+}) {
+  const config = step.config || {};
+  return (
+    <>
+      <div className="mb-4">
+        <label style={labelStyle}>How it works</label>
+        <p style={{ fontSize: "12px", color: "#3A3328", lineHeight: 1.5, margin: 0 }}>
+          Scans the current document for references to other documents (e.g., "see Bylaws Section 4.2").
+          Matches references against other documents in the same <strong>group</strong> using chunk titles.
+          Detects contradictions across documents via LLM.
+        </p>
+      </div>
+
+      <div className="mb-4">
+        <label style={labelStyle}>Detect Contradictions</label>
+        <select
+          value={String(config.detect_contradictions ?? true)}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, detect_contradictions: e.target.value === "true" } })
+          }
+          style={inputStyle}
+        >
+          <option value="true">Yes — use LLM to detect conflicting claims across documents</option>
+          <option value="false">No — only detect references, skip contradiction analysis</option>
+        </select>
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          Contradiction detection uses one LLM call per document. Reference detection is free (regex + chunk matching).
+        </p>
+      </div>
+
+      <div className="mb-4 p-3 rounded" style={{ background: "rgba(195, 53, 32, 0.04)", border: "1px solid rgba(195, 53, 32, 0.1)" }}>
+        <div style={{ fontSize: "11px", fontWeight: 500, color: "#C33520", marginBottom: "4px" }}>Requires group key</div>
+        <p style={{ fontSize: "11px", color: "#3A3328", lineHeight: 1.4, margin: 0 }}>
+          Send a <code style={{ fontSize: "10px", background: "rgba(0,0,0,0.05)", padding: "1px 4px", borderRadius: "2px" }}>group</code> field
+          with each document upload to group related documents together.
+          References are resolved within the group.
         </p>
       </div>
     </>
