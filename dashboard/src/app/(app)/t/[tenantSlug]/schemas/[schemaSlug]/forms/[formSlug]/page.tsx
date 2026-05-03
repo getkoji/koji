@@ -63,6 +63,7 @@ export default function FormAnnotationPage() {
   const [drawMode, setDrawMode] = useState(false);
   const [mode, setMode] = useState<"annotate" | "test">("annotate");
   const [testFile, setTestFile] = useState<File | null>(null);
+  const [testPdfDoc, setTestPdfDoc] = useState<any>(null);
   const [testing, setTesting] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, { value: string | null; error?: string }> | null>(null);
   const [testWarning, setTestWarning] = useState<string | null>(null);
@@ -112,18 +113,39 @@ export default function FormAnnotationPage() {
     });
   }, [sampleUrl]);
 
+  // Load test PDF when file is selected
+  useEffect(() => {
+    if (!testFile) { setTestPdfDoc(null); return; }
+    const url = URL.createObjectURL(testFile);
+    import("pdfjs-dist").then(async (pdfjs) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.mjs",
+        import.meta.url,
+      ).toString();
+      const doc = await pdfjs.getDocument(url).promise;
+      setTestPdfDoc(doc);
+    });
+    return () => URL.revokeObjectURL(url);
+  }, [testFile]);
+
+  // Which PDF to show — test PDF in test mode, sample PDF in annotate mode
+  const activePdfDoc = mode === "test" && testPdfDoc ? testPdfDoc : pdfDoc;
+
   // Render PDF page
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current) return;
+    if (!activePdfDoc || !canvasRef.current) return;
+    setTotalPages(activePdfDoc.numPages);
+    if (currentPage > activePdfDoc.numPages) setCurrentPage(1);
     (async () => {
-      const page = await pdfDoc.getPage(currentPage);
+      const pg = Math.min(currentPage, activePdfDoc.numPages);
+      const page = await activePdfDoc.getPage(pg);
       const viewport = page.getViewport({ scale: 1.5 });
       const canvas = canvasRef.current!;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
     })();
-  }, [pdfDoc, currentPage]);
+  }, [activePdfDoc, currentPage]);
 
   // Init mappings from form data
   useEffect(() => {
