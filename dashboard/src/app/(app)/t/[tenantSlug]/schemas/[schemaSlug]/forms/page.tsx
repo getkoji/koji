@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ClipboardList, Plus, Upload, Trash2 } from "lucide-react";
+import { ClipboardList, Plus, Upload, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
@@ -31,6 +31,8 @@ export default function FormsListPage() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FormMapping | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const { data: forms, loading, refetch } = useApi(
     useCallback(
@@ -180,12 +182,10 @@ export default function FormsListPage() {
                     <span>v{f.version}</span>
                   </div>
                   <button
-                    onClick={async (e) => {
+                    onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (!confirm(`Delete "${f.displayName}"?`)) return;
-                      await api.delete(`/api/forms/${f.slug}`);
-                      refetch();
+                      setDeleteTarget(f);
                     }}
                     className="text-ink-4 hover:text-vermillion-2 transition-colors opacity-0 group-hover:opacity-100"
                   >
@@ -197,6 +197,47 @@ export default function FormsListPage() {
           </div>
         )}
       </div>
+
+      {/* Delete confirmation dialog */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-cream border border-border rounded-sm shadow-lg w-[380px] p-5">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-[15px] font-medium text-ink">Delete form mapping</h3>
+              <button onClick={() => setDeleteTarget(null)} className="text-ink-4 hover:text-ink">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[13px] text-ink-3 mb-4">
+              Are you sure you want to delete <strong>{deleteTarget.displayName}</strong>? This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="px-3 py-1.5 rounded-sm text-[12px] text-ink-3 hover:text-ink transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await api.delete(`/api/forms/${deleteTarget.slug}`);
+                    setDeleteTarget(null);
+                    refetch();
+                  } finally {
+                    setDeleting(false);
+                  }
+                }}
+                disabled={deleting}
+                className="px-3 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion-2/90 transition-colors disabled:opacity-50"
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,7 +7,7 @@
  */
 
 import { Hono } from "hono";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 
@@ -67,6 +67,7 @@ forms.get("/", requires("schema:read"), async (c) => {
       .where(and(
         eq(formMappings.schemaId, s.id),
         eq(formMappings.tenantId, tenantId),
+        isNull(formMappings.deletedAt),
       ))
       .orderBy(desc(formMappings.createdAt)),
   );
