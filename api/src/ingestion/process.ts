@@ -35,6 +35,9 @@ import {
   type ExtractEndpointPayload,
 } from "../extract/resolve-endpoint";
 import { createProvider, extractFields } from "../extract";
+import { formExtractToResult } from "../extract/form-extract";
+import { matchFormMapping } from "../extract/form-match";
+import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { isTransientError } from "./errors";
 import type { BillingAdapter } from "../billing/adapter";
 import { NoOpBillingAdapter } from "../billing/noop";
@@ -195,35 +198,122 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         return { value: md, summary: { markdown_chars: md.length } };
       },
     );
-    const endpointPayload = await resolveExtractEndpoint(
-      db,
-      tenantId,
-      pipeline.modelProviderId,
-    );
-    extractResult = await recorder.run(
-      "extract",
-      async () => {
-        let schemaDef: Record<string, unknown>;
-        try {
-          schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
-        } catch (err) {
-          throw new TerminalError(`Invalid schema YAML: ${err instanceof Error ? err.message : "yaml parse"}`);
-        }
-        const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
-        const provider = createProvider(modelStr, endpointPayload);
-        const res = await extractFields(markdown, schemaDef, provider, modelStr);
-        return {
-          value: res as ExtractResult,
-          summary: {
-            model: res.model ?? "unknown",
-            fields: Object.keys(
-              (res.extracted ?? {}) as Record<string, unknown>,
-            ).length,
-            tokens: res.elapsed_ms ?? null,
-          },
-        };
-      },
-    );
+    // ── Form-mapping early exit ──────────────────────────────────────────
+    // Check if this document matches an active form mapping. If so, use
+    // coordinate extraction (+ optional LLM interpret) instead of the
+    // full parse → LLM pipeline. Sub-second, zero LLM cost for mapped fields.
+    const formMatch = pipeline.schemaId
+      ? await matchFormMapping(db, tenantId, markdown.slice(0, 3000), pipeline.schemaId)
+      : null;
+
+    if (formMatch && parseProvider.extractCoordinates) {
+      extractResult = await recorder.run(
+        "extract",
+        async () => {
+          console.log(
+            `[ingestion] form match: ${formMatch.slug} (score=${formMatch.score.toFixed(2)}) — using coordinate extraction`,
+          );
+          const blob = await storage.getBuffer(document.storageKey);
+          if (!blob) throw new Error("File not found in storage for coordinate extraction");
+
+          const coordResult = await parseProvider.extractCoordinates!({
+            fileBuffer: blob.data,
+            mappings: formMatch.mappingsJson as Record<string, { page: number; x: number; y: number; w: number; h: number }>,
+          });
+
+          // Handle LLM interpret regions
+          const llmRegions = Object.entries(formMatch.mappingsJson).filter(
+            ([, m]: [string, any]) => m.mapping_type === "llm_interpret",
+          );
+          if (llmRegions.length > 0) {
+            const { provider } = await resolveTenantProvider(db, tenantId);
+            const schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
+            const schemaFields = ((schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>);
+
+            for (const [regionKey, mapping] of llmRegions as [string, any][]) {
+              const rawText = coordResult.extracted[regionKey]?.value;
+              if (!rawText) continue;
+              const targetFields: string[] = mapping.target_fields ?? [];
+              if (targetFields.length === 0) continue;
+
+              const fieldDescriptions = targetFields.map((f: string) => {
+                const spec = schemaFields[f];
+                const parts = [`  "${f}"`];
+                if (spec?.type) parts.push(`(type: ${spec.type})`);
+                if (spec?.extraction_guidance) parts.push(`— ${spec.extraction_guidance}`);
+                if (spec?.required) parts.push("[required]");
+                return parts.join(" ");
+              }).join("\n");
+
+              const prompt = `You are extracting structured data from a region of a PDF form.\n\nThe raw text from this region:\n"""\n${rawText}\n"""\n\nExtract values for these fields:\n${fieldDescriptions}\n\n${mapping.llm_prompt ? `Additional instructions: ${mapping.llm_prompt}\n` : ""}Return a JSON object with exactly these keys: ${JSON.stringify(targetFields)}\nEach value should be a string, number, or null if not found. Return ONLY valid JSON, no explanation.`;
+
+              try {
+                const llmResponse = await provider.generate(prompt, true);
+                const parsed = JSON.parse(llmResponse);
+                for (const tf of targetFields) {
+                  if (parsed[tf] !== undefined) {
+                    coordResult.extracted[tf] = { value: parsed[tf], page: coordResult.extracted[regionKey]?.page };
+                  }
+                }
+              } catch {
+                for (const tf of targetFields) {
+                  coordResult.extracted[tf] = { value: null, error: "LLM interpretation failed" };
+                }
+              }
+              delete coordResult.extracted[regionKey];
+            }
+          }
+
+          let schemaDef: Record<string, unknown>;
+          try {
+            schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
+          } catch (err) {
+            throw new TerminalError(`Invalid schema YAML: ${err instanceof Error ? err.message : "yaml parse"}`);
+          }
+          const res = formExtractToResult(coordResult.extracted, schemaDef);
+          return {
+            value: res as ExtractResult,
+            summary: {
+              model: "coordinates",
+              strategy: "form-mapping",
+              form: formMatch.slug,
+              fields: Object.keys(res.extracted).length,
+            },
+          };
+        },
+      );
+    } else {
+      // ── Standard LLM extraction ───────────────────────────────────────
+      const endpointPayload = await resolveExtractEndpoint(
+        db,
+        tenantId,
+        pipeline.modelProviderId,
+      );
+      extractResult = await recorder.run(
+        "extract",
+        async () => {
+          let schemaDef: Record<string, unknown>;
+          try {
+            schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
+          } catch (err) {
+            throw new TerminalError(`Invalid schema YAML: ${err instanceof Error ? err.message : "yaml parse"}`);
+          }
+          const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
+          const provider = createProvider(modelStr, endpointPayload);
+          const res = await extractFields(markdown, schemaDef, provider, modelStr);
+          return {
+            value: res as ExtractResult,
+            summary: {
+              model: res.model ?? "unknown",
+              fields: Object.keys(
+                (res.extracted ?? {}) as Record<string, unknown>,
+              ).length,
+              tokens: res.elapsed_ms ?? null,
+            },
+          };
+        },
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
 

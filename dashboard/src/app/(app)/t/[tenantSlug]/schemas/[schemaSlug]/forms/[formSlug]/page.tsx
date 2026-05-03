@@ -96,6 +96,8 @@ export default function FormAnnotationPage() {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [formStatus, setFormStatus] = useState<string>("draft");
   const [drawMode, setDrawMode] = useState(false);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [dragging, setDragging] = useState<{ field: string; startX: number; startY: number; origX: number; origY: number } | null>(null);
@@ -193,8 +195,9 @@ export default function FormAnnotationPage() {
     })();
   }, [activePdfDoc, currentPage]);
 
-  // Init mappings from form data
+  // Init mappings + status from form data
   useEffect(() => {
+    if (form?.status) setFormStatus(form.status);
     if (form?.mappingsJson && typeof form.mappingsJson === "object") {
       setMappings(form.mappingsJson as Record<string, FieldMapping>);
     }
@@ -402,6 +405,20 @@ export default function FormAnnotationPage() {
     }
   }
 
+  async function handleActivate() {
+    const newStatus = formStatus === "active" ? "draft" : "active";
+    setActivating(true);
+    try {
+      await api.patch(`/api/forms/${formSlug}?schema=${schemaSlug}`, {
+        mappings_json: mappings,
+        status: newStatus,
+      });
+      setFormStatus(newStatus);
+    } finally {
+      setActivating(false);
+    }
+  }
+
   async function handleTest() {
     if (!testFile) return;
     setTesting(true);
@@ -419,6 +436,8 @@ export default function FormAnnotationPage() {
       }>(`/api/forms/${formSlug}/test?schema=${schemaSlug}`, fd);
       if (resp.data.warning) {
         setTestWarning(resp.data.warning);
+      } else if (resp.data.has_text_layer === false) {
+        setTestWarning("This PDF appears to be scanned — it has no text layer. Coordinate-based extraction requires a digital PDF. Results may be empty or inaccurate.");
       }
       setTestResults(resp.data);
     } catch (err: any) {
@@ -480,6 +499,17 @@ export default function FormAnnotationPage() {
               >
                 <Save className="w-3.5 h-3.5" />
                 {saving ? "Saving..." : "Save"}
+              </button>
+              <button
+                onClick={handleActivate}
+                disabled={activating || Object.keys(mappings).length === 0}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium transition-colors disabled:opacity-30 ${
+                  formStatus === "active"
+                    ? "bg-green/15 text-green border border-green/30 hover:bg-vermillion-3/30 hover:text-vermillion-2 hover:border-vermillion-2/30"
+                    : "bg-cream-2 text-ink-3 border border-border hover:border-green hover:text-green"
+                }`}
+              >
+                {activating ? "..." : formStatus === "active" ? "Active" : "Activate"}
               </button>
             </>
           )}

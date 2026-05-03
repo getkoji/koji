@@ -12,6 +12,7 @@ import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { formExtractToResult, fieldsNeedingLlm } from "../extract/form-extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
+import { generateFingerprint } from "../extract/form-match";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 
 const { formMappings, schemas: schemasTable } = schema;
@@ -209,7 +210,11 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
   const [current] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ id: formMappings.id, version: formMappings.version })
+    tx.select({
+      id: formMappings.id,
+      version: formMappings.version,
+      sampleStorageKey: formMappings.sampleStorageKey,
+    })
       .from(formMappings)
       .where(and(...conditions))
       .limit(1),
@@ -218,6 +223,32 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
 
   if (body.mappings_json) {
     updates.version = current.version + 1;
+  }
+
+  // Auto-generate fingerprint when activating a form mapping
+  if (body.status === "active" && current.sampleStorageKey) {
+    try {
+      const storage = c.get("storage");
+      const parseProvider = c.get("parseProvider") as any;
+      if (parseProvider?.extractCoordinates) {
+        // Use coordinate extraction to get page 1 text (just a small region)
+        // Actually simpler: fetch the PDF and use the parse provider to get text
+        const blob = await storage.getBuffer(current.sampleStorageKey);
+        if (blob) {
+          const parseResult = await parseProvider.parse({
+            filename: "sample.pdf",
+            mimeType: "application/pdf",
+            fileBuffer: blob.data,
+          });
+          const fingerprint = generateFingerprint(parseResult.markdown.slice(0, 3000));
+          updates.fingerprintJson = fingerprint;
+          console.log(`[forms] generated fingerprint for ${slug}: ${fingerprint.keywords.length} keywords`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[forms] fingerprint generation failed for ${slug}:`, err);
+      // Non-fatal — the form mapping still activates
+    }
   }
 
   const [updated] = await withRLS(db, tenantId, (tx) =>
