@@ -94,7 +94,10 @@ export default function FormAnnotationPage() {
   useEffect(() => {
     if (!sampleUrl) return;
     import("pdfjs-dist").then(async (pdfjs) => {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.mjs",
+        import.meta.url,
+      ).toString();
       const doc = await pdfjs.getDocument(sampleUrl).promise;
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
