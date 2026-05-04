@@ -53,6 +53,7 @@ interface FormDetail {
   id: string;
   slug: string;
   displayName: string;
+  description: string | null;
   mappingsJson: Record<string, FieldMapping>;
   sampleStorageKey: string | null;
   status: string;
@@ -98,6 +99,9 @@ export default function FormAnnotationPage() {
   const [saving, setSaving] = useState(false);
   const [activating, setActivating] = useState(false);
   const [formStatus, setFormStatus] = useState<string>("draft");
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [savingDetails, setSavingDetails] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [dragging, setDragging] = useState<{ field: string; startX: number; startY: number; origX: number; origY: number } | null>(null);
@@ -195,9 +199,11 @@ export default function FormAnnotationPage() {
     })();
   }, [activePdfDoc, currentPage]);
 
-  // Init mappings + status from form data
+  // Init mappings + status + details from form data
   useEffect(() => {
     if (form?.status) setFormStatus(form.status);
+    if (form?.displayName) setEditName(form.displayName);
+    if (form?.description !== undefined) setEditDescription(form.description ?? "");
     if (form?.mappingsJson && typeof form.mappingsJson === "object") {
       setMappings(form.mappingsJson as Record<string, FieldMapping>);
     }
@@ -402,6 +408,18 @@ export default function FormAnnotationPage() {
       await api.patch(`/api/forms/${formSlug}?schema=${schemaSlug}`, { mappings_json: mappings });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSaveDetails() {
+    setSavingDetails(true);
+    try {
+      await api.patch(`/api/forms/${formSlug}?schema=${schemaSlug}`, {
+        display_name: editName.trim() || undefined,
+        description: editDescription.trim() || null,
+      });
+    } finally {
+      setSavingDetails(false);
     }
   }
 
@@ -915,6 +933,42 @@ export default function FormAnnotationPage() {
                   <div>{Object.keys(mappings).filter((k) => k.startsWith("__llm_")).length} LLM region(s)</div>
                 )}
                 <div>v{form?.version ?? 1}</div>
+              </div>
+
+              {/* Form details */}
+              <div className="mt-4 pt-3 border-t border-border">
+                <div className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 mb-2">
+                  Details
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[11px] text-ink-3 block mb-0.5">Name</label>
+                    <input
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full h-[28px] rounded-sm border border-input bg-white px-2 text-[12px] outline-none focus:border-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-ink-3 block mb-0.5">Description</label>
+                    <textarea
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      placeholder="Optional description"
+                      rows={2}
+                      className="w-full rounded-sm border border-input bg-white px-2 py-1.5 text-[12px] outline-none focus:border-ring placeholder:text-ink-4 resize-none"
+                    />
+                  </div>
+                  {(editName !== (form?.displayName ?? "") || editDescription !== (form?.description ?? "")) && (
+                    <button
+                      onClick={handleSaveDetails}
+                      disabled={savingDetails || !editName.trim()}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[11px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30"
+                    >
+                      {savingDetails ? "Saving..." : "Save details"}
+                    </button>
+                  )}
+                </div>
               </div>
             </>
           ) : (
