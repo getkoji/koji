@@ -197,7 +197,7 @@ export default function PipelineDetailPage() {
                     disabled={submitting || undeployed}
                     title={
                       undeployed
-                        ? "Deploy a schema version before running"
+                        ? "Select a schema version before running"
                         : "Upload a document and run it through this pipeline"
                     }
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -370,7 +370,7 @@ function DeploymentSection({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
           >
             <Upload className="w-3 h-3" />
-            Deploy version
+            Change schema version
           </button>
         ) : null
       }
@@ -1109,7 +1109,7 @@ function DeployDialog({
             className="font-display text-[22px] font-medium text-ink leading-tight"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
           >
-            Deploy schema version
+            Change schema version
           </h2>
           <button
             type="button"
@@ -1185,13 +1185,13 @@ function DeployDialog({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40"
           >
             {submitting ? (
-              "Deploying…"
+              "Updating…"
             ) : selected === pipeline.activeSchemaVersionId ? (
-              "Already deployed"
+              "Current version"
             ) : (
               <>
                 <RotateCcw className="w-3.5 h-3.5" />
-                Deploy
+                Apply
               </>
             )}
           </button>
