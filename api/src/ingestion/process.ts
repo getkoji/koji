@@ -270,14 +270,48 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           } catch (err) {
             throw new TerminalError(`Invalid schema YAML: ${err instanceof Error ? err.message : "yaml parse"}`);
           }
-          const res = formExtractToResult(coordResult.extracted, schemaDef);
+          const formResult = formExtractToResult(coordResult.extracted, schemaDef);
+
+          // Check for unmapped fields — run LLM extraction to backfill them
+          const schemaFields = Object.keys((schemaDef.fields ?? {}) as Record<string, unknown>);
+          const nullFields = schemaFields.filter((f) => formResult.extracted[f] == null);
+
+          if (nullFields.length > 0 && markdown) {
+            console.log(
+              `[ingestion] form-mapping: ${nullFields.length} unmapped fields, backfilling with LLM`,
+            );
+            try {
+              const { provider, model: modelStr } = await resolveTenantProvider(db, tenantId, {
+                modelProviderId: pipeline.modelProviderId,
+              });
+              const llmResult = await extractFields(markdown, schemaDef, provider, modelStr);
+
+              // Merge: form extraction wins for mapped fields, LLM fills the rest
+              for (const field of nullFields) {
+                const llmValue = (llmResult.extracted as Record<string, unknown>)?.[field];
+                if (llmValue != null) {
+                  formResult.extracted[field] = llmValue;
+                  formResult.confidence_scores[field] = llmResult.confidence_scores?.[field] ?? 0.8;
+                  formResult.confidence[field] = llmResult.confidence?.[field] ?? "medium";
+                  if (formResult.provenance && llmResult.provenance?.[field]) {
+                    formResult.provenance[field] = llmResult.provenance[field];
+                  }
+                }
+              }
+              formResult.strategy = "form-mapping+llm";
+              formResult.model = `coordinates+${modelStr}`;
+            } catch (err) {
+              console.warn("[ingestion] LLM backfill failed, returning form-only results:", err);
+            }
+          }
+
           return {
-            value: res as ExtractResult,
+            value: formResult as ExtractResult,
             summary: {
-              model: "coordinates",
-              strategy: "form-mapping",
+              model: formResult.model ?? "coordinates",
+              strategy: formResult.strategy ?? "form-mapping",
               form: formMatch.slug,
-              fields: Object.keys(res.extracted).length,
+              fields: Object.keys(formResult.extracted).length,
             },
           };
         },
