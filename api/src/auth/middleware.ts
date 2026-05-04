@@ -62,6 +62,7 @@ function matchesNoTenantPath(path: string): boolean {
   if (path === "/api/projects/setup") return true;
   if (path === "/api/model-registry") return true;
   if (path === "/api/model-registry/refresh") return true;
+  if (path.startsWith("/api/admin")) return true;
   return false;
 }
 
