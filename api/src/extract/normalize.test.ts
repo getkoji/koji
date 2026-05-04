@@ -424,3 +424,95 @@ describe("normalizeExtracted edge cases", () => {
     expect(extracted.f).toBe("  hello  ");
   });
 });
+
+describe("resolve directive", () => {
+  it("resolves field reference from template", () => {
+    const extracted = {
+      insurer_a: "Trisura Insurance Company",
+      insurer_b: "Continental Casualty",
+      gl_insurer_letter: "A",
+      gl_insurer_name: null,
+    };
+    const schema = {
+      fields: {
+        insurer_a: { type: "string" },
+        insurer_b: { type: "string" },
+        gl_insurer_letter: { type: "string" },
+        gl_insurer_name: { type: "string", resolve: "insurer_{gl_insurer_letter}" },
+      },
+    };
+    const [result, report] = normalizeExtracted(extracted, schema);
+    expect(result.gl_insurer_name).toBe("Trisura Insurance Company");
+    expect(report.applied).toContainEqual(
+      expect.objectContaining({ field: "gl_insurer_name", transform: expect.stringContaining("resolve") }),
+    );
+  });
+
+  it("resolves to different insurer based on letter", () => {
+    const extracted = {
+      insurer_a: "Trisura",
+      insurer_b: "Continental",
+      auto_insurer_letter: "B",
+      auto_insurer_name: null,
+    };
+    const schema = {
+      fields: {
+        insurer_a: { type: "string" },
+        insurer_b: { type: "string" },
+        auto_insurer_letter: { type: "string" },
+        auto_insurer_name: { type: "string", resolve: "insurer_{auto_insurer_letter}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.auto_insurer_name).toBe("Continental");
+  });
+
+  it("does not overwrite existing value", () => {
+    const extracted = {
+      insurer_a: "Trisura",
+      gl_insurer_letter: "A",
+      gl_insurer_name: "Already Set",
+    };
+    const schema = {
+      fields: {
+        insurer_a: { type: "string" },
+        gl_insurer_letter: { type: "string" },
+        gl_insurer_name: { type: "string", resolve: "insurer_{gl_insurer_letter}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.gl_insurer_name).toBe("Already Set");
+  });
+
+  it("leaves null when referenced field is missing", () => {
+    const extracted = {
+      gl_insurer_letter: "C",
+      gl_insurer_name: null,
+    };
+    const schema = {
+      fields: {
+        gl_insurer_letter: { type: "string" },
+        gl_insurer_name: { type: "string", resolve: "insurer_{gl_insurer_letter}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.gl_insurer_name).toBeNull();
+  });
+
+  it("leaves null when source field is null", () => {
+    const extracted = {
+      insurer_a: "Trisura",
+      gl_insurer_letter: null,
+      gl_insurer_name: null,
+    };
+    const schema = {
+      fields: {
+        insurer_a: { type: "string" },
+        gl_insurer_letter: { type: "string" },
+        gl_insurer_name: { type: "string", resolve: "insurer_{gl_insurer_letter}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.gl_insurer_name).toBeNull();
+  });
+});

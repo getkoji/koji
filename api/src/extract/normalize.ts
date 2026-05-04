@@ -500,7 +500,6 @@ export function normalizeExtracted(
     });
 
     // Look up the resolved field name in the extracted results
-    console.log(`[normalize] resolve ${fieldName}: template="${resolveTemplate}" → resolved="${resolved}", found=${resolved in result}, value=${resolved in result ? JSON.stringify(result[resolved]) : "N/A"}`);
     if (resolved && resolved in result) {
       const resolvedValue = result[resolved];
       if (resolvedValue != null) {
