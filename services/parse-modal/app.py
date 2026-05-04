@@ -869,12 +869,14 @@ async def render_region(request: Request):
         doc.close()
 
         b64 = base64.b64encode(img_bytes).decode("ascii")
-        return JSONResponse({
-            "image_base64": b64,
-            "width": pix.width,
-            "height": pix.height,
-            "format": "png",
-        })
+        return JSONResponse(
+            {
+                "image_base64": b64,
+                "width": pix.width,
+                "height": pix.height,
+                "format": "png",
+            }
+        )
     except Exception as e:
         return JSONResponse({"error": f"render failed: {e}"}, status_code=500)
     finally:
