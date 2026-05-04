@@ -354,14 +354,32 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
     return c.json({ error: "Parse provider does not support coordinate extraction" }, 500);
   }
 
-  // Also fetch the schema definition for normalization/validation
-  const [schemaRow] = schemaId ? await withRLS(db, tenantId, (tx) =>
-    tx.select({
-      draftYaml: schemasTable.draftYaml,
-    }).from(schemasTable)
-      .where(eq(schemasTable.id, schemaId))
-      .limit(1),
-  ) : [null];
+  // Fetch the schema definition for normalization/validation.
+  // Prefer the latest committed version over the draft (the draft may
+  // not have new directives like `resolve` until committed).
+  let schemaYaml: string | null = null;
+  if (schemaId) {
+    // Try latest committed version first
+    const [ver] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ yamlSource: schema.schemaVersions.yamlSource })
+        .from(schema.schemaVersions)
+        .where(eq(schema.schemaVersions.schemaId, schemaId))
+        .orderBy(desc(schema.schemaVersions.versionNumber))
+        .limit(1),
+    );
+    if (ver?.yamlSource) {
+      schemaYaml = ver.yamlSource;
+    } else {
+      // Fall back to draft
+      const [s] = await withRLS(db, tenantId, (tx) =>
+        tx.select({ draftYaml: schemasTable.draftYaml })
+          .from(schemasTable)
+          .where(eq(schemasTable.id, schemaId))
+          .limit(1),
+      );
+      schemaYaml = s?.draftYaml ?? null;
+    }
+  }
 
   try {
     const coordResult = await parseProvider.extractCoordinates({
@@ -384,10 +402,10 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
 
       // Parse schema YAML to get field descriptions for the prompt
       let schemaFields: Record<string, { type?: string; extraction_guidance?: string; required?: boolean }> = {};
-      if (schemaRow?.draftYaml) {
+      if (schemaYaml) {
         try {
           const { parse: parseYaml } = await import("yaml");
-          const parsed = parseYaml(schemaRow.draftYaml);
+          const parsed = parseYaml(schemaYaml);
           schemaFields = (parsed?.fields ?? {}) as typeof schemaFields;
         } catch { /* ignore parse errors */ }
       }
@@ -457,10 +475,10 @@ Each value should be a string, number, or null if not found. Return ONLY valid J
     }
 
     // If we have a schema, run through the normalize → validate pipeline
-    if (schemaRow?.draftYaml) {
+    if (schemaYaml) {
       try {
         const { parse: parseYaml } = await import("yaml");
-        const schemaDef = parseYaml(schemaRow.draftYaml);
+        const schemaDef = parseYaml(schemaYaml);
         const extractionResult = formExtractToResult(coordResult.extracted, schemaDef);
         const needsLlm = fieldsNeedingLlm(extractionResult, schemaDef);
 
