@@ -735,21 +735,25 @@ export default function FormAnnotationPage() {
                     >
                       {editingField ? "Update mapping" : "Create LLM region"}
                     </button>
+                  ) : editingField ? (
+                    <button
+                      onClick={() => assignField(editingField)}
+                      className="w-full px-2 py-1.5 text-[12px] font-medium rounded-sm bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+                    >
+                      Save changes
+                    </button>
                   ) : (
                     <div className="max-h-[200px] overflow-y-auto space-y-0.5">
                       {schemaFields
-                        .filter((f) => editingField === f.name || !(f.name in mappings))
+                        .filter((f) => !(f.name in mappings))
                         .map((f) => (
                           <button
                             key={f.name}
                             onClick={() => assignField(f.name)}
-                            className={`w-full text-left px-2 py-1.5 text-[12px] rounded-sm hover:bg-cream-2 transition-colors ${
-                              editingField === f.name ? "bg-cream-2 font-medium" : ""
-                            }`}
+                            className="w-full text-left px-2 py-1.5 text-[12px] rounded-sm hover:bg-cream-2 transition-colors"
                           >
                             <span className="font-mono text-vermillion-2">{f.name}</span>
                             <span className="text-ink-4 ml-1.5 text-[10px]">{f.type}</span>
-                            {editingField === f.name && <span className="text-ink-4 ml-1 text-[9px]">(current)</span>}
                           </button>
                         ))}
                     </div>
