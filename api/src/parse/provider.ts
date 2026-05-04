@@ -30,4 +30,12 @@ export interface ParseProvider {
     fileBuffer: Buffer;
     mappings: Record<string, { page: number; x: number; y: number; w: number; h: number }>;
   }): Promise<CoordinateExtractionResult>;
+
+  /** Render a PDF region as a base64 PNG image. Used for vision LLM calls. */
+  renderRegion?(input: {
+    fileBuffer: Buffer;
+    page: number;
+    x: number; y: number; w: number; h: number;
+    scale?: number;
+  }): Promise<{ image_base64: string; width: number; height: number }>;
 }

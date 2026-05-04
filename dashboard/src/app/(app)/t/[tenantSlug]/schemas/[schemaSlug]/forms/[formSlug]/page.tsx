@@ -36,6 +36,8 @@ interface FieldMapping {
   llm_prompt?: string;
   /** For llm_interpret: which schema fields this region maps to */
   target_fields?: string[];
+  /** For llm_interpret: send a cropped image instead of extracted text (vision) */
+  use_vision?: boolean;
 }
 
 const VALUE_TYPES: { value: ValueType; label: string }[] = [
@@ -94,6 +96,7 @@ export default function FormAnnotationPage() {
   const [pendingUncheckedValue, setPendingUncheckedValue] = useState<string>("");
   const [pendingLlmPrompt, setPendingLlmPrompt] = useState<string>("");
   const [pendingTargetFields, setPendingTargetFields] = useState<string[]>([]);
+  const [pendingUseVision, setPendingUseVision] = useState(false);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [mappings, setMappings] = useState<Record<string, FieldMapping>>({});
   const [saving, setSaving] = useState(false);
@@ -350,6 +353,7 @@ export default function FormAnnotationPage() {
     if (pendingMappingType === "llm_interpret") {
       mapping.llm_prompt = pendingLlmPrompt.trim() || undefined;
       mapping.target_fields = pendingTargetFields.length > 0 ? pendingTargetFields : undefined;
+      if (pendingUseVision) mapping.use_vision = true;
     }
     // If editing, remove old field name if it changed
     if (editingField && editingField !== fieldName) {
@@ -375,6 +379,7 @@ export default function FormAnnotationPage() {
     setPendingUncheckedValue("");
     setPendingLlmPrompt("");
     setPendingTargetFields([]);
+    setPendingUseVision(false);
     setEditingField(null);
   }
 
@@ -390,6 +395,7 @@ export default function FormAnnotationPage() {
     setPendingUncheckedValue(m.unchecked_value ?? "");
     setPendingLlmPrompt(m.llm_prompt ?? "");
     setPendingTargetFields(m.target_fields ?? []);
+    setPendingUseVision(m.use_vision ?? false);
     // Set drawRect to current position for the popover
     setDrawRect({ x: m.x, y: m.y, w: m.w, h: m.h });
   }
@@ -723,6 +729,15 @@ export default function FormAnnotationPage() {
                         </div>
                         <p className="text-[9px] text-ink-4 mt-0.5">Which schema fields this region populates</p>
                       </div>
+                      <label className="flex items-center gap-1.5 mt-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pendingUseVision}
+                          onChange={(e) => setPendingUseVision(e.target.checked)}
+                          className="rounded-sm"
+                        />
+                        <span className="text-[10px] text-ink-3">Use vision (send image instead of text)</span>
+                      </label>
                     </div>
                   )}
 

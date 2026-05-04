@@ -235,4 +235,39 @@ export class ModalParseProvider implements ParseProvider {
 
     return resp.json();
   }
+
+  async renderRegion(input: {
+    fileBuffer: Buffer;
+    page: number;
+    x: number; y: number; w: number; h: number;
+    scale?: number;
+  }): Promise<{ image_base64: string; width: number; height: number }> {
+    const renderUrl = this.url.replace("parse-http", "render-region");
+
+    const fd = new FormData();
+    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "render.pdf");
+    fd.append("page", String(input.page));
+    fd.append("x", String(input.x));
+    fd.append("y", String(input.y));
+    fd.append("w", String(input.w));
+    fd.append("h", String(input.h));
+    if (input.scale) fd.append("scale", String(input.scale));
+
+    const resp = await fetch(renderUrl, {
+      method: "POST",
+      body: fd,
+      headers: {
+        "Modal-Key": this.tokenId,
+        "Modal-Secret": this.tokenSecret,
+      },
+      redirect: "follow",
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => "Unknown error");
+      throw new Error(`Region render failed: ${err}`);
+    }
+
+    return resp.json();
+  }
 }

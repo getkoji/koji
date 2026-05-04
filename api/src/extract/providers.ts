@@ -23,6 +23,8 @@ import type { ExtractEndpointPayload } from "./resolve-endpoint";
 
 export interface ModelProvider {
   generate(prompt: string, jsonMode?: boolean): Promise<string>;
+  /** Generate with an image (vision). Base64 PNG + text prompt. */
+  generateWithImage?(prompt: string, imageBase64: string, jsonMode?: boolean): Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,37 @@ export class OpenAIProvider implements ModelProvider {
       signal: AbortSignal.timeout(300_000),
     });
     if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`);
+    const body = (await resp.json()) as {
+      choices: Array<{ message: { content: string } }>;
+    };
+    return body.choices[0].message.content;
+  }
+
+  async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {
+    const payload: Record<string, unknown> = {
+      model: this.model,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
+          { type: "text", text: prompt },
+        ],
+      }],
+      temperature: 0,
+      max_tokens: 4096,
+    };
+    if (jsonMode) payload.response_format = { type: "json_object" };
+
+    const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!resp.ok) throw new Error(`OpenAI vision ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
@@ -187,6 +220,35 @@ export class AnthropicProvider implements ModelProvider {
       signal: AbortSignal.timeout(300_000),
     });
     if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`);
+    return AnthropicProvider.extractText(await resp.json());
+  }
+
+  async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {
+    const effectivePrompt = jsonMode ? prompt + AnthropicProvider.JSON_SUFFIX : prompt;
+    const payload = {
+      model: this.model,
+      max_tokens: 4096,
+      temperature: 0,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
+          { type: "text", text: effectivePrompt },
+        ],
+      }],
+    };
+
+    const resp = await fetch(`${this.baseUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": AnthropicProvider.ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!resp.ok) throw new Error(`Anthropic vision ${resp.status}: ${await resp.text()}`);
     return AnthropicProvider.extractText(await resp.json());
   }
 }

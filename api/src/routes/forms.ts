@@ -429,7 +429,18 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
           return parts.join(" ");
         }).join("\n");
 
-        const prompt = `You are extracting structured data from a region of a PDF form.
+        // Vision mode: render the region as an image and send to LLM
+        const useVision = mapping.use_vision && parseProvider?.renderRegion;
+
+        let prompt: string;
+        if (useVision) {
+          prompt = `You are looking at a cropped region of a PDF form. Extract values for these fields:
+${fieldDescriptions}
+
+${userPrompt ? `Additional instructions: ${userPrompt}\n` : ""}Return a JSON object with exactly these keys: ${JSON.stringify(targetFields)}
+Each value should be a string, number, boolean, or null if not found. For checkboxes, return true if marked with X or checkmark, false if empty. Return ONLY valid JSON, no explanation.`;
+        } else {
+          prompt = `You are extracting structured data from a region of a PDF form.
 
 The raw text from this region:
 """
@@ -441,10 +452,23 @@ ${fieldDescriptions}
 
 ${userPrompt ? `Additional instructions: ${userPrompt}\n` : ""}Return a JSON object with exactly these keys: ${JSON.stringify(targetFields)}
 Each value should be a string, number, or null if not found. Return ONLY valid JSON, no explanation.`;
+        }
 
         try {
-          const llmResponse = await provider.generate(prompt, true);
-          console.log(`[forms/test] LLM region ${regionKey} raw response:`, llmResponse);
+          let llmResponse: string;
+          if (useVision) {
+            const regionCoords = coordResult.extracted[regionKey];
+            const rendered = await parseProvider.renderRegion!({
+              fileBuffer,
+              page: mapping.page ?? regionCoords?.page ?? 1,
+              x: mapping.x, y: mapping.y, w: mapping.w, h: mapping.h,
+              scale: 3,
+            });
+            llmResponse = await provider.generateWithImage!(prompt, rendered.image_base64, true);
+          } else {
+            llmResponse = await provider.generate(prompt, true);
+          }
+          console.log(`[forms/test] LLM region ${regionKey} ${useVision ? "(vision)" : ""} raw response:`, llmResponse);
           const parsed = JSON.parse(llmResponse);
 
           // Write LLM results into coordResult under the target field names

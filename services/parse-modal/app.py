@@ -797,6 +797,90 @@ async def extract_coordinates(request: Request):
 # ---------------------------------------------------------------------------
 # Local entry point — ``modal run app.py --filename foo.pdf --file-bytes @foo.pdf``
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Render region — crop a PDF region as a base64 PNG image for vision LLM calls
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    image=image,
+    timeout=30,
+    memory=512,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def render_region(request: Request):
+    """Render a region of a PDF page as a base64 PNG image.
+
+    Accepts multipart form with:
+    - ``file`` — the PDF bytes
+    - ``page`` — 1-indexed page number
+    - ``x``, ``y``, ``w``, ``h`` — normalized coordinates (0.0-1.0)
+    - ``scale`` — optional render scale (default 2 for good quality)
+    """
+    import base64
+    import tempfile
+    from pathlib import Path
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    try:
+        page_num = int(form.get("page", "1"))
+        x = float(form.get("x", "0"))
+        y = float(form.get("y", "0"))
+        w = float(form.get("w", "1"))
+        h = float(form.get("h", "1"))
+        scale = float(form.get("scale", "2"))
+    except (ValueError, TypeError) as e:
+        return JSONResponse({"error": f"invalid numeric parameter: {e}"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = Path(tmp.name)
+
+    try:
+        doc = pymupdf.open(str(tmp_path))
+        if page_num < 1 or page_num > len(doc):
+            doc.close()
+            return JSONResponse({"error": f"page {page_num} out of range (1-{len(doc)})"}, status_code=400)
+
+        page = doc[page_num - 1]
+        pw, ph = page.rect.width, page.rect.height
+
+        # Convert normalized coords to absolute
+        clip = pymupdf.Rect(x * pw, y * ph, (x + w) * pw, (y + h) * ph)
+
+        # Render at scale
+        mat = pymupdf.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, clip=clip)
+        img_bytes = pix.tobytes("png")
+        doc.close()
+
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        return JSONResponse({
+            "image_base64": b64,
+            "width": pix.width,
+            "height": pix.height,
+            "format": "png",
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"render failed: {e}"}, status_code=500)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # Convenience wrapper so humans can smoke-test without writing a client.
 # Not used by the platform API.
 
