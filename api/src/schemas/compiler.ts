@@ -24,7 +24,7 @@ const VALID_FIELD_PROPS = new Set([
   "type", "required", "nullable", "importance", "review_below",
   "extraction_guidance", "validate", "normalize", "derived_from",
   "method", "values", "items", "fields", "merge", "description",
-  "format", "default", "hints", "options", "signals",
+  "format", "default", "hints", "options", "signals", "resolve",
 ]);
 
 const VALID_NORMALIZE = new Set([
