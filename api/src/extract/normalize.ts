@@ -481,5 +481,33 @@ export function normalizeExtracted(
     }
   }
 
+  // Resolve fields — interpolate other field values to look up a field by name.
+  // Example: resolve: "insurer_{gl_insurer_letter}" with gl_insurer_letter="A"
+  // resolves to the value of the "insurer_a" field.
+  for (const [fieldName, spec] of Object.entries(fieldsSpec)) {
+    if (!spec || typeof spec !== "object") continue;
+    const resolveTemplate = spec.resolve as string | undefined;
+    if (!resolveTemplate) continue;
+
+    // Don't overwrite if already has a value
+    const current = result[fieldName];
+    if (current != null && String(current).trim()) continue;
+
+    // Interpolate {field_name} references in the template
+    const resolved = resolveTemplate.replace(/\{(\w+)\}/g, (_, ref) => {
+      const val = result[ref];
+      return val != null ? String(val).toLowerCase() : "";
+    });
+
+    // Look up the resolved field name in the extracted results
+    if (resolved && resolved in result) {
+      const resolvedValue = result[resolved];
+      if (resolvedValue != null) {
+        result[fieldName] = resolvedValue;
+        report.applied.push({ field: fieldName, transform: `resolve "${resolveTemplate}" → ${resolved}` });
+      }
+    }
+  }
+
   return [result, report];
 }

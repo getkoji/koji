@@ -289,6 +289,28 @@ line_items:
 
 Transforms are deterministic and fault-tolerant: if a value can't be parsed (e.g. `"next Tuesday"` through `iso8601`), the original value is passed through unchanged. Unknown transform names are recorded as warnings in the response's `normalization.warnings` list rather than raising.
 
+### Resolve (field reference lookup)
+
+Use `resolve` to populate a field by looking up another field's value. The template string uses `{field_name}` syntax to interpolate extracted values into a field name, then returns the value of that field.
+
+```yaml
+fields:
+  insurer_a:
+    type: string
+  insurer_b:
+    type: string
+  gl_insurer_letter:
+    type: string
+    description: "Letter (A-E) identifying which insurer covers General Liability"
+  gl_insurer_name:
+    type: string
+    resolve: "insurer_{gl_insurer_letter}"
+```
+
+If `gl_insurer_letter` extracts as `"A"`, the template resolves to `"insurer_a"`, and `gl_insurer_name` is set to whatever `insurer_a` contains (e.g. `"Trisura Insurance Company"`).
+
+Resolve runs after all other normalization. It only fills fields that are null or empty -- it won't overwrite a value that was already extracted. This makes it safe to use alongside [form mappings](forms-guide.md) where some fields come from coordinates and others from LLM interpretation.
+
 ## Validation rules
 
 Validation runs immediately after normalization. It evaluates a list of schema-declared rules against the extracted output and returns a report indicating which rules passed and which failed. Think of it as "turn extracted JSON into extracted and verified JSON" — the schema is the contract, and validation is the enforcement point before the data leaves Koji for downstream systems.

@@ -134,3 +134,27 @@ For sections that shift between carriers or software versions (insurer tables, c
 | Hybrid (coordinates + LLM regions) | $0.50-2 | 1-3 seconds |
 
 The hybrid approach gives you the accuracy of LLM extraction at a fraction of the cost, with the speed of direct text reads for simple fields.
+
+## Linking related fields with resolve
+
+Insurance forms often reference data across sections -- for example, a General Liability row shows "A" in the insurer letter column, meaning the coverage is provided by whatever company is listed as Insurer A at the top of the form.
+
+Use the `resolve` directive to automatically link these:
+
+```yaml
+fields:
+  insurer_a:
+    type: string
+  insurer_b:
+    type: string
+  gl_insurer_letter:
+    type: string
+    description: "Letter identifying which insurer covers GL"
+  gl_insurer_name:
+    type: string
+    resolve: "insurer_{gl_insurer_letter}"
+```
+
+When extraction produces `gl_insurer_letter: "A"`, the resolve step looks up `insurer_a` and fills in `gl_insurer_name: "Trisura Insurance Company"`. No glue code needed.
+
+See [Schema Guide: Resolve](schema-guide.md#resolve-field-reference-lookup) for full documentation.
