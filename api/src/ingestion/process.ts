@@ -393,13 +393,18 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   // ── Confidence gate (recorded as the 'validate' stage) ──────────────────
   const validateStart = Date.now();
   const fieldScores = extractResult.confidence_scores ?? {};
-  // Compute overall confidence as average of per-field scores
-  const scoreValues = Object.values(fieldScores).filter((v) => Number.isFinite(v));
+  const extractedValues = (extractResult.extracted ?? {}) as Record<string, unknown>;
+  // Compute overall confidence as average of scores for fields that have values.
+  // Null fields (legitimately absent — e.g. no WC coverage on a COI) are excluded
+  // so they don't drag the average down and trigger unnecessary review.
+  const scoreValues = Object.entries(fieldScores)
+    .filter(([field, v]) => Number.isFinite(v) && extractedValues[field] != null)
+    .map(([, v]) => v);
   const confidence = scoreValues.length > 0
     ? scoreValues.reduce((sum, v) => sum + v, 0) / scoreValues.length
     : null;
   const threshold = Number(pipeline.reviewThreshold);
-  const lowField = findLowestConfidenceField(fieldScores, threshold);
+  const lowField = findLowestConfidenceField(fieldScores, threshold, extractedValues);
 
   const routeToReview =
     lowField !== null ||
@@ -1026,11 +1031,14 @@ class TraceRecorder {
 function findLowestConfidenceField(
   scores: Record<string, number>,
   threshold: number,
+  extractedValues?: Record<string, unknown>,
 ): { name: string; confidence: number } | null {
   let worst: { name: string; confidence: number } | null = null;
   for (const [name, raw] of Object.entries(scores)) {
     const c = Number(raw);
     if (!Number.isFinite(c)) continue;
+    // Skip null fields — they're legitimately absent, not low confidence
+    if (extractedValues && extractedValues[name] == null) continue;
     if (c < threshold && (worst === null || c < worst.confidence)) {
       worst = { name, confidence: c };
     }
