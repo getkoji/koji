@@ -16,6 +16,7 @@ New to Koji? Start here:
 ## Core concepts
 
 - **[Schemas](schema-guide.md)** — define what to extract: field types, hints, arrays, enums, custom signals
+- **[Form Mappings](forms-guide.md)** — extract from fixed-layout PDFs by position: draw boxes, map to fields, extract at near-zero cost
 - **[Configuration](configuration.md)** — full `koji.yaml` reference
 - **[Architecture](architecture.md)** — how the pipeline works (map → route → extract → validate → reconcile)
 

@@ -177,6 +177,22 @@ tags:
 
 Output: `"tags": ["urgent", "reviewed", "approved"]`
 
+### boolean
+
+True/false values. Koji normalizes common representations automatically:
+
+```yaml
+gl_claims_made:
+  type: boolean
+  description: Whether General Liability is claims-made (vs occurrence)
+```
+
+The following are all recognized as `true`: `"true"`, `"yes"`, `"Y"`, `"X"`, `"1"`, `"checked"`. And as `false`: `"false"`, `"no"`, `"N"`, `"0"`, `""`, `"unchecked"`.
+
+Output: `"gl_claims_made": true`
+
+Booleans are especially useful with [form mappings](forms-guide.md) -- checkbox mapping types detect whether a checkbox is marked and return the boolean value directly.
+
 ## Required fields
 
 Mark fields as `required: true` when the extraction is incomplete without them:
