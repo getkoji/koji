@@ -83,7 +83,9 @@ export function formExtractToResult(
   }
 
   // Build confidence scores
-  // Coordinate extraction gets high base confidence (direct read from PDF)
+  // Only score fields that have coordinate results (were actually mapped).
+  // Unmapped fields are excluded — they weren't attempted, so scoring them
+  // as 0 would tank the overall confidence and route to review incorrectly.
   const confidence: Record<string, string> = {};
   const confidenceScores: Record<string, number> = {};
 
@@ -92,13 +94,16 @@ export function formExtractToResult(
   );
 
   for (const fieldName of Object.keys(normalized)) {
-    const value = normalized[fieldName];
     const coordResult = coordinateResults[fieldName];
+    const value = normalized[fieldName];
+
+    // Field has no mapping — skip it entirely (don't drag down confidence)
+    if (!coordResult) continue;
 
     if (value == null) {
       confidenceScores[fieldName] = 0;
       confidence[fieldName] = "not_found";
-    } else if (coordResult?.error) {
+    } else if (coordResult.error) {
       confidenceScores[fieldName] = 0.3;
       confidence[fieldName] = "low";
     } else if (failedFields.has(fieldName)) {

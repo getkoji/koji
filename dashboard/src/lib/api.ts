@@ -46,8 +46,12 @@ export class ApiError extends Error {
   status: number;
   detail?: string;
 
-  constructor(status: number, body: { error?: string; title?: string; detail?: string }) {
-    super(body.error ?? body.title ?? `API error ${status}`);
+  constructor(status: number, body: { error?: string | { message?: string; code?: string }; title?: string; detail?: string }) {
+    const errField = body.error;
+    const msg = typeof errField === "string"
+      ? errField
+      : errField?.message ?? body.title ?? `API error ${status}`;
+    super(msg);
     this.status = status;
     this.detail = body.detail;
   }
