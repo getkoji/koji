@@ -270,4 +270,42 @@ export class ModalParseProvider implements ParseProvider {
 
     return resp.json();
   }
+
+  async pageHeaders(input: {
+    fileBuffer: Buffer;
+  }): Promise<{ pages: number; headers: Array<{ page: number; header_text: string }> }> {
+    const headersUrl = this.url.replace("parse-http", "page-headers");
+    const fd = new FormData();
+    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+
+    const resp = await fetch(headersUrl, {
+      method: "POST",
+      body: fd,
+      headers: { "Modal-Key": this.tokenId, "Modal-Secret": this.tokenSecret },
+      redirect: "follow",
+    });
+    if (!resp.ok) throw new Error(`page_headers failed: ${await resp.text()}`);
+    return resp.json();
+  }
+
+  async slicePdf(input: {
+    fileBuffer: Buffer;
+    startPage: number;
+    endPage: number;
+  }): Promise<{ pdf_base64: string; pages: number; byte_size: number }> {
+    const sliceUrl = this.url.replace("parse-http", "slice-pdf");
+    const fd = new FormData();
+    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+    fd.append("start_page", String(input.startPage));
+    fd.append("end_page", String(input.endPage));
+
+    const resp = await fetch(sliceUrl, {
+      method: "POST",
+      body: fd,
+      headers: { "Modal-Key": this.tokenId, "Modal-Secret": this.tokenSecret },
+      redirect: "follow",
+    });
+    if (!resp.ok) throw new Error(`slice_pdf failed: ${await resp.text()}`);
+    return resp.json();
+  }
 }

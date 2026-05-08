@@ -86,6 +86,10 @@ export const documents = pgTable(
     groupKey: varchar("group_key", { length: 255 }),
     chunksJson: jsonb("chunks_json"),
     referencesJson: jsonb("references_json"),
+    /** For split-produced sub-documents: the parent document ID */
+    parentDocumentId: uuid("parent_document_id"),
+    /** For split-produced sub-documents: page range [start, end] (1-indexed, inclusive) */
+    pageRange: jsonb("page_range"),
     createdAt: createdAt(),
   },
   (t) => ({

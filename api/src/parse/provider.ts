@@ -38,4 +38,16 @@ export interface ParseProvider {
     x: number; y: number; w: number; h: number;
     scale?: number;
   }): Promise<{ image_base64: string; width: number; height: number }>;
+
+  /** Extract the first ~200 chars from each page. Used for split boundary detection. */
+  pageHeaders?(input: {
+    fileBuffer: Buffer;
+  }): Promise<{ pages: number; headers: Array<{ page: number; header_text: string }> }>;
+
+  /** Slice a page range from a PDF into a new PDF (base64). */
+  slicePdf?(input: {
+    fileBuffer: Buffer;
+    startPage: number;
+    endPage: number;
+  }): Promise<{ pdf_base64: string; pages: number; byte_size: number }>;
 }

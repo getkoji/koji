@@ -5,6 +5,7 @@ import { tagStep } from './tag';
 import { filterStep } from './filter';
 import { webhookStep } from './webhook';
 import { transformStep } from './transform';
+import { splitStep } from './split';
 
 export function registerAllSteps(): void {
   registerStep(extractStep);
@@ -13,6 +14,7 @@ export function registerAllSteps(): void {
   registerStep(filterStep);
   registerStep(webhookStep);
   registerStep(transformStep);
+  registerStep(splitStep);
 }
 
 export { getStep, hasStep } from './registry';

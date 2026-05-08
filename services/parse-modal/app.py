@@ -883,6 +883,143 @@ async def render_region(request: Request):
         tmp_path.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Slice PDF — extract a page range into a new PDF
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    image=image,
+    timeout=30,
+    memory=512,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def slice_pdf(request: Request):
+    """Extract a page range from a PDF into a new PDF.
+
+    Accepts multipart form with:
+    - ``file`` — the PDF bytes
+    - ``start_page`` — 1-indexed start page (inclusive)
+    - ``end_page`` — 1-indexed end page (inclusive)
+    """
+    import base64
+    import tempfile
+    from pathlib import Path
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    try:
+        start_page = int(form.get("start_page", "1"))
+        end_page = int(form.get("end_page", "-1"))
+    except (ValueError, TypeError) as e:
+        return JSONResponse({"error": f"invalid page params: {e}"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = Path(tmp.name)
+
+    try:
+        doc = pymupdf.open(str(tmp_path))
+        if end_page < 0:
+            end_page = len(doc)
+        if start_page < 1 or end_page > len(doc) or start_page > end_page:
+            doc.close()
+            return JSONResponse(
+                {
+                    "error": f"invalid range [{start_page}, {end_page}] for {len(doc)}-page PDF"
+                },
+                status_code=400,
+            )
+
+        new_doc = pymupdf.open()
+        new_doc.insert_pdf(doc, from_page=start_page - 1, to_page=end_page - 1)
+        pdf_bytes = new_doc.tobytes()
+        new_doc.close()
+        doc.close()
+
+        b64 = base64.b64encode(pdf_bytes).decode("ascii")
+        return JSONResponse(
+            {
+                "pdf_base64": b64,
+                "pages": end_page - start_page + 1,
+                "byte_size": len(pdf_bytes),
+            }
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"slice failed: {e}"}, status_code=500)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Page headers — extract first ~200 chars from each page (for split boundary detection)
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    image=image,
+    timeout=60,
+    memory=512,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def page_headers(request: Request):
+    """Extract the first ~200 characters of text from each page of a PDF.
+
+    Used by the split step for LLM-based page boundary detection.
+    Returns an array of {page, header_text} objects.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = Path(tmp.name)
+
+    try:
+        doc = pymupdf.open(str(tmp_path))
+        headers = []
+        for i in range(len(doc)):
+            page = doc[i]
+            text = page.get_text("text") or ""
+            # First 200 chars, cleaned up
+            header = " ".join(text[:300].split())[:200]
+            headers.append({"page": i + 1, "header_text": header})
+        doc.close()
+        return JSONResponse({"pages": len(headers), "headers": headers})
+    except Exception as e:
+        return JSONResponse({"error": f"page_headers failed: {e}"}, status_code=500)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # Convenience wrapper so humans can smoke-test without writing a client.
 # Not used by the platform API.
 

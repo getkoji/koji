@@ -527,6 +527,134 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
           break;
         }
 
+        case "split": {
+          // Get page headers for boundary detection
+          if (_parseProvider?.pageHeaders) {
+            const file = await storage.getBuffer(doc.storageKey);
+            if (file) {
+              const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
+
+              // Inject page headers and LLM provider into context for the step
+              const splitCtx = {
+                ...{
+                  tenantId,
+                  documentId,
+                  jobId: (doc as any).jobId ?? documentId,
+                  document: {
+                    filename: doc.filename,
+                    storageKey: doc.storageKey,
+                    mimeType: doc.mimeType,
+                    pageCount: headersResult.pages,
+                    contentHash: "",
+                  },
+                  stepOutputs: {
+                    ...Object.fromEntries(
+                      Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }]),
+                    ),
+                    __page_headers: {
+                      stepId: "__page_headers",
+                      stepType: "split" as const,
+                      output: { headers: headersResult.headers },
+                      durationMs: 0,
+                      costUsd: 0,
+                    },
+                  },
+                  db, storage, endpoints: null, queue: null,
+                },
+              };
+
+              // Inject LLM provider if available
+              if (endpoint) {
+                const provider = createProvider(endpoint.model, endpoint);
+                (splitCtx as any).__llm_provider = provider;
+              }
+
+              // Import and run the split step
+              const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
+              const splitResult = await splitStepImpl.run(splitCtx as any, step.config);
+
+              output = splitResult.output;
+
+              // Fan-out: create child documents for each page group
+              const groups = (splitResult.output.groups as Array<{ startPage: number; endPage: number; type: string }>) || [];
+              if (splitResult.ok && groups.length > 0 && _parseProvider?.slicePdf) {
+                const childIds: string[] = [];
+                const jobId = (await withRLS(db, tenantId, (tx) =>
+                  tx.select({ jobId: schema.documents.jobId }).from(schema.documents)
+                    .where(eq(schema.documents.id, documentId)).limit(1),
+                ))[0]?.jobId;
+
+                for (const group of groups) {
+                  try {
+                    const sliced = await _parseProvider.slicePdf({
+                      fileBuffer: file.data,
+                      startPage: group.startPage,
+                      endPage: group.endPage,
+                    });
+
+                    // Store sliced PDF
+                    const childKey = `${doc.storageKey.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
+                    const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+                    await storage.put(childKey, childBuffer, { contentType: "application/pdf" });
+
+                    // Create child document row
+                    const childFilename = `${doc.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type}.pdf`;
+                    const [child] = await withRLS(db, tenantId, (tx) =>
+                      tx.insert(schema.documents).values({
+                        tenantId,
+                        jobId: jobId!,
+                        filename: childFilename,
+                        storageKey: childKey,
+                        fileSize: sliced.byte_size,
+                        mimeType: "application/pdf",
+                        contentHash: `split-${documentId}-${group.startPage}-${group.endPage}`,
+                        pageCount: sliced.pages,
+                        status: "pending",
+                        parentDocumentId: documentId,
+                        pageRange: [group.startPage, group.endPage],
+                      }).returning({ id: schema.documents.id }),
+                    );
+
+                    if (child) childIds.push(child.id);
+                    console.log(`[dag-runner] split: created child doc ${childFilename} (pages ${group.startPage}-${group.endPage}, type=${group.type})`);
+                  } catch (err) {
+                    console.error(`[dag-runner] split: failed to create child for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
+                  }
+                }
+
+                output.child_document_ids = childIds;
+                output.fan_out = true;
+
+                // Update job doc count
+                if (jobId && childIds.length > 0) {
+                  await withRLS(db, tenantId, (tx) =>
+                    tx.update(schema.jobs).set({
+                      docsTotal: sql`docs_total + ${childIds.length}`,
+                      updatedAt: new Date(),
+                    }).where(eq(schema.jobs.id, jobId)),
+                  );
+                }
+
+                // Queue each child document for processing through the remaining DAG
+                // The child docs will be picked up by the queue and processed independently
+                const queue = (globalThis as any).__koji_queue;
+                if (queue?.enqueue) {
+                  for (const childId of childIds) {
+                    await queue.enqueue({
+                      kind: "pipeline.dag.run",
+                      payload: { documentId: childId, pipelineId },
+                      tenantId,
+                    });
+                  }
+                }
+              }
+            }
+          } else {
+            output = { groups: [], error: "Parse provider does not support page headers" };
+          }
+          break;
+        }
+
         default:
           output = { note: `Step type "${step.type}" executed` };
       }
@@ -560,14 +688,22 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
     stepOutputs[step.id] = output;
     if (status === "failed") break;
 
+    // After a split with fan-out, stop processing the parent — children continue independently
+    if (step.type === "split" && output.fan_out) {
+      console.log(`[dag-runner] split fan-out: parent ${documentId} done, ${(output.child_document_ids as string[])?.length ?? 0} children queued`);
+      break;
+    }
+
     // Resolve next step
     const outEdges = pEdges.filter(e => e.from === step.id);
     currentId = resolveNextStep(outEdges, output);
   }
 
   // Update document with final result
+  const lastOutput = stepOutputs[Object.keys(stepOutputs).pop() ?? ""];
+  const wasSplit = lastOutput?.fan_out === true;
   const updates: Record<string, unknown> = {
-    status: finalExtraction ? "completed" : "completed",
+    status: wasSplit ? "split" : "completed",
     completedAt: new Date(),
     pageCount,
     costUsd: String(totalCost),
