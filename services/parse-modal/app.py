@@ -938,9 +938,7 @@ async def slice_pdf(request: Request):
         if start_page < 1 or end_page > len(doc) or start_page > end_page:
             doc.close()
             return JSONResponse(
-                {
-                    "error": f"invalid range [{start_page}, {end_page}] for {len(doc)}-page PDF"
-                },
+                {"error": f"invalid range [{start_page}, {end_page}] for {len(doc)}-page PDF"},
                 status_code=400,
             )
 
