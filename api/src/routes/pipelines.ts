@@ -1056,7 +1056,7 @@ function resolveTestNextSteps(edges: TestEdge[], output: Record<string, unknown>
 
 async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
-  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }> },
+  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; fileBuffer?: Buffer; parseProvider?: any },
   priorOutputs: Record<string, unknown>,
   ctx?: { db: unknown; tenantId: string; pipelineId: string },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
@@ -1278,36 +1278,20 @@ async function executeTestStep(
       };
     }
     case "split": {
-      // Extract page headers from the parsed markdown
-      // Docling inserts "<!-- page N -->" markers or we can split by page breaks
-      const text = docInfo.text || "";
-      const pageMarkerRe = /<!--\s*page\s+(\d+)\s*-->/gi;
-      const markers: Array<{ page: number; pos: number }> = [];
-      let match;
-      while ((match = pageMarkerRe.exec(text)) !== null) {
-        markers.push({ page: parseInt(match[1]!, 10), pos: match.index });
-      }
-
+      // Extract page headers using the parse provider (pymupdf — accurate per-page text)
       let headers: Array<{ page: number; header_text: string }> = [];
-      if (markers.length > 0) {
-        // Extract first ~200 chars after each page marker
-        for (let i = 0; i < markers.length; i++) {
-          const start = markers[i]!.pos + markers[i]!.toString().length;
-          const end = markers[i + 1]?.pos ?? text.length;
-          const pageText = text.slice(start, Math.min(start + 300, end));
-          headers.push({ page: markers[i]!.page, header_text: pageText.replace(/\s+/g, " ").trim().slice(0, 200) });
-        }
-      } else if (docInfo.pageCount && docInfo.pageCount > 0) {
-        // No page markers — split evenly as approximation
-        const charsPerPage = Math.floor(text.length / docInfo.pageCount);
-        for (let p = 0; p < docInfo.pageCount; p++) {
-          const pageText = text.slice(p * charsPerPage, Math.min((p + 1) * charsPerPage, p * charsPerPage + 300));
-          headers.push({ page: p + 1, header_text: pageText.replace(/\s+/g, " ").trim().slice(0, 200) });
+
+      if (docInfo.parseProvider?.pageHeaders && docInfo.fileBuffer) {
+        try {
+          const result = await docInfo.parseProvider.pageHeaders({ fileBuffer: docInfo.fileBuffer });
+          headers = result.headers;
+        } catch (err) {
+          console.warn("[test/split] pageHeaders failed:", (err as Error).message);
         }
       }
 
       if (headers.length === 0) {
-        return { ok: false, output: { groups: [], error: "No page structure detected in document" }, costUsd: cost };
+        return { ok: false, output: { groups: [], error: "Could not extract page headers — parse provider may not support pageHeaders" }, costUsd: cost };
       }
 
       const method = (step.config.method as string) || "llm";
@@ -1425,10 +1409,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
 
   // ── Implicit parse step: extract text from document ──
   // Every pipeline starts with parsing. This runs before any user-defined steps.
+  const parseProvider = (c as any).get("parseProvider");
   let docText: string | undefined;
   let pageCount: number | undefined;
   try {
-    const parseProvider = (c as any).get("parseProvider");
     if (parseProvider?.parse) {
       const parseResult = await parseProvider.parse({
         filename: file.name,
@@ -1452,7 +1436,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   const { chunkMarkdown } = await import("../extract/chunker");
   const docChunks = docText ? chunkMarkdown(docText) : [];
 
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks };
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: Buffer.from(fileBytes), parseProvider };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
