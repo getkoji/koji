@@ -32,7 +32,12 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
   const client = postgres(databaseUrl, { max: 1, prepare: false });
   try {
     const db = drizzle(client);
+    console.log(`[migrate] Running migrations from: ${migrationsFolder}`);
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(migrationsFolder).filter(f => f.endsWith(".sql")).sort();
+    console.log(`[migrate] Found ${files.length} SQL files: ${files.join(", ")}`);
     await drizzleMigrate(db, { migrationsFolder });
+    console.log("[migrate] drizzleMigrate completed");
     const rlsPath = resolve(migrationsFolder, "0001_rls.sql");
     const rlsSql = readFileSync(rlsPath, "utf8");
     await client.unsafe(rlsSql);
