@@ -1339,10 +1339,16 @@ async function executeTestStep(
         groups = arr.map((g: any) => ({ startPage: g.start_page ?? g.startPage ?? 1, endPage: g.end_page ?? g.endPage ?? 1, type: g.type ?? "document", confidence: g.confidence ?? 0.85, method: "llm_fallback" }));
       }
 
-        // Slice PDFs for each group — store in R2 and return signed URLs
+        // Filter groups by type if filter_types is configured
+        const filterTypes = step.config.filter_types as string[] | undefined;
+        const groupsToSlice = filterTypes?.length
+          ? groups.filter((g) => filterTypes.some((ft) => g.type.toLowerCase().includes(ft.toLowerCase())))
+          : groups;
+
+        // Slice PDFs for matching groups — store in R2 and return signed URLs
         const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }> = [];
-        if (docInfo.parseProvider?.slicePdf && docInfo.fileBuffer) {
-          for (const group of groups) {
+        if (docInfo.parseProvider?.slicePdf && docInfo.fileBuffer && groupsToSlice.length > 0) {
+          for (const group of groupsToSlice) {
             try {
               const sliced = await docInfo.parseProvider.slicePdf({
                 fileBuffer: docInfo.fileBuffer,

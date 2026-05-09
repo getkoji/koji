@@ -141,13 +141,16 @@ export async function detectSections(
     }
 
     // Generic keyword fallback
+    // "declarations" must appear in a bold heading — body text often references
+    // declarations without being a dec page (e.g. "the declarations page is amended")
     if (info.type === "unknown") {
-      if (/declarations?\b|dec\s*page/i.test(searchText)) info.type = "declarations";
-      else if (/endorsement|amendment/i.test(searchText)) info.type = "endorsement";
+      if (/declarations?\b|dec\s*page/i.test(headings)) info.type = "declarations";
+      else if (/endorsement/i.test(headings) || /this\s+endorsement\s+changes/i.test(text)) info.type = "endorsement";
+      else if (/amendment/i.test(headings)) info.type = "endorsement";
       else if (/schedule\s+of\s+forms/i.test(searchText)) info.type = "schedule_of_forms";
       else if (/certificate\s+of\s+(liability\s+)?insurance|acord\s+25/i.test(searchText)) info.type = "certificate_of_insurance";
-      else if (/policy\s+(form|conditions|provisions)/i.test(searchText)) info.type = "policy_form";
-      else if (/copyright|©/i.test(searchText)) info.type = "copyright_notice";
+      else if (/policy\s+(form|conditions|provisions)/i.test(headings)) info.type = "policy_form";
+      else if (/copyright|©/i.test(text)) info.type = "copyright_notice";
 
       if (info.type !== "unknown") info.method += "+generic_keyword";
     }

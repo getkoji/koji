@@ -730,6 +730,21 @@ function SplitConfig({
       )}
 
       <div className="mb-4">
+        <label style={labelStyle}>Filter types (optional)</label>
+        <input
+          value={((config.filter_types as string[]) || []).join(", ")}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, filter_types: e.target.value.split(",").map(s => s.trim()).filter(Boolean) } })
+          }
+          placeholder="e.g. declarations, endorsement — only slice these types"
+          style={{ ...inputStyle, fontSize: "12px" }}
+        />
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          Comma-separated list. Only sections matching these types will be sliced into child documents. Leave empty to slice all sections.
+        </p>
+      </div>
+
+      <div className="mb-4">
         <p style={{ fontSize: "10px", color: "#8A847B" }}>
           The split step detects document boundaries in a multi-page PDF and creates separate child documents for each section.
           Each child document continues through the rest of the pipeline independently.
