@@ -98,6 +98,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   const [doc] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.documents.id,
+      jobId: schema.documents.jobId,
       filename: schema.documents.filename,
       storageKey: schema.documents.storageKey,
       mimeType: schema.documents.mimeType,
@@ -684,7 +685,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       tx.insert(schema.pipelineStepRuns).values({
         tenantId,
         documentId,
-        jobId: doc.id, // TODO: use actual jobId
+        jobId: doc.jobId,
         stepId: step.id,
         stepType: step.type,
         stepOrder,
@@ -805,7 +806,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
             tx.insert(schema.pipelineStepRuns).values({
               tenantId,
               documentId,
-              jobId: doc.id,
+              jobId: doc.jobId,
               stepId: branchStep.id,
               stepType: branchStep.type,
               stepOrder,
