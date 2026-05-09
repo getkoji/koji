@@ -1378,12 +1378,9 @@ async function executeTestStep(
 
         return {
           ok: true,
-          output: { groups, method: "llm", count: groups.length, pages_analyzed: headers.length, children },
+          output: { groups, count: groups.length, children },
           costUsd: 0.005,
         };
-      } catch (err) {
-        return { ok: false, output: { groups: [] }, costUsd: 0.005, error: `LLM split failed: ${(err as Error).message}` };
-      }
     }
     case "webhook": {
       // Show what the webhook payload WOULD be — don't actually deliver
