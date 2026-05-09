@@ -1367,8 +1367,8 @@ async function executeTestStep(
           confidence: g.confidence ?? 0.85,
         }));
 
-        // Slice PDFs for each group so downstream steps get real content
-        const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string }> = [];
+        // Slice PDFs for each group — store in R2 and return signed URLs
+        const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }> = [];
         if (docInfo.parseProvider?.slicePdf && docInfo.fileBuffer) {
           for (const group of groups) {
             try {
@@ -1377,18 +1377,30 @@ async function executeTestStep(
                 startPage: group.startPage,
                 endPage: group.endPage,
               });
+              const childFilename = `${docInfo.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type.replace(/\s+/g, "_")}.pdf`;
+              const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+
+              // Store sliced PDF in R2
+              let storageKey: string | undefined;
+              let previewUrl: string | undefined;
+              if (docInfo.storage) {
+                storageKey = `test-runs/${Date.now()}-${childFilename}`;
+                await docInfo.storage.put(storageKey, childBuffer, { contentType: "application/pdf" });
+                try { previewUrl = await docInfo.storage.getSignedUrl(storageKey, 3600); } catch {}
+              }
+
               // Parse the sliced PDF to get text
               let childText: string | undefined;
               if (docInfo.parseProvider.parse) {
-                const childFilename = `${docInfo.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
-                const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
                 try {
                   const parseResult = await docInfo.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
                   childText = parseResult.markdown;
-                } catch { /* parse failed — child text stays undefined */ }
-                children.push({ group, text: childText, pageCount: sliced.pages, filename: childFilename });
+                } catch { /* parse failed */ }
               }
-            } catch { /* slice failed — skip this group */ }
+              children.push({ group, text: childText, pageCount: sliced.pages, filename: childFilename, storageKey, previewUrl });
+            } catch (err) {
+              console.warn(`[test/split] slice failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
+            }
           }
         }
 
@@ -1401,8 +1413,28 @@ async function executeTestStep(
         return { ok: false, output: { groups: [] }, costUsd: 0.005, error: `LLM split failed: ${(err as Error).message}` };
       }
     }
-    case "webhook":
-      return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
+    case "webhook": {
+      // Show what the webhook payload WOULD be — don't actually deliver
+      const webhookUrl = (step.config.url as string) || "(no URL configured)";
+      const payloadMode = (step.config.payload as string) || "result";
+      const extractOutput = Object.values(priorOutputs).reverse().find(o => (o as any)?.fields);
+      const splitOutput = Object.values(priorOutputs).reverse().find(o => (o as any)?.current_group);
+      const payload: Record<string, unknown> = {
+        document_id: "(test)",
+        filename: docInfo.filename,
+        mime_type: docInfo.mimeType,
+        page_count: docInfo.pageCount,
+      };
+      if (splitOutput) {
+        payload.document_url = (splitOutput as any).document_url;
+        payload.group = (splitOutput as any).current_group;
+        payload.storage_key = (splitOutput as any).storage_key;
+      }
+      if (payloadMode === "result" && extractOutput) {
+        payload.extraction = extractOutput;
+      }
+      return { ok: true, output: { skipped: true, reason: "Webhooks not delivered in test mode", url: webhookUrl, would_send: payload }, costUsd: 0 };
+    }
     case "gate":
       return { ok: true, output: { reviewed: true, auto_approved: true, reason: "Gates auto-approved in test mode" }, costUsd: 0 };
     default:
@@ -1473,7 +1505,8 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   const { chunkMarkdown } = await import("../extract/chunker");
   const docChunks = docText ? chunkMarkdown(docText) : [];
 
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: Buffer.from(fileBytes), parseProvider };
+  const storage = c.get("storage");
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: Buffer.from(fileBytes), parseProvider, storage };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
@@ -1592,7 +1625,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
 
       // Split fan-out: run downstream steps for each child document
       if (step.type === "split" && result.ok && result.output.children) {
-        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string }>;
+        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }>;
         const childBranches = nextIds.length > 0 ? nextIds : [];
         for (const child of children) {
           const childDocInfo = {
@@ -1600,16 +1633,32 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             filename: child.filename,
             text: child.text,
             pageCount: child.pageCount,
-            // Pass the group type so filter steps can check it
           };
-          // Set the split output for this child so filter can access group type
+          // Set the split output for this child so filter/webhook can access group type + URL
           const childStepOutputs = { ...stepOutputs };
-          childStepOutputs[step.id] = { ...result.output, current_group: child.group };
+          childStepOutputs[step.id] = {
+            ...result.output,
+            current_group: child.group,
+            document_url: child.previewUrl,
+            storage_key: child.storageKey,
+          };
           for (const nextId of childBranches) {
-            // Run downstream steps with child's doc info
             const savedOutputs = { ...stepOutputs };
             Object.assign(stepOutputs, childStepOutputs);
-            results.push({ stepId: `${step.id}:${child.group.type}_p${child.group.startPage}-${child.group.endPage}`, stepType: "split_child", status: "completed", output: { group: child.group, filename: child.filename, pageCount: child.pageCount, textLength: child.text?.length ?? 0 }, durationMs: 0, costUsd: 0 });
+            results.push({
+              stepId: `${step.id}:${child.group.type.replace(/\s+/g, "_")}_p${child.group.startPage}-${child.group.endPage}`,
+              stepType: "split_child",
+              status: "completed",
+              output: {
+                group: child.group,
+                filename: child.filename,
+                pageCount: child.pageCount,
+                textLength: child.text?.length ?? 0,
+                previewUrl: child.previewUrl,
+              },
+              durationMs: 0,
+              costUsd: 0,
+            });
             path.push(`${step.id}:child`);
             await runBranch(nextId, childDocInfo);
             Object.assign(stepOutputs, savedOutputs);
