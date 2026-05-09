@@ -163,7 +163,7 @@ export async function detectSections(
       return `Page ${pageNum}: headings=[${headings}], tables=${p.table_count}, text_density=${p.text_density}, form_numbers=[${p.form_numbers.join(",")}], has_dollars=${p.has_dollar_amounts}, preview="${p.content_preview.slice(0, 200)}"`;
     }).join("\n");
 
-    const prompt = `Classify these document pages. Each is the start of a new section in a multi-document package.\n\n${pageDescriptions}\n${labelDesc}\nFor each page, identify the document type.\n\nReturn a JSON object mapping page numbers to types:\n{"1": "cover_letter", "5": "report", ...}\n\nReturn ONLY valid JSON.`;
+    const prompt = `Classify these document pages. Each is the start of a new section in a multi-document package.\n\n${pageDescriptions}\n${labelDesc}\nFor each page, identify the document type. If a page does not clearly match any of the known types, use "other".\n\nReturn a JSON object mapping page numbers to types:\n{"1": "other", "5": "report", ...}\n\nReturn ONLY valid JSON.`;
 
     try {
       const raw = await opts.llmProvider.generate(prompt, true);
