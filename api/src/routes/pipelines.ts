@@ -1367,7 +1367,36 @@ async function executeTestStep(
           confidence: g.confidence ?? 0.85,
         }));
 
-        return { ok: true, output: { groups, method: "llm", count: groups.length, pages_analyzed: headers.length }, costUsd: 0.005 };
+        // Slice PDFs for each group so downstream steps get real content
+        const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string }> = [];
+        if (docInfo.parseProvider?.slicePdf && docInfo.fileBuffer) {
+          for (const group of groups) {
+            try {
+              const sliced = await docInfo.parseProvider.slicePdf({
+                fileBuffer: docInfo.fileBuffer,
+                startPage: group.startPage,
+                endPage: group.endPage,
+              });
+              // Parse the sliced PDF to get text
+              let childText: string | undefined;
+              if (docInfo.parseProvider.parse) {
+                const childFilename = `${docInfo.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
+                const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+                try {
+                  const parseResult = await docInfo.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
+                  childText = parseResult.markdown;
+                } catch { /* parse failed — child text stays undefined */ }
+                children.push({ group, text: childText, pageCount: sliced.pages, filename: childFilename });
+              }
+            } catch { /* slice failed — skip this group */ }
+          }
+        }
+
+        return {
+          ok: true,
+          output: { groups, method: "llm", count: groups.length, pages_analyzed: headers.length, children },
+          costUsd: 0.005,
+        };
       } catch (err) {
         return { ok: false, output: { groups: [] }, costUsd: 0.005, error: `LLM split failed: ${(err as Error).message}` };
       }
@@ -1489,7 +1518,8 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     const readable = new ReadableStream({
       async start(controller) {
         const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        async function streamBranch(branchStartId: string | null) {
+        async function streamBranch(branchStartId: string | null, branchDocInfo?: typeof docInfo) {
+          const activeDocInfo = branchDocInfo || docInfo;
           let branchId = branchStartId;
           while (branchId && stepOrder < 20) {
             const step = pSteps.find(s => s.id === branchId);
@@ -1498,7 +1528,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             stepOrder++;
             send("step_start", { stepId: step.id, stepType: step.type, stepOrder });
             const t0 = Date.now();
-            const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+            const result = await executeTestStep(step, activeDocInfo, stepOutputs, testCtx);
             const ms = Date.now() - t0;
             const outEdges = pEdges.filter(e => e.from === step.id);
             const nextIds = resolveTestNextSteps(outEdges, result.output);
@@ -1509,8 +1539,23 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             send("step_complete", sr);
             if (!result.ok) break;
             if (mode === "step") { send("pipeline_paused", { nextStepId: nextIds[0] ?? null, completedSteps: path, stepOutputs }); return; }
+
+            // Split fan-out with real child documents
+            if (step.type === "split" && result.ok && result.output.children) {
+              const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string }>;
+              for (const child of children) {
+                const childDocInfo = { ...activeDocInfo, filename: child.filename, text: child.text, pageCount: child.pageCount };
+                const childStepOutputs = { ...stepOutputs };
+                childStepOutputs[step.id] = { ...result.output, current_group: child.group };
+                Object.assign(stepOutputs, childStepOutputs);
+                send("split_child", { group: child.group, filename: child.filename, pageCount: child.pageCount });
+                for (const nextId of nextIds) { await streamBranch(nextId, childDocInfo); }
+              }
+              return;
+            }
+
             if (nextIds.length > 1) {
-              for (const nextId of nextIds) { await streamBranch(nextId); }
+              await Promise.all(nextIds.map(nextId => streamBranch(nextId, activeDocInfo)));
               return;
             }
             branchId = nextIds[0] ?? null;
@@ -1525,7 +1570,8 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   }
 
   // Non-streaming — with parallel fan-out support
-  async function runBranch(startId: string | null) {
+  async function runBranch(startId: string | null, branchDocInfo?: typeof docInfo) {
+    const activeDocInfo = branchDocInfo || docInfo;
     let branchId = startId;
     while (branchId && stepOrder < 20) {
       const step = pSteps.find(s => s.id === branchId);
@@ -1533,7 +1579,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       if (stepOutputs[branchId]) { branchId = resolveTestNextStep(pEdges.filter(e => e.from === branchId), stepOutputs[branchId]!); continue; }
       stepOrder++;
       const t0 = Date.now();
-      const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+      const result = await executeTestStep(step, activeDocInfo, stepOutputs, testCtx);
       const ms = Date.now() - t0;
       const outEdges = pEdges.filter(e => e.from === step.id);
       const nextIds = resolveTestNextSteps(outEdges, result.output);
@@ -1544,12 +1590,38 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       if (!result.ok) break;
       if (mode === "step") return;
 
-      // Fan-out: run each matching branch
-      if (nextIds.length > 1) {
-        for (const nextId of nextIds) {
-          await runBranch(nextId);
+      // Split fan-out: run downstream steps for each child document
+      if (step.type === "split" && result.ok && result.output.children) {
+        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string }>;
+        const childBranches = nextIds.length > 0 ? nextIds : [];
+        for (const child of children) {
+          const childDocInfo = {
+            ...activeDocInfo,
+            filename: child.filename,
+            text: child.text,
+            pageCount: child.pageCount,
+            // Pass the group type so filter steps can check it
+          };
+          // Set the split output for this child so filter can access group type
+          const childStepOutputs = { ...stepOutputs };
+          childStepOutputs[step.id] = { ...result.output, current_group: child.group };
+          for (const nextId of childBranches) {
+            // Run downstream steps with child's doc info
+            const savedOutputs = { ...stepOutputs };
+            Object.assign(stepOutputs, childStepOutputs);
+            results.push({ stepId: `${step.id}:${child.group.type}_p${child.group.startPage}-${child.group.endPage}`, stepType: "split_child", status: "completed", output: { group: child.group, filename: child.filename, pageCount: child.pageCount, textLength: child.text?.length ?? 0 }, durationMs: 0, costUsd: 0 });
+            path.push(`${step.id}:child`);
+            await runBranch(nextId, childDocInfo);
+            Object.assign(stepOutputs, savedOutputs);
+          }
         }
-        return; // all branches done
+        return;
+      }
+
+      // Regular fan-out: run each matching branch
+      if (nextIds.length > 1) {
+        await Promise.all(nextIds.map(nextId => runBranch(nextId, activeDocInfo)));
+        return;
       }
       branchId = nextIds[0] ?? null;
     }
