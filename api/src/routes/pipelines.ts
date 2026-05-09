@@ -1056,7 +1056,7 @@ function resolveTestNextSteps(edges: TestEdge[], output: Record<string, unknown>
 
 async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
-  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string },
+  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }> },
   priorOutputs: Record<string, unknown>,
   ctx?: { db: unknown; tenantId: string; pipelineId: string },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
@@ -1276,6 +1276,109 @@ async function executeTestStep(
         },
         costUsd: 0.02,
       };
+    }
+    case "split": {
+      // Extract page headers from the parsed markdown
+      // Docling inserts "<!-- page N -->" markers or we can split by page breaks
+      const text = docInfo.text || "";
+      const pageMarkerRe = /<!--\s*page\s+(\d+)\s*-->/gi;
+      const markers: Array<{ page: number; pos: number }> = [];
+      let match;
+      while ((match = pageMarkerRe.exec(text)) !== null) {
+        markers.push({ page: parseInt(match[1]!, 10), pos: match.index });
+      }
+
+      let headers: Array<{ page: number; header_text: string }> = [];
+      if (markers.length > 0) {
+        // Extract first ~200 chars after each page marker
+        for (let i = 0; i < markers.length; i++) {
+          const start = markers[i]!.pos + markers[i]!.toString().length;
+          const end = markers[i + 1]?.pos ?? text.length;
+          const pageText = text.slice(start, Math.min(start + 300, end));
+          headers.push({ page: markers[i]!.page, header_text: pageText.replace(/\s+/g, " ").trim().slice(0, 200) });
+        }
+      } else if (docInfo.pageCount && docInfo.pageCount > 0) {
+        // No page markers — split evenly as approximation
+        const charsPerPage = Math.floor(text.length / docInfo.pageCount);
+        for (let p = 0; p < docInfo.pageCount; p++) {
+          const pageText = text.slice(p * charsPerPage, Math.min((p + 1) * charsPerPage, p * charsPerPage + 300));
+          headers.push({ page: p + 1, header_text: pageText.replace(/\s+/g, " ").trim().slice(0, 200) });
+        }
+      }
+
+      if (headers.length === 0) {
+        return { ok: false, output: { groups: [], error: "No page structure detected in document" }, costUsd: cost };
+      }
+
+      const method = (step.config.method as string) || "llm";
+      const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
+
+      if (method === "keyword") {
+        // Keyword-based boundary detection
+        const groups: Array<{ startPage: number; endPage: number; type: string; confidence: number }> = [];
+        let currentGroup: typeof groups[0] | null = null;
+        for (const h of headers) {
+          const hText = h.header_text.toLowerCase();
+          let matched: string | null = null;
+          for (const label of labels) {
+            const hits = (label.keywords || []).filter(kw => hText.includes(kw.toLowerCase()));
+            if (hits.length >= 1) { matched = label.id; break; }
+          }
+          if (matched) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = { startPage: h.page, endPage: h.page, type: matched, confidence: 0.9 };
+          } else if (currentGroup) {
+            currentGroup.endPage = h.page;
+          }
+        }
+        if (currentGroup) groups.push(currentGroup);
+        return { ok: true, output: { groups, method: "keyword", count: groups.length, pages_analyzed: headers.length }, costUsd: 0 };
+      }
+
+      if (method === "fixed") {
+        const ranges = (step.config.page_ranges as Array<{ start: number; end: number; type?: string }>) || [];
+        const groups = ranges.map(r => ({ startPage: r.start, endPage: r.end, type: r.type || "document", confidence: 1.0 }));
+        return { ok: true, output: { groups, method: "fixed", count: groups.length }, costUsd: 0 };
+      }
+
+      // LLM-based boundary detection
+      if (!ctx?.db || !ctx.tenantId) {
+        return { ok: false, output: { groups: [], error: "No DB context for LLM split detection" }, costUsd: cost };
+      }
+      try {
+        const { resolveTenantProvider } = await import("../extract/resolve-endpoint");
+        const { provider } = await resolveTenantProvider(ctx.db as any, ctx.tenantId);
+
+        const labelDesc = labels.length > 0
+          ? `\nKnown document types:\n${labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n")}\n`
+          : "";
+
+        const headerList = headers.map(h => `Page ${h.page}: "${h.header_text}"`).join("\n");
+
+        const prompt = `This is a multi-document PDF submission. Here are the first ~200 characters from each page:\n\n${headerList}\n${labelDesc}\nIdentify where new documents begin. Group consecutive pages that belong to the same document.\n\nReturn a JSON array of document groups:\n[{"start_page": 1, "end_page": 3, "type": "document_type"},...]`;
+
+        const raw = await provider.generate(prompt, true);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          const arrMatch = raw.match(/\[[\s\S]*\]/);
+          if (arrMatch) parsed = JSON.parse(arrMatch[0]);
+          else throw new Error("Could not parse LLM response");
+        }
+
+        const arr = Array.isArray(parsed) ? parsed : [];
+        const groups = arr.map((g: any) => ({
+          startPage: g.start_page ?? g.startPage ?? 1,
+          endPage: g.end_page ?? g.endPage ?? 1,
+          type: g.type ?? "document",
+          confidence: g.confidence ?? 0.85,
+        }));
+
+        return { ok: true, output: { groups, method: "llm", count: groups.length, pages_analyzed: headers.length }, costUsd: 0.005 };
+      } catch (err) {
+        return { ok: false, output: { groups: [] }, costUsd: 0.005, error: `LLM split failed: ${(err as Error).message}` };
+      }
     }
     case "webhook":
       return { ok: true, output: { skipped: true, reason: "Webhooks disabled in test mode" }, costUsd: 0 };
