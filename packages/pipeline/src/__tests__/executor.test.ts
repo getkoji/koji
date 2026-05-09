@@ -117,7 +117,12 @@ function branchingPipeline(): CompiledPipeline {
       {
         from: 'classify-step',
         to: 'extract-step',
-        condition: { field: 'output.label', op: 'eq', value: 'invoice' },
+        condition: {
+          type: 'comparison',
+          left: { type: 'ref', path: ['output', 'label'] },
+          op: '==',
+          right: 'invoice',
+        },
         isDefault: false,
       },
       {
@@ -379,5 +384,127 @@ describe('executePipeline', () => {
     // No new steps should have been started
     const onStepStart = deps.onStepStart as ReturnType<typeof vi.fn>;
     expect(onStepStart).not.toHaveBeenCalled();
+  });
+
+  it('parallel fan-out: executes all matching branches', async () => {
+    const deps = makeDeps();
+    const pipeline: CompiledPipeline = {
+      id: 'pipe-parallel',
+      version: 1,
+      steps: [
+        { id: 'classify', type: 'classify', config: { mockLabel: 'insurance' } },
+        { id: 'extract', type: 'extract', config: { schema: 'coi' } },
+        { id: 'tag', type: 'tag', config: {} },
+        { id: 'webhook', type: 'webhook', config: {} },
+      ],
+      edges: [
+        {
+          from: 'classify',
+          to: 'extract',
+          condition: {
+            type: 'comparison',
+            left: { type: 'ref', path: ['output', 'label'] },
+            op: '==',
+            right: 'insurance',
+          },
+          isDefault: false,
+        },
+        {
+          from: 'classify',
+          to: 'tag',
+          // Unconditional — always matches
+          condition: null,
+          isDefault: false,
+        },
+        { from: 'extract', to: 'webhook', condition: null, isDefault: false },
+      ],
+      entryStepId: 'classify',
+      settings: { max_steps: 50, timeout_ms: 60000, on_no_match: 'skip' },
+    };
+
+    const result = await executePipeline(pipeline, deps);
+    expect(result.status).toBe('completed');
+
+    const stepIds = result.stepOutputs.map((s) => s.stepId);
+    // classify runs first, then both extract and tag run (fan-out)
+    expect(stepIds).toContain('classify');
+    expect(stepIds).toContain('extract');
+    expect(stepIds).toContain('tag');
+    // webhook runs after extract (downstream of extract branch)
+    expect(stepIds).toContain('webhook');
+    expect(result.stepOutputs.length).toBe(4);
+  });
+
+  it('parallel fan-out: default edge does not fire when conditional edges match', async () => {
+    const deps = makeDeps();
+    const pipeline: CompiledPipeline = {
+      id: 'pipe-default-skip',
+      version: 1,
+      steps: [
+        { id: 'classify', type: 'classify', config: { mockLabel: 'invoice' } },
+        { id: 'extract', type: 'extract', config: { schema: 'invoice' } },
+        { id: 'tag', type: 'tag', config: {} },
+      ],
+      edges: [
+        {
+          from: 'classify',
+          to: 'extract',
+          condition: {
+            type: 'comparison',
+            left: { type: 'ref', path: ['output', 'label'] },
+            op: '==',
+            right: 'invoice',
+          },
+          isDefault: false,
+        },
+        {
+          from: 'classify',
+          to: 'tag',
+          condition: null,
+          isDefault: true, // default — should NOT fire because extract matched
+        },
+      ],
+      entryStepId: 'classify',
+      settings: { max_steps: 50, timeout_ms: 60000, on_no_match: 'skip' },
+    };
+
+    const result = await executePipeline(pipeline, deps);
+    const stepIds = result.stepOutputs.map((s) => s.stepId);
+    expect(stepIds).toContain('extract');
+    expect(stepIds).not.toContain('tag'); // default should not fire
+  });
+
+  it('parallel fan-out: one branch failure does not stop other branches', async () => {
+    // Register a failing step
+    registerStep({
+      type: 'gate',
+      async run() {
+        return { ok: false, output: {}, costUsd: 0, error: 'Gate blocked' };
+      },
+    });
+
+    const deps = makeDeps();
+    const pipeline: CompiledPipeline = {
+      id: 'pipe-branch-fail',
+      version: 1,
+      steps: [
+        { id: 'start', type: 'classify', config: { mockLabel: 'insurance' } },
+        { id: 'gate-step', type: 'gate', config: {} },
+        { id: 'tag-step', type: 'tag', config: {} },
+      ],
+      edges: [
+        // Both unconditional — both should fire
+        { from: 'start', to: 'gate-step', condition: null, isDefault: false },
+        { from: 'start', to: 'tag-step', condition: null, isDefault: false },
+      ],
+      entryStepId: 'start',
+      settings: { max_steps: 50, timeout_ms: 60000, on_no_match: 'skip' },
+    };
+
+    const result = await executePipeline(pipeline, deps);
+    const stepIds = result.stepOutputs.map((s) => s.stepId);
+    // Both branches attempted — gate failed but tag should still run
+    expect(stepIds).toContain('start');
+    expect(stepIds).toContain('tag-step');
   });
 });

@@ -170,8 +170,77 @@ export async function executePipeline(
     stepOutputs.push(output);
     await deps.onStepComplete(currentStepId, output);
 
-    // Resolve next step
-    currentStepId = resolveNextStep(pipeline, currentStepId, outputsByStepId);
+    // Resolve next step(s) — may be multiple for parallel fan-out
+    const nextSteps = resolveNextSteps(pipeline, currentStepId, outputsByStepId);
+
+    if (nextSteps.length > 1) {
+      // Parallel fan-out: run each branch independently
+      // Each branch shares the accumulated outputs from before the fork point
+      // but executes its own path to completion
+      for (const branchStepId of nextSteps) {
+        let branchCurrentId: string | null = branchStepId;
+        while (branchCurrentId !== null && stepOrder < maxSteps) {
+          if (outputsByStepId[branchCurrentId]) {
+            branchCurrentId = resolveNextStep(pipeline, branchCurrentId, outputsByStepId);
+            continue;
+          }
+
+          const branchStep = pipeline.steps.find((s) => s.id === branchCurrentId);
+          if (!branchStep) break;
+
+          const branchImpl = getStep(branchStep.type);
+          if (!branchImpl) break;
+
+          stepOrder++;
+          await deps.onStepStart(branchCurrentId, branchStep.type, stepOrder);
+
+          const branchCtx: StepContext = {
+            tenantId: deps.tenantId,
+            documentId: deps.documentId,
+            jobId: deps.jobId,
+            document: deps.document,
+            stepOutputs: outputsByStepId,
+            db: deps.db,
+            storage: deps.storage,
+            endpoints: deps.endpoints,
+            queue: deps.queue,
+          };
+
+          const branchStart = Date.now();
+          let branchResult;
+          try {
+            branchResult = await branchImpl.run(branchCtx, branchStep.config);
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            await deps.onStepFail(branchCurrentId, errorMsg);
+            break; // branch fails, other branches continue
+          }
+
+          if (!branchResult.ok) {
+            await deps.onStepFail(branchCurrentId, branchResult.error || 'Step failed');
+            break;
+          }
+
+          const branchOutput: StepOutput = {
+            stepId: branchCurrentId,
+            stepType: branchStep.type,
+            output: branchResult.output,
+            durationMs: Date.now() - branchStart,
+            costUsd: branchResult.costUsd,
+          };
+
+          outputsByStepId[branchCurrentId] = branchOutput;
+          stepOutputs.push(branchOutput);
+          await deps.onStepComplete(branchCurrentId, branchOutput);
+
+          branchCurrentId = resolveNextStep(pipeline, branchCurrentId, outputsByStepId);
+        }
+      }
+      // All branches complete, stop the main loop
+      currentStepId = null;
+    } else {
+      currentStepId = nextSteps[0] ?? null;
+    }
   }
 
   // Determine final status
@@ -194,8 +263,22 @@ function resolveNextStep(
   stepId: string,
   outputsByStepId: Record<string, StepOutput>,
 ): string | null {
+  const next = resolveNextSteps(pipeline, stepId, outputsByStepId);
+  return next[0] ?? null;
+}
+
+/**
+ * Evaluate outgoing edges from a step and return ALL matching next step IDs.
+ * Used for parallel fan-out: all conditional edges that match fire simultaneously.
+ * Falls back to the default edge only if no conditional edges matched.
+ */
+function resolveNextSteps(
+  pipeline: CompiledPipeline,
+  stepId: string,
+  outputsByStepId: Record<string, StepOutput>,
+): string[] {
   const outgoing = pipeline.edges.filter((e) => e.from === stepId);
-  if (outgoing.length === 0) return null; // terminal step
+  if (outgoing.length === 0) return []; // terminal step
 
   // Build evaluation context
   const stepOutput = outputsByStepId[stepId];
@@ -208,17 +291,21 @@ function resolveNextStep(
     ),
   };
 
-  // Evaluate conditional edges first (in order)
+  // Collect all matching conditional edges
+  const matched: string[] = [];
   for (const edge of outgoing) {
     if (edge.isDefault) continue;
-    if (edge.condition === null) return edge.to; // unconditional
-    if (evaluateCondition(edge.condition, context)) return edge.to;
+    if (edge.condition === null) { matched.push(edge.to); continue; } // unconditional
+    if (evaluateCondition(edge.condition, context)) matched.push(edge.to);
   }
+
+  // If any conditional edges matched, return all of them (parallel fan-out)
+  if (matched.length > 0) return matched;
 
   // Fall back to default edge
   const defaultEdge = outgoing.find((e) => e.isDefault);
-  if (defaultEdge) return defaultEdge.to;
+  if (defaultEdge) return [defaultEdge.to];
 
   // No edge matched
-  return null;
+  return [];
 }
