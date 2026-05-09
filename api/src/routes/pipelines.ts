@@ -1353,7 +1353,13 @@ async function executeTestStep(
           else throw new Error("Could not parse LLM response");
         }
 
-        const arr = Array.isArray(parsed) ? parsed : [];
+        const arr = Array.isArray(parsed)
+          ? parsed
+          : (parsed && typeof parsed === "object" && Array.isArray((parsed as any).documents))
+            ? (parsed as any).documents
+            : (parsed && typeof parsed === "object" && Array.isArray((parsed as any).groups))
+              ? (parsed as any).groups
+              : [];
         const groups = arr.map((g: any) => ({
           startPage: g.start_page ?? g.startPage ?? 1,
           endPage: g.end_page ?? g.endPage ?? 1,
