@@ -1038,11 +1038,20 @@ function evalTestCondition(condition: string, context: Record<string, unknown>):
 interface TestEdge { from: string; to: string; when?: string; default?: boolean }
 
 function resolveTestNextStep(edges: TestEdge[], output: Record<string, unknown>): string | null {
+  const all = resolveTestNextSteps(edges, output);
+  return all[0] ?? null;
+}
+
+function resolveTestNextSteps(edges: TestEdge[], output: Record<string, unknown>): string[] {
+  const matched: string[] = [];
   for (const e of edges) {
-    if (!e.when && !e.default) return e.to;
-    if (e.when && evalTestCondition(e.when, { output })) return e.to;
+    if (e.default) continue;
+    if (!e.when) { matched.push(e.to); continue; }
+    if (evalTestCondition(e.when, { output })) matched.push(e.to);
   }
-  return edges.find(e => e.default)?.to ?? null;
+  if (matched.length > 0) return matched;
+  const def = edges.find(e => e.default);
+  return def ? [def.to] : [];
 }
 
 async function executeTestStep(
@@ -1385,28 +1394,34 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     const readable = new ReadableStream({
       async start(controller) {
         const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        while (currentId && stepOrder < 20) {
-          const step = pSteps.find(s => s.id === currentId);
-          if (!step) break;
-          if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
-          stepOrder++;
-          send("step_start", { stepId: step.id, stepType: step.type, stepOrder });
-          const t0 = Date.now();
-          const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
-          const ms = Date.now() - t0;
-          const outEdges = pEdges.filter(e => e.from === step.id);
-          const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
-          let nextId: string | null = null;
-          for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
-          if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
-          const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
-          results.push(sr); path.push(step.id);
-          if (result.ok) stepOutputs[step.id] = result.output;
-          send("step_complete", sr);
-          if (!result.ok) break;
-          if (mode === "step") { send("pipeline_paused", { nextStepId: nextId, completedSteps: path, stepOutputs }); controller.close(); return; }
-          currentId = nextId;
+        async function streamBranch(branchStartId: string | null) {
+          let branchId = branchStartId;
+          while (branchId && stepOrder < 20) {
+            const step = pSteps.find(s => s.id === branchId);
+            if (!step) break;
+            if (stepOutputs[branchId]) { branchId = resolveTestNextStep(pEdges.filter(e => e.from === branchId), stepOutputs[branchId]!); continue; }
+            stepOrder++;
+            send("step_start", { stepId: step.id, stepType: step.type, stepOrder });
+            const t0 = Date.now();
+            const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+            const ms = Date.now() - t0;
+            const outEdges = pEdges.filter(e => e.from === step.id);
+            const nextIds = resolveTestNextSteps(outEdges, result.output);
+            const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: nextIds.includes(e.to) }));
+            const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
+            results.push(sr); path.push(step.id);
+            if (result.ok) stepOutputs[step.id] = result.output;
+            send("step_complete", sr);
+            if (!result.ok) break;
+            if (mode === "step") { send("pipeline_paused", { nextStepId: nextIds[0] ?? null, completedSteps: path, stepOutputs }); return; }
+            if (nextIds.length > 1) {
+              for (const nextId of nextIds) { await streamBranch(nextId); }
+              return;
+            }
+            branchId = nextIds[0] ?? null;
+          }
         }
+        await streamBranch(currentId);
         send("pipeline_complete", { status: "completed", path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a: number, r: any) => a + r.durationMs, 0), totalCostUsd: results.reduce((a: number, r: any) => a + r.costUsd, 0), documentInfo: { filename: docInfo.filename, pageCount: docInfo.pageCount, mimeType: docInfo.mimeType } });
         controller.close();
       },
@@ -1414,26 +1429,44 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     return new Response(readable, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" } });
   }
 
-  // Non-streaming
-  while (currentId && stepOrder < 20) {
-    const step = pSteps.find(s => s.id === currentId);
-    if (!step) break;
-    if (stepOutputs[currentId]) { currentId = resolveTestNextStep(pEdges.filter(e => e.from === currentId), stepOutputs[currentId]!); continue; }
-    stepOrder++;
-    const t0 = Date.now();
-    const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
-    const ms = Date.now() - t0;
-    const outEdges = pEdges.filter(e => e.from === step.id);
-    const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: false }));
-    let nextId: string | null = null;
-    for (const ev of evals) { const edge = outEdges.find(e => e.to === ev.to)!; if (!edge.when && !edge.default) { ev.matched = true; nextId = edge.to; break; } if (edge.when && evalTestCondition(edge.when, { output: result.output })) { ev.matched = true; nextId = edge.to; break; } }
-    if (!nextId) { const def = evals.find(e => e.condition === "default"); if (def) { def.matched = true; nextId = outEdges.find(e => e.default)?.to ?? null; } }
-    results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
-    path.push(step.id);
-    if (result.ok) stepOutputs[step.id] = result.output;
-    if (!result.ok) break;
-    if (mode === "step") return c.json({ status: "paused", currentStep: results[results.length - 1], nextStepId: nextId, completedSteps: path, stepOutputs });
-    currentId = nextId;
+  // Non-streaming — with parallel fan-out support
+  async function runBranch(startId: string | null) {
+    let branchId = startId;
+    while (branchId && stepOrder < 20) {
+      const step = pSteps.find(s => s.id === branchId);
+      if (!step) break;
+      if (stepOutputs[branchId]) { branchId = resolveTestNextStep(pEdges.filter(e => e.from === branchId), stepOutputs[branchId]!); continue; }
+      stepOrder++;
+      const t0 = Date.now();
+      const result = await executeTestStep(step, docInfo, stepOutputs, testCtx);
+      const ms = Date.now() - t0;
+      const outEdges = pEdges.filter(e => e.from === step.id);
+      const nextIds = resolveTestNextSteps(outEdges, result.output);
+      const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: nextIds.includes(e.to) }));
+      results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
+      path.push(step.id);
+      if (result.ok) stepOutputs[step.id] = result.output;
+      if (!result.ok) break;
+      if (mode === "step") return;
+
+      // Fan-out: run each matching branch
+      if (nextIds.length > 1) {
+        for (const nextId of nextIds) {
+          await runBranch(nextId);
+        }
+        return; // all branches done
+      }
+      branchId = nextIds[0] ?? null;
+    }
+  }
+
+  await runBranch(currentId);
+
+  if (mode === "step" && results.length > 0) {
+    const lastResult = results[results.length - 1];
+    const outEdges = pEdges.filter(e => e.from === lastResult.stepId);
+    const nextId = resolveTestNextStep(outEdges, lastResult.output);
+    return c.json({ status: "paused", currentStep: lastResult, nextStepId: nextId, completedSteps: path, stepOutputs });
   }
 
   return c.json({ status: "completed", steps: results, path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a, r) => a + r.durationMs, 0), totalCostUsd: results.reduce((a, r) => a + r.costUsd, 0), documentInfo: docInfo });
