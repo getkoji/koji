@@ -4,8 +4,8 @@
  * Layered approach, cheapest to most expensive:
  * 1. Page number resets (free) — "Page 1" after "Page 4" = new section
  * 2. Structural fingerprint (free) — text density shifts, form number changes,
- *    carrier/heading changes, horizontal rules
- * 3. Keyword matching (free) — known section headers
+ *    heading changes, horizontal rules
+ * 3. Keyword matching (free) — user-configured section labels
  * 4. LLM classification (cheap) — only for ambiguous boundaries
  *
  * Each layer only processes pages that previous layers couldn't classify.
@@ -140,19 +140,13 @@ export async function detectSections(
       }
     }
 
-    // Generic keyword fallback
-    // "declarations" must appear in a bold heading — body text often references
-    // declarations without being a dec page (e.g. "the declarations page is amended")
+    // Generic fallback: only truly universal patterns (not domain-specific)
+    // Domain keywords belong in user-configured labels, not hardcoded here.
     if (info.type === "unknown") {
-      if (/declarations?\b|dec\s*page/i.test(headings)) info.type = "declarations";
-      else if (/endorsement/i.test(headings) || /this\s+endorsement\s+changes/i.test(text)) info.type = "endorsement";
-      else if (/amendment/i.test(headings)) info.type = "endorsement";
-      else if (/schedule\s+of\s+forms/i.test(searchText)) info.type = "schedule_of_forms";
-      else if (/certificate\s+of\s+(liability\s+)?insurance|acord\s+25/i.test(searchText)) info.type = "certificate_of_insurance";
-      else if (/policy\s+(form|conditions|provisions)/i.test(headings)) info.type = "policy_form";
-      else if (/copyright|©/i.test(text)) info.type = "copyright_notice";
-
-      if (info.type !== "unknown") info.method += "+generic_keyword";
+      if (/copyright|©/i.test(text)) {
+        info.type = "copyright_notice";
+        info.method += "+generic_keyword";
+      }
     }
   }
 
@@ -169,7 +163,7 @@ export async function detectSections(
       return `Page ${pageNum}: headings=[${headings}], tables=${p.table_count}, text_density=${p.text_density}, form_numbers=[${p.form_numbers.join(",")}], has_dollars=${p.has_dollar_amounts}, preview="${p.content_preview.slice(0, 200)}"`;
     }).join("\n");
 
-    const prompt = `Classify these document pages. Each is the start of a new section in an insurance document package.\n\n${pageDescriptions}\n${labelDesc}\nFor each page, identify the document type.\n\nReturn a JSON object mapping page numbers to types:\n{"9": "declarations", "13": "endorsement", ...}\n\nReturn ONLY valid JSON.`;
+    const prompt = `Classify these document pages. Each is the start of a new section in a multi-document package.\n\n${pageDescriptions}\n${labelDesc}\nFor each page, identify the document type.\n\nReturn a JSON object mapping page numbers to types:\n{"1": "cover_letter", "5": "report", ...}\n\nReturn ONLY valid JSON.`;
 
     try {
       const raw = await opts.llmProvider.generate(prompt, true);

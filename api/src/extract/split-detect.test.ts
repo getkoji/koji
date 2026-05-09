@@ -307,22 +307,12 @@ describe("detectSections", () => {
   });
 
   describe("Layer 3: keyword matching", () => {
-    it("classifies section by bold heading keywords", async () => {
-      const pages = stapledSubmissionFixture();
-      const sections = await detectSections(pages);
-
-      const coi = sections.find((s) => s.startPage === 1);
-      expect(coi!.type).toBe("certificate_of_insurance");
-
-      const dec = sections.find((s) => s.startPage === 3);
-      expect(dec!.type).toBe("declarations");
-    });
-
-    it("uses configured labels for classification", async () => {
+    it("classifies sections using configured labels", async () => {
       const pages = stapledSubmissionFixture();
       const labels = [
-        { id: "coi", keywords: ["CERTIFICATE OF LIABILITY INSURANCE", "ACORD 25"] },
-        { id: "dec_page", keywords: ["DECLARATIONS", "POLICY DECLARATIONS"] },
+        { id: "coi", keywords: ["CERTIFICATE OF LIABILITY INSURANCE"] },
+        { id: "dec_page", keywords: ["POLICY DECLARATIONS"] },
+        { id: "supplement", keywords: ["EVIDENCE OF COMMERCIAL PROPERTY"] },
       ];
       const sections = await detectSections(pages, { labels });
 
@@ -331,14 +321,34 @@ describe("detectSections", () => {
 
       const dec = sections.find((s) => s.startPage === 3);
       expect(dec!.type).toBe("dec_page");
+
+      const supp = sections.find((s) => s.startPage === 6);
+      expect(supp!.type).toBe("supplement");
     });
 
-    it("classifies endorsements by keyword", async () => {
+    it("matches keywords in bold headings", async () => {
       const pages = insurancePolicyFixture();
-      const sections = await detectSections(pages);
+      const labels = [
+        { id: "endorsement", keywords: ["THIS ENDORSEMENT CHANGES THE POLICY"] },
+        { id: "dec_page", keywords: ["BUSINESSOWNERS POLICY DECLARATIONS"] },
+      ];
+      const sections = await detectSections(pages, { labels });
 
       const endorsements = sections.filter((s) => s.type === "endorsement");
       expect(endorsements.length).toBeGreaterThan(0);
+
+      const dec = sections.find((s) => s.startPage === 9);
+      expect(dec!.type).toBe("dec_page");
+    });
+
+    it("without labels, sections stay unknown (no hardcoded domain keywords)", async () => {
+      const pages = stapledSubmissionFixture();
+      const sections = await detectSections(pages);
+
+      // Without configured labels, only copyright_notice gets generic classification
+      // All other sections should be "unknown" — no hardcoded domain keywords
+      const classified = sections.filter((s) => s.type !== "unknown" && s.type !== "copyright_notice");
+      expect(classified.length).toBe(0);
     });
   });
 
