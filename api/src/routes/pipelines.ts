@@ -1338,10 +1338,12 @@ async function executeTestStep(
           : "";
 
         const headerList = headers.map(h => `Page ${h.page}: "${h.header_text}"`).join("\n");
+        console.log(`[test/split] ${headers.length} page headers, first 3:`, headers.slice(0, 3).map(h => `p${h.page}: ${h.header_text.slice(0, 80)}`));
 
         const prompt = `This is a multi-document PDF submission. Here are the first ~200 characters from each page:\n\n${headerList}\n${labelDesc}\nIdentify where new documents begin. Group consecutive pages that belong to the same document.\n\nReturn a JSON array of document groups:\n[{"start_page": 1, "end_page": 3, "type": "document_type"},...]`;
 
         const raw = await provider.generate(prompt, true);
+        console.log(`[test/split] LLM raw response (first 500 chars):`, raw.slice(0, 500));
         let parsed: unknown;
         try {
           parsed = JSON.parse(raw);
