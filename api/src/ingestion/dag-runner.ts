@@ -68,11 +68,21 @@ function evalCondition(condition: string, context: Record<string, unknown>): boo
 }
 
 function resolveNextStep(edges: TestEdge[], output: Record<string, unknown>): string | null {
+  const all = resolveNextSteps(edges, output);
+  return all[0] ?? null;
+}
+
+function resolveNextSteps(edges: TestEdge[], output: Record<string, unknown>): string[] {
+  const matched: string[] = [];
   for (const e of edges) {
-    if (!e.when && !e.default) return e.to;
-    if (e.when && evalCondition(e.when, { output })) return e.to;
+    if (e.default) continue;
+    if (!e.when) { matched.push(e.to); continue; } // unconditional
+    if (evalCondition(e.when, { output })) matched.push(e.to);
   }
-  return edges.find(e => e.default)?.to ?? null;
+  if (matched.length > 0) return matched;
+  // Fall back to default edge
+  const def = edges.find(e => e.default);
+  return def ? [def.to] : [];
 }
 
 export async function handleDagRun(job: QueuedJob): Promise<void> {
@@ -694,9 +704,129 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       break;
     }
 
-    // Resolve next step
+    // Resolve next step(s) — may be multiple for parallel fan-out
     const outEdges = pEdges.filter(e => e.from === step.id);
-    currentId = resolveNextStep(outEdges, output);
+    const nextSteps = resolveNextSteps(outEdges, output);
+
+    if (nextSteps.length > 1) {
+      // Parallel fan-out: run each branch independently
+      for (const branchStartId of nextSteps) {
+        let branchId: string | null = branchStartId;
+        while (branchId && stepOrder < 20) {
+          const branchStep = pSteps.find(s => s.id === branchId);
+          if (!branchStep) break;
+          stepOrder++;
+
+          const branchStart = Date.now();
+          let branchOutput: Record<string, unknown> = {};
+          let branchStatus = "completed";
+          let branchError: string | undefined;
+          const branchCost = STEP_COSTS[branchStep.type] ?? 0;
+
+          try {
+            // Re-use the same step execution switch logic
+            // For simplicity, delegate to a helper or inline the common cases
+            switch (branchStep.type) {
+              case "extract": {
+                const schemaSlug = (branchStep.config.schema as string) || "";
+                if (schemaSlug && docText && endpoint) {
+                  const srRows = await withRLS(db, tenantId, (tx) =>
+                    tx.select({ currentVersionId: schema.schemas.currentVersionId })
+                      .from(schema.schemas).where(eq(schema.schemas.slug, schemaSlug)).limit(1),
+                  );
+                  const sr = srRows[0] as { currentVersionId: string | null } | undefined;
+                  if (sr?.currentVersionId) {
+                    const verRows = await withRLS(db, tenantId, (tx) =>
+                      tx.select({ parsedJson: schema.schemaVersions.parsedJson })
+                        .from(schema.schemaVersions).where(eq(schema.schemaVersions.id, sr.currentVersionId!)).limit(1),
+                    );
+                    const ver = verRows[0] as { parsedJson: Record<string, unknown> | null } | undefined;
+                    if (ver?.parsedJson) {
+                      const provider = createProvider(endpoint.model, endpoint);
+                      const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
+                      const fieldNames = Object.keys(result.extracted || {});
+                      const nonNull = fieldNames.filter(f => result.extracted[f] != null);
+                      const scores = Object.values(result.confidence_scores || {});
+                      const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+                      branchOutput = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
+                      finalExtraction = result.extracted;
+                      finalConfidence = avgConf;
+                    }
+                  }
+                }
+                if (!branchOutput.schema) branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
+                break;
+              }
+              case "tag":
+                branchOutput = { tags: (branchStep.config.tags as Record<string, string>) || {} };
+                break;
+              case "webhook": {
+                const webhookUrl = branchStep.config.url as string;
+                if (webhookUrl) {
+                  const payloadMode = (branchStep.config.payload as string) || "result";
+                  const extractOutput = Object.values(stepOutputs).reverse().find(o => o?.fields);
+                  const payload = payloadMode === "document"
+                    ? { document_id: documentId, filename: doc.filename }
+                    : { document_id: documentId, tenant_id: tenantId, extraction: extractOutput || {} };
+                  try {
+                    const resp = await fetch(webhookUrl, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(payload),
+                    });
+                    branchOutput = { status_code: resp.status, delivered: resp.ok };
+                  } catch (err) {
+                    branchOutput = { status_code: 0, delivered: false, error: (err as Error).message };
+                  }
+                }
+                break;
+              }
+              case "filter": {
+                const passed = evalCondition((branchStep.config.condition as string) || "true", { document: doc, steps: stepOutputs });
+                branchOutput = { passed };
+                if (!passed && branchStep.config.on_fail === "fail") { branchStatus = "failed"; branchError = "Filter blocked"; }
+                break;
+              }
+              default:
+                branchOutput = { note: `Step type "${branchStep.type}" executed (branch)` };
+            }
+          } catch (err) {
+            branchStatus = "failed";
+            branchError = (err as Error).message;
+          }
+
+          const branchDurationMs = Date.now() - branchStart;
+          totalCost += branchCost;
+
+          await withRLS(db, tenantId, (tx) =>
+            tx.insert(schema.pipelineStepRuns).values({
+              tenantId,
+              documentId,
+              jobId: doc.id,
+              stepId: branchStep.id,
+              stepType: branchStep.type,
+              stepOrder,
+              status: branchStatus,
+              outputJson: branchOutput,
+              errorMessage: branchError,
+              durationMs: branchDurationMs,
+              costUsd: String(branchCost),
+              startedAt: new Date(Date.now() - branchDurationMs),
+              completedAt: new Date(),
+            }),
+          );
+
+          stepOutputs[branchStep.id] = branchOutput;
+          if (branchStatus === "failed") break;
+
+          const branchOutEdges = pEdges.filter(e => e.from === branchStep.id);
+          branchId = resolveNextStep(branchOutEdges, branchOutput);
+        }
+      }
+      currentId = null; // all branches done
+    } else {
+      currentId = nextSteps[0] ?? null;
+    }
   }
 
   // Update document with final result
