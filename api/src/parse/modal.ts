@@ -308,4 +308,22 @@ export class ModalParseProvider implements ParseProvider {
     if (!resp.ok) throw new Error(`slice_pdf failed: ${await resp.text()}`);
     return resp.json();
   }
+
+  async analyzePages(input: {
+    fileBuffer: Buffer;
+  }): Promise<import("./provider").PageAnalysis[]> {
+    const analyzeUrl = this.url.replace("parse-http", "analyze-pages");
+    const fd = new FormData();
+    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+
+    const resp = await fetch(analyzeUrl, {
+      method: "POST",
+      body: fd,
+      headers: { "Modal-Key": this.tokenId, "Modal-Secret": this.tokenSecret },
+      redirect: "follow",
+    });
+    if (!resp.ok) throw new Error(`analyze_pages failed: ${await resp.text()}`);
+    const result = await resp.json() as { pages: number; data: import("./provider").PageAnalysis[] };
+    return result.data;
+  }
 }

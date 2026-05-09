@@ -963,6 +963,195 @@ async def slice_pdf(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Analyze pages — rich structural analysis for split boundary detection
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    image=image,
+    timeout=120,
+    memory=1024,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def analyze_pages(request: Request):
+    """Analyze PDF page structure for split boundary detection.
+
+    Returns per-page structural signals:
+    - Page number labels (for reset detection)
+    - Text density and content preview
+    - Table count and structure
+    - Image area ratio
+    - Horizontal rules (section separators)
+    - Form numbers, dollar amounts, dates
+    - Bold headings
+    """
+    import re
+    import tempfile
+    from pathlib import Path
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = Path(tmp.name)
+
+    # Patterns for detection
+    page_num_re = re.compile(r"(?:Page|Pg\.?|p\.?)\s*(\d+)\s*(?:of\s*(\d+))?", re.IGNORECASE)
+    form_num_re = re.compile(r"\b\d{4,5}\s*\(\d{2}-\d{2}\)\b")
+    dollar_re = re.compile(r"\$[\d,]+(?:\.\d{2})?")
+    date_re = re.compile(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|\b\d{4}[-/]\d{2}[-/]\d{2}\b")
+
+    try:
+        doc = pymupdf.open(str(tmp_path))
+        pages_data = []
+
+        for i in range(len(doc)):
+            page = doc[i]
+            pw, ph = page.rect.width, page.rect.height
+            page_area = pw * ph
+
+            # Get full text and text dict for structural analysis
+            full_text = page.get_text("text") or ""
+            text_dict = page.get_text("dict")
+
+            # Text density: chars per page area (normalized)
+            text_density = len(full_text) / max(page_area, 1) * 1000
+
+            # Content preview (first 500 chars)
+            content_preview = " ".join(full_text[:600].split())[:500]
+
+            # Page number detection
+            page_label = None
+            page_of = None
+            for m in page_num_re.finditer(full_text):
+                page_label = int(m.group(1))
+                if m.group(2):
+                    page_of = int(m.group(2))
+                break  # Take first match
+
+            # Bold headings (first 3)
+            bold_headings = []
+            for block in text_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue  # skip image blocks
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        flags = span.get("flags", 0)
+                        is_bold = bool(flags & (1 << 4))  # bit 4 = bold
+                        size = span.get("size", 0)
+                        text = span.get("text", "").strip()
+                        if is_bold and size >= 9 and len(text) > 3:
+                            y_norm = span.get("origin", [0, 0])[1] / ph if ph else 0
+                            bold_headings.append({"text": text[:100], "y": round(y_norm, 3), "size": round(size, 1)})
+                if len(bold_headings) >= 5:
+                    break
+
+            # Table detection via text blocks with tabular structure
+            tables = []
+            for block in text_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                lines = block.get("lines", [])
+                if len(lines) >= 3:
+                    # Check if lines have consistent x-positions (tabular)
+                    x_positions = set()
+                    for line in lines[:5]:
+                        for span in line.get("spans", []):
+                            x_positions.add(round(span.get("origin", [0])[0] / pw, 1))
+                    if len(x_positions) >= 3:
+                        bbox = block.get("bbox", [0, 0, pw, ph])
+                        first_line_text = " ".join(s.get("text", "") for s in lines[0].get("spans", [])).strip()
+                        tables.append(
+                            {
+                                "y": round(bbox[1] / ph, 3),
+                                "h": round((bbox[3] - bbox[1]) / ph, 3),
+                                "cols": len(x_positions),
+                                "header": first_line_text[:100],
+                            }
+                        )
+                if len(tables) >= 5:
+                    break
+
+            # Horizontal rules / drawings (section separators)
+            h_rules = []
+            try:
+                drawings = page.get_drawings()
+                for d in drawings:
+                    if d.get("items"):
+                        for item in d["items"]:
+                            if item[0] == "l":  # line
+                                p1, p2 = item[1], item[2]
+                                # Horizontal line: similar y, spans > 50% of page width
+                                if abs(p1.y - p2.y) < 2 and abs(p1.x - p2.x) > pw * 0.3:
+                                    h_rules.append(round(p1.y / ph, 3))
+                if len(h_rules) > 10:
+                    h_rules = h_rules[:10]
+            except Exception:
+                pass  # drawings API can fail on some PDFs
+
+            # Image area ratio
+            image_area = 0
+            for block in text_dict.get("blocks", []):
+                if block.get("type") == 1:  # image block
+                    bbox = block.get("bbox", [0, 0, 0, 0])
+                    image_area += (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+            image_ratio = round(image_area / max(page_area, 1), 3)
+
+            # Content signals
+            form_numbers = form_num_re.findall(full_text)
+            has_dollar_amounts = bool(dollar_re.search(full_text))
+            has_dates = bool(date_re.search(full_text))
+
+            # Blank space ratio (bottom of page)
+            last_text_y = 0
+            for block in text_dict.get("blocks", []):
+                bbox = block.get("bbox", [0, 0, 0, 0])
+                if bbox[3] > last_text_y:
+                    last_text_y = bbox[3]
+            blank_bottom_ratio = round(1 - (last_text_y / ph), 3) if ph else 0
+
+            pages_data.append(
+                {
+                    "page": i + 1,
+                    "page_label": page_label,
+                    "page_of": page_of,
+                    "content_preview": content_preview,
+                    "text_density": round(text_density, 2),
+                    "text_chars": len(full_text),
+                    "bold_headings": bold_headings,
+                    "tables": tables,
+                    "table_count": len(tables),
+                    "horizontal_rules": h_rules,
+                    "image_ratio": image_ratio,
+                    "form_numbers": form_numbers[:3],
+                    "has_dollar_amounts": has_dollar_amounts,
+                    "has_dates": has_dates,
+                    "blank_bottom_ratio": blank_bottom_ratio,
+                }
+            )
+
+        doc.close()
+        return JSONResponse({"pages": len(pages_data), "data": pages_data})
+    except Exception as e:
+        return JSONResponse({"error": f"analyze_pages failed: {e}"}, status_code=500)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Page headers — extract first ~200 chars from each page (for split boundary detection)
 # ---------------------------------------------------------------------------
 

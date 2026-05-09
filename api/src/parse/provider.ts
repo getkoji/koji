@@ -18,6 +18,24 @@ export interface CoordinateExtractionResult {
   warning?: string;
 }
 
+export interface PageAnalysis {
+  page: number;
+  page_label: number | null;
+  page_of: number | null;
+  content_preview: string;
+  text_density: number;
+  text_chars: number;
+  bold_headings: Array<{ text: string; y: number; size: number }>;
+  tables: Array<{ y: number; h: number; cols: number; header: string }>;
+  table_count: number;
+  horizontal_rules: number[];
+  image_ratio: number;
+  form_numbers: string[];
+  has_dollar_amounts: boolean;
+  has_dates: boolean;
+  blank_bottom_ratio: number;
+}
+
 export interface ParseProvider {
   parse(input: {
     filename: string;
@@ -43,6 +61,11 @@ export interface ParseProvider {
   pageHeaders?(input: {
     fileBuffer: Buffer;
   }): Promise<{ pages: number; headers: Array<{ page: number; header_text: string }> }>;
+
+  /** Rich structural analysis per page — page numbers, text density, tables, headings, etc. */
+  analyzePages?(input: {
+    fileBuffer: Buffer;
+  }): Promise<{ pages: number; data: PageAnalysis[] }>;
 
   /** Slice a page range from a PDF into a new PDF (base64). */
   slicePdf?(input: {

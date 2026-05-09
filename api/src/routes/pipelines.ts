@@ -1278,94 +1278,66 @@ async function executeTestStep(
       };
     }
     case "split": {
-      // Extract page headers using the parse provider (pymupdf — accurate per-page text)
-      let headers: Array<{ page: number; header_text: string }> = [];
-
-      if (docInfo.parseProvider?.pageHeaders && docInfo.fileBuffer) {
-        try {
-          const result = await docInfo.parseProvider.pageHeaders({ fileBuffer: docInfo.fileBuffer });
-          headers = result.headers;
-        } catch (err) {
-          console.warn("[test/split] pageHeaders failed:", (err as Error).message);
-        }
-      }
-
-      if (headers.length === 0) {
-        return { ok: false, output: { groups: [], error: "Could not extract page headers — parse provider may not support pageHeaders" }, costUsd: cost };
-      }
-
-      const method = (step.config.method as string) || "llm";
+      const method = (step.config.method as string) || "auto";
       const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
-
-      if (method === "keyword") {
-        // Keyword-based boundary detection
-        const groups: Array<{ startPage: number; endPage: number; type: string; confidence: number }> = [];
-        let currentGroup: typeof groups[0] | null = null;
-        for (const h of headers) {
-          const hText = h.header_text.toLowerCase();
-          let matched: string | null = null;
-          for (const label of labels) {
-            const hits = (label.keywords || []).filter(kw => hText.includes(kw.toLowerCase()));
-            if (hits.length >= 1) { matched = label.id; break; }
-          }
-          if (matched) {
-            if (currentGroup) groups.push(currentGroup);
-            currentGroup = { startPage: h.page, endPage: h.page, type: matched, confidence: 0.9 };
-          } else if (currentGroup) {
-            currentGroup.endPage = h.page;
-          }
-        }
-        if (currentGroup) groups.push(currentGroup);
-        return { ok: true, output: { groups, method: "keyword", count: groups.length, pages_analyzed: headers.length }, costUsd: 0 };
-      }
 
       if (method === "fixed") {
         const ranges = (step.config.page_ranges as Array<{ start: number; end: number; type?: string }>) || [];
-        const groups = ranges.map(r => ({ startPage: r.start, endPage: r.end, type: r.type || "document", confidence: 1.0 }));
+        const groups = ranges.map(r => ({ startPage: r.start, endPage: r.end, type: r.type || "document", confidence: 1.0, method: "fixed" }));
         return { ok: true, output: { groups, method: "fixed", count: groups.length }, costUsd: 0 };
       }
 
-      // LLM-based boundary detection
-      if (!ctx?.db || !ctx.tenantId) {
-        return { ok: false, output: { groups: [], error: "No DB context for LLM split detection" }, costUsd: cost };
+      // Use structural page analysis for smart boundary detection
+      if (!docInfo.parseProvider?.analyzePages && !docInfo.parseProvider?.pageHeaders) {
+        return { ok: false, output: { groups: [], error: "Parse provider does not support page analysis" }, costUsd: cost };
       }
-      try {
+      if (!docInfo.fileBuffer) {
+        return { ok: false, output: { groups: [], error: "No file buffer available" }, costUsd: cost };
+      }
+
+      let groups: Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }>;
+
+      if (docInfo.parseProvider.analyzePages) {
+        // Full structural analysis — layered detection
+        const { detectSections } = await import("../extract/split-detect");
+        const pageData = await docInfo.parseProvider.analyzePages({ fileBuffer: docInfo.fileBuffer });
+
+        let llmProvider: any = undefined;
+        if (ctx?.db && ctx.tenantId) {
+          try {
+            const { resolveTenantProvider } = await import("../extract/resolve-endpoint");
+            const resolved = await resolveTenantProvider(ctx.db as any, ctx.tenantId);
+            llmProvider = resolved.provider;
+          } catch {}
+        }
+
+        const sections = await detectSections(pageData, { labels, llmProvider });
+        groups = sections;
+        console.log(`[test/split] detectSections found ${sections.length} sections:`, sections.map(s => `p${s.startPage}-${s.endPage} ${s.type} (${s.method})`));
+      } else {
+        // Fallback to page headers + LLM (old approach)
+        const result = await docInfo.parseProvider.pageHeaders!({ fileBuffer: docInfo.fileBuffer });
+        const headers = result.headers;
+        if (headers.length === 0) {
+          return { ok: false, output: { groups: [], error: "No pages found" }, costUsd: cost };
+        }
+
+        if (!ctx?.db || !ctx.tenantId) {
+          return { ok: false, output: { groups: [], error: "No DB context for LLM classification" }, costUsd: cost };
+        }
         const { resolveTenantProvider } = await import("../extract/resolve-endpoint");
         const { provider } = await resolveTenantProvider(ctx.db as any, ctx.tenantId);
-
         const labelDesc = labels.length > 0
           ? `\nKnown document types:\n${labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n")}\n`
           : "";
-
         const headerList = headers.map(h => `Page ${h.page}: "${h.header_text}"`).join("\n");
-        console.log(`[test/split] ${headers.length} page headers, first 3:`, headers.slice(0, 3).map(h => `p${h.page}: ${h.header_text.slice(0, 80)}`));
-
-        const prompt = `This is a multi-document PDF submission. Here are the first ~200 characters from each page:\n\n${headerList}\n${labelDesc}\nIdentify where new documents begin. Group consecutive pages that belong to the same document.\n\nReturn a JSON array of document groups:\n[{"start_page": 1, "end_page": 3, "type": "document_type"},...]`;
-
+        const prompt = `This is a multi-document PDF submission. Here are the first ~200 characters from each page:\n\n${headerList}\n${labelDesc}\nIdentify where new documents begin. Return a JSON array:\n[{"start_page": 1, "end_page": 3, "type": "document_type"},...]`;
         const raw = await provider.generate(prompt, true);
-        console.log(`[test/split] LLM raw response (first 500 chars):`, raw.slice(0, 500));
         let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          const arrMatch = raw.match(/\[[\s\S]*\]/);
-          if (arrMatch) parsed = JSON.parse(arrMatch[0]);
-          else throw new Error("Could not parse LLM response");
-        }
-
-        const arr = Array.isArray(parsed)
-          ? parsed
-          : (parsed && typeof parsed === "object" && Array.isArray((parsed as any).documents))
-            ? (parsed as any).documents
-            : (parsed && typeof parsed === "object" && Array.isArray((parsed as any).groups))
-              ? (parsed as any).groups
-              : [];
-        const groups = arr.map((g: any) => ({
-          startPage: g.start_page ?? g.startPage ?? 1,
-          endPage: g.end_page ?? g.endPage ?? 1,
-          type: g.type ?? "document",
-          confidence: g.confidence ?? 0.85,
-        }));
+        try { parsed = JSON.parse(raw); } catch { const m = raw.match(/\[[\s\S]*\]/); if (m) parsed = JSON.parse(m[0]); else throw new Error("Could not parse LLM response"); }
+        const arr = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === "object" && Array.isArray((parsed as any).documents)) ? (parsed as any).documents : [];
+        groups = arr.map((g: any) => ({ startPage: g.start_page ?? g.startPage ?? 1, endPage: g.end_page ?? g.endPage ?? 1, type: g.type ?? "document", confidence: g.confidence ?? 0.85, method: "llm_fallback" }));
+      }
 
         // Slice PDFs for each group — store in R2 and return signed URLs
         const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }> = [];
