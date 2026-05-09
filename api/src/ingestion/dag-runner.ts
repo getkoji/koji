@@ -77,8 +77,11 @@ function resolveNextSteps(edges: TestEdge[], output: Record<string, unknown>): s
   for (const e of edges) {
     if (e.default) continue;
     if (!e.when) { matched.push(e.to); continue; } // unconditional
-    if (evalCondition(e.when, { output })) matched.push(e.to);
+    const result = evalCondition(e.when, { output });
+    console.log(`[dag-runner] edge ${e.from} → ${e.to} when="${e.when}" result=${result}`);
+    if (result) matched.push(e.to);
   }
+  console.log(`[dag-runner] resolveNextSteps: ${edges.length} edges, ${matched.length} matched: [${matched.join(", ")}]`);
   if (matched.length > 0) return matched;
   // Fall back to default edge
   const def = edges.find(e => e.default);
