@@ -105,6 +105,9 @@ export function StepConfigPanel({ step, onUpdate, onClose, onDelete, schemas = [
       {step.type === "resolve_references" && (
         <ResolveReferencesConfig step={step} onUpdate={onUpdate} />
       )}
+      {step.type === "split" && (
+        <SplitConfig step={step} onUpdate={onUpdate} />
+      )}
 
       {/* Delete */}
       <div className="mt-8 pt-4 border-t border-[#E8E0D0]">
@@ -596,6 +599,140 @@ function ResolveReferencesConfig({
           Send a <code style={{ fontSize: "10px", background: "rgba(0,0,0,0.05)", padding: "1px 4px", borderRadius: "2px" }}>group</code> field
           with each document upload to group related documents together.
           References are resolved within the group.
+        </p>
+      </div>
+    </>
+  );
+}
+
+function SplitConfig({
+  step,
+  onUpdate,
+}: {
+  step: PipelineStep;
+  onUpdate: (id: string, u: Partial<PipelineStep>) => void;
+}) {
+  const config = step.config || {};
+  const method = (config.method as string) || "llm";
+  const labels = (config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
+
+  function updateLabels(newLabels: typeof labels) {
+    onUpdate(step.id, { config: { ...config, labels: newLabels } });
+  }
+
+  function addLabel() {
+    updateLabels([...labels, { id: "", description: "" }]);
+  }
+
+  function removeLabel(index: number) {
+    updateLabels(labels.filter((_, i) => i !== index));
+  }
+
+  function updateLabel(index: number, updates: Partial<typeof labels[0]>) {
+    updateLabels(labels.map((l, i) => (i === index ? { ...l, ...updates } : l)));
+  }
+
+  return (
+    <>
+      <div className="mb-4">
+        <label style={labelStyle}>Detection Method</label>
+        <select
+          value={method}
+          onChange={(e) =>
+            onUpdate(step.id, { config: { ...config, method: e.target.value } })
+          }
+          style={inputStyle}
+        >
+          <option value="llm">LLM (send page headers to model)</option>
+          <option value="keyword">Keyword (match page headers)</option>
+          <option value="fixed">Fixed (manual page ranges)</option>
+        </select>
+        <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
+          LLM analyzes page headers to detect document boundaries. Keyword matches against configured patterns. Fixed uses manual page ranges.
+        </p>
+      </div>
+
+      {(method === "llm" || method === "keyword") && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <label style={labelStyle}>Document Types</label>
+            <button
+              onClick={addLabel}
+              style={{
+                fontSize: "11px",
+                color: "#C33520",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontWeight: 500,
+              }}
+            >
+              + Add type
+            </button>
+          </div>
+          {labels.map((label, i) => (
+            <div key={i} className="mb-2 p-2 rounded" style={{ background: "rgba(232, 224, 208, 0.3)", border: "1px solid #E8E0D0" }}>
+              <div className="flex gap-2 mb-1">
+                <input
+                  value={label.id}
+                  onChange={(e) => updateLabel(i, { id: e.target.value })}
+                  placeholder="e.g. certificate_of_insurance"
+                  style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "12px" }}
+                />
+                <button
+                  onClick={() => removeLabel(i)}
+                  style={{ color: "#C33520", background: "none", border: "none", cursor: "pointer", fontSize: "14px", padding: "0 4px" }}
+                >
+                  ×
+                </button>
+              </div>
+              <input
+                value={label.description || ""}
+                onChange={(e) => updateLabel(i, { description: e.target.value })}
+                placeholder="Description (e.g. ACORD 25 Certificate of Liability Insurance)"
+                style={{ ...inputStyle, fontSize: "11px", marginBottom: "4px" }}
+              />
+              {method === "keyword" && (
+                <input
+                  value={(label.keywords || []).join(", ")}
+                  onChange={(e) =>
+                    updateLabel(i, { keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })
+                  }
+                  placeholder="Keywords (comma-separated): certificate of liability, ACORD 25"
+                  style={{ ...inputStyle, fontSize: "11px" }}
+                />
+              )}
+            </div>
+          ))}
+          {labels.length === 0 && (
+            <p style={{ fontSize: "11px", color: "#8A847B", fontStyle: "italic" }}>
+              No document types defined. Add types to help the splitter identify boundaries.
+            </p>
+          )}
+        </div>
+      )}
+
+      {method === "fixed" && (
+        <div className="mb-4">
+          <label style={labelStyle}>Page Ranges (JSON)</label>
+          <textarea
+            value={JSON.stringify(config.page_ranges || [], null, 2)}
+            onChange={(e) => {
+              try {
+                const ranges = JSON.parse(e.target.value);
+                onUpdate(step.id, { config: { ...config, page_ranges: ranges } });
+              } catch { /* ignore parse errors while typing */ }
+            }}
+            style={{ ...inputStyle, minHeight: "80px", resize: "vertical", fontFamily: "'JetBrains Mono', monospace", fontSize: "11px" }}
+            placeholder={'[\n  { "start": 1, "end": 3, "type": "coi" },\n  { "start": 4, "end": 8, "type": "policy" }\n]'}
+          />
+        </div>
+      )}
+
+      <div className="mb-4">
+        <p style={{ fontSize: "10px", color: "#8A847B" }}>
+          The split step detects document boundaries in a multi-page PDF and creates separate child documents for each section.
+          Each child document continues through the rest of the pipeline independently.
         </p>
       </div>
     </>
