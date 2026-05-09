@@ -233,6 +233,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         schemaVersion: schema.schemaVersions.versionNumber,
+        pipelineId: schema.jobs.pipelineId,
       })
       .from(schema.documents)
       .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
@@ -285,6 +286,27 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
       )
     : [];
 
+  // Query DAG step runs (for DAG pipelines)
+  const stepRuns = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        id: schema.pipelineStepRuns.id,
+        stepId: schema.pipelineStepRuns.stepId,
+        stepType: schema.pipelineStepRuns.stepType,
+        stepOrder: schema.pipelineStepRuns.stepOrder,
+        status: schema.pipelineStepRuns.status,
+        outputJson: schema.pipelineStepRuns.outputJson,
+        errorMessage: schema.pipelineStepRuns.errorMessage,
+        durationMs: schema.pipelineStepRuns.durationMs,
+        costUsd: schema.pipelineStepRuns.costUsd,
+        startedAt: schema.pipelineStepRuns.startedAt,
+        completedAt: schema.pipelineStepRuns.completedAt,
+      })
+      .from(schema.pipelineStepRuns)
+      .where(eq(schema.pipelineStepRuns.documentId, docId))
+      .orderBy(asc(schema.pipelineStepRuns.stepOrder)),
+  );
+
   // Sign a short-lived URL for "Open doc" if we have the file in storage.
   // Best-effort — old rows (or seed rows pointing at keys that never got
   // uploaded) will return null and the UI will just disable the button.
@@ -297,10 +319,25 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     }
   }
 
+  // For DAG pipelines, convert step runs into the trace stage shape
+  // so the frontend renders them without changes.
+  const dagStages = stepRuns.map((sr) => ({
+    id: sr.id,
+    stageName: `${sr.stepType}: ${sr.stepId}`,
+    stageOrder: sr.stepOrder,
+    status: sr.status === "completed" ? "ok" : sr.status,
+    startedAt: sr.startedAt,
+    completedAt: sr.completedAt,
+    durationMs: sr.durationMs,
+    summaryJson: sr.outputJson as Record<string, unknown> | null,
+    errorMessage: sr.errorMessage,
+  }));
+
   return c.json({
     ...row,
     trace: trace ?? null,
-    stages,
+    stages: dagStages.length > 0 ? dagStages : stages,
+    stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
     documentPreviewUrl,
   });
 });
