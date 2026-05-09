@@ -46,22 +46,27 @@ export async function detectSections(
 
   // ── Layer 1: Page number resets ────────────────────────────────────────
   let prevLabel: number | null = null;
+  let prevPageOf: number | null = null;
   for (const p of pages) {
     if (p.page_label !== null) {
       if (p.page_label === 1 && prevLabel !== null && prevLabel !== 1) {
         // Page numbering reset — new section
         sectionStarts.set(p.page, { type: "unknown", confidence: 0.95, method: "page_number_reset" });
-      } else if (prevLabel === null) {
-        // First page with a label — might be a section start
-        sectionStarts.set(p.page, { type: "unknown", confidence: 0.8, method: "page_number_start" });
+      } else if (prevLabel === null && p.page_label === 1) {
+        // First page with label "1" after unlabeled pages — new section start
+        sectionStarts.set(p.page, { type: "unknown", confidence: 0.85, method: "page_number_start" });
       }
       prevLabel = p.page_label;
+      prevPageOf = p.page_of;
     } else {
-      // Page without a label after pages with labels — possible section change
-      if (prevLabel !== null) {
-        sectionStarts.set(p.page, { type: "unknown", confidence: 0.7, method: "page_number_end" });
+      // Page without a label after labeled pages — only trigger section
+      // boundary if the previous page was the LAST in its numbered sequence
+      if (prevLabel !== null && prevPageOf !== null && prevLabel >= prevPageOf) {
+        // Previous page was "Page N of N" — section ended, new one starts
+        sectionStarts.set(p.page, { type: "unknown", confidence: 0.8, method: "page_number_end" });
       }
       prevLabel = null;
+      prevPageOf = null;
     }
   }
   // First page is always a section start
@@ -97,8 +102,8 @@ export async function detectSections(
 
     // Image-heavy to text-heavy transition (or vice versa)
     if (
-      (prev.image_ratio > 0.5 && curr.image_ratio < 0.1) ||
-      (prev.image_ratio < 0.1 && curr.image_ratio > 0.5)
+      (prev.image_ratio > 0.4 && curr.image_ratio < 0.15) ||
+      (prev.image_ratio < 0.15 && curr.image_ratio > 0.4)
     ) {
       sectionStarts.set(curr.page, { type: "unknown", confidence: 0.7, method: "content_type_shift" });
       continue;
@@ -202,10 +207,11 @@ export async function detectSections(
   }
 
   // ── Merge adjacent sections of the same type ───────────────────────────
+  // Don't merge "unknown" sections — they're distinct unclassified boundaries
   const merged: DetectedSection[] = [];
   for (const section of sections) {
     const prev = merged[merged.length - 1];
-    if (prev && prev.type === section.type && prev.endPage === section.startPage - 1) {
+    if (prev && prev.type === section.type && prev.type !== "unknown" && prev.endPage === section.startPage - 1) {
       prev.endPage = section.endPage;
       prev.confidence = Math.min(prev.confidence, section.confidence);
       prev.method += "+" + section.method;
