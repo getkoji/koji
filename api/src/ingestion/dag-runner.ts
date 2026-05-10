@@ -121,6 +121,12 @@ async function executeSplit(
           }).returning({ id: schema.documents.id }),
         );
         if (child) childIds.push(child.id);
+        // Attach preview URL and child doc ID to the group
+        try {
+          const previewUrl = await storage.getSignedUrl(childKey, 3600);
+          (group as any).previewUrl = previewUrl;
+        } catch {}
+        (group as any).childDocumentId = child?.id;
         console.log(`[dag-runner] split: created child doc ${childFilename} (pages ${group.startPage}-${group.endPage}, type=${group.type})`);
       } catch (err) {
         console.error(`[dag-runner] split: failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);

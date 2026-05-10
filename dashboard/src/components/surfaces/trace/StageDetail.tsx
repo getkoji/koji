@@ -626,7 +626,7 @@ function WebhookBody({ output }: { output: Record<string, unknown> | null }) {
 
 function SplitBody({ output }: { output: Record<string, unknown> | null }) {
   if (!output) return <EmptyBody message="No split data" />;
-  const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }> | undefined;
+  const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string; previewUrl?: string; childDocumentId?: string }> | undefined;
   const childCount = Array.isArray(output.child_document_ids) ? (output.child_document_ids as string[]).length : 0;
   const errorMsg = typeof output.error === "string" ? output.error : null;
 
@@ -653,14 +653,26 @@ function SplitBody({ output }: { output: Record<string, unknown> | null }) {
             {groups.map((g, i) => {
               const pageLabel = g.startPage === g.endPage ? `p. ${g.startPage}` : `pp. ${g.startPage}–${g.endPage}`;
               return (
-                <div key={i} className="px-4 py-3 flex items-baseline justify-between gap-3">
+                <div key={i} className="px-4 py-3 flex items-center justify-between gap-3">
                   <div className="flex items-baseline gap-2 min-w-0">
                     <span className="font-mono text-[12px] font-medium text-ink truncate">{g.type}</span>
                     <span className="font-mono text-[10px] text-ink-4 shrink-0">{pageLabel}</span>
                   </div>
-                  <span className={`font-mono text-[10px] font-medium shrink-0 ${g.confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
-                    {(g.confidence * 100).toFixed(0)}%
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`font-mono text-[10px] font-medium ${g.confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
+                      {(g.confidence * 100).toFixed(0)}%
+                    </span>
+                    {g.previewUrl && (
+                      <a
+                        href={g.previewUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[10px] font-medium text-vermillion-2 hover:underline"
+                      >
+                        View PDF →
+                      </a>
+                    )}
+                  </div>
                 </div>
               );
             })}
