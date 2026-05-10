@@ -39,11 +39,11 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-8">
-      <div className="flex flex-col gap-1 min-w-0">
+    <div className="flex items-start justify-between gap-4 overflow-hidden">
+      <div className="flex flex-col gap-1 min-w-0 overflow-hidden">
         <div className="flex items-baseline gap-3 min-w-0">
           <h1
-            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate max-w-[50vw]"
+            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
             title={title}
           >

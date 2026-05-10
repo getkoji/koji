@@ -224,7 +224,9 @@ export default function TraceViewPage() {
                   : "Re-queue this document for extraction"
               }
             >
-              {rerunning ? "Re-queueing…" : "Rerun"}
+              {rerunning ? (
+                <span className="inline-block w-3.5 h-3.5 border-2 border-ink/30 border-t-ink rounded-full animate-spin" />
+              ) : "Rerun"}
             </GhostButton>
             <GhostButton
               onClick={handleCopyTrace}
