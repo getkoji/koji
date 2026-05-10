@@ -39,21 +39,21 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 overflow-hidden">
-      <div className="flex flex-col gap-1 min-w-0 overflow-hidden">
+    <div className="flex items-start justify-between gap-4 w-full overflow-hidden">
+      <div className="flex flex-col gap-1 min-w-0 flex-1">
         <div className="flex items-baseline gap-3 min-w-0">
           <h1
-            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate"
+            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate min-w-0"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
             title={title}
           >
             {title}
           </h1>
-          {badge}
+          {badge && <span className="shrink-0">{badge}</span>}
         </div>
-        {meta && <div className="flex items-center gap-2.5 font-mono text-[11px] text-ink-4">{meta}</div>}
+        {meta && <div className="flex items-center gap-2.5 font-mono text-[11px] text-ink-4 overflow-hidden">{meta}</div>}
       </div>
-      {actions && <div className="flex gap-2 shrink-0">{actions}</div>}
+      {actions && <div className="flex gap-2 shrink-0 flex-wrap justify-end">{actions}</div>}
     </div>
   );
 }
