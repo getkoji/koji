@@ -17,7 +17,7 @@ export function DetailLayout({
   const cols = sidebarWidth ?? "0.42fr";
 
   return (
-    <div className="flex flex-col h-[calc(100vh-60px)] overflow-x-hidden">
+    <div className="flex flex-col h-[calc(100vh-60px)]">
       <StickyHeader>{header}</StickyHeader>
       <div className="flex-1 min-h-0 flex flex-col">
         {metricsStrip && <div className="px-10 pt-5 shrink-0">{metricsStrip}</div>}

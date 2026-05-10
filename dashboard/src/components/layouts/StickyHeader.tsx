@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 export function StickyHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="sticky top-[60px] z-10 bg-cream border-b border-border px-10 pt-5 pb-4 shrink-0 overflow-hidden">
+    <div className="sticky top-[60px] z-10 bg-cream border-b border-border px-10 pt-5 pb-4 shrink-0">
       {children}
     </div>
   );
@@ -10,7 +10,7 @@ export function StickyHeader({ children }: { children: ReactNode }) {
 
 export function Breadcrumbs({ items }: { items: { label: string; href?: string }[] }) {
   return (
-    <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3 min-w-0 max-w-full overflow-hidden">
+    <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3 min-w-0 overflow-hidden" style={{ maxWidth: "calc(100vw - 480px)" }}>
       {items.map((item, i) => (
         <span key={i} className="contents">
           {i > 0 && <span className="text-cream-4 shrink-0">/</span>}
@@ -39,11 +39,11 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 w-full overflow-hidden">
-      <div className="flex flex-col gap-1 min-w-0 flex-1">
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-1" style={{ minWidth: 0, maxWidth: "calc(100vw - 820px)" }}>
         <div className="flex items-baseline gap-3 min-w-0">
           <h1
-            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate min-w-0"
+            className="font-display text-[30px] font-medium leading-none tracking-tight text-ink m-0 truncate"
             style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
             title={title}
           >
@@ -51,9 +51,9 @@ export function PageHeader({
           </h1>
           {badge && <span className="shrink-0">{badge}</span>}
         </div>
-        {meta && <div className="flex items-center gap-2.5 font-mono text-[11px] text-ink-4 overflow-hidden">{meta}</div>}
+        {meta && <div className="flex items-center gap-2.5 font-mono text-[11px] text-ink-4">{meta}</div>}
       </div>
-      {actions && <div className="flex gap-2 shrink-0 flex-wrap justify-end">{actions}</div>}
+      {actions && <div className="flex gap-2 shrink-0">{actions}</div>}
     </div>
   );
 }
