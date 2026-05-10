@@ -74,22 +74,24 @@ async function executeSplit(
     if (endpoint) { llmProvider = createProvider(endpoint.model, endpoint); }
     groups = await detectSections(pageData, { labels, llmProvider });
   } else {
-    // Fallback: page headers + package split step
+    // Fallback: convert page headers into minimal PageAnalysis for detectSections
     const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
-    const splitCtx = {
-      tenantId, documentId,
-      jobId: documentId,
-      document: { filename: doc.filename, storageKey: doc.storageKey, mimeType: doc.mimeType, pageCount: headersResult.pages, contentHash: "" },
-      stepOutputs: {
-        ...Object.fromEntries(Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }])),
-        __page_headers: { stepId: "__page_headers", stepType: "split" as const, output: { headers: headersResult.headers }, durationMs: 0, costUsd: 0 },
-      },
-      db, storage, endpoints: null, queue: null,
-    };
-    if (endpoint) { (splitCtx as any).__llm_provider = createProvider(endpoint.model, endpoint); }
-    const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
-    const splitResult = await splitStepImpl.run(splitCtx as any, step.config);
-    groups = (splitResult.output.groups as typeof groups) || [];
+    const pageData = headersResult.headers.map((h: { page: number; header_text: string }) => ({
+      page: h.page,
+      content_preview: h.header_text,
+      bold_headings: [] as Array<{ text: string; y: number }>,
+      form_numbers: [] as string[],
+      text_density: 1,
+      image_ratio: 0,
+      blank_bottom_ratio: 0,
+      table_count: 0,
+      has_dollar_amounts: false,
+      page_label: null as number | null,
+      page_of: null as number | null,
+    }));
+    let llmProvider: any = undefined;
+    if (endpoint) { llmProvider = createProvider(endpoint.model, endpoint); }
+    groups = await detectSections(pageData, { labels, llmProvider });
   }
 
   const output: Record<string, unknown> = { groups, method: method === "auto" ? "structural" : method, count: groups.length };
