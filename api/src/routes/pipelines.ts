@@ -1481,7 +1481,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   const docChunks = docText ? chunkMarkdown(docText) : [];
 
   const storage = c.get("storage");
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: Buffer.from(fileBytes), parseProvider, storage };
+  // Copy fileBytes into a new Buffer — Buffer.from(ArrayBuffer) creates a view
+  // that shares memory, which can be detached after the first fetch call consumes it.
+  const fileBufferCopy = Buffer.from(new Uint8Array(fileBytes));
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy, parseProvider, storage };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
