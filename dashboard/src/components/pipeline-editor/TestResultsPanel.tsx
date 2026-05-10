@@ -85,6 +85,7 @@ export function TestResultsPanel({ result, onClose }: TestResultsPanelProps) {
         </div>
       ) : null}
 
+      {result.stepType === "split" ? <SplitResults output={result.output} /> : null}
       {result.stepType === "classify" ? <ClassifyResults output={result.output} /> : null}
       {result.stepType === "extract" ? <ExtractResults output={result.output} /> : null}
       {result.stepType === "tag" ? <TagResults output={result.output} /> : null}
@@ -151,7 +152,7 @@ export function TestResultsPanel({ result, onClose }: TestResultsPanelProps) {
           ) : null}
         </div>
       ) : null}
-      {!["classify", "extract", "tag", "filter", "webhook", "gate", "resolve_references"].includes(result.stepType) ? (
+      {!["split", "classify", "extract", "tag", "filter", "webhook", "gate", "resolve_references"].includes(result.stepType) ? (
         <div>
           <div style={sectionLabelStyle}>Output</div>
           <pre style={preStyle}>{JSON.stringify(result.output, null, 2)}</pre>
@@ -286,6 +287,101 @@ function TagResults({ output }: { output: Record<string, unknown> }) {
       ) : (
         <p style={{ fontSize: "12px", color: "#8A847B" }}>No tags</p>
       )}
+    </div>
+  );
+}
+
+function SplitResults({ output }: { output: Record<string, unknown> }) {
+  const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }> | undefined;
+  const children = output.children as Array<{ group: Record<string, unknown>; filename: string; pageCount: number; previewUrl?: string }> | undefined;
+
+  if (!groups || groups.length === 0) {
+    return (
+      <div>
+        <div style={sectionLabelStyle}>Split</div>
+        <p style={{ fontSize: "12px", color: "#8A847B", fontStyle: "italic" }}>No sections detected</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={sectionLabelStyle}>
+        {groups.length} Section{groups.length !== 1 ? "s" : ""} Detected
+      </div>
+      <div className="flex flex-col gap-2">
+        {groups.map((group, i) => {
+          const child = children?.find(
+            c => (c.group as Record<string, unknown>).startPage === group.startPage
+              && (c.group as Record<string, unknown>).endPage === group.endPage
+          );
+          const previewUrl = child?.previewUrl;
+          const pageLabel = group.startPage === group.endPage
+            ? `p. ${group.startPage}`
+            : `pp. ${group.startPage}–${group.endPage}`;
+
+          return (
+            <div
+              key={i}
+              className="rounded"
+              style={{
+                border: "1px solid #E8E0D0",
+                background: "rgba(255,255,255,0.5)",
+                overflow: "hidden",
+              }}
+            >
+              <div style={{ padding: "10px 12px" }}>
+                <div className="flex items-baseline justify-between mb-1">
+                  <span style={{
+                    fontFamily: "'Fraunces', serif",
+                    fontSize: "14px",
+                    fontWeight: 500,
+                    color: "#171410",
+                    maxWidth: "200px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap" as const,
+                  }}>
+                    {group.type}
+                  </span>
+                  <span style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: "11px",
+                    color: group.confidence >= 0.8 ? "#2D8A4E" : group.confidence >= 0.5 ? "#B08D2D" : "#8A847B",
+                  }}>
+                    {(group.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div className="flex gap-3" style={{ fontSize: "11px", color: "#8A847B", fontFamily: "'JetBrains Mono', monospace" }}>
+                  <span>{pageLabel}</span>
+                  <span>{group.method}</span>
+                </div>
+              </div>
+              {previewUrl ? (
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block"
+                  style={{
+                    borderTop: "1px solid #E8E0D0",
+                    padding: "6px 12px",
+                    fontSize: "11px",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontWeight: 500,
+                    color: "#C33520",
+                    textDecoration: "none",
+                    cursor: "pointer",
+                    background: "rgba(195, 53, 32, 0.03)",
+                  }}
+                >
+                  View PDF →
+                </a>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

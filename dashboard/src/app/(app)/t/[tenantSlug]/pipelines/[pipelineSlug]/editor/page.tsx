@@ -462,6 +462,19 @@ export default function PipelineEditorPage() {
         return next;
       });
     }
+    if (event.type === "split_child") {
+      // Merge child preview data into the parent split step's result
+      const child = event.data as { group: Record<string, unknown>; filename: string; pageCount: number; previewUrl?: string };
+      setTestResults(prev => prev.map(r =>
+        r.stepType === "split" ? {
+          ...r,
+          output: {
+            ...r.output,
+            children: [...(r.output.children as unknown[] || []), child],
+          },
+        } : r
+      ));
+    }
     if (event.type === "step_complete") {
       const result = event.data as unknown as StepTestResult;
       setTestResults(prev => [...prev, result]);
@@ -507,6 +520,15 @@ export default function PipelineEditorPage() {
         next.set(stepId, { executionState: "skipped" });
       }
       return next;
+    });
+    // Merge split_child results into parent split step (non-streaming case)
+    setTestResults(prev => {
+      const childResults = prev.filter(r => r.stepType === "split_child");
+      if (childResults.length === 0) return prev;
+      const children = childResults.map(r => r.output);
+      return prev
+        .filter(r => r.stepType !== "split_child")
+        .map(r => r.stepType === "split" ? { ...r, output: { ...r.output, children } } : r);
     });
   }
 
