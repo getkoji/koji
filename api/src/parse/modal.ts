@@ -215,7 +215,7 @@ export class ModalParseProvider implements ParseProvider {
     const extractUrl = this.url.replace("parse-http", "extract-coordinates");
 
     const fd = new FormData();
-    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "test.pdf");
+    fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: "application/pdf" }), "test.pdf");
     fd.append("mappings", JSON.stringify(input.mappings));
 
     const resp = await fetch(extractUrl, {
@@ -245,7 +245,7 @@ export class ModalParseProvider implements ParseProvider {
     const renderUrl = this.url.replace("parse-http", "render-region");
 
     const fd = new FormData();
-    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "render.pdf");
+    fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: "application/pdf" }), "render.pdf");
     fd.append("page", String(input.page));
     fd.append("x", String(input.x));
     fd.append("y", String(input.y));
@@ -276,7 +276,7 @@ export class ModalParseProvider implements ParseProvider {
   }): Promise<{ pages: number; headers: Array<{ page: number; header_text: string }> }> {
     const headersUrl = this.url.replace("parse-http", "page-headers");
     const fd = new FormData();
-    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+    fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: "application/pdf" }), "doc.pdf");
 
     const resp = await fetch(headersUrl, {
       method: "POST",
@@ -294,8 +294,9 @@ export class ModalParseProvider implements ParseProvider {
     endPage: number;
   }): Promise<{ pdf_base64: string; pages: number; byte_size: number }> {
     const sliceUrl = this.url.replace("parse-http", "slice-pdf");
+    const part = Uint8Array.from(input.fileBuffer);
     const fd = new FormData();
-    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+    fd.append("file", new Blob([part], { type: "application/pdf" }), "doc.pdf");
     fd.append("start_page", String(input.startPage));
     fd.append("end_page", String(input.endPage));
 
@@ -314,7 +315,7 @@ export class ModalParseProvider implements ParseProvider {
   }): Promise<import("./provider").PageAnalysis[]> {
     const analyzeUrl = this.url.replace("parse-http", "analyze-pages");
     const fd = new FormData();
-    fd.append("file", new Blob([input.fileBuffer], { type: "application/pdf" }), "doc.pdf");
+    fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: "application/pdf" }), "doc.pdf");
 
     const resp = await fetch(analyzeUrl, {
       method: "POST",
