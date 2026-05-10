@@ -838,7 +838,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
   const lastOutput = stepOutputs[Object.keys(stepOutputs).pop() ?? ""];
   const wasSplit = lastOutput?.fan_out === true;
   const updates: Record<string, unknown> = {
-    status: wasSplit ? "split" : "completed",
+    status: wasSplit ? "split" : "delivered",
     completedAt: new Date(),
     pageCount,
     costUsd: String(totalCost),
@@ -861,6 +861,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
   if (jobRow?.jobId) {
     await withRLS(db, tenantId, (tx) =>
       tx.update(schema.jobs).set({
+        status: "complete",
         docsProcessed: sql`docs_processed + 1`,
         docsPassed: finalExtraction ? sql`docs_passed + 1` : sql`docs_passed`,
         completedAt: new Date(),
