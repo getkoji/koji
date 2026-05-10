@@ -163,7 +163,21 @@ export async function detectSections(
       return `Page ${pageNum}: headings=[${headings}], tables=${p.table_count}, text_density=${p.text_density}, form_numbers=[${p.form_numbers.join(",")}], has_dollars=${p.has_dollar_amounts}, preview="${p.content_preview.slice(0, 200)}"`;
     }).join("\n");
 
-    const prompt = `Classify these document pages. Each is the start of a new section in a multi-document package.\n\n${pageDescriptions}\n${labelDesc}\nFor each page, identify the document type. If a page does not clearly match any of the known types, use "other".\n\nReturn a JSON object mapping page numbers to types:\n{"1": "other", "5": "report", ...}\n\nReturn ONLY valid JSON.`;
+    const prompt = `Classify these document pages. Each is the start of a new section in a multi-document package.
+
+${pageDescriptions}
+${labelDesc}
+For each page, identify the document type based on the structural signals AND content. Pay close attention to:
+- Bold headings: these are the strongest signal for document type
+- Table count: pages with data tables are likely different from narrative pages
+- Text density: cover letters and notices have moderate density, data pages have high density
+
+If a page does not clearly match any of the known types based on its headings and structure, use "other". Do not force-fit a type — "other" is the correct answer for cover letters, notices, and generic pages.
+
+Return a JSON object mapping page numbers to types:
+{"1": "other", "5": "report", ...}
+
+Return ONLY valid JSON.`;
 
     try {
       const raw = await opts.llmProvider.generate(prompt, true);
