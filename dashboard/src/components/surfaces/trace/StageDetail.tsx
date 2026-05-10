@@ -627,14 +627,26 @@ function WebhookBody({ output }: { output: Record<string, unknown> | null }) {
 function SplitBody({ output }: { output: Record<string, unknown> | null }) {
   if (!output) return <EmptyBody message="No split data" />;
   const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }> | undefined;
+  const childCount = Array.isArray(output.child_document_ids) ? (output.child_document_ids as string[]).length : 0;
+  const errorMsg = typeof output.error === "string" ? output.error : null;
 
   return (
     <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[200px]">
-      <div className="px-4 py-3 border-b border-border">
+      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between">
         <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
-          {groups ? `${groups.length} section${groups.length !== 1 ? "s" : ""} detected` : "Split"}
+          {groups && groups.length > 0 ? `${groups.length} section${groups.length !== 1 ? "s" : ""} detected` : "Split"}
         </span>
+        {childCount > 0 && (
+          <span className="font-mono text-[10px] text-green font-medium">
+            {childCount} child doc{childCount !== 1 ? "s" : ""} created
+          </span>
+        )}
       </div>
+      {errorMsg && (
+        <div className="px-4 py-2 border-b border-border bg-vermillion-3">
+          <span className="font-mono text-[11px] text-vermillion-2">{errorMsg}</span>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto">
         {groups && groups.length > 0 ? (
           <div className="divide-y divide-border">
@@ -653,9 +665,13 @@ function SplitBody({ output }: { output: Record<string, unknown> | null }) {
               );
             })}
           </div>
-        ) : (
-          <div className="p-8 text-center font-mono text-[11px] text-ink-4">No sections detected</div>
-        )}
+        ) : !errorMsg ? (
+          <div className="p-4">
+            <pre className="bg-ink text-cream font-mono text-[10.5px] leading-[1.5] px-3 py-2.5 rounded-sm overflow-auto max-h-[300px] m-0">
+              {JSON.stringify(output, null, 2)}
+            </pre>
+          </div>
+        ) : null}
       </div>
     </div>
   );
