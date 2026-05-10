@@ -31,19 +31,6 @@ jobs:
           --health-timeout 3s
           --health-retries 5
 
-      minio:
-        image: minio/minio:latest
-        env:
-          MINIO_ROOT_USER: koji
-          MINIO_ROOT_PASSWORD: kojisecret
-        ports:
-          - 9415:9000
-        options: >-
-          --health-cmd "mc ready local"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +57,15 @@ jobs:
         run: pnpm --filter @koji/db migrate
         env:
           DATABASE_URL: postgres://koji:koji@localhost:5434/koji
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -e MINIO_ROOT_USER=koji \
+            -e MINIO_ROOT_PASSWORD=kojisecret \
+            -p 9415:9000 \
+            minio/minio:latest server /data
+          timeout 30 bash -c 'until curl -sf http://localhost:9415/minio/health/live; do sleep 1; done'
 
       - name: Create MinIO bucket
         run: |
