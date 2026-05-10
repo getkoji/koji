@@ -376,6 +376,7 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
         documentId: schema.documents.id,
         jobId: schema.documents.jobId,
         status: schema.documents.status,
+        pipelineId: schema.jobs.pipelineId,
       })
       .from(schema.documents)
       .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
@@ -422,11 +423,33 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
       .where(eq(schema.jobs.id, doc.jobId)),
   );
 
-  await queue.enqueue(
-    "ingestion.process",
-    { documentId: doc.documentId },
-    { tenantId },
+  // Clear old step runs so the DAG runner starts fresh
+  await withRLS(db, tenantId, (tx) =>
+    tx.delete(schema.pipelineStepRuns)
+      .where(eq(schema.pipelineStepRuns.documentId, doc.documentId)),
   );
+
+  // Route to DAG runner if the pipeline has DAG steps, otherwise legacy
+  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ pipelineType: schema.pipelines.pipelineType })
+      .from(schema.pipelines)
+      .where(eq(schema.pipelines.id, doc.pipelineId))
+      .limit(1),
+  );
+
+  if (pipeline?.pipelineType === "dag") {
+    await queue.enqueue(
+      "pipeline.dag.run",
+      { documentId: doc.documentId, pipelineId: doc.pipelineId },
+      { tenantId },
+    );
+  } else {
+    await queue.enqueue(
+      "ingestion.process",
+      { documentId: doc.documentId },
+      { tenantId },
+    );
+  }
 
   return c.json({ ok: true }, 202);
 });
