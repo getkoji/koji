@@ -949,7 +949,6 @@ async def slice_pdf(request: Request):
         slice_doc.select(page_list)
         pdf_bytes = slice_doc.tobytes(deflate=True)
         slice_doc.close()
-        new_doc.close()
         doc.close()
 
         b64 = base64.b64encode(pdf_bytes).decode("ascii")
