@@ -791,6 +791,70 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                 if (!passed && branchStep.config.on_fail === "fail") { branchStatus = "failed"; branchError = "Filter blocked"; }
                 break;
               }
+              case "split": {
+                if (_parseProvider?.pageHeaders) {
+                  const file = await storage.getBuffer(doc.storageKey);
+                  if (file) {
+                    const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
+                    const splitCtx = {
+                      tenantId, documentId,
+                      jobId: (doc as any).jobId ?? documentId,
+                      document: { filename: doc.filename, storageKey: doc.storageKey, mimeType: doc.mimeType, pageCount: headersResult.pages, contentHash: "" },
+                      stepOutputs: {
+                        ...Object.fromEntries(Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }])),
+                        __page_headers: { stepId: "__page_headers", stepType: "split" as const, output: { headers: headersResult.headers }, durationMs: 0, costUsd: 0 },
+                      },
+                      db, storage, endpoints: null, queue: null,
+                    };
+                    if (endpoint) { (splitCtx as any).__llm_provider = createProvider(endpoint.model, endpoint); }
+                    const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
+                    const splitResult = await splitStepImpl.run(splitCtx as any, branchStep.config);
+                    branchOutput = splitResult.output;
+
+                    const groups = (splitResult.output.groups as Array<{ startPage: number; endPage: number; type: string }>) || [];
+                    if (splitResult.ok && groups.length > 0 && _parseProvider?.slicePdf) {
+                      const childIds: string[] = [];
+                      const jobId = (await withRLS(db, tenantId, (tx) =>
+                        tx.select({ jobId: schema.documents.jobId }).from(schema.documents)
+                          .where(eq(schema.documents.id, documentId)).limit(1),
+                      ))[0]?.jobId;
+
+                      for (const group of groups) {
+                        try {
+                          const sliced = await _parseProvider.slicePdf({ fileBuffer: file.data, startPage: group.startPage, endPage: group.endPage });
+                          const childKey = `${doc.storageKey.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
+                          const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+                          await storage.put(childKey, childBuffer, { contentType: "application/pdf" });
+                          const childFilename = `${doc.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type}.pdf`;
+                          const [child] = await withRLS(db, tenantId, (tx) =>
+                            tx.insert(schema.documents).values({
+                              tenantId, jobId: jobId!, filename: childFilename, storageKey: childKey,
+                              fileSize: sliced.byte_size, mimeType: "application/pdf",
+                              contentHash: `split-${documentId}-${group.startPage}-${group.endPage}`,
+                              pageCount: sliced.pages, status: "pending", parentDocumentId: documentId,
+                              pageRange: [group.startPage, group.endPage],
+                            }).returning({ id: schema.documents.id }),
+                          );
+                          if (child) childIds.push(child.id);
+                        } catch (err) {
+                          console.error(`[dag-runner] split (branch): failed to create child for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
+                        }
+                      }
+                      branchOutput.child_document_ids = childIds;
+                      branchOutput.fan_out = true;
+                      const queue = (globalThis as any).__koji_queue;
+                      if (queue?.enqueue) {
+                        for (const childId of childIds) {
+                          await queue.enqueue({ kind: "pipeline.dag.run", payload: { documentId: childId, pipelineId }, tenantId });
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  branchOutput = { groups: [], error: "Parse provider does not support page headers" };
+                }
+                break;
+              }
               default:
                 branchOutput = { note: `Step type "${branchStep.type}" executed (branch)` };
             }
