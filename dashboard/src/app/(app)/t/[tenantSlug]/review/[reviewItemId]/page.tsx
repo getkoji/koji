@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Check, X, FileText, ChevronLeft, ChevronRight } from "lucide-react";
-import { Breadcrumbs, StickyHeader } from "@/components/layouts";
+import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { review as reviewApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -310,15 +310,10 @@ function ReviewHeader({
       : "bg-cream-2 text-ink-3";
 
   return (
-    <div className="flex items-start justify-between gap-6 mt-2">
-      <div className="flex flex-col gap-2 min-w-0">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1
-            className="font-display text-[26px] font-medium leading-none tracking-tight text-ink m-0"
-            style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
-          >
-            {item.documentFilename ?? "Unknown document"}
-          </h1>
+    <PageHeader
+      title={item.documentFilename ?? "Unknown document"}
+      badge={
+        <span className="flex items-center gap-2 shrink-0">
           <code className="font-mono text-[11px] text-vermillion-2 bg-vermillion-3/40 px-2 py-0.5 rounded-sm">
             {item.fieldName}
           </code>
@@ -330,8 +325,10 @@ function ReviewHeader({
               <span className="ml-1 font-normal">· {Number(item.confidence).toFixed(2)}</span>
             )}
           </span>
-        </div>
-        <div className="flex items-center gap-2 font-mono text-[11px] text-ink-3 flex-wrap">
+        </span>
+      }
+      meta={
+        <>
           {item.schemaName && (
             <>
               <span>
@@ -350,41 +347,42 @@ function ReviewHeader({
             </>
           )}
           <span>flagged {formatRelativeTime(item.createdAt)}</span>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2 shrink-0">
-        {queuePosition && (
-          <span className="font-mono text-[10px] text-ink-4 px-2">
-            Item {queuePosition.index} of {queuePosition.total} pending
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={onPrev ?? undefined}
-          disabled={!onPrev}
-          className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-3 border border-border-strong rounded-sm px-2 py-1 hover:border-ink hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <ChevronLeft className="w-3 h-3" />
-          prev
-          <span className="text-ink-4 text-[10px] ml-0.5 px-1 border border-border rounded-[2px]">
-            K
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={onNext ?? undefined}
-          disabled={!onNext}
-          className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-3 border border-border-strong rounded-sm px-2 py-1 hover:border-ink hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          next
-          <ChevronRight className="w-3 h-3" />
-          <span className="text-ink-4 text-[10px] ml-0.5 px-1 border border-border rounded-[2px]">
-            J
-          </span>
-        </button>
-      </div>
-    </div>
+        </>
+      }
+      actions={
+        <>
+          {queuePosition && (
+            <span className="font-mono text-[10px] text-ink-4 px-2 self-center">
+              {queuePosition.index} of {queuePosition.total}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onPrev ?? undefined}
+            disabled={!onPrev}
+            className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-3 border border-border-strong rounded-sm px-2 py-1 hover:border-ink hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <ChevronLeft className="w-3 h-3" />
+            prev
+            <span className="text-ink-4 text-[10px] ml-0.5 px-1 border border-border rounded-[2px]">
+              K
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onNext ?? undefined}
+            disabled={!onNext}
+            className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-3 border border-border-strong rounded-sm px-2 py-1 hover:border-ink hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            next
+            <ChevronRight className="w-3 h-3" />
+            <span className="text-ink-4 text-[10px] ml-0.5 px-1 border border-border rounded-[2px]">
+              J
+            </span>
+          </button>
+        </>
+      }
+    />
   );
 }
 
