@@ -933,6 +933,7 @@ async def slice_pdf(request: Request):
 
     try:
         doc = pymupdf.open(str(tmp_path))
+        print(f"[slice_pdf] file size={len(file_bytes)}, pages={len(doc)}, requested=[{start_page}, {end_page}]")
         if end_page < 0:
             end_page = len(doc)
         if start_page < 1 or end_page > len(doc) or start_page > end_page:
@@ -942,9 +943,12 @@ async def slice_pdf(request: Request):
                 status_code=400,
             )
 
-        new_doc = pymupdf.open()
-        new_doc.insert_pdf(doc, from_page=start_page - 1, to_page=end_page - 1)
-        pdf_bytes = new_doc.tobytes()
+        # Reopen the doc for slicing — select() modifies in-place
+        slice_doc = pymupdf.open(str(tmp_path))
+        page_list = list(range(start_page - 1, end_page))
+        slice_doc.select(page_list)
+        pdf_bytes = slice_doc.tobytes(deflate=True)
+        slice_doc.close()
         new_doc.close()
         doc.close()
 
