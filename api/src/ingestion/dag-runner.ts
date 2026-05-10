@@ -160,9 +160,9 @@ const STEP_COSTS: Record<string, number> = {
   tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
 };
 
-interface TestEdge { from: string; to: string; when?: string; default?: boolean }
+export interface TestEdge { from: string; to: string; when?: string; default?: boolean }
 
-function evalCondition(condition: string, context: Record<string, unknown>): boolean {
+export function evalCondition(condition: string, context: Record<string, unknown>): boolean {
   const m = condition.match(/^([\w.]+)\s*(==|!=|>=?|<=?|in)\s*(.+)$/);
   if (!m) return true;
   let current: unknown = context;
@@ -192,7 +192,7 @@ function resolveNextStep(edges: TestEdge[], output: Record<string, unknown>): st
   return all[0] ?? null;
 }
 
-function resolveNextSteps(edges: TestEdge[], output: Record<string, unknown>): string[] {
+export function resolveNextSteps(edges: TestEdge[], output: Record<string, unknown>): string[] {
   const matched: string[] = [];
   for (const e of edges) {
     if (e.default) continue;
