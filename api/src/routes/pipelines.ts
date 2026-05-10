@@ -1367,15 +1367,9 @@ async function executeTestStep(
                 try { previewUrl = await docInfo.storage.getSignedUrl(storageKey, 3600); } catch {}
               }
 
-              // Parse the sliced PDF to get text
-              let childText: string | undefined;
-              if (docInfo.parseProvider.parse) {
-                try {
-                  const parseResult = await docInfo.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
-                  childText = parseResult.markdown;
-                } catch { /* parse failed */ }
-              }
-              children.push({ group, text: childText, pageCount: sliced.pages, filename: childFilename, storageKey, previewUrl });
+              // Don't parse here — defer to downstream steps that need the text.
+              // Store the buffer so runBranch can parse lazily when extract runs.
+              children.push({ group, text: undefined, pageCount: sliced.pages, filename: childFilename, storageKey, previewUrl, fileBuffer: childBuffer });
             } catch (err) {
               console.warn(`[test/split] slice failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
             }
@@ -1603,14 +1597,26 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
 
       // Split fan-out: run downstream steps for each child document
       if (step.type === "split" && result.ok && result.output.children) {
-        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }>;
+        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string; fileBuffer?: Buffer }>;
         const childBranches = nextIds.length > 0 ? nextIds : [];
         for (const child of children) {
+          // Lazy parse: only parse child PDF if a downstream step needs text
+          let childText = child.text;
+          if (!childText && child.fileBuffer && activeDocInfo.parseProvider?.parse) {
+            const hasExtractStep = childBranches.some((id) => pSteps.find((s) => s.id === id)?.type === "extract");
+            if (hasExtractStep) {
+              try {
+                const parseResult = await activeDocInfo.parseProvider.parse({ filename: child.filename, mimeType: "application/pdf", fileBuffer: child.fileBuffer });
+                childText = parseResult.markdown;
+              } catch { /* parse failed */ }
+            }
+          }
           const childDocInfo = {
             ...activeDocInfo,
             filename: child.filename,
-            text: child.text,
+            text: childText,
             pageCount: child.pageCount,
+            fileBuffer: child.fileBuffer ?? activeDocInfo.fileBuffer,
           };
           // Set the split output for this child so filter/webhook can access group type + URL
           const childStepOutputs = { ...stepOutputs };
