@@ -1,0 +1,22 @@
+name: Deploy to Platform
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  trigger-platform-deploy:
+    name: Trigger platform submodule update
+    runs-on: ubuntu-latest
+    # Only deploy when CI-relevant code changes — skip docs-only commits
+    if: >-
+      !contains(github.event.head_commit.message, '[skip deploy]')
+    steps:
+      - name: Trigger platform update
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.PLATFORM_DEPLOY_TOKEN }}" \
+            https://api.github.com/repos/getkoji/platform/dispatches \
+            -d '{"event_type": "koji-updated", "client_payload": {"sha": "${{ github.sha }}", "message": "${{ github.event.head_commit.message }}"}}'
+          echo "Triggered platform deploy for ${{ github.sha }}"
