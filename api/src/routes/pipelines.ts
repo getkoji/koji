@@ -1516,7 +1516,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             const outEdges = pEdges.filter(e => e.from === step.id);
             const nextIds = resolveTestNextSteps(outEdges, result.output);
             const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: nextIds.includes(e.to) }));
-            const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
+            // Strip non-serializable context before sending to client
+            const sliceCtx = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
+            const { _slice_context: _, ...serializableOutput } = result.output;
+            const sr = { stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: serializableOutput, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals };
             results.push(sr); path.push(step.id);
             if (result.ok) stepOutputs[step.id] = result.output;
             send("step_complete", sr);
@@ -1526,7 +1529,6 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             // Split fan-out: slice each group and stream downstream steps
             if (step.type === "split" && result.ok && result.output.groups) {
               const groups = result.output.groups as Array<{ startPage: number; endPage: number; type: string }>;
-              const sliceCtx = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
               for (const group of groups) {
                 let childBuffer: Buffer | undefined;
                 let childFilename = `${(sliceCtx?.filename ?? "doc").replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type.replace(/\s+/g, "_")}.pdf`;
@@ -1588,7 +1590,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       const outEdges = pEdges.filter(e => e.from === step.id);
       const nextIds = resolveTestNextSteps(outEdges, result.output);
       const evals = outEdges.map(e => ({ to: e.to, condition: e.when || (e.default ? "default" : undefined), matched: nextIds.includes(e.to) }));
-      results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: result.output, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
+      // Strip non-serializable context before adding to results
+      const sliceCtxNs = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
+      const { _slice_context: _ns, ...serializableOutputNs } = result.output;
+      results.push({ stepId: step.id, stepType: step.type, status: result.ok ? "completed" : "failed", output: serializableOutputNs, durationMs: ms, costUsd: result.costUsd, error: result.error, edgeEvaluations: evals });
       path.push(step.id);
       if (result.ok) stepOutputs[step.id] = result.output;
       if (!result.ok) break;
@@ -1597,7 +1602,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       // Split fan-out: slice each group and run downstream steps
       if (step.type === "split" && result.ok && result.output.groups) {
         const groups = result.output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }>;
-        const sliceCtx = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
+        const sliceCtx = sliceCtxNs;
         const childBranches = nextIds.length > 0 ? nextIds : [];
 
         for (const group of groups) {
@@ -1676,5 +1681,6 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     return c.json({ status: "paused", currentStep: lastResult, nextStepId: nextId, completedSteps: path, stepOutputs });
   }
 
-  return c.json({ status: "completed", steps: results, path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a, r) => a + r.durationMs, 0), totalCostUsd: results.reduce((a, r) => a + r.costUsd, 0), documentInfo: docInfo });
+  const { parseProvider: _pp, storage: _st, fileBuffer: _fb, ...safeDocInfo } = docInfo;
+  return c.json({ status: "completed", steps: results, path, skippedSteps: pSteps.filter(s => !path.includes(s.id)).map(s => s.id), totalDurationMs: results.reduce((a, r) => a + r.durationMs, 0), totalCostUsd: results.reduce((a, r) => a + r.costUsd, 0), documentInfo: safeDocInfo });
 });
