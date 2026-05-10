@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 export function StickyHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="sticky top-[60px] z-10 bg-cream border-b border-border px-10 pt-5 pb-4 shrink-0">
+    <div className="sticky top-[60px] z-10 bg-cream border-b border-border px-10 pt-5 pb-4 shrink-0 overflow-hidden">
       {children}
     </div>
   );
