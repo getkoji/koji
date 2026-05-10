@@ -1341,44 +1341,22 @@ async function executeTestStep(
 
         // Filter groups by type if filter_types is configured
         const filterTypes = step.config.filter_types as string[] | undefined;
-        const groupsToSlice = filterTypes?.length
+        const filteredGroups = filterTypes?.length
           ? groups.filter((g) => filterTypes.some((ft) => g.type.toLowerCase().includes(ft.toLowerCase())))
           : groups;
 
-        // Slice PDFs for matching groups — store in R2 and return signed URLs
-        const children: Array<{ group: typeof groups[0]; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string }> = [];
-        if (docInfo.parseProvider?.slicePdf && docInfo.fileBuffer && groupsToSlice.length > 0) {
-          for (const group of groupsToSlice) {
-            try {
-              const sliced = await docInfo.parseProvider.slicePdf({
-                fileBuffer: docInfo.fileBuffer,
-                startPage: group.startPage,
-                endPage: group.endPage,
-              });
-              const childFilename = `${docInfo.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type.replace(/\s+/g, "_")}.pdf`;
-              const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
-
-              // Store sliced PDF in R2
-              let storageKey: string | undefined;
-              let previewUrl: string | undefined;
-              if (docInfo.storage) {
-                storageKey = `test-runs/${Date.now()}-${childFilename}`;
-                await docInfo.storage.put(storageKey, childBuffer, { contentType: "application/pdf" });
-                try { previewUrl = await docInfo.storage.getSignedUrl(storageKey, 3600); } catch {}
-              }
-
-              // Don't parse here — defer to downstream steps that need the text.
-              // Store the buffer so runBranch can parse lazily when extract runs.
-              children.push({ group, text: undefined, pageCount: sliced.pages, filename: childFilename, storageKey, previewUrl, fileBuffer: childBuffer });
-            } catch (err) {
-              console.warn(`[test/split] slice failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
-            }
-          }
-        }
-
+        // Return groups immediately — slicing happens in the fan-out loop
+        // so the step_complete event fires fast and the UI doesn't hang.
         return {
           ok: true,
-          output: { groups, count: groups.length, children },
+          output: {
+            groups: filteredGroups,
+            all_groups: groups,
+            count: filteredGroups.length,
+            total_sections: groups.length,
+            // Pass context needed for slicing in the fan-out
+            _slice_context: { fileBuffer: docInfo.fileBuffer, parseProvider: docInfo.parseProvider, storage: docInfo.storage, filename: docInfo.filename },
+          },
           costUsd: 0.005,
         };
     }
@@ -1545,15 +1523,36 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             if (!result.ok) break;
             if (mode === "step") { send("pipeline_paused", { nextStepId: nextIds[0] ?? null, completedSteps: path, stepOutputs }); return; }
 
-            // Split fan-out with real child documents
-            if (step.type === "split" && result.ok && result.output.children) {
-              const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string }>;
-              for (const child of children) {
-                const childDocInfo = { ...activeDocInfo, filename: child.filename, text: child.text, pageCount: child.pageCount };
+            // Split fan-out: slice each group and stream downstream steps
+            if (step.type === "split" && result.ok && result.output.groups) {
+              const groups = result.output.groups as Array<{ startPage: number; endPage: number; type: string }>;
+              const sliceCtx = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
+              for (const group of groups) {
+                let childBuffer: Buffer | undefined;
+                let childFilename = `${(sliceCtx?.filename ?? "doc").replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type.replace(/\s+/g, "_")}.pdf`;
+                let previewUrl: string | undefined;
+                let childPageCount = group.endPage - group.startPage + 1;
+                if (sliceCtx?.parseProvider?.slicePdf && sliceCtx.fileBuffer) {
+                  try {
+                    const sliced = await sliceCtx.parseProvider.slicePdf({ fileBuffer: sliceCtx.fileBuffer, startPage: group.startPage, endPage: group.endPage });
+                    childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+                    childPageCount = sliced.pages;
+                    if (sliceCtx.storage) {
+                      const storageKey = `test-runs/${Date.now()}-${childFilename}`;
+                      await sliceCtx.storage.put(storageKey, childBuffer, { contentType: "application/pdf" });
+                      try { previewUrl = await sliceCtx.storage.getSignedUrl(storageKey, 3600); } catch {}
+                    }
+                  } catch {}
+                }
+                let childText: string | undefined;
+                if (childBuffer && sliceCtx?.parseProvider?.parse && nextIds.some((id) => pSteps.find((s) => s.id === id)?.type === "extract")) {
+                  try { childText = (await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer })).markdown; } catch {}
+                }
+                const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: childBuffer ?? activeDocInfo.fileBuffer };
                 const childStepOutputs = { ...stepOutputs };
-                childStepOutputs[step.id] = { ...result.output, current_group: child.group };
+                childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl };
                 Object.assign(stepOutputs, childStepOutputs);
-                send("split_child", { group: child.group, filename: child.filename, pageCount: child.pageCount });
+                send("split_child", { group, filename: childFilename, pageCount: childPageCount, previewUrl });
                 for (const nextId of nextIds) { await streamBranch(nextId, childDocInfo); }
               }
               return;
@@ -1595,51 +1594,59 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       if (!result.ok) break;
       if (mode === "step") return;
 
-      // Split fan-out: run downstream steps for each child document
-      if (step.type === "split" && result.ok && result.output.children) {
-        const children = result.output.children as Array<{ group: { startPage: number; endPage: number; type: string }; text?: string; pageCount: number; filename: string; storageKey?: string; previewUrl?: string; fileBuffer?: Buffer }>;
+      // Split fan-out: slice each group and run downstream steps
+      if (step.type === "split" && result.ok && result.output.groups) {
+        const groups = result.output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }>;
+        const sliceCtx = result.output._slice_context as { fileBuffer?: Buffer; parseProvider?: any; storage?: any; filename?: string } | undefined;
         const childBranches = nextIds.length > 0 ? nextIds : [];
-        for (const child of children) {
-          // Lazy parse: only parse child PDF if a downstream step needs text
-          let childText = child.text;
-          if (!childText && child.fileBuffer && activeDocInfo.parseProvider?.parse) {
+
+        for (const group of groups) {
+          // Slice this group's pages into a child PDF
+          let childBuffer: Buffer | undefined;
+          let childFilename = `${(sliceCtx?.filename ?? "doc").replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type.replace(/\s+/g, "_")}.pdf`;
+          let previewUrl: string | undefined;
+          let storageKey: string | undefined;
+          let childPageCount = group.endPage - group.startPage + 1;
+
+          if (sliceCtx?.parseProvider?.slicePdf && sliceCtx.fileBuffer) {
+            try {
+              const sliced = await sliceCtx.parseProvider.slicePdf({ fileBuffer: sliceCtx.fileBuffer, startPage: group.startPage, endPage: group.endPage });
+              childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+              childPageCount = sliced.pages;
+              if (sliceCtx.storage) {
+                storageKey = `test-runs/${Date.now()}-${childFilename}`;
+                await sliceCtx.storage.put(storageKey, childBuffer, { contentType: "application/pdf" });
+                try { previewUrl = await sliceCtx.storage.getSignedUrl(storageKey, 3600); } catch {}
+              }
+            } catch (err) {
+              console.warn(`[test/split] slice failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
+            }
+          }
+
+          // Lazy parse: only if downstream has an extract step
+          let childText: string | undefined;
+          if (childBuffer && sliceCtx?.parseProvider?.parse) {
             const hasExtractStep = childBranches.some((id) => pSteps.find((s) => s.id === id)?.type === "extract");
             if (hasExtractStep) {
               try {
-                const parseResult = await activeDocInfo.parseProvider.parse({ filename: child.filename, mimeType: "application/pdf", fileBuffer: child.fileBuffer });
+                const parseResult = await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
                 childText = parseResult.markdown;
-              } catch { /* parse failed */ }
+              } catch {}
             }
           }
-          const childDocInfo = {
-            ...activeDocInfo,
-            filename: child.filename,
-            text: childText,
-            pageCount: child.pageCount,
-            fileBuffer: child.fileBuffer ?? activeDocInfo.fileBuffer,
-          };
-          // Set the split output for this child so filter/webhook can access group type + URL
+
+          const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: childBuffer ?? activeDocInfo.fileBuffer };
           const childStepOutputs = { ...stepOutputs };
-          childStepOutputs[step.id] = {
-            ...result.output,
-            current_group: child.group,
-            document_url: child.previewUrl,
-            storage_key: child.storageKey,
-          };
+          childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl, storage_key: storageKey };
+
           for (const nextId of childBranches) {
             const savedOutputs = { ...stepOutputs };
             Object.assign(stepOutputs, childStepOutputs);
             results.push({
-              stepId: `${step.id}:${child.group.type.replace(/\s+/g, "_")}_p${child.group.startPage}-${child.group.endPage}`,
+              stepId: `${step.id}:${group.type.replace(/\s+/g, "_")}_p${group.startPage}-${group.endPage}`,
               stepType: "split_child",
               status: "completed",
-              output: {
-                group: child.group,
-                filename: child.filename,
-                pageCount: child.pageCount,
-                textLength: child.text?.length ?? 0,
-                previewUrl: child.previewUrl,
-              },
+              output: { group, filename: childFilename, pageCount: childPageCount, previewUrl },
               durationMs: 0,
               costUsd: 0,
             });
