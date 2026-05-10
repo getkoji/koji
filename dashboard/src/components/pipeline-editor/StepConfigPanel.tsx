@@ -643,12 +643,12 @@ function SplitConfig({
           }
           style={inputStyle}
         >
-          <option value="llm">LLM (send page headers to model)</option>
-          <option value="keyword">Keyword (match page headers)</option>
-          <option value="fixed">Fixed (manual page ranges)</option>
+          <option value="llm">Auto</option>
+          <option value="keyword">Pattern matching</option>
+          <option value="fixed">Fixed page ranges</option>
         </select>
         <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>
-          LLM analyzes page headers to detect document boundaries. Keyword matches against configured patterns. Fixed uses manual page ranges.
+          Auto detects document boundaries using AI. Pattern matching uses your configured keywords. Fixed lets you specify exact page ranges.
         </p>
       </div>
 

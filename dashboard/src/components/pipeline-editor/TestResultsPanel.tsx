@@ -291,6 +291,26 @@ function TagResults({ output }: { output: Record<string, unknown> }) {
   );
 }
 
+function friendlyMethod(method: string): string {
+  // Show the most significant detection signal (last in the chain)
+  const parts = method.split("+");
+  const primary = parts[parts.length - 1]!;
+  const map: Record<string, string> = {
+    first_page: "start",
+    page_number_reset: "pagination",
+    page_number_start: "pagination",
+    page_number_end: "pagination",
+    form_number_change: "structure",
+    density_shift: "layout",
+    content_type_shift: "layout",
+    blank_gap: "layout",
+    keyword: "matched",
+    generic_keyword: "matched",
+    llm: "auto",
+  };
+  return map[primary] ?? "auto";
+}
+
 function SplitResults({ output }: { output: Record<string, unknown> }) {
   const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }> | undefined;
   const children = output.children as Array<{ group: Record<string, unknown>; filename: string; pageCount: number; previewUrl?: string }> | undefined;
@@ -354,7 +374,7 @@ function SplitResults({ output }: { output: Record<string, unknown> }) {
                 </div>
                 <div className="flex gap-3" style={{ fontSize: "11px", color: "#8A847B", fontFamily: "'JetBrains Mono', monospace" }}>
                   <span>{pageLabel}</span>
-                  <span>{group.method}</span>
+                  <span>{friendlyMethod(group.method)}</span>
                 </div>
               </div>
               {previewUrl ? (
