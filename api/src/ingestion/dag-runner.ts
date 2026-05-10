@@ -34,6 +34,118 @@ export function setDagParseProvider(provider: ParseProvider) {
   _parseProvider = provider;
 }
 
+/** Shared split execution — used by both main path and branch fan-out. */
+async function executeSplit(
+  step: { config: Record<string, unknown> },
+  doc: { filename: string; storageKey: string; mimeType: string },
+  documentId: string,
+  pipelineId: string,
+  tenantId: string,
+  stepOutputs: Record<string, Record<string, unknown>>,
+  db: Db,
+  storage: StorageProvider,
+  endpoint: any,
+): Promise<Record<string, unknown>> {
+  if (!_parseProvider?.pageHeaders) {
+    return { groups: [], error: "Parse provider does not support page headers" };
+  }
+  const file = await storage.getBuffer(doc.storageKey);
+  if (!file) {
+    return { groups: [], error: "File not found in storage" };
+  }
+
+  const method = (step.config.method as string) || "auto";
+  const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
+
+  // Fixed page ranges — no detection needed
+  if (method === "fixed") {
+    const ranges = (step.config.page_ranges as Array<{ start: number; end: number; type?: string }>) || [];
+    const groups = ranges.map(r => ({ startPage: r.start, endPage: r.end, type: r.type || "document", confidence: 1.0, method: "fixed" }));
+    return { groups, method: "fixed", count: groups.length };
+  }
+
+  // Use full structural analysis if available, otherwise fall back to page headers
+  let groups: Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }>;
+
+  if (_parseProvider.analyzePages) {
+    const { detectSections } = await import("../extract/split-detect");
+    const pageData = await _parseProvider.analyzePages({ fileBuffer: file.data });
+    let llmProvider: any = undefined;
+    if (endpoint) { llmProvider = createProvider(endpoint.model, endpoint); }
+    groups = await detectSections(pageData, { labels, llmProvider });
+  } else {
+    // Fallback: page headers + package split step
+    const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
+    const splitCtx = {
+      tenantId, documentId,
+      jobId: documentId,
+      document: { filename: doc.filename, storageKey: doc.storageKey, mimeType: doc.mimeType, pageCount: headersResult.pages, contentHash: "" },
+      stepOutputs: {
+        ...Object.fromEntries(Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }])),
+        __page_headers: { stepId: "__page_headers", stepType: "split" as const, output: { headers: headersResult.headers }, durationMs: 0, costUsd: 0 },
+      },
+      db, storage, endpoints: null, queue: null,
+    };
+    if (endpoint) { (splitCtx as any).__llm_provider = createProvider(endpoint.model, endpoint); }
+    const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
+    const splitResult = await splitStepImpl.run(splitCtx as any, step.config);
+    groups = (splitResult.output.groups as typeof groups) || [];
+  }
+
+  const output: Record<string, unknown> = { groups, method: method === "auto" ? "structural" : method, count: groups.length };
+
+  // Fan-out: create child documents
+  if (groups.length > 0 && _parseProvider.slicePdf) {
+    const childIds: string[] = [];
+    const jobId = (await withRLS(db, tenantId, (tx) =>
+      tx.select({ jobId: schema.documents.jobId }).from(schema.documents)
+        .where(eq(schema.documents.id, documentId)).limit(1),
+    ))[0]?.jobId;
+
+    for (const group of groups) {
+      try {
+        const sliced = await _parseProvider.slicePdf({ fileBuffer: file.data, startPage: group.startPage, endPage: group.endPage });
+        const childKey = `${doc.storageKey.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
+        const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
+        await storage.put(childKey, childBuffer, { contentType: "application/pdf" });
+        const childFilename = `${doc.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type}.pdf`;
+        const [child] = await withRLS(db, tenantId, (tx) =>
+          tx.insert(schema.documents).values({
+            tenantId, jobId: jobId!, filename: childFilename, storageKey: childKey,
+            fileSize: sliced.byte_size, mimeType: "application/pdf",
+            contentHash: `split-${documentId}-${group.startPage}-${group.endPage}`,
+            pageCount: sliced.pages, status: "pending", parentDocumentId: documentId,
+            pageRange: [group.startPage, group.endPage],
+          }).returning({ id: schema.documents.id }),
+        );
+        if (child) childIds.push(child.id);
+        console.log(`[dag-runner] split: created child doc ${childFilename} (pages ${group.startPage}-${group.endPage}, type=${group.type})`);
+      } catch (err) {
+        console.error(`[dag-runner] split: failed for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
+      }
+    }
+
+    output.child_document_ids = childIds;
+    output.fan_out = true;
+
+    if (jobId && childIds.length > 0) {
+      await withRLS(db, tenantId, (tx) =>
+        tx.update(schema.jobs).set({ docsTotal: sql`docs_total + ${childIds.length}`, updatedAt: new Date() })
+          .where(eq(schema.jobs.id, jobId)),
+      );
+    }
+
+    const queue = (globalThis as any).__koji_queue;
+    if (queue?.enqueue) {
+      for (const childId of childIds) {
+        await queue.enqueue({ kind: "pipeline.dag.run", payload: { documentId: childId, pipelineId }, tenantId });
+      }
+    }
+  }
+
+  return output;
+}
+
 // Step cost lookup
 const STEP_COSTS: Record<string, number> = {
   classify: 0.005, extract: 0.08, ocr: 0.03, split: 0.01,
@@ -542,130 +654,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
         }
 
         case "split": {
-          // Get page headers for boundary detection
-          if (_parseProvider?.pageHeaders) {
-            const file = await storage.getBuffer(doc.storageKey);
-            if (file) {
-              const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
-
-              // Inject page headers and LLM provider into context for the step
-              const splitCtx = {
-                ...{
-                  tenantId,
-                  documentId,
-                  jobId: (doc as any).jobId ?? documentId,
-                  document: {
-                    filename: doc.filename,
-                    storageKey: doc.storageKey,
-                    mimeType: doc.mimeType,
-                    pageCount: headersResult.pages,
-                    contentHash: "",
-                  },
-                  stepOutputs: {
-                    ...Object.fromEntries(
-                      Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }]),
-                    ),
-                    __page_headers: {
-                      stepId: "__page_headers",
-                      stepType: "split" as const,
-                      output: { headers: headersResult.headers },
-                      durationMs: 0,
-                      costUsd: 0,
-                    },
-                  },
-                  db, storage, endpoints: null, queue: null,
-                },
-              };
-
-              // Inject LLM provider if available
-              if (endpoint) {
-                const provider = createProvider(endpoint.model, endpoint);
-                (splitCtx as any).__llm_provider = provider;
-              }
-
-              // Import and run the split step
-              const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
-              const splitResult = await splitStepImpl.run(splitCtx as any, step.config);
-
-              output = splitResult.output;
-
-              // Fan-out: create child documents for each page group
-              const groups = (splitResult.output.groups as Array<{ startPage: number; endPage: number; type: string }>) || [];
-              if (splitResult.ok && groups.length > 0 && _parseProvider?.slicePdf) {
-                const childIds: string[] = [];
-                const jobId = (await withRLS(db, tenantId, (tx) =>
-                  tx.select({ jobId: schema.documents.jobId }).from(schema.documents)
-                    .where(eq(schema.documents.id, documentId)).limit(1),
-                ))[0]?.jobId;
-
-                for (const group of groups) {
-                  try {
-                    const sliced = await _parseProvider.slicePdf({
-                      fileBuffer: file.data,
-                      startPage: group.startPage,
-                      endPage: group.endPage,
-                    });
-
-                    // Store sliced PDF
-                    const childKey = `${doc.storageKey.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
-                    const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
-                    await storage.put(childKey, childBuffer, { contentType: "application/pdf" });
-
-                    // Create child document row
-                    const childFilename = `${doc.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type}.pdf`;
-                    const [child] = await withRLS(db, tenantId, (tx) =>
-                      tx.insert(schema.documents).values({
-                        tenantId,
-                        jobId: jobId!,
-                        filename: childFilename,
-                        storageKey: childKey,
-                        fileSize: sliced.byte_size,
-                        mimeType: "application/pdf",
-                        contentHash: `split-${documentId}-${group.startPage}-${group.endPage}`,
-                        pageCount: sliced.pages,
-                        status: "pending",
-                        parentDocumentId: documentId,
-                        pageRange: [group.startPage, group.endPage],
-                      }).returning({ id: schema.documents.id }),
-                    );
-
-                    if (child) childIds.push(child.id);
-                    console.log(`[dag-runner] split: created child doc ${childFilename} (pages ${group.startPage}-${group.endPage}, type=${group.type})`);
-                  } catch (err) {
-                    console.error(`[dag-runner] split: failed to create child for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
-                  }
-                }
-
-                output.child_document_ids = childIds;
-                output.fan_out = true;
-
-                // Update job doc count
-                if (jobId && childIds.length > 0) {
-                  await withRLS(db, tenantId, (tx) =>
-                    tx.update(schema.jobs).set({
-                      docsTotal: sql`docs_total + ${childIds.length}`,
-                      updatedAt: new Date(),
-                    }).where(eq(schema.jobs.id, jobId)),
-                  );
-                }
-
-                // Queue each child document for processing through the remaining DAG
-                // The child docs will be picked up by the queue and processed independently
-                const queue = (globalThis as any).__koji_queue;
-                if (queue?.enqueue) {
-                  for (const childId of childIds) {
-                    await queue.enqueue({
-                      kind: "pipeline.dag.run",
-                      payload: { documentId: childId, pipelineId },
-                      tenantId,
-                    });
-                  }
-                }
-              }
-            }
-          } else {
-            output = { groups: [], error: "Parse provider does not support page headers" };
-          }
+          output = await executeSplit(step, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint);
           break;
         }
 
@@ -792,67 +781,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                 break;
               }
               case "split": {
-                if (_parseProvider?.pageHeaders) {
-                  const file = await storage.getBuffer(doc.storageKey);
-                  if (file) {
-                    const headersResult = await _parseProvider.pageHeaders({ fileBuffer: file.data });
-                    const splitCtx = {
-                      tenantId, documentId,
-                      jobId: (doc as any).jobId ?? documentId,
-                      document: { filename: doc.filename, storageKey: doc.storageKey, mimeType: doc.mimeType, pageCount: headersResult.pages, contentHash: "" },
-                      stepOutputs: {
-                        ...Object.fromEntries(Object.entries(stepOutputs).map(([k, v]) => [k, { stepId: k, stepType: "unknown" as const, output: v, durationMs: 0, costUsd: 0 }])),
-                        __page_headers: { stepId: "__page_headers", stepType: "split" as const, output: { headers: headersResult.headers }, durationMs: 0, costUsd: 0 },
-                      },
-                      db, storage, endpoints: null, queue: null,
-                    };
-                    if (endpoint) { (splitCtx as any).__llm_provider = createProvider(endpoint.model, endpoint); }
-                    const { splitStep: splitStepImpl } = await import("@koji/pipeline/steps/split");
-                    const splitResult = await splitStepImpl.run(splitCtx as any, branchStep.config);
-                    branchOutput = splitResult.output;
-
-                    const groups = (splitResult.output.groups as Array<{ startPage: number; endPage: number; type: string }>) || [];
-                    if (splitResult.ok && groups.length > 0 && _parseProvider?.slicePdf) {
-                      const childIds: string[] = [];
-                      const jobId = (await withRLS(db, tenantId, (tx) =>
-                        tx.select({ jobId: schema.documents.jobId }).from(schema.documents)
-                          .where(eq(schema.documents.id, documentId)).limit(1),
-                      ))[0]?.jobId;
-
-                      for (const group of groups) {
-                        try {
-                          const sliced = await _parseProvider.slicePdf({ fileBuffer: file.data, startPage: group.startPage, endPage: group.endPage });
-                          const childKey = `${doc.storageKey.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}.pdf`;
-                          const childBuffer = Buffer.from(sliced.pdf_base64, "base64");
-                          await storage.put(childKey, childBuffer, { contentType: "application/pdf" });
-                          const childFilename = `${doc.filename.replace(/\.pdf$/i, "")}_p${group.startPage}-${group.endPage}_${group.type}.pdf`;
-                          const [child] = await withRLS(db, tenantId, (tx) =>
-                            tx.insert(schema.documents).values({
-                              tenantId, jobId: jobId!, filename: childFilename, storageKey: childKey,
-                              fileSize: sliced.byte_size, mimeType: "application/pdf",
-                              contentHash: `split-${documentId}-${group.startPage}-${group.endPage}`,
-                              pageCount: sliced.pages, status: "pending", parentDocumentId: documentId,
-                              pageRange: [group.startPage, group.endPage],
-                            }).returning({ id: schema.documents.id }),
-                          );
-                          if (child) childIds.push(child.id);
-                        } catch (err) {
-                          console.error(`[dag-runner] split (branch): failed to create child for pages ${group.startPage}-${group.endPage}:`, (err as Error).message);
-                        }
-                      }
-                      branchOutput.child_document_ids = childIds;
-                      branchOutput.fan_out = true;
-                      const queue = (globalThis as any).__koji_queue;
-                      if (queue?.enqueue) {
-                        for (const childId of childIds) {
-                          await queue.enqueue({ kind: "pipeline.dag.run", payload: { documentId: childId, pipelineId }, tenantId });
-                        }
-                      }
-                    }
-                  }
-                } else {
-                  branchOutput = { groups: [], error: "Parse provider does not support page headers" };
-                }
+                branchOutput = await executeSplit(branchStep, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint);
                 break;
               }
               default:
