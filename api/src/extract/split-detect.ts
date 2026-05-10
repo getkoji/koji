@@ -142,7 +142,9 @@ export async function detectSections(
 
     // Generic fallback: only truly universal patterns (not domain-specific)
     // Domain keywords belong in user-configured labels, not hardcoded here.
-    if (info.type === "unknown") {
+    // Skip if the page has bold headings — headings are a stronger signal,
+    // so defer to the LLM layer for proper classification.
+    if (info.type === "unknown" && pageData.bold_headings.length === 0) {
       if (/copyright|©/i.test(text)) {
         info.type = "copyright_notice";
         info.method += "+generic_keyword";
