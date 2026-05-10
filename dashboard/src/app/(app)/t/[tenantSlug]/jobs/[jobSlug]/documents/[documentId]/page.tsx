@@ -366,11 +366,13 @@ function mapStages(
     cursorMs += dur;
     return {
       name: prettyStageName(r.stageName),
+      rawName: r.stageName,
       durationMs: dur,
       startPct,
       widthPct,
       status: normalizeStatus(r.status),
       meta: stageMeta(r),
+      output: r.summaryJson ?? null,
     };
   });
 }

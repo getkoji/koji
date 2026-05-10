@@ -30,9 +30,17 @@ export function StageDetail({
   documentPreviewUrl: string | null;
   documentMimeType: string | null;
 }) {
-  const isExtract = stage.name === "Extract";
+  // DAG pipeline steps have rawName like "classify: step_id"
+  const dagType = stage.rawName.includes(":") ? stage.rawName.split(":")[0]!.trim() : null;
+  const isExtract = stage.name === "Extract" || dagType === "extract";
   const isParse = stage.name === "Parse";
   const isDeliver = stage.name === "Deliver";
+  const isClassify = dagType === "classify";
+  const isFilter = dagType === "filter";
+  const isWebhook = dagType === "webhook";
+  const isSplit = dagType === "split";
+  const isTag = dagType === "tag";
+  const isGate = dagType === "gate";
   const summary = extractSummary(stage);
 
   return (
@@ -111,6 +119,18 @@ export function StageDetail({
         />
       ) : isDeliver ? (
         <DeliverBody jobSlug={jobSlug} documentId={documentId} stage={stage} />
+      ) : isClassify ? (
+        <ClassifyBody output={stage.output} />
+      ) : isFilter ? (
+        <FilterBody output={stage.output} />
+      ) : isWebhook ? (
+        <WebhookBody output={stage.output} />
+      ) : isSplit ? (
+        <SplitBody output={stage.output} />
+      ) : isTag ? (
+        <TagBody output={stage.output} />
+      ) : isGate ? (
+        <GateBody output={stage.output} />
       ) : (
         <GenericBody stage={stage} />
       )}
@@ -119,9 +139,17 @@ export function StageDetail({
 }
 
 function extractSummary(stage: TraceStage): { model: string | null; fields: number | null } {
-  // TraceStage.meta is a display string assembled in page-level mapStages from
-  // summary_json. Parse the two values we surface in the stats row. If the
-  // format shifts we gracefully fall back to nulls and render "—".
+  // Try structured output first (DAG pipelines)
+  if (stage.output) {
+    const o = stage.output;
+    const model = typeof o.model === "string" ? o.model : null;
+    const fieldCount = typeof o.fieldCount === "number" ? o.fieldCount
+      : typeof o.fields === "number" ? o.fields
+      : o.fields && typeof o.fields === "object" ? Object.keys(o.fields).length
+      : null;
+    if (model || fieldCount !== null) return { model, fields: fieldCount };
+  }
+  // Fallback: parse from meta string (legacy traces)
   const meta = stage.meta ?? "";
   const model = meta.match(/model:\s*([^\s·]+)/i)?.[1] ?? null;
   const fieldsRaw = meta.match(/fields:\s*(\d+)/i)?.[1];
@@ -493,7 +521,223 @@ function formatDeliveryTime(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function ClassifyBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No classification data" />;
+  const label = String(output.label ?? "—");
+  const confidence = typeof output.confidence === "number" ? output.confidence : null;
+  const method = String(output.method ?? "—");
+  const reasoning = output.reasoning ? String(output.reasoning) : null;
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[200px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Classification result
+        </span>
+      </div>
+      <div className="px-4 py-4 flex flex-col gap-3">
+        <div className="flex items-baseline gap-3">
+          <span className="font-display text-xl font-medium text-ink tracking-tight"
+            style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
+            {label}
+          </span>
+          {confidence !== null && (
+            <span className={`font-mono text-[12px] font-medium ${confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
+              {(confidence * 100).toFixed(0)}%
+            </span>
+          )}
+        </div>
+        <div className="flex gap-4">
+          <div>
+            <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 block mb-0.5">Method</span>
+            <span className="font-mono text-[12px] text-ink">{method}</span>
+          </div>
+        </div>
+        {reasoning && (
+          <div>
+            <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 block mb-1">Reasoning</span>
+            <p className="font-body text-[12px] text-ink-2 leading-[1.5] m-0 italic">{reasoning}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilterBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No filter data" />;
+  const passed = Boolean(output.passed);
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[120px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Filter result
+        </span>
+      </div>
+      <div className="px-4 py-4">
+        <span className={`font-mono text-[14px] font-medium ${passed ? "text-green" : "text-vermillion-2"}`}>
+          {passed ? "✓ Passed" : "✗ Blocked"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function WebhookBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No webhook data" />;
+  const url = output.url ? String(output.url) : null;
+  const statusCode = output.status_code ?? output.statusCode;
+  const skipped = Boolean(output.skipped);
+  const wouldSend = output.would_send as Record<string, unknown> | undefined;
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[200px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Webhook
+        </span>
+      </div>
+      <div className="px-4 py-4 flex flex-col gap-3">
+        {url && (
+          <div>
+            <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 block mb-0.5">URL</span>
+            <span className="font-mono text-[11px] text-ink break-all">{url}</span>
+          </div>
+        )}
+        <div>
+          <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 block mb-0.5">Status</span>
+          <span className={`font-mono text-[12px] font-medium ${skipped ? "text-ink-3" : "text-green"}`}>
+            {skipped ? "Skipped (test mode)" : statusCode ? `${statusCode}` : "Sent"}
+          </span>
+        </div>
+        {wouldSend && (
+          <div>
+            <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4 block mb-1">Payload</span>
+            <pre className="bg-ink text-cream font-mono text-[10.5px] leading-[1.5] px-3 py-2.5 rounded-sm overflow-auto max-h-[300px] m-0">
+              {JSON.stringify(wouldSend, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SplitBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No split data" />;
+  const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }> | undefined;
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[200px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          {groups ? `${groups.length} section${groups.length !== 1 ? "s" : ""} detected` : "Split"}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {groups && groups.length > 0 ? (
+          <div className="divide-y divide-border">
+            {groups.map((g, i) => {
+              const pageLabel = g.startPage === g.endPage ? `p. ${g.startPage}` : `pp. ${g.startPage}–${g.endPage}`;
+              return (
+                <div key={i} className="px-4 py-3 flex items-baseline justify-between gap-3">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="font-mono text-[12px] font-medium text-ink truncate">{g.type}</span>
+                    <span className="font-mono text-[10px] text-ink-4 shrink-0">{pageLabel}</span>
+                  </div>
+                  <span className={`font-mono text-[10px] font-medium shrink-0 ${g.confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
+                    {(g.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4">No sections detected</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TagBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No tag data" />;
+  const tags = output.tags as Record<string, string> | undefined;
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[120px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Tags applied
+        </span>
+      </div>
+      <div className="px-4 py-4">
+        {tags && Object.keys(tags).length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {Object.entries(tags).map(([key, val]) => (
+              <div key={key} className="flex items-baseline gap-2">
+                <span className="font-mono text-[10px] font-medium text-vermillion-2 uppercase tracking-[0.08em]">{key}</span>
+                <span className="font-mono text-[11px] text-ink">{val}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <span className="font-mono text-[11px] text-ink-4">No tags</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GateBody({ output }: { output: Record<string, unknown> | null }) {
+  if (!output) return <EmptyBody message="No gate data" />;
+  const approved = Boolean(output.auto_approved || output.reviewed);
+
+  return (
+    <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[120px]">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+          Gate (HITL)
+        </span>
+      </div>
+      <div className="px-4 py-4">
+        <span className={`font-mono text-[12px] font-medium ${approved ? "text-green" : "text-[#B6861A]"}`}>
+          {output.auto_approved ? "Auto-approved" : output.reviewed ? "Reviewed" : "Pending review"}
+        </span>
+        {typeof output.reason === "string" ? (
+          <p className="font-body text-[11px] text-ink-3 mt-1 m-0">{output.reason}</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function EmptyBody({ message }: { message: string }) {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8 text-ink-4 font-mono text-[11px]">
+      {message}
+    </div>
+  );
+}
+
 function GenericBody({ stage }: { stage: TraceStage }) {
+  if (stage.output && Object.keys(stage.output).length > 0) {
+    return (
+      <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[200px]">
+        <div className="px-4 py-3 border-b border-border">
+          <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+            Output
+          </span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          <pre className="bg-ink text-cream font-mono text-[10.5px] leading-[1.5] px-3 py-2.5 rounded-sm overflow-auto max-h-[400px] m-0">
+            {JSON.stringify(stage.output, null, 2)}
+          </pre>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex-1 flex items-center justify-center p-8 text-ink-4 font-mono text-[11px]">
       Stage detail for &ldquo;{stage.name}&rdquo; — {stage.durationMs}ms, {stage.status}

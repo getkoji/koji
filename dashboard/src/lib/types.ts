@@ -6,11 +6,15 @@
 
 export interface TraceStage {
   name: string;
+  /** Raw stage name before prettifying (e.g. "classify: classify_guci") */
+  rawName: string;
   durationMs: number;
   startPct: number;
   widthPct: number;
   status: "ok" | "warn" | "fail";
   meta: string;
+  /** Structured output from the step (outputJson for DAG, summaryJson for legacy) */
+  output: Record<string, unknown> | null;
 }
 
 export interface TraceField {
