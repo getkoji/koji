@@ -234,7 +234,7 @@ function ClassifyConfig({
                   value={label.description || ""}
                   onChange={(e) => updateLabel(i, { description: e.target.value || undefined })}
                   style={{ ...inputStyle, fontSize: "12px", padding: "4px 8px" }}
-                  placeholder="Any insurance document — policy, certificate, claim"
+                  placeholder="e.g. Multi-page financial report with tables"
                 />
               </div>
               <div>
@@ -248,7 +248,7 @@ function ClassifyConfig({
           ))}
           {labels.length === 0 ? (
             <p style={{ fontSize: "12px", color: "#8A847B", fontStyle: "italic", textAlign: "center" as const, padding: "12px" }}>
-              No labels yet. Add at least two labels (e.g., "insurance" and "other").
+              No labels yet. Add at least two labels (e.g., "invoice" and "other").
             </p>
           ) : null}
         </div>
@@ -297,7 +297,7 @@ function KeywordsInput({ keywords, onChange }: { keywords: string[]; onChange: (
         onChange(parsed);
       }}
       style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", padding: "4px 8px" }}
-      placeholder="insurance, policy, certificate, claim, ACORD"
+      placeholder="invoice, receipt, contract, report"
     />
   );
 }
@@ -689,7 +689,7 @@ function SplitConfig({
               <input
                 value={label.description || ""}
                 onChange={(e) => updateLabel(i, { description: e.target.value })}
-                placeholder="Description (e.g. ACORD 25 Certificate of Liability Insurance)"
+                placeholder="Description (e.g. Monthly vendor invoice with line items)"
                 style={{ ...inputStyle, fontSize: "11px", marginBottom: "4px" }}
               />
               {method === "keyword" && (
@@ -698,7 +698,7 @@ function SplitConfig({
                   onChange={(e) =>
                     updateLabel(i, { keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })
                   }
-                  placeholder="Keywords (comma-separated): certificate of liability, ACORD 25"
+                  placeholder="Keywords (comma-separated): invoice, purchase order"
                   style={{ ...inputStyle, fontSize: "11px" }}
                 />
               )}
@@ -724,7 +724,7 @@ function SplitConfig({
               } catch { /* ignore parse errors while typing */ }
             }}
             style={{ ...inputStyle, minHeight: "80px", resize: "vertical", fontFamily: "'JetBrains Mono', monospace", fontSize: "11px" }}
-            placeholder={'[\n  { "start": 1, "end": 3, "type": "coi" },\n  { "start": 4, "end": 8, "type": "policy" }\n]'}
+            placeholder={'[\n  { "start": 1, "end": 3, "type": "summary" },\n  { "start": 4, "end": 8, "type": "detail" }\n]'}
           />
         </div>
       )}
@@ -736,7 +736,7 @@ function SplitConfig({
           onChange={(e) =>
             onUpdate(step.id, { config: { ...config, filter_types: e.target.value.split(",").map(s => s.trim()).filter(Boolean) } })
           }
-          placeholder="e.g. declarations, endorsement — only slice these types"
+          placeholder="e.g. invoice, contract — only slice these types"
           style={{ ...inputStyle, fontSize: "12px" }}
         />
         <p style={{ fontSize: "10px", color: "#8A847B", marginTop: "4px" }}>

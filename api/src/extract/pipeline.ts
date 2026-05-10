@@ -178,7 +178,7 @@ Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 d
 
 Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.
 
-Also include a "__reasoning" key mapping each field name to a brief one-sentence explanation of where and why you selected that value. Example: {"policy_number": "Found 'ACP BPHK2202901585' labeled as 'Policy Number' on the declarations page", "effective_date": "Extracted '12-04-17' from 'Effective From 12-04-17 To 12-04-18' on the common declarations"}. For null fields, explain why: "Field not found in document".${extraBlock}
+Also include a "__reasoning" key mapping each field name to a brief one-sentence explanation of where and why you selected that value. Example: {"vendor_name": "Found 'Acme Corp' in the header on page 1", "total_amount": "Extracted '$1,250.00' from the totals row in the line items table"}. For null fields, explain why: "Field not found in document".${extraBlock}
 
 JSON:`;
 }

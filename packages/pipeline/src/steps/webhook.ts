@@ -136,7 +136,7 @@ function buildPayload(
       // Find the most recent extract step's output
       const extractOutput = Object.values(ctx.stepOutputs)
         .reverse()
-        .find((o) => o.output?.fields || o.output?._delegate === 'extraction_pipeline');
+        .find((o) => o.output?.fields);
       return {
         document_id: ctx.documentId,
         job_id: ctx.jobId,
