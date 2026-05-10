@@ -1,0 +1,148 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dashboard/**"
+      - "api/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  e2e:
+    name: Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: koji
+          POSTGRES_PASSWORD: koji
+          POSTGRES_DB: koji
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U koji"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: koji
+          MINIO_ROOT_PASSWORD: kojisecret
+        ports:
+          - 9415:9000
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Provision the app_user role (same as docker-entrypoint-initdb.d)
+      - name: Init database roles
+        run: psql -f docker/db-init/01_app_user.sql
+        env:
+          PGHOST: localhost
+          PGPORT: 5434
+          PGUSER: koji
+          PGPASSWORD: koji
+          PGDATABASE: koji
+
+      - name: Run migrations
+        run: pnpm --filter @koji/db migrate
+        env:
+          DATABASE_URL: postgres://koji:koji@localhost:5434/koji
+
+      - name: Create MinIO bucket
+        run: |
+          curl -sS https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
+          chmod +x /tmp/mc
+          /tmp/mc alias set koji http://localhost:9415 koji kojisecret
+          /tmp/mc mb koji/koji --ignore-existing
+
+      # Start API early so we can call /api/setup to create the first user
+      - name: Start API
+        run: pnpm --filter @koji/api start &
+        env:
+          DATABASE_URL: postgres://koji:koji@localhost:5434/koji
+          PORT: "9401"
+          KOJI_S3_ENDPOINT: http://localhost:9415
+          KOJI_S3_BUCKET: koji
+          KOJI_S3_ACCESS_KEY: koji
+          KOJI_S3_SECRET_KEY: kojisecret
+          KOJI_S3_REGION: us-east-1
+          KOJI_S3_FORCE_PATH_STYLE: "true"
+
+      - name: Wait for API
+        run: timeout 30 bash -c 'until curl -sf http://localhost:9401/api/health; do sleep 1; done'
+
+      - name: Run first-time setup
+        run: |
+          curl -sf -X POST http://localhost:9401/api/setup \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"CI User","email":"ci@koji.test","password":"testpass123","workspace_slug":"ci-workspace"}'
+
+      - name: Seed test data
+        run: pnpm --filter @koji/api seed
+        env:
+          DATABASE_URL: postgres://koji:koji@localhost:5434/koji
+
+      - name: Build dashboard
+        run: pnpm --filter @koji/dashboard build
+
+      - name: Start dashboard
+        run: pnpm --filter @koji/dashboard start --port 3002 &
+
+      - name: Wait for dashboard
+        run: timeout 30 bash -c 'until curl -s -o /dev/null -w "%{http_code}" http://localhost:3002 | grep -q "^[23]"; do sleep 1; done'
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('dashboard/package.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: dashboard
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        run: pnpm --filter @koji/dashboard test:e2e
+        env:
+          CI: true
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: dashboard/playwright-report/
+          retention-days: 14
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: dashboard/test-results/
+          retention-days: 14
