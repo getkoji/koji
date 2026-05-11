@@ -627,7 +627,8 @@ function WebhookBody({ output }: { output: Record<string, unknown> | null }) {
 function SplitBody({ output, jobSlug }: { output: Record<string, unknown> | null; jobSlug: string }) {
   if (!output) return <EmptyBody message="No split data" />;
   const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string; previewUrl?: string; childDocumentId?: string }> | undefined;
-  const childCount = Array.isArray(output.child_document_ids) ? (output.child_document_ids as string[]).length : 0;
+  const childDocIds = Array.isArray(output.child_document_ids) ? (output.child_document_ids as string[]) : [];
+  const childCount = childDocIds.length;
   const errorMsg = typeof output.error === "string" ? output.error : null;
 
   return (
@@ -662,10 +663,10 @@ function SplitBody({ output, jobSlug }: { output: Record<string, unknown> | null
                     <span className={`font-mono text-[10px] font-medium ${g.confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
                       {(g.confidence * 100).toFixed(0)}%
                     </span>
-                    {(g.childDocumentId || g.previewUrl) && (
+                    {(g.childDocumentId || childDocIds[i] || g.previewUrl) && (
                       <a
-                        href={g.childDocumentId
-                          ? `/api/jobs/${jobSlug}/documents/${g.childDocumentId}/preview`
+                        href={(g.childDocumentId || childDocIds[i])
+                          ? `/api/jobs/${jobSlug}/documents/${g.childDocumentId || childDocIds[i]}/preview`
                           : g.previewUrl!}
                         target="_blank"
                         rel="noopener noreferrer"
