@@ -69,9 +69,9 @@ jobs:
 
       - name: Create MinIO bucket
         run: |
-          docker run --rm --network host \
+          docker run --rm --network host --entrypoint sh \
             minio/mc:latest \
-            bash -c "mc alias set koji http://localhost:9415 koji kojisecret && mc mb koji/koji --ignore-existing"
+            -c "mc alias set koji http://localhost:9415 koji kojisecret && mc mb koji/koji --ignore-existing"
 
       # Start API early so we can call /api/setup to create the first user
       - name: Start API
