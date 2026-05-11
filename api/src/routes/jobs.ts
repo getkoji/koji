@@ -455,6 +455,38 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
 });
 
 /**
+ * GET /api/jobs/:slug/documents/:docId/preview — redirect to a fresh signed URL.
+ *
+ * Generates a 1-hour signed URL for the document's file in storage and
+ * redirects to it. Unlike pre-baked signed URLs stored in step outputs,
+ * this endpoint always returns a fresh URL so links never expire.
+ */
+jobs.get("/:slug/documents/:docId/preview", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const tenantId = getTenantId(c);
+  const docId = c.req.param("docId")!;
+
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ storageKey: schema.documents.storageKey })
+      .from(schema.documents)
+      .where(eq(schema.documents.id, docId))
+      .limit(1),
+  );
+
+  if (!doc?.storageKey) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  try {
+    const url = await storage.getSignedUrl(doc.storageKey, 3600);
+    return c.redirect(url, 302);
+  } catch {
+    return c.json({ error: "File not available in storage" }, 404);
+  }
+});
+
+/**
  * GET /api/jobs/:slug/documents/:docId/markdown — the parsed markdown.
  *
  * Powers the "Parse" stage detail pane. Every parse result is written to

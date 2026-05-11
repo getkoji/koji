@@ -126,7 +126,7 @@ export function StageDetail({
       ) : isWebhook ? (
         <WebhookBody output={stage.output} />
       ) : isSplit ? (
-        <SplitBody output={stage.output} />
+        <SplitBody output={stage.output} jobSlug={jobSlug} />
       ) : isTag ? (
         <TagBody output={stage.output} />
       ) : isGate ? (
@@ -624,7 +624,7 @@ function WebhookBody({ output }: { output: Record<string, unknown> | null }) {
   );
 }
 
-function SplitBody({ output }: { output: Record<string, unknown> | null }) {
+function SplitBody({ output, jobSlug }: { output: Record<string, unknown> | null; jobSlug: string }) {
   if (!output) return <EmptyBody message="No split data" />;
   const groups = output.groups as Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string; previewUrl?: string; childDocumentId?: string }> | undefined;
   const childCount = Array.isArray(output.child_document_ids) ? (output.child_document_ids as string[]).length : 0;
@@ -662,9 +662,11 @@ function SplitBody({ output }: { output: Record<string, unknown> | null }) {
                     <span className={`font-mono text-[10px] font-medium ${g.confidence >= 0.8 ? "text-green" : "text-[#B6861A]"}`}>
                       {(g.confidence * 100).toFixed(0)}%
                     </span>
-                    {g.previewUrl && (
+                    {(g.childDocumentId || g.previewUrl) && (
                       <a
-                        href={g.previewUrl}
+                        href={g.childDocumentId
+                          ? `/api/jobs/${jobSlug}/documents/${g.childDocumentId}/preview`
+                          : g.previewUrl!}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="font-mono text-[10px] font-medium text-vermillion-2 hover:underline"
