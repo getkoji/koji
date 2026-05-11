@@ -5,6 +5,8 @@
  */
 import crypto from "node:crypto";
 import { createDb, schema } from "@koji/db";
+import { eq } from "drizzle-orm";
+import { hashPassword } from "./auth/password";
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5433/koji";
 
@@ -24,6 +26,34 @@ async function seed() {
   const USER = userRow.id;
   console.log(`  tenant=${TENANT}`);
   console.log(`  user=${USER}`);
+
+  // ── E2E test user ──
+  const TEST_EMAIL = "test@koji.test";
+  const TEST_PASSWORD = "testpass123";
+  const [existingTestUser] = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(eq(schema.users.email, TEST_EMAIL))
+    .limit(1);
+
+  if (!existingTestUser) {
+    const passwordHash = await hashPassword(TEST_PASSWORD);
+    const [testUser] = await db.insert(schema.users).values({
+      email: TEST_EMAIL,
+      name: "E2E Test User",
+      passwordHash,
+      authProvider: "local",
+      authProviderId: `local-${TEST_EMAIL}`,
+    }).returning();
+    await db.insert(schema.memberships).values({
+      userId: testUser!.id,
+      tenantId: TENANT,
+      roles: ["owner"],
+    });
+    console.log(`  test user created (${TEST_EMAIL})`);
+  } else {
+    console.log(`  test user already exists (${TEST_EMAIL})`);
+  }
 
   // ── Schemas ──
   const [invoiceSchema, receiptSchema, claimSchema] = await db
