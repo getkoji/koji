@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, eq, desc, asc, gte, sql, type SQL } from "drizzle-orm";
+import { and, eq, desc, asc, gte, isNull, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId } from "../auth/middleware";
@@ -189,7 +189,7 @@ jobs.get("/:slug/documents", requires("job:read"), async (c) => {
         createdAt: schema.documents.createdAt,
       })
       .from(schema.documents)
-      .where(eq(schema.documents.jobId, job.id))
+      .where(and(eq(schema.documents.jobId, job.id), isNull(schema.documents.parentDocumentId)))
       .orderBy(asc(schema.documents.createdAt)),
   );
 
