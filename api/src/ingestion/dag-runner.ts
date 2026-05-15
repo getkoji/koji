@@ -36,7 +36,7 @@ export function setDagParseProvider(provider: ParseProvider) {
 
 /** Shared split execution — used by both main path and branch fan-out. */
 async function executeSplit(
-  step: { config: Record<string, unknown> },
+  step: { id: string; config: Record<string, unknown> },
   doc: { filename: string; storageKey: string; mimeType: string },
   documentId: string,
   pipelineId: string,
@@ -45,6 +45,8 @@ async function executeSplit(
   db: Db,
   storage: StorageProvider,
   endpoint: any,
+  /** Step IDs that follow the split in the DAG — children resume from here */
+  nextStepIds?: string[],
 ): Promise<Record<string, unknown>> {
   if (!_parseProvider?.pageHeaders) {
     return { groups: [], error: "Parse provider does not support page headers" };
@@ -145,8 +147,24 @@ async function executeSplit(
 
     const queue = (globalThis as any).__koji_queue;
     if (queue?.enqueue) {
-      for (const childId of childIds) {
-        await queue.enqueue({ kind: "pipeline.dag.run", payload: { documentId: childId, pipelineId }, tenantId });
+      // Resolve next steps after split so children resume from there, not from the beginning
+      const resumeStepIds = nextStepIds ?? [];
+      for (let ci = 0; ci < childIds.length; ci++) {
+        const group = groups[ci];
+        await queue.enqueue({
+          kind: "pipeline.dag.run",
+          payload: {
+            documentId: childIds[ci],
+            pipelineId,
+            // Children resume from the step(s) after split
+            startStepId: resumeStepIds[0] ?? null,
+            // Pass the split output so downstream steps have group context
+            inheritedOutputs: {
+              [step.id]: { ...output, current_group: group },
+            },
+          },
+          tenantId,
+        });
       }
     }
   }
@@ -211,7 +229,12 @@ export function resolveNextSteps(edges: TestEdge[], output: Record<string, unkno
 export async function handleDagRun(job: QueuedJob): Promise<void> {
   const db = _db!;
   const storage = _storage!;
-  const { documentId, pipelineId } = job.payload as { documentId: string; pipelineId: string };
+  const { documentId, pipelineId, startStepId, inheritedOutputs } = job.payload as {
+    documentId: string;
+    pipelineId: string;
+    startStepId?: string | null;
+    inheritedOutputs?: Record<string, Record<string, unknown>>;
+  };
   const tenantId = job.tenantId;
 
   // Load document
@@ -302,10 +325,12 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   // Resolve model endpoint
   const endpoint = await resolveExtractEndpoint(db, tenantId, pipeline.modelProviderId);
 
-  // Walk the DAG
+  // Walk the DAG — start from startStepId (split child resume) or the first step with no incoming edges
   const withIncoming = new Set(pEdges.map(e => e.to));
-  let currentId: string | null = pSteps.find(s => !withIncoming.has(s.id))?.id || pSteps[0]?.id || null;
-  const stepOutputs: Record<string, Record<string, unknown>> = {};
+  let currentId: string | null = startStepId
+    ? startStepId
+    : pSteps.find(s => !withIncoming.has(s.id))?.id || pSteps[0]?.id || null;
+  const stepOutputs: Record<string, Record<string, unknown>> = { ...(inheritedOutputs ?? {}) };
   let stepOrder = 0;
   let totalCost = 0;
   let finalExtraction: Record<string, unknown> | null = null;
@@ -662,7 +687,12 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
         }
 
         case "split": {
-          output = await executeSplit(step, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint);
+          // Pre-resolve next steps so executeSplit can tell children where to resume
+          const splitOutEdges = pEdges.filter(e => e.from === step.id);
+          const splitNextIds = splitOutEdges.filter(e => !e.when && !e.default).map(e => e.to);
+          // If all edges are conditional, include them all — children will evaluate conditions
+          const resumeIds = splitNextIds.length > 0 ? splitNextIds : splitOutEdges.map(e => e.to);
+          output = await executeSplit(step, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint, resumeIds);
           break;
         }
 
@@ -789,7 +819,9 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                 break;
               }
               case "split": {
-                branchOutput = await executeSplit(branchStep, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint);
+                const branchSplitEdges = pEdges.filter(e => e.from === branchStep.id);
+                const branchResumeIds = branchSplitEdges.map(e => e.to);
+                branchOutput = await executeSplit(branchStep, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint, branchResumeIds);
                 break;
               }
               default:
