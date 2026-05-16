@@ -152,10 +152,12 @@ def route_fields(
     override via `hints.max_chunks` in the schema — useful for array
     fields that aggregate data across many detail sections.
 
-    When `section_map` is provided (from `build_section_map`), it takes
-    priority: fields use the LLM-assigned chunks directly, with no cap.
-    Fields not in the map or mapped to empty lists fall through to the
-    heuristic scorer so nothing is silently dropped.
+    When `section_map` is provided (from `build_section_map`), the
+    LLM-assigned chunks are *merged* with heuristic results — the map
+    can only add coverage, never reduce it. This prevents the map from
+    accidentally narrowing the chunk set for complex fields (e.g. array
+    fields spanning a full table) while still adding chunks the
+    heuristics would have missed.
     """
     fields = schema_def.get("fields", {})
     routes: list[FieldRoute] = []
@@ -165,24 +167,7 @@ def route_fields(
         has_hints = bool(field_spec.get("hints"))
         field_cap = _field_max_chunks(field_spec, max_chunks_per_field)
 
-        # ── Section map path (LLM-assigned chunks) ──
-        if section_map and field_name in section_map and section_map[field_name]:
-            mapped_chunks = [
-                chunk_by_index[i] for i in section_map[field_name] if i in chunk_by_index
-            ]
-            if mapped_chunks:
-                routes.append(
-                    FieldRoute(
-                        field_name=field_name,
-                        field_spec=field_spec,
-                        chunks=mapped_chunks,
-                        source="section_map",
-                    )
-                )
-                continue
-            # Empty after filtering — fall through to heuristic
-
-        # ── Heuristic path (original scorer) ──
+        # ── Heuristic path (always runs) ──
 
         # look_in is a hard filter when any chunks match — schema authors
         # who declare a category are asserting the field lives there, so a
@@ -206,15 +191,41 @@ def route_fields(
                 scored.append((score, chunk))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        top_chunks = [chunk for _, chunk in scored[:field_cap]]
+        heuristic_chunks = [chunk for _, chunk in scored[:field_cap]]
 
-        if top_chunks:
+        # ── Section map merge (LLM-assigned chunks supplement heuristics) ──
+        if section_map and field_name in section_map and section_map[field_name]:
+            mapped_chunks = [
+                chunk_by_index[i] for i in section_map[field_name] if i in chunk_by_index
+            ]
+            # Union: heuristic chunks + map chunks, deduplicated, ordered by index
+            seen = set()
+            merged: list[Chunk] = []
+            for c in heuristic_chunks + mapped_chunks:
+                if c.index not in seen:
+                    seen.add(c.index)
+                    merged.append(c)
+            merged.sort(key=lambda c: c.index)
+
+            if merged:
+                routes.append(
+                    FieldRoute(
+                        field_name=field_name,
+                        field_spec=field_spec,
+                        chunks=merged,
+                        source="section_map",
+                    )
+                )
+                continue
+
+        # ── Heuristic-only result ──
+        if heuristic_chunks:
             source = "hint" if has_hints else "signal_inferred"
             routes.append(
                 FieldRoute(
                     field_name=field_name,
                     field_spec=field_spec,
-                    chunks=top_chunks,
+                    chunks=heuristic_chunks,
                     source=source,
                 )
             )
