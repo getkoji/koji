@@ -411,28 +411,27 @@ def bench(
         console.print(f"[red]Corpus path not found: {corpus}[/red]")
         raise SystemExit(1)
 
+    # Bench calls the extract service directly (stateless, no auth needed).
+    # Locally it runs on the extract port; prod uses the CLI profile URL.
     from .credentials import get_active_profile
 
-    # Resolve server: CLI profile first (works with prod + local), then local cluster
-    auth_headers: dict[str, str] = {}
-    profile = get_active_profile()
     state = load_cluster_state()
-    if profile:
-        # When a local cluster is running, prefer it (faster) but still use the profile's API key
-        server_url = f"http://127.0.0.1:{state['server_port']}" if state else profile.url
-        auth_headers = {"Authorization": f"Bearer {profile.api_key}"}
-    elif state is not None:
-        server_url = f"http://127.0.0.1:{state['server_port']}"
+    if state is not None:
+        server_url = f"http://127.0.0.1:{state.get('extract_port', 9412)}"
     else:
-        console.print("[red]No CLI profile and no local cluster running.[/red]")
-        console.print("[dim]Run [bold]koji login[/bold] or [bold]koji start[/bold] first.[/dim]")
-        raise SystemExit(1)
+        profile = get_active_profile()
+        if profile:
+            server_url = profile.url
+        else:
+            console.print("[red]No local cluster running and no CLI profile.[/red]")
+            console.print("[dim]Run [bold]koji start[/bold] or [bold]koji login[/bold] first.[/dim]")
+            raise SystemExit(1)
 
     # Verify connectivity
     try:
         httpx.get(f"{server_url}/health", timeout=5)
     except (httpx.ConnectError, httpx.ReadTimeout):
-        console.print(f"[red]Server not reachable at {server_url}[/red]")
+        console.print(f"[red]Extract service not reachable at {server_url}[/red]")
         raise SystemExit(1)
 
     if not json_output:
@@ -449,7 +448,7 @@ def bench(
         if not json_output:
             console.print(f"  [dim]({cat} {i}/{total}) {doc}[/dim]")
 
-    with httpx.Client(headers=auth_headers) as client:
+    with httpx.Client() as client:
         result = run_bench(
             corpus_root=corpus_path,
             server_url=server_url,
