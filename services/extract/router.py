@@ -1,11 +1,26 @@
-"""Phase 2: Field Router — match schema fields to the right chunks using schema hints."""
+"""Phase 2: Field Router — match schema fields to the right chunks using schema hints.
+
+For short documents (chunk count ≤ max_chunks_per_field), the heuristic
+scorer in `route_fields` is sufficient — every chunk is within reach.
+
+For long documents, the LLM section map (`build_section_map`) provides a
+smarter first pass: it asks the LLM which chunks are relevant to which
+fields, then `route_fields` uses that mapping instead of heuristics.
+This is triggered automatically in the pipeline when the document is
+large enough that heuristic routing would be forced to drop content.
+"""
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .document_map import Chunk
+
+
+# Type alias — the map pass returns {field_name: [chunk_index, ...]}
+SectionMap = dict[str, list[int]]
 
 
 @dataclass
@@ -15,7 +30,7 @@ class FieldRoute:
     field_name: str
     field_spec: dict
     chunks: list[Chunk]
-    source: str  # "hint", "signal_inferred", "broadened", "fallback"
+    source: str  # "hint", "signal_inferred", "broadened", "fallback", "section_map"
 
 
 # ── Generic signal inference ────────────────────────────────────────
@@ -129,19 +144,45 @@ def route_fields(
     schema_def: dict,
     chunks: list[Chunk],
     max_chunks_per_field: int = 3,
+    section_map: SectionMap | None = None,
 ) -> list[FieldRoute]:
     """Route each schema field to the most relevant chunks.
 
     `max_chunks_per_field` is the default cap. Individual fields can
     override via `hints.max_chunks` in the schema — useful for array
     fields that aggregate data across many detail sections.
+
+    When `section_map` is provided (from `build_section_map`), it takes
+    priority: fields use the LLM-assigned chunks directly, with no cap.
+    Fields not in the map or mapped to empty lists fall through to the
+    heuristic scorer so nothing is silently dropped.
     """
     fields = schema_def.get("fields", {})
     routes: list[FieldRoute] = []
+    chunk_by_index = {c.index: c for c in chunks}
 
     for field_name, field_spec in fields.items():
         has_hints = bool(field_spec.get("hints"))
         field_cap = _field_max_chunks(field_spec, max_chunks_per_field)
+
+        # ── Section map path (LLM-assigned chunks) ──
+        if section_map and field_name in section_map and section_map[field_name]:
+            mapped_chunks = [
+                chunk_by_index[i] for i in section_map[field_name] if i in chunk_by_index
+            ]
+            if mapped_chunks:
+                routes.append(
+                    FieldRoute(
+                        field_name=field_name,
+                        field_spec=field_spec,
+                        chunks=mapped_chunks,
+                        source="section_map",
+                    )
+                )
+                continue
+            # Empty after filtering — fall through to heuristic
+
+        # ── Heuristic path (original scorer) ──
 
         # look_in is a hard filter when any chunks match — schema authors
         # who declare a category are asserting the field lives there, so a
@@ -257,3 +298,126 @@ def summarize_routing(routes: list[FieldRoute]) -> dict:
             "source": route.source,
         }
     return plan
+
+
+# ── LLM Section Map ───────────────────────────────────────────────
+#
+# For long documents, ask the LLM which chunks contain which fields.
+# This replaces the heuristic scorer with a content-aware assignment.
+
+
+_CHUNK_PREVIEW_CHARS = 400
+
+
+def _build_section_map_prompt(
+    chunks: list[Chunk],
+    schema_def: dict,
+) -> str:
+    """Build the prompt for the LLM section map pass.
+
+    Sends a numbered list of chunk previews and a list of schema fields.
+    Asks the LLM to return a JSON mapping of field_name → [chunk_indices].
+    """
+    fields = schema_def.get("fields", {})
+
+    # Build chunk previews
+    chunk_lines = []
+    for chunk in chunks:
+        preview = chunk.content[:_CHUNK_PREVIEW_CHARS].replace("\n", " ").strip()
+        if len(chunk.content) > _CHUNK_PREVIEW_CHARS:
+            preview += "..."
+        chunk_lines.append(f"  [{chunk.index}] {chunk.title}: {preview}")
+    chunk_list = "\n".join(chunk_lines)
+
+    # Build field descriptions
+    field_lines = []
+    for name, spec in fields.items():
+        ftype = spec.get("type", "string")
+        desc = spec.get("description", "").strip().split("\n")[0]  # first line only
+        field_lines.append(f"  - {name} ({ftype}): {desc}" if desc else f"  - {name} ({ftype})")
+    field_list = "\n".join(field_lines)
+
+    field_names = list(fields.keys())
+
+    return f"""You are analyzing a document to determine which sections contain which fields.
+
+## Document sections
+
+{chunk_list}
+
+## Fields to locate
+
+{field_list}
+
+## Instructions
+
+For each field, identify which document sections (by index number) are most likely to contain that field's value. A field may appear in multiple sections, or not at all.
+
+Return ONLY valid JSON — a single object mapping each field name to an array of section indices. If a field is not present in any section, map it to an empty array.
+
+Example format:
+{{
+  "{field_names[0] if field_names else "field_name"}": [0, 1],
+  "{field_names[1] if len(field_names) > 1 else "other_field"}": [3]
+}}
+
+JSON:"""
+
+
+async def build_section_map(
+    chunks: list[Chunk],
+    schema_def: dict,
+    provider: "ModelProvider",
+) -> SectionMap | None:
+    """Ask the LLM to map fields to chunks for a long document.
+
+    Returns a dict of {field_name: [chunk_indices]} or None if the
+    LLM call fails. The caller should fall back to heuristic routing
+    when None is returned.
+    """
+    from .providers import ModelProvider  # avoid circular import at module level
+
+    prompt = _build_section_map_prompt(chunks, schema_def)
+    fields = schema_def.get("fields", {})
+
+    try:
+        raw = await provider.generate(prompt, json_mode=True)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r"\{[\s\S]*\}", raw)
+            if match:
+                parsed = json.loads(match.group())
+            else:
+                print("[koji-extract] Section map: LLM returned invalid JSON")
+                return None
+
+        if not isinstance(parsed, dict):
+            print("[koji-extract] Section map: LLM returned non-object")
+            return None
+
+        # Validate and normalize the response
+        valid_indices = {c.index for c in chunks}
+        section_map: SectionMap = {}
+        for field_name in fields:
+            indices = parsed.get(field_name, [])
+            if not isinstance(indices, list):
+                indices = [indices] if isinstance(indices, int) else []
+            # Filter to valid chunk indices
+            section_map[field_name] = [i for i in indices if isinstance(i, int) and i in valid_indices]
+
+        return section_map
+
+    except Exception as e:
+        print(f"[koji-extract] Section map failed: {e}")
+        return None
+
+
+def needs_section_map(chunks: list[Chunk], max_chunks_per_field: int = 3) -> bool:
+    """Determine whether a document is large enough to benefit from an LLM section map.
+
+    The map pass adds one LLM call. It's worth it when the heuristic
+    router would be forced to drop content — i.e., there are more
+    chunks than any single field can see.
+    """
+    return len(chunks) > max_chunks_per_field * 2

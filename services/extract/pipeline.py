@@ -11,7 +11,7 @@ import time
 from .document_map import Chunk, build_document_map, summarize_map
 from .packet_splitter import Section, classify_chunks_to_sections
 from .providers import ModelProvider, build_provider, create_provider
-from .router import group_routes, route_fields, summarize_routing
+from .router import SectionMap, build_section_map, group_routes, needs_section_map, route_fields, summarize_routing
 
 
 def _snap_to_source(value: str, chunks: list[Chunk], min_ratio: float = 0.5) -> str:
@@ -1022,7 +1022,22 @@ async def intelligent_extract(
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
 
-    async def _extract_one_section(section_chunks: list[Chunk]) -> dict:
+    # Phase 1.5: LLM section map for long documents
+    # When the document has more chunks than heuristic routing can cover,
+    # ask the LLM which chunks contain which fields. This adds one cheap
+    # LLM call but dramatically improves routing accuracy on long docs.
+    section_map: SectionMap | None = None
+    if needs_section_map(chunks):
+        print(f"[koji-extract] Long document ({len(chunks)} chunks) — building LLM section map")
+        section_map = await build_section_map(chunks, schema_def, provider)
+        if section_map:
+            mapped_fields = sum(1 for v in section_map.values() if v)
+            total_fields = len(section_map)
+            print(f"[koji-extract] Section map: {mapped_fields}/{total_fields} fields mapped to chunks")
+        else:
+            print("[koji-extract] Section map failed — falling back to heuristic routing")
+
+    async def _extract_one_section(section_chunks: list[Chunk], section_map_override: SectionMap | None = None) -> dict:
         """Run the wave + gap-fill extraction pipeline against a chunk slice.
 
         Returns a dict with extracted / confidence / confidence_scores /
@@ -1048,7 +1063,7 @@ async def intelligent_extract(
         for wave_index, wave in enumerate(waves):
             wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
 
-            wave_routes = route_fields(wave_schema, section_chunks)
+            wave_routes = route_fields(wave_schema, section_chunks, section_map=section_map_override)
             wave_plan = summarize_routing(wave_routes)
             routing_plan.update(wave_plan)
             if len(waves) > 1:
@@ -1174,7 +1189,7 @@ async def intelligent_extract(
 
     # ── Classifier OFF: classic single-section response shape ───────
     if not classify_config:
-        section_result = await _extract_one_section(chunks)
+        section_result = await _extract_one_section(chunks, section_map_override=section_map)
         elapsed_ms = int((time.time() - start) * 1000)
         return {
             "extracted": section_result["extracted"],
