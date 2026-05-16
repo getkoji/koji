@@ -22,6 +22,7 @@ Current adapters:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import TYPE_CHECKING
@@ -32,6 +33,37 @@ if TYPE_CHECKING:
     # Forward-reference Pydantic type from main.py. Import guarded so
     # providers.py stays importable on its own for unit tests.
     from .main import EndpointConfig
+
+
+_RETRY_STATUS_CODES = {429, 502, 503, 529}
+_MAX_RETRIES = 3
+_BASE_DELAY = 2.0  # seconds
+
+
+async def _retry_on_rate_limit(coro_factory, max_retries: int = _MAX_RETRIES) -> httpx.Response:
+    """Retry an async HTTP call with exponential backoff on rate-limit errors.
+
+    `coro_factory` is a zero-arg callable that returns a fresh coroutine
+    each time (since coroutines can't be re-awaited).
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await coro_factory()
+            if resp.status_code not in _RETRY_STATUS_CODES:
+                return resp
+            last_exc = httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in _RETRY_STATUS_CODES:
+                raise
+            last_exc = e
+        if attempt < max_retries:
+            delay = _BASE_DELAY * (2 ** attempt)
+            print(f"[koji-extract] Rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+    raise last_exc  # type: ignore[misc]
 
 
 class ModelProvider:
@@ -110,10 +142,12 @@ class OpenAIProvider(ModelProvider):
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
 
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=self._headers(),
+            resp = await _retry_on_rate_limit(
+                lambda: client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -129,10 +163,12 @@ class OpenAIProvider(ModelProvider):
             if tools:
                 payload["tools"] = tools
 
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=self._headers(),
+            resp = await _retry_on_rate_limit(
+                lambda: client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             choice = resp.json()["choices"][0]
