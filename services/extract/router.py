@@ -424,11 +424,16 @@ async def build_section_map(
         return None
 
 
+_SECTION_MAP_MIN_CHUNKS = 50
+
+
 def needs_section_map(chunks: list[Chunk], max_chunks_per_field: int = 3) -> bool:
     """Determine whether a document is large enough to benefit from an LLM section map.
 
-    The map pass adds one LLM call. It's worth it when the heuristic
-    router would be forced to drop content — i.e., there are more
-    chunks than any single field can see.
+    The map adds one LLM call and extra chunks to the extraction prompt.
+    For medium-length docs (10-50 chunks), heuristic routing is already
+    accurate and the extra context can hurt. Only engage for genuinely
+    long documents where heuristic routing is forced to drop significant
+    content — 50+ chunks (~20+ pages of structured content).
     """
-    return len(chunks) > max_chunks_per_field * 2
+    return len(chunks) >= _SECTION_MAP_MIN_CHUNKS
