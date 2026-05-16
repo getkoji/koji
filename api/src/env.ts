@@ -47,5 +47,7 @@ export type Env = {
     /** Billing adapter — feature gates, usage tracking, Stripe integration.
      *  Self-hosted uses NoOpBillingAdapter (all gates pass, no metering). */
     billing: BillingAdapter;
+    /** Tenant ID resolved from an API key (set by auth middleware). */
+    apiKeyTenantId: string | undefined;
   };
 };
