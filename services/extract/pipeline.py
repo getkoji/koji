@@ -1059,11 +1059,13 @@ async def intelligent_extract(
         accumulated: dict = {"extracted": {}, "confidence": {}, "confidence_scores": {}}
         routing_plan: dict = {}
         all_groups: list[dict] = []
+        all_routes: list = []  # accumulate routes across waves for retry
 
         for wave_index, wave in enumerate(waves):
             wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
 
             wave_routes = route_fields(wave_schema, section_chunks, section_map=section_map_override)
+            all_routes.extend(wave_routes)
             wave_plan = summarize_routing(wave_routes)
             routing_plan.update(wave_plan)
             if len(waves) > 1:
@@ -1092,7 +1094,11 @@ async def intelligent_extract(
             accumulated["confidence"].update(wave_result["confidence"])
             accumulated["confidence_scores"].update(wave_result["confidence_scores"])
 
-        # Gap-fill for missing required fields
+        # Same-chunk retry for missing required fields.
+        # LLM non-determinism (even at temp=0) means a required field can
+        # return null despite the correct chunks being in the prompt. A
+        # simple retry on the same chunks often succeeds without needing
+        # to broaden to different content.
         missing_required = [
             f
             for f, conf in accumulated["confidence"].items()
@@ -1100,8 +1106,61 @@ async def intelligent_extract(
         ]
         gap_filled: list[str] = []
         if missing_required:
-            print(f"[koji-extract] Missing required fields: {missing_required}")
-            print(f"[koji-extract] Gap filling: broadened retry for {len(missing_required)} fields")
+            # Build a lookup from field → original routed chunks
+            route_by_field = {r.field_name: r.chunks for r in all_routes}
+
+            # Phase 1: retry on the same chunks the main pass used
+            retry_fields = [f for f in missing_required if f in route_by_field and route_by_field[f]]
+            if retry_fields:
+                print(f"[koji-extract] Same-chunk retry for {len(retry_fields)} required fields: {retry_fields}")
+                retry_tasks = []
+                for field_name in retry_fields:
+                    field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
+                    retry_tasks.append(
+                        (
+                            field_name,
+                            route_by_field[field_name],
+                            fill_gap(
+                                field_name,
+                                field_spec,
+                                route_by_field[field_name],
+                                schema_name,
+                                provider,
+                                semaphore,
+                                context_chunks=context_chunks,
+                            ),
+                        )
+                    )
+
+                retry_results = await asyncio.gather(*[t[2] for t in retry_tasks])
+                for (field_name, r_chunks, _), retry_result in zip(retry_tasks, retry_results):
+                    value = retry_result.get(field_name)
+                    if value is not None:
+                        field_spec = schema_def["fields"][field_name]
+                        value, is_valid, issue = validate_field(field_name, value, field_spec)
+                        accumulated["extracted"][field_name] = value
+                        llm_conf = retry_result.get("__llm_confidence", {}).get(field_name)
+                        prov = compute_provenance_strength(value, r_chunks, field_spec.get("type", "string"))
+                        retry_score = compute_field_confidence(
+                            llm_confidence=llm_conf, provenance_strength=prov, validation_passed=is_valid,
+                        )
+                        accumulated["confidence_scores"][field_name] = retry_score
+                        accumulated["confidence"][field_name] = _score_label(retry_score)
+                        gap_filled.append(field_name)
+                        print(f"[koji-extract] Same-chunk retry filled: {field_name} = {value}")
+                    else:
+                        print(f"[koji-extract] Same-chunk retry missed: {field_name}")
+
+            # Recompute missing after retry
+            missing_required = [
+                f
+                for f, conf in accumulated["confidence"].items()
+                if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
+            ]
+
+        # Phase 2: broadened gap-fill for fields still missing after retry
+        if missing_required:
+            print(f"[koji-extract] Broadened gap-fill for {len(missing_required)} fields: {missing_required}")
 
             gap_tasks = []
             for field_name in missing_required:
