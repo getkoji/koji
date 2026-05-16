@@ -1097,8 +1097,12 @@ async def intelligent_extract(
         # Same-chunk retry for missing required fields.
         # LLM non-determinism (even at temp=0) means a required field can
         # return null despite the correct chunks being in the prompt. A
-        # simple retry on the same chunks often succeeds without needing
-        # to broaden to different content.
+        # retry on the same chunks often succeeds without needing to
+        # broaden to different content. Up to 2 retries — if the LLM
+        # succeeds ~60% of the time per attempt, 2 retries give ~84%
+        # cumulative success.
+        _MAX_SAME_CHUNK_RETRIES = 2
+
         missing_required = [
             f
             for f, conf in accumulated["confidence"].items()
@@ -1111,8 +1115,10 @@ async def intelligent_extract(
 
             # Phase 1: retry on the same chunks the main pass used
             retry_fields = [f for f in missing_required if f in route_by_field and route_by_field[f]]
-            if retry_fields:
-                print(f"[koji-extract] Same-chunk retry for {len(retry_fields)} required fields: {retry_fields}")
+            for retry_round in range(1, _MAX_SAME_CHUNK_RETRIES + 1):
+                if not retry_fields:
+                    break
+                print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
                 retry_tasks = []
                 for field_name in retry_fields:
                     field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
@@ -1133,6 +1139,7 @@ async def intelligent_extract(
                     )
 
                 retry_results = await asyncio.gather(*[t[2] for t in retry_tasks])
+                still_missing = []
                 for (field_name, r_chunks, _), retry_result in zip(retry_tasks, retry_results):
                     value = retry_result.get(field_name)
                     if value is not None:
@@ -1147,9 +1154,10 @@ async def intelligent_extract(
                         accumulated["confidence_scores"][field_name] = retry_score
                         accumulated["confidence"][field_name] = _score_label(retry_score)
                         gap_filled.append(field_name)
-                        print(f"[koji-extract] Same-chunk retry filled: {field_name} = {value}")
+                        print(f"[koji-extract] Same-chunk retry {retry_round} filled: {field_name} = {value}")
                     else:
-                        print(f"[koji-extract] Same-chunk retry missed: {field_name}")
+                        still_missing.append(field_name)
+                retry_fields = still_missing
 
             # Recompute missing after retry
             missing_required = [
