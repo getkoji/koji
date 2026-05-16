@@ -559,7 +559,7 @@ def _get_db_url() -> str | None:
 def login(
     server_url: str = typer.Argument(
         None,
-        help="Server URL (e.g. https://koji.acme.internal or http://localhost:9401)",
+        help="Server URL (default: https://console.getkoji.dev)",
     ),
     api_key: str | None = typer.Option(
         None,
@@ -586,9 +586,11 @@ def login(
     """
     from .credentials import Profile, load_credentials
 
+    DEFAULT_SERVER = "https://console.getkoji.dev"
+
     if api_key:
         # Direct key — headless mode
-        url = server_url or "http://localhost:9401"
+        url = server_url or DEFAULT_SERVER
         name = profile or _derive_profile_name(url)
 
         creds = load_credentials()
@@ -604,11 +606,7 @@ def login(
         return
 
     # Browser flow
-    if not server_url:
-        console.print("[red]Server URL is required. Usage: koji login https://koji.example.com[/red]")
-        raise SystemExit(1)
-
-    url = server_url.rstrip("/")
+    url = (server_url or DEFAULT_SERVER).rstrip("/")
     name = profile or _derive_profile_name(url)
 
     import http.server
