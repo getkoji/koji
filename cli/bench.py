@@ -305,14 +305,14 @@ def benchmark_document(
     compare_config = schema_dict.get("compare") or {} if isinstance(schema_dict, dict) else {}
     fuzzy_threshold = float(compare_config.get("fuzzy_threshold", 0.0))
 
-    payload: dict = {"markdown": markdown, "schema": schema_content}
+    payload: dict = {"markdown": markdown, "schema_def": schema_dict}
     if model:
         payload["model"] = model
 
     started = time.time()
     try:
         response = http_client.post(
-            f"{server_url}/api/extract",
+            f"{server_url}/extract",
             json=payload,
             timeout=timeout,
         )
