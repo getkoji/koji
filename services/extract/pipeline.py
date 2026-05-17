@@ -409,9 +409,7 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
-
-Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.{extra_block}
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.{extra_block}
 
 JSON:"""
 
@@ -577,8 +575,6 @@ def build_gap_fill_prompt(
 
 Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a FLAT JSON object with ONLY the single field — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"{field_name}": ...}}`, not `{{"{schema_name}": {{"{field_name}": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
 
-Also include a "__confidence" key with your confidence (0.0-1.0) that the value is correct. Example: `{{"{field_name}": "value", "__confidence": {{"{field_name}": 0.85}}}}`. Use 0.0 if the field is null.
-
 JSON:"""
 
 
@@ -720,14 +716,11 @@ def _score_label(score: float) -> str:
 # Confidence scoring v2 — LLM self-reported confidence + provenance strength
 # ---------------------------------------------------------------------------
 
-# Weights when LLM confidence is available
-_W_LLM = 0.50
-_W_PROV = 0.35
-_W_VAL = 0.15
-
-# Weights when LLM confidence is missing (fallback)
-_W_PROV_FALLBACK = 0.70
-_W_VAL_FALLBACK = 0.30
+# Confidence scoring weights — provenance + validation only.
+# LLM self-assessed confidence removed: untrustworthy signal that added
+# prompt overhead without improving accuracy. See project_confidence_scoring.md.
+_W_PROV = 0.70
+_W_VAL = 0.30
 
 
 def compute_provenance_strength(
@@ -801,21 +794,14 @@ def compute_field_confidence(
     provenance_strength: float = 0.0,
     validation_passed: bool = True,
 ) -> float:
-    """Compute confidence score from continuous signals.
+    """Compute confidence score from deterministic signals.
 
-    When llm_confidence is available:
-      score = 0.50 * llm + 0.35 * provenance + 0.15 * validation
-    When missing (fallback — provenance + validation only):
-      score = 0.70 * provenance + 0.30 * validation
+    score = 0.70 * provenance + 0.30 * validation
+
+    llm_confidence parameter is retained for API compatibility but ignored.
     """
     val_bonus = 1.0 if validation_passed else 0.0
-
-    if llm_confidence is not None:
-        llm_clamped = max(0.0, min(1.0, llm_confidence))
-        score = _W_LLM * llm_clamped + _W_PROV * provenance_strength + _W_VAL * val_bonus
-    else:
-        score = _W_PROV_FALLBACK * provenance_strength + _W_VAL_FALLBACK * val_bonus
-
+    score = _W_PROV * provenance_strength + _W_VAL * val_bonus
     return max(0.0, min(score, 1.0))
 
 
