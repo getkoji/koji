@@ -486,16 +486,21 @@ async def extract_group(
                     try:
                         parsed = json.loads(match.group())
                     except json.JSONDecodeError:
-                        print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                        print(f"[koji-extract] Group {group['fields']} returned invalid JSON, raw={raw[:200]}")
                         return {}
                 else:
-                    print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                    print(f"[koji-extract] Group {group['fields']} returned invalid JSON, raw={raw[:200]}")
                     return {}
 
             llm_conf = _extract_llm_confidence(parsed, expected_fields)
             result = _unwrap_nested_result(parsed, expected_fields)
             if llm_conf:
                 result["__llm_confidence"] = llm_conf
+
+            # Log fields that came back null so we can diagnose extraction misses
+            null_fields = [f for f in expected_fields if result.get(f) is None]
+            if null_fields:
+                print(f"[koji-extract] Group {group['fields']} returned null for: {null_fields}")
             return result
 
         except Exception as e:
@@ -1080,6 +1085,12 @@ async def intelligent_extract(
             accumulated["confidence"].update(wave_result["confidence"])
             accumulated["confidence_scores"].update(wave_result["confidence_scores"])
 
+            # Log wave results for debugging extraction misses
+            extracted_fields = {k: v for k, v in wave_result["extracted"].items() if v is not None}
+            null_fields = [k for k, v in wave_result["extracted"].items() if v is None]
+            if null_fields:
+                print(f"[koji-extract] Wave {wave_index} results: extracted={list(extracted_fields.keys())}, null={null_fields}")
+
         # Same-chunk retry for missing required fields.
         # LLM non-determinism (even at temp=0) means a required field can
         # return null despite the correct chunks being in the prompt. A
@@ -1087,7 +1098,7 @@ async def intelligent_extract(
         # broaden to different content. Up to 2 retries — if the LLM
         # succeeds ~60% of the time per attempt, 2 retries give ~84%
         # cumulative success.
-        _MAX_SAME_CHUNK_RETRIES = 2
+        _MAX_SAME_CHUNK_RETRIES = 3
 
         missing_required = [
             f
