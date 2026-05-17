@@ -411,19 +411,19 @@ def bench(
         console.print(f"[red]Corpus path not found: {corpus}[/red]")
         raise SystemExit(1)
 
+    # Bench calls the extract service directly (stateless, no auth needed).
+    # Try cluster state first, then fall back to default local extract port.
     state = load_cluster_state()
-    if state is None:
-        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
-        console.print("[dim]koji bench needs a running cluster to call the extract API.[/dim]")
-        raise SystemExit(1)
-
-    server_url = f"http://127.0.0.1:{state['server_port']}"
+    if state is not None:
+        server_url = f"http://127.0.0.1:{state.get('extract_port', 9412)}"
+    else:
+        server_url = "http://127.0.0.1:9412"
 
     # Verify connectivity
     try:
         httpx.get(f"{server_url}/health", timeout=5)
     except (httpx.ConnectError, httpx.ReadTimeout):
-        console.print("[red]Cluster not reachable. Run [bold]koji start[/bold] and wait for services.[/red]")
+        console.print(f"[red]Extract service not reachable at {server_url}[/red]")
         raise SystemExit(1)
 
     if not json_output:
