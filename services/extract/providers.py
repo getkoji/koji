@@ -106,9 +106,7 @@ class AdaptiveRateLimiter:
                 if resp.status_code not in _RETRY_STATUS_CODES:
                     await self._maybe_widen()
                     return resp
-                last_exc = httpx.HTTPStatusError(
-                    f"HTTP {resp.status_code}", request=resp.request, response=resp
-                )
+                last_exc = httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code not in _RETRY_STATUS_CODES:
                     self._sem.release()
@@ -120,7 +118,7 @@ class AdaptiveRateLimiter:
             # Rate limited — tighten and backoff before retry
             await self._tighten()
             if attempt < max_retries:
-                delay = _BASE_DELAY * (2 ** attempt)
+                delay = _BASE_DELAY * (2**attempt)
                 print(f"[koji-extract] Rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
@@ -460,9 +458,7 @@ class BedrockProvider(ModelProvider):
         headers = self._signed_headers(url, body)
 
         async with httpx.AsyncClient(timeout=300) as client:
-            resp = await self._limiter.execute(
-                lambda: client.post(url, content=body, headers=headers)
-            )
+            resp = await self._limiter.execute(lambda: client.post(url, content=body, headers=headers))
             resp.raise_for_status()
             return resp.json()
 

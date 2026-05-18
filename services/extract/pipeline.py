@@ -1090,7 +1090,9 @@ async def intelligent_extract(
             extracted_fields = {k: v for k, v in wave_result["extracted"].items() if v is not None}
             null_fields = [k for k, v in wave_result["extracted"].items() if v is None]
             if null_fields:
-                print(f"[koji-extract] Wave {wave_index} results: extracted={list(extracted_fields.keys())}, null={null_fields}")
+                print(
+                    f"[koji-extract] Wave {wave_index} results: extracted={list(extracted_fields.keys())}, null={null_fields}"
+                )
 
         # Same-chunk retry for missing required fields.
         # LLM non-determinism (even at temp=0) means a required field can
@@ -1104,7 +1106,9 @@ async def intelligent_extract(
         # Build fallback provider once if configured
         fallback_provider = None
         if fallback_model and fallback_model != model:
-            fallback_provider = build_provider(fallback_model, endpoint_cfg) if endpoint_cfg else create_provider(fallback_model)
+            fallback_provider = (
+                build_provider(fallback_model, endpoint_cfg) if endpoint_cfg else create_provider(fallback_model)
+            )
             print(f"[koji-extract] Fallback model configured: {fallback_model}")
 
         missing_required = [
@@ -1126,9 +1130,13 @@ async def intelligent_extract(
                 is_final_retry = retry_round == _MAX_SAME_CHUNK_RETRIES
                 retry_provider = (fallback_provider or provider) if is_final_retry else provider
                 if is_final_retry and fallback_provider:
-                    print(f"[koji-extract] Escalating to {fallback_model} for {len(retry_fields)} fields: {retry_fields}")
+                    print(
+                        f"[koji-extract] Escalating to {fallback_model} for {len(retry_fields)} fields: {retry_fields}"
+                    )
                 else:
-                    print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
+                    print(
+                        f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}"
+                    )
                 retry_tasks = []
                 for field_name in retry_fields:
                     field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
@@ -1159,7 +1167,9 @@ async def intelligent_extract(
                         llm_conf = retry_result.get("__llm_confidence", {}).get(field_name)
                         prov = compute_provenance_strength(value, r_chunks, field_spec.get("type", "string"))
                         retry_score = compute_field_confidence(
-                            llm_confidence=llm_conf, provenance_strength=prov, validation_passed=is_valid,
+                            llm_confidence=llm_conf,
+                            provenance_strength=prov,
+                            validation_passed=is_valid,
                         )
                         accumulated["confidence_scores"][field_name] = retry_score
                         accumulated["confidence"][field_name] = _score_label(retry_score)
@@ -1182,7 +1192,9 @@ async def intelligent_extract(
         if missing_required:
             gap_provider = fallback_provider or provider
             gap_model_label = fallback_model if fallback_provider else model
-            print(f"[koji-extract] Broadened gap-fill ({gap_model_label}) for {len(missing_required)} fields: {missing_required}")
+            print(
+                f"[koji-extract] Broadened gap-fill ({gap_model_label}) for {len(missing_required)} fields: {missing_required}"
+            )
 
             gap_tasks = []
             for field_name in missing_required:

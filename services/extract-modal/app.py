@@ -41,6 +41,7 @@ from fastapi import Request  # noqa: E402
 async def extract_http(request: Request):
     """HTTP endpoint wrapping the extract service."""
     import sys
+
     sys.path.insert(0, "/root")
 
     import traceback

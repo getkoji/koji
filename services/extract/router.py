@@ -198,9 +198,7 @@ def route_fields(
 
         # ── Section map merge (LLM-assigned chunks supplement heuristics) ──
         if section_map and field_name in section_map and section_map[field_name]:
-            mapped_chunks = [
-                chunk_by_index[i] for i in section_map[field_name] if i in chunk_by_index
-            ]
+            mapped_chunks = [chunk_by_index[i] for i in section_map[field_name] if i in chunk_by_index]
             # Union: heuristic chunks + map chunks, deduplicated, ordered by index
             seen = set()
             merged: list[Chunk] = []
