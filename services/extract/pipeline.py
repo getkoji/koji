@@ -967,6 +967,7 @@ async def intelligent_extract(
     max_concurrent: int = 5,
     classify_config: dict | None = None,
     endpoint_cfg=None,  # EndpointConfig from main.py; forward-referenced to avoid circular import
+    fallback_model: str | None = None,
 ) -> dict:
     """Run the full intelligent extraction pipeline.
 
@@ -1095,10 +1096,16 @@ async def intelligent_extract(
         # LLM non-determinism (even at temp=0) means a required field can
         # return null despite the correct chunks being in the prompt. A
         # retry on the same chunks often succeeds without needing to
-        # broaden to different content. Up to 2 retries — if the LLM
-        # succeeds ~60% of the time per attempt, 2 retries give ~84%
-        # cumulative success.
+        # broaden to different content. On the final retry, escalate to
+        # a fallback model (if configured) for fields that a smaller
+        # model consistently fails on.
         _MAX_SAME_CHUNK_RETRIES = 3
+
+        # Build fallback provider once if configured
+        fallback_provider = None
+        if fallback_model and fallback_model != model:
+            fallback_provider = build_provider(fallback_model, endpoint_cfg) if endpoint_cfg else create_provider(fallback_model)
+            print(f"[koji-extract] Fallback model configured: {fallback_model}")
 
         missing_required = [
             f
@@ -1115,7 +1122,13 @@ async def intelligent_extract(
             for retry_round in range(1, _MAX_SAME_CHUNK_RETRIES + 1):
                 if not retry_fields:
                     break
-                print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
+                # Escalate to fallback model on the final retry
+                is_final_retry = retry_round == _MAX_SAME_CHUNK_RETRIES
+                retry_provider = (fallback_provider or provider) if is_final_retry else provider
+                if is_final_retry and fallback_provider:
+                    print(f"[koji-extract] Escalating to {fallback_model} for {len(retry_fields)} fields: {retry_fields}")
+                else:
+                    print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
                 retry_tasks = []
                 for field_name in retry_fields:
                     field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
@@ -1128,7 +1141,7 @@ async def intelligent_extract(
                                 field_spec,
                                 route_by_field[field_name],
                                 schema_name,
-                                provider,
+                                retry_provider,
                                 semaphore,
                                 context_chunks=context_chunks,
                             ),
@@ -1163,9 +1176,13 @@ async def intelligent_extract(
                 if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
             ]
 
-        # Phase 2: broadened gap-fill for fields still missing after retry
+        # Phase 2: broadened gap-fill for fields still missing after retry.
+        # Use fallback model if configured — these fields already failed
+        # multiple times on the primary model.
         if missing_required:
-            print(f"[koji-extract] Broadened gap-fill for {len(missing_required)} fields: {missing_required}")
+            gap_provider = fallback_provider or provider
+            gap_model_label = fallback_model if fallback_provider else model
+            print(f"[koji-extract] Broadened gap-fill ({gap_model_label}) for {len(missing_required)} fields: {missing_required}")
 
             gap_tasks = []
             for field_name in missing_required:
@@ -1191,7 +1208,7 @@ async def intelligent_extract(
                             field_spec,
                             broadened_chunks,
                             schema_name,
-                            provider,
+                            gap_provider,
                             semaphore,
                             context_chunks=context_chunks,
                         ),
