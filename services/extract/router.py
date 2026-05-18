@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .document_map import Chunk
 
+if TYPE_CHECKING:
+    from .providers import ModelProvider
 
 # Type alias — the map pass returns {field_name: [chunk_index, ...]}
 SectionMap = dict[str, list[int]]
@@ -378,7 +381,7 @@ JSON:"""
 async def build_section_map(
     chunks: list[Chunk],
     schema_def: dict,
-    provider: "ModelProvider",
+    provider: ModelProvider,
 ) -> SectionMap | None:
     """Ask the LLM to map fields to chunks for a long document.
 
@@ -386,7 +389,6 @@ async def build_section_map(
     LLM call fails. The caller should fall back to heuristic routing
     when None is returned.
     """
-    from .providers import ModelProvider  # avoid circular import at module level
 
     prompt = _build_section_map_prompt(chunks, schema_def)
     fields = schema_def.get("fields", {})
