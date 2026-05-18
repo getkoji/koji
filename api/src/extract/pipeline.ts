@@ -176,9 +176,7 @@ ${markdown}
 
 Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
 
-Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.
-
-Also include a "__reasoning" key mapping each field name to a brief one-sentence explanation of where and why you selected that value. Example: {"vendor_name": "Found 'Acme Corp' in the header on page 1", "total_amount": "Extracted '$1,250.00' from the totals row in the line items table"}. For null fields, explain why: "Field not found in document".${extraBlock}
+${extraBlock}
 
 JSON:`;
 }
@@ -238,14 +236,11 @@ function scoreLabel(score: number): string {
   return "not_found";
 }
 
-// Weights when LLM confidence is available
-const W_LLM = 0.50;
-const W_PROV = 0.35;
-const W_VAL = 0.15;
-
-// Weights when LLM confidence is missing (fallback)
-const W_PROV_FALLBACK = 0.70;
-const W_VAL_FALLBACK = 0.30;
+// Confidence scoring weights — provenance + validation only.
+// LLM self-assessed confidence removed: untrustworthy signal that added
+// prompt overhead without improving accuracy.
+const W_PROV = 0.70;
+const W_VAL = 0.30;
 
 /**
  * Extract and validate __confidence from a parsed LLM response.
@@ -321,19 +316,10 @@ function buildConfidence(
     // Validation bonus
     const valBonus = failedFields.has(fieldName) ? 0 : 1;
 
-    // LLM-reported confidence
-    const llmConf = llmConfidence?.[fieldName];
-
-    let score: number;
-    if (llmConf != null) {
-      const clamped = Math.max(0, Math.min(1, llmConf));
-      score = W_LLM * clamped + W_PROV * provStrength + W_VAL * valBonus;
-    } else {
-      score = W_PROV_FALLBACK * provStrength + W_VAL_FALLBACK * valBonus;
-    }
-
+    // Deterministic scoring: provenance + validation only
+    let score = W_PROV * provStrength + W_VAL * valBonus;
     score = Math.max(0, Math.min(score, 1));
-    score = Math.round(score * 1000) / 1000; // clean decimals
+    score = Math.round(score * 1000) / 1000;
 
     confidenceScores[fieldName] = score;
     confidence[fieldName] = scoreLabel(score);
@@ -524,26 +510,19 @@ export async function extractFields(
     extracted[fieldName] = validated;
   }
 
+  // Resolve field-level text provenance BEFORE normalization — the raw
+  // extracted values match the source text directly. Normalized values
+  // (e.g. dates transformed to ISO) would require reverse-engineering
+  // the original format, which is fragile and lossy.
+  const provenance = resolveProvenance(extracted, markdown, textMap);
+
   // Post-extraction normalization
   const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);
 
-  // Post-extraction validation
+  // Post-extraction validation (runs against normalized values)
   const validationReport = validateExtracted(normalized, schemaDef);
 
-  // Resolve field-level text provenance
-  const provenance = resolveProvenance(normalized, markdown, textMap);
-
-  // Attach LLM reasoning to provenance spans
-  for (const [field, reasoning] of Object.entries(llmReasoning)) {
-    if (provenance[field]) {
-      provenance[field]!.reasoning = reasoning;
-    } else if (reasoning) {
-      // Field had no text match but LLM provided reasoning (e.g. derived/inferred)
-      provenance[field] = { offset: -1, length: 0, reasoning };
-    }
-  }
-
-  // Confidence scoring — uses LLM confidence, provenance, and validation
+  // Confidence scoring — provenance + validation only
   const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport, llmConfidence);
 
   const elapsedMs = Date.now() - start;

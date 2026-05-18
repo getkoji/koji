@@ -409,9 +409,7 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.
-
-Also include a "__confidence" key mapping each field name to your confidence (0.0-1.0) that the extracted value is correct. 1.0 = value is explicitly and unambiguously stated in the text. 0.5 = value is inferred or only partially visible. 0.0 = pure guess. For null fields, use 0.0.{extra_block}
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.{extra_block}
 
 JSON:"""
 
@@ -488,16 +486,21 @@ async def extract_group(
                     try:
                         parsed = json.loads(match.group())
                     except json.JSONDecodeError:
-                        print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                        print(f"[koji-extract] Group {group['fields']} returned invalid JSON, raw={raw[:200]}")
                         return {}
                 else:
-                    print(f"[koji-extract] Group {group['fields']} returned invalid JSON")
+                    print(f"[koji-extract] Group {group['fields']} returned invalid JSON, raw={raw[:200]}")
                     return {}
 
             llm_conf = _extract_llm_confidence(parsed, expected_fields)
             result = _unwrap_nested_result(parsed, expected_fields)
             if llm_conf:
                 result["__llm_confidence"] = llm_conf
+
+            # Log fields that came back null so we can diagnose extraction misses
+            null_fields = [f for f in expected_fields if result.get(f) is None]
+            if null_fields:
+                print(f"[koji-extract] Group {group['fields']} returned null for: {null_fields}")
             return result
 
         except Exception as e:
@@ -576,8 +579,6 @@ def build_gap_fill_prompt(
 ## Instructions
 
 Look carefully through every section. The value may be embedded in prose, tables, or key-value pairs. Return a FLAT JSON object with ONLY the single field — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"{field_name}": ...}}`, not `{{"{schema_name}": {{"{field_name}": ...}}}}`. Dates as YYYY-MM-DD. Numbers as numbers (not strings). Do not invent data.
-
-Also include a "__confidence" key with your confidence (0.0-1.0) that the value is correct. Example: `{{"{field_name}": "value", "__confidence": {{"{field_name}": 0.85}}}}`. Use 0.0 if the field is null.
 
 JSON:"""
 
@@ -720,14 +721,11 @@ def _score_label(score: float) -> str:
 # Confidence scoring v2 — LLM self-reported confidence + provenance strength
 # ---------------------------------------------------------------------------
 
-# Weights when LLM confidence is available
-_W_LLM = 0.50
-_W_PROV = 0.35
-_W_VAL = 0.15
-
-# Weights when LLM confidence is missing (fallback)
-_W_PROV_FALLBACK = 0.70
-_W_VAL_FALLBACK = 0.30
+# Confidence scoring weights — provenance + validation only.
+# LLM self-assessed confidence removed: untrustworthy signal that added
+# prompt overhead without improving accuracy. See project_confidence_scoring.md.
+_W_PROV = 0.70
+_W_VAL = 0.30
 
 
 def compute_provenance_strength(
@@ -801,21 +799,14 @@ def compute_field_confidence(
     provenance_strength: float = 0.0,
     validation_passed: bool = True,
 ) -> float:
-    """Compute confidence score from continuous signals.
+    """Compute confidence score from deterministic signals.
 
-    When llm_confidence is available:
-      score = 0.50 * llm + 0.35 * provenance + 0.15 * validation
-    When missing (fallback — provenance + validation only):
-      score = 0.70 * provenance + 0.30 * validation
+    score = 0.70 * provenance + 0.30 * validation
+
+    llm_confidence parameter is retained for API compatibility but ignored.
     """
     val_bonus = 1.0 if validation_passed else 0.0
-
-    if llm_confidence is not None:
-        llm_clamped = max(0.0, min(1.0, llm_confidence))
-        score = _W_LLM * llm_clamped + _W_PROV * provenance_strength + _W_VAL * val_bonus
-    else:
-        score = _W_PROV_FALLBACK * provenance_strength + _W_VAL_FALLBACK * val_bonus
-
+    score = _W_PROV * provenance_strength + _W_VAL * val_bonus
     return max(0.0, min(score, 1.0))
 
 
@@ -976,6 +967,7 @@ async def intelligent_extract(
     max_concurrent: int = 5,
     classify_config: dict | None = None,
     endpoint_cfg=None,  # EndpointConfig from main.py; forward-referenced to avoid circular import
+    fallback_model: str | None = None,
 ) -> dict:
     """Run the full intelligent extraction pipeline.
 
@@ -1094,14 +1086,26 @@ async def intelligent_extract(
             accumulated["confidence"].update(wave_result["confidence"])
             accumulated["confidence_scores"].update(wave_result["confidence_scores"])
 
+            # Log wave results for debugging extraction misses
+            extracted_fields = {k: v for k, v in wave_result["extracted"].items() if v is not None}
+            null_fields = [k for k, v in wave_result["extracted"].items() if v is None]
+            if null_fields:
+                print(f"[koji-extract] Wave {wave_index} results: extracted={list(extracted_fields.keys())}, null={null_fields}")
+
         # Same-chunk retry for missing required fields.
         # LLM non-determinism (even at temp=0) means a required field can
         # return null despite the correct chunks being in the prompt. A
         # retry on the same chunks often succeeds without needing to
-        # broaden to different content. Up to 2 retries — if the LLM
-        # succeeds ~60% of the time per attempt, 2 retries give ~84%
-        # cumulative success.
-        _MAX_SAME_CHUNK_RETRIES = 2
+        # broaden to different content. On the final retry, escalate to
+        # a fallback model (if configured) for fields that a smaller
+        # model consistently fails on.
+        _MAX_SAME_CHUNK_RETRIES = 3
+
+        # Build fallback provider once if configured
+        fallback_provider = None
+        if fallback_model and fallback_model != model:
+            fallback_provider = build_provider(fallback_model, endpoint_cfg) if endpoint_cfg else create_provider(fallback_model)
+            print(f"[koji-extract] Fallback model configured: {fallback_model}")
 
         missing_required = [
             f
@@ -1118,7 +1122,13 @@ async def intelligent_extract(
             for retry_round in range(1, _MAX_SAME_CHUNK_RETRIES + 1):
                 if not retry_fields:
                     break
-                print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
+                # Escalate to fallback model on the final retry
+                is_final_retry = retry_round == _MAX_SAME_CHUNK_RETRIES
+                retry_provider = (fallback_provider or provider) if is_final_retry else provider
+                if is_final_retry and fallback_provider:
+                    print(f"[koji-extract] Escalating to {fallback_model} for {len(retry_fields)} fields: {retry_fields}")
+                else:
+                    print(f"[koji-extract] Same-chunk retry {retry_round}/{_MAX_SAME_CHUNK_RETRIES} for {len(retry_fields)} fields: {retry_fields}")
                 retry_tasks = []
                 for field_name in retry_fields:
                     field_spec = _resolve_conditional_hints(schema_def["fields"][field_name], accumulated["extracted"])
@@ -1131,7 +1141,7 @@ async def intelligent_extract(
                                 field_spec,
                                 route_by_field[field_name],
                                 schema_name,
-                                provider,
+                                retry_provider,
                                 semaphore,
                                 context_chunks=context_chunks,
                             ),
@@ -1166,9 +1176,13 @@ async def intelligent_extract(
                 if conf == "not_found" and schema_def.get("fields", {}).get(f, {}).get("required")
             ]
 
-        # Phase 2: broadened gap-fill for fields still missing after retry
+        # Phase 2: broadened gap-fill for fields still missing after retry.
+        # Use fallback model if configured — these fields already failed
+        # multiple times on the primary model.
         if missing_required:
-            print(f"[koji-extract] Broadened gap-fill for {len(missing_required)} fields: {missing_required}")
+            gap_provider = fallback_provider or provider
+            gap_model_label = fallback_model if fallback_provider else model
+            print(f"[koji-extract] Broadened gap-fill ({gap_model_label}) for {len(missing_required)} fields: {missing_required}")
 
             gap_tasks = []
             for field_name in missing_required:
@@ -1194,7 +1208,7 @@ async def intelligent_extract(
                             field_spec,
                             broadened_chunks,
                             schema_name,
-                            provider,
+                            gap_provider,
                             semaphore,
                             context_chunks=context_chunks,
                         ),

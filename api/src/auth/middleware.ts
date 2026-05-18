@@ -10,9 +10,10 @@
  * Public routes skip all of this. Authenticated-but-no-tenant routes
  * (like /api/me, /api/tenants) skip tenant resolution.
  */
+import { createHash } from "node:crypto";
 import type { Context, Next } from "hono";
 import { getCookie } from "hono/cookie";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { AuthAdapter, Principal } from "./adapter";
 import { resolvePermissions, type Permission } from "./roles";
@@ -97,7 +98,43 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     // injects a fresh one with a per-request DB), falling back to the
     // closure adapter for Node/self-hosted where the DB is shared.
     const requestAuth = c.get("auth") ?? adapter;
-    const principal = await requestAuth.resolve(token);
+    let principal = await requestAuth.resolve(token);
+
+    // Fallback: if the adapter didn't resolve the token and it looks like
+    // a CLI API key (koji_ prefix), check the api_keys table directly.
+    // This works across all auth adapters (local, Clerk, OIDC).
+    if (!principal && token.startsWith("koji_") && !token.startsWith("koji_sess_")) {
+      const db = c.get("db");
+      const keyHashHex = createHash("sha256").update(token).digest("hex");
+      const [row] = await db
+        .select({
+          tenantId: schema.apiKeys.tenantId,
+          userId: schema.apiKeys.createdBy,
+          email: schema.users.email,
+          name: schema.users.name,
+        })
+        .from(schema.apiKeys)
+        .innerJoin(schema.users, eq(schema.users.id, schema.apiKeys.createdBy))
+        .where(
+          and(
+            sql`${schema.apiKeys.keyHash} = decode(${keyHashHex}, 'hex')`,
+            isNull(schema.apiKeys.revokedAt),
+          ),
+        )
+        .limit(1);
+
+      if (row) {
+        principal = {
+          userId: row.userId,
+          email: row.email,
+          name: row.name,
+        };
+        // Stash the tenant from the key so tenant resolution can use it
+        // when no x-koji-tenant header is present.
+        c.set("apiKeyTenantId", row.tenantId);
+      }
+    }
+
     if (!principal) {
       return c.json({ error: "Invalid or expired session" }, 401);
     }
@@ -115,6 +152,9 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     const db = c.get("db");
     let tenant: { id: string } | undefined;
 
+    // API keys carry their tenant — use it when no header/org is provided
+    const apiKeyTenantId = c.get("apiKeyTenantId") as string | undefined;
+
     if (tenantSlug) {
       // Primary path: resolve by slug (OSS, CLI, API keys)
       [tenant] = await db
@@ -129,10 +169,13 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         .from(schema.tenants)
         .where(eq(schema.tenants.externalAuthId, principal.orgId))
         .limit(1);
+    } else if (apiKeyTenantId) {
+      // API key path: tenant is embedded in the key row
+      tenant = { id: apiKeyTenantId };
     }
 
     if (!tenant) {
-      if (!tenantSlug && !principal.orgId) {
+      if (!tenantSlug && !principal.orgId && !apiKeyTenantId) {
         return c.json({ error: "Missing x-koji-tenant header" }, 400);
       }
       return c.json({ error: "Tenant not found" }, 404);

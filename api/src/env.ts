@@ -4,6 +4,7 @@ import type { Permission } from "./auth/roles";
 import type { BillingAdapter } from "./billing/adapter";
 import type { EmailSender } from "./email/provider";
 import type { QueueProvider } from "./queue/provider";
+import type { ParseProvider } from "./parse/provider";
 import type { StorageProvider } from "./storage/provider";
 
 /**
@@ -47,5 +48,9 @@ export type Env = {
     /** Billing adapter — feature gates, usage tracking, Stripe integration.
      *  Self-hosted uses NoOpBillingAdapter (all gates pass, no metering). */
     billing: BillingAdapter;
+    /** Parse provider for direct parsing (Workers) or sidecar proxy (Node). */
+    parseProvider: ParseProvider;
+    /** Tenant ID resolved from an API key (set by auth middleware). */
+    apiKeyTenantId: string | undefined;
   };
 };

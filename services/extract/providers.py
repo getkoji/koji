@@ -40,30 +40,100 @@ _MAX_RETRIES = 3
 _BASE_DELAY = 2.0  # seconds
 
 
-async def _retry_on_rate_limit(coro_factory, max_retries: int = _MAX_RETRIES) -> httpx.Response:
-    """Retry an async HTTP call with exponential backoff on rate-limit errors.
+class AdaptiveRateLimiter:
+    """Per-API-key admission control with automatic backoff.
 
-    `coro_factory` is a zero-arg callable that returns a fresh coroutine
-    each time (since coroutines can't be re-awaited).
+    Instead of firing all requests at once and retrying individually on
+    429, this limiter gates how many requests can be in-flight
+    simultaneously. When a 429 hits, concurrency is halved globally —
+    all waiters slow down, not just the one that got throttled. On
+    success, concurrency slowly recovers.
+
+    This eliminates the thundering herd pattern where N groups fire,
+    all get 429'd, all back off, then all fire again simultaneously.
     """
-    last_exc = None
-    for attempt in range(max_retries + 1):
-        try:
-            resp = await coro_factory()
-            if resp.status_code not in _RETRY_STATUS_CODES:
-                return resp
-            last_exc = httpx.HTTPStatusError(
-                f"HTTP {resp.status_code}", request=resp.request, response=resp
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code not in _RETRY_STATUS_CODES:
-                raise
-            last_exc = e
-        if attempt < max_retries:
-            delay = _BASE_DELAY * (2 ** attempt)
-            print(f"[koji-extract] Rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
-            await asyncio.sleep(delay)
-    raise last_exc  # type: ignore[misc]
+
+    _instances: dict[str, "AdaptiveRateLimiter"] = {}
+
+    def __init__(self, initial: int = 4):
+        self._max = initial
+        self._sem = asyncio.Semaphore(initial)
+        self._lock = asyncio.Lock()
+        self._successes_since_backoff = 0
+        self._floor = 1
+        self._ceiling = initial
+
+    @classmethod
+    def for_key(cls, key: str, initial: int = 4) -> "AdaptiveRateLimiter":
+        """Get or create a limiter for a given API key / base URL."""
+        if key not in cls._instances:
+            cls._instances[key] = cls(initial)
+        return cls._instances[key]
+
+    async def _tighten(self) -> None:
+        """Halve concurrency on rate limit."""
+        async with self._lock:
+            new_max = max(self._floor, self._max // 2)
+            if new_max < self._max:
+                # Drain permits down to new_max by acquiring the difference
+                drain = self._max - new_max
+                for _ in range(drain):
+                    # Try to acquire without blocking — if we can't, the
+                    # slots are already in use and will naturally reduce
+                    if self._sem._value > 0:  # noqa: SLF001
+                        await self._sem.acquire()
+                self._max = new_max
+                print(f"[koji-extract] Rate limiter: concurrency → {self._max}")
+            self._successes_since_backoff = 0
+
+    async def _maybe_widen(self) -> None:
+        """Probe upward after sustained success."""
+        async with self._lock:
+            self._successes_since_backoff += 1
+            if self._successes_since_backoff >= 10 and self._max < self._ceiling:
+                self._max += 1
+                self._sem.release()  # add one permit
+                self._successes_since_backoff = 0
+                print(f"[koji-extract] Rate limiter: concurrency → {self._max}")
+
+    async def execute(self, coro_factory, max_retries: int = _MAX_RETRIES) -> httpx.Response:
+        """Acquire a slot, execute with retry, adjust concurrency."""
+        last_exc = None
+        for attempt in range(max_retries + 1):
+            await self._sem.acquire()
+            try:
+                resp = await coro_factory()
+                if resp.status_code not in _RETRY_STATUS_CODES:
+                    await self._maybe_widen()
+                    return resp
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}", request=resp.request, response=resp
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in _RETRY_STATUS_CODES:
+                    self._sem.release()
+                    raise
+                last_exc = e
+            finally:
+                self._sem.release()
+
+            # Rate limited — tighten and backoff before retry
+            await self._tighten()
+            if attempt < max_retries:
+                delay = _BASE_DELAY * (2 ** attempt)
+                print(f"[koji-extract] Rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+
+async def _retry_on_rate_limit(coro_factory, max_retries: int = _MAX_RETRIES) -> httpx.Response:
+    """Legacy retry wrapper — delegates to a shared rate limiter.
+
+    Kept for backward compatibility with providers that don't have a
+    limiter configured. Uses a default global limiter keyed by "default".
+    """
+    limiter = AdaptiveRateLimiter.for_key("default")
+    return await limiter.execute(coro_factory, max_retries)
 
 
 class ModelProvider:
@@ -123,6 +193,9 @@ class OpenAIProvider(ModelProvider):
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = base_url or os.environ.get("KOJI_OPENAI_URL", "https://api.openai.com/v1")
+        # Shared rate limiter per API key — all providers using the same
+        # key share a single concurrency pool.
+        self._limiter = AdaptiveRateLimiter.for_key(self.api_key or self.base_url)
 
     def _headers(self) -> dict:
         return {
@@ -142,7 +215,7 @@ class OpenAIProvider(ModelProvider):
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
 
-            resp = await _retry_on_rate_limit(
+            resp = await self._limiter.execute(
                 lambda: client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
@@ -163,7 +236,7 @@ class OpenAIProvider(ModelProvider):
             if tools:
                 payload["tools"] = tools
 
-            resp = await _retry_on_rate_limit(
+            resp = await self._limiter.execute(
                 lambda: client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
@@ -202,6 +275,7 @@ class AzureOpenAIProvider(ModelProvider):
         self.base_url = base_url.rstrip("/")
         self.deployment_name = deployment_name
         self.api_version = api_version
+        self._limiter = AdaptiveRateLimiter.for_key(self.api_key or self.base_url)
 
     def _headers(self) -> dict:
         return {
@@ -226,10 +300,12 @@ class AzureOpenAIProvider(ModelProvider):
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
 
-            resp = await client.post(
-                self._url(),
-                json=payload,
-                headers=self._headers(),
+            resp = await self._limiter.execute(
+                lambda: client.post(
+                    self._url(),
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -245,10 +321,12 @@ class AzureOpenAIProvider(ModelProvider):
             if tools:
                 payload["tools"] = tools
 
-            resp = await client.post(
-                self._url(),
-                json=payload,
-                headers=self._headers(),
+            resp = await self._limiter.execute(
+                lambda: client.post(
+                    self._url(),
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             choice = resp.json()["choices"][0]
@@ -293,6 +371,7 @@ class BedrockProvider(ModelProvider):
         self.secret_access_key = secret_access_key
         self.session_token = session_token
         self._endpoint = f"https://bedrock-runtime.{region}.amazonaws.com"
+        self._limiter = AdaptiveRateLimiter.for_key(f"bedrock:{region}:{access_key_id}")
 
     def _signed_headers(self, url: str, body: bytes) -> dict[str, str]:
         """Build SigV4-signed headers for a Bedrock Converse POST.
@@ -381,7 +460,9 @@ class BedrockProvider(ModelProvider):
         headers = self._signed_headers(url, body)
 
         async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(url, content=body, headers=headers)
+            resp = await self._limiter.execute(
+                lambda: client.post(url, content=body, headers=headers)
+            )
             resp.raise_for_status()
             return resp.json()
 
@@ -445,6 +526,7 @@ class AnthropicProvider(ModelProvider):
         self.model = model
         self.api_key = api_key
         self.base_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
+        self._limiter = AdaptiveRateLimiter.for_key(self.api_key or self.base_url)
 
     def _headers(self) -> dict:
         return {
@@ -477,10 +559,12 @@ class AnthropicProvider(ModelProvider):
             "messages": [{"role": "user", "content": effective_prompt}],
         }
         async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{self.base_url}/messages",
-                json=payload,
-                headers=self._headers(),
+            resp = await self._limiter.execute(
+                lambda: client.post(
+                    f"{self.base_url}/messages",
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             return self._extract_text(resp.json())
@@ -525,10 +609,12 @@ class AnthropicProvider(ModelProvider):
             payload["system"] = "\n\n".join(system_parts)
 
         async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{self.base_url}/messages",
-                json=payload,
-                headers=self._headers(),
+            resp = await self._limiter.execute(
+                lambda: client.post(
+                    f"{self.base_url}/messages",
+                    json=payload,
+                    headers=self._headers(),
+                )
             )
             resp.raise_for_status()
             text = self._extract_text(resp.json())

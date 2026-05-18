@@ -1156,16 +1156,19 @@ class TestGapFilling:
         assert result["extracted"]["c"] is None
 
     async def test_retry_limit_one_attempt(self, monkeypatch):
-        """Each missing field is retried only once. If still null, stays null."""
+        """Missing field exhausts same-chunk retries then gap-fill. If still null, stays null."""
         schema = {
             "name": "test_gap",
             "fields": {
                 "ghost": {"type": "string", "required": True},
             },
         }
-        # First call: ghost missing. Gap fill: still null. No third attempt.
+        # 1 initial + 3 same-chunk retries + 1 broadened gap fill = 5 calls
         provider = MockProvider(
             responses=[
+                json.dumps({"ghost": None}),
+                json.dumps({"ghost": None}),
+                json.dumps({"ghost": None}),
                 json.dumps({"ghost": None}),
                 json.dumps({"ghost": None}),
             ]
@@ -1183,8 +1186,8 @@ class TestGapFilling:
 
         assert result["extracted"]["ghost"] is None
         assert result["gap_filled"] == []
-        # Exactly 2 calls: initial + one gap fill attempt
-        assert len(provider.calls) == 2
+        # 1 initial + 3 same-chunk retries + 1 broadened gap fill
+        assert len(provider.calls) == 5
 
     async def test_gap_fill_strips_hints_to_escape_restrictive_look_in(self, monkeypatch):
         """When look_in filters out the chunk that actually contains the value,
@@ -1414,7 +1417,8 @@ class TestComputeFieldConfidence:
             provenance_strength=1.0,
             validation_passed=True,
         )
-        assert score == pytest.approx(0.975)
+        # LLM confidence is ignored; 0.70*1.0 + 0.30*1.0 = 1.0
+        assert score == pytest.approx(1.0)
 
     def test_moderate_signals_produce_moderate_score(self):
         score = compute_field_confidence(
@@ -1422,7 +1426,8 @@ class TestComputeFieldConfidence:
             provenance_strength=0.6,
             validation_passed=True,
         )
-        assert score == pytest.approx(0.71)
+        # 0.70*0.6 + 0.30*1.0 = 0.72
+        assert score == pytest.approx(0.72)
 
     def test_low_confidence_no_provenance_invalid(self):
         score = compute_field_confidence(
@@ -1430,7 +1435,8 @@ class TestComputeFieldConfidence:
             provenance_strength=0.0,
             validation_passed=False,
         )
-        assert score == pytest.approx(0.20)
+        # 0.70*0.0 + 0.30*0.0 = 0.0
+        assert score == pytest.approx(0.0)
 
     def test_fallback_exact_match_valid(self):
         """Without LLM confidence, uses provenance-heavy fallback weights."""
@@ -1470,13 +1476,15 @@ class TestComputeFieldConfidence:
         valid = compute_field_confidence(llm_confidence=0.9, provenance_strength=0.8, validation_passed=True)
         invalid = compute_field_confidence(llm_confidence=0.9, provenance_strength=0.8, validation_passed=False)
         assert valid > invalid
-        assert valid - invalid == pytest.approx(0.15)
+        # Validation weight is 0.30
+        assert valid - invalid == pytest.approx(0.30)
 
     def test_provenance_strength_matters(self):
         high_prov = compute_field_confidence(llm_confidence=0.8, provenance_strength=1.0)
         low_prov = compute_field_confidence(llm_confidence=0.8, provenance_strength=0.0)
         assert high_prov > low_prov
-        assert high_prov - low_prov == pytest.approx(0.35)
+        # Provenance weight is 0.70
+        assert high_prov - low_prov == pytest.approx(0.70)
 
 
 class TestComputeProvenanceStrength:
@@ -1626,8 +1634,8 @@ class TestReconcileConfidenceScores:
             )
         ]
         out = reconcile(results, schema, routes=routes)
-        # 0.50 * 0.95 + 0.35 * 1.0 (exact match) + 0.15 * 1.0 (valid) = 0.975
-        assert out["confidence_scores"]["f"] == pytest.approx(0.975)
+        # LLM confidence ignored; 0.70 * 1.0 (exact match) + 0.30 * 1.0 (valid) = 1.0
+        assert out["confidence_scores"]["f"] == pytest.approx(1.0)
         assert out["confidence"]["f"] == "high"
 
 

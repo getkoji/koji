@@ -86,6 +86,7 @@ class ExtractionRequest(BaseModel):
     markdown: str
     schema_def: dict
     model: str | None = None
+    fallback_model: str | None = None  # Escalation model for retries (e.g. "openai/gpt-4o")
     strategy: str | None = None  # "parallel" or "agent"
     classify_mode: str | None = None  # "keywords" (default), "llm", "all"
     relevant_categories: list[str] | None = None  # which chunk categories to extract from
@@ -138,6 +139,7 @@ async def extract(req: ExtractionRequest):
                 model,
                 classify_config=req.classify_config,
                 endpoint_cfg=req.endpoint,
+                fallback_model=req.fallback_model,
             )
         elif strategy == "agent":
             result = await _run_agent(req.markdown, req.schema_def, model, endpoint_cfg=req.endpoint)

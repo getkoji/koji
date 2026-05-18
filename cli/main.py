@@ -412,12 +412,20 @@ def bench(
         raise SystemExit(1)
 
     # Bench calls the extract service directly (stateless, no auth needed).
-    # Try cluster state first, then fall back to default local extract port.
+    # Locally it runs on the extract port; prod uses the CLI profile URL.
+    from .credentials import get_active_profile
+
     state = load_cluster_state()
     if state is not None:
         server_url = f"http://127.0.0.1:{state.get('extract_port', 9412)}"
     else:
-        server_url = "http://127.0.0.1:9412"
+        profile = get_active_profile()
+        if profile:
+            server_url = profile.url
+        else:
+            console.print("[red]No local cluster running and no CLI profile.[/red]")
+            console.print("[dim]Run [bold]koji start[/bold] or [bold]koji login[/bold] first.[/dim]")
+            raise SystemExit(1)
 
     # Verify connectivity
     try:
@@ -559,7 +567,7 @@ def _get_db_url() -> str | None:
 def login(
     server_url: str = typer.Argument(
         None,
-        help="Server URL (e.g. https://koji.acme.internal or http://localhost:9401)",
+        help="Server URL (default: https://console.getkoji.dev)",
     ),
     api_key: str | None = typer.Option(
         None,
@@ -586,9 +594,11 @@ def login(
     """
     from .credentials import Profile, load_credentials
 
+    DEFAULT_SERVER = "https://console.getkoji.dev"
+
     if api_key:
         # Direct key — headless mode
-        url = server_url or "http://localhost:9401"
+        url = server_url or DEFAULT_SERVER
         name = profile or _derive_profile_name(url)
 
         creds = load_credentials()
@@ -604,11 +614,7 @@ def login(
         return
 
     # Browser flow
-    if not server_url:
-        console.print("[red]Server URL is required. Usage: koji login https://koji.example.com[/red]")
-        raise SystemExit(1)
-
-    url = server_url.rstrip("/")
+    url = (server_url or DEFAULT_SERVER).rstrip("/")
     name = profile or _derive_profile_name(url)
 
     import http.server

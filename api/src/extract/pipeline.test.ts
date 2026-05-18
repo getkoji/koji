@@ -282,7 +282,7 @@ describe("confidence scoring", () => {
     expect(result.confidence_scores.name).toBeGreaterThanOrEqual(0.7);
   });
 
-  it("uses LLM self-reported confidence when available", async () => {
+  it("LLM self-reported confidence is ignored (stripped but not used in scoring)", async () => {
     const response = JSON.stringify({
       name: "Acme Corp",
       __confidence: { name: 0.95 },
@@ -291,9 +291,9 @@ describe("confidence scoring", () => {
     const schema = { name: "test", fields: { name: { type: "string" } } };
 
     const result = await extractFields("Name: Acme Corp", schema, provider, "m");
-    // 0.50 * 0.95 + 0.35 * 0.85 (provenance) + 0.15 * 1 (valid) = 0.9225
+    // LLM confidence ignored; 0.70 * 0.85 (provenance, no bbox) + 0.30 * 1 (valid) = 0.895
     expect(result.confidence.name).toBe("high");
-    expect(result.confidence_scores.name).toBeGreaterThan(0.9);
+    expect(result.confidence_scores.name).toBeGreaterThanOrEqual(0.7);
     // __confidence should not leak into extracted output
     expect(result.extracted).not.toHaveProperty("__confidence");
   });
