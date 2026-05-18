@@ -53,7 +53,7 @@ class AdaptiveRateLimiter:
     all get 429'd, all back off, then all fire again simultaneously.
     """
 
-    _instances: dict[str, "AdaptiveRateLimiter"] = {}
+    _instances: dict[str, AdaptiveRateLimiter] = {}
 
     def __init__(self, initial: int = 4):
         self._max = initial
@@ -64,7 +64,7 @@ class AdaptiveRateLimiter:
         self._ceiling = initial
 
     @classmethod
-    def for_key(cls, key: str, initial: int = 4) -> "AdaptiveRateLimiter":
+    def for_key(cls, key: str, initial: int = 4) -> AdaptiveRateLimiter:
         """Get or create a limiter for a given API key / base URL."""
         if key not in cls._instances:
             cls._instances[key] = cls(initial)

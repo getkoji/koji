@@ -1,7 +1,5 @@
 """Tests for AdaptiveRateLimiter and per-provider rate limiting."""
 
-import asyncio
-
 import httpx
 import pytest
 
@@ -11,7 +9,6 @@ from services.extract.providers import (
     AzureOpenAIProvider,
     OpenAIProvider,
 )
-
 
 # ---------------------------------------------------------------------------
 # AdaptiveRateLimiter unit tests
