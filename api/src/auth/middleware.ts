@@ -184,7 +184,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     c.set("tenantId", tenant.id);
 
     // --- Stage 3: Load grants ---
-    const [membership] = await db
+    let [membership] = await db
       .select({ roles: schema.memberships.roles })
       .from(schema.memberships)
       .where(
@@ -194,6 +194,37 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         ),
       )
       .limit(1);
+
+    // JIT provisioning: if the user resolved via Clerk org but has no
+    // Koji membership, they accepted a Clerk invite that didn't create
+    // a local row. Auto-provision as member so they can access the tenant.
+    if (!membership && principal.orgId) {
+      const orgRole = principal.orgRole ?? "org:member";
+      const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
+        ? ["admin"]
+        : ["member"];
+      try {
+        await db.insert(schema.memberships).values({
+          userId: principal.userId,
+          tenantId: tenant.id,
+          roles: kojiRoles,
+        });
+        membership = { roles: kojiRoles };
+        console.log(`[auth] JIT provisioned membership for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
+      } catch (err: any) {
+        // Unique constraint = race condition, re-read
+        if (err.code === "23505") {
+          [membership] = await db
+            .select({ roles: schema.memberships.roles })
+            .from(schema.memberships)
+            .where(and(
+              eq(schema.memberships.userId, principal.userId),
+              eq(schema.memberships.tenantId, tenant.id),
+            ))
+            .limit(1);
+        }
+      }
+    }
 
     if (!membership) {
       return c.json({ error: "You are not a member of this workspace" }, 403);
