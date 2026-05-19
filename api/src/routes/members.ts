@@ -26,7 +26,10 @@ members.get("/", requires("member:read"), async (c) => {
     })
     .from(schema.memberships)
     .innerJoin(schema.users, eq(schema.users.id, schema.memberships.userId))
-    .where(eq(schema.memberships.tenantId, tenantId));
+    .where(and(
+      eq(schema.memberships.tenantId, tenantId),
+      eq(schema.memberships.isShadow, false),
+    ));
 
   return c.json({
     data: rows.map((r) => ({
@@ -71,7 +74,12 @@ members.patch("/:id", requires("member:invite"), async (c) => {
 
   // Find the membership
   const [membership] = await db
-    .select({ id: schema.memberships.id, userId: schema.memberships.userId, roles: schema.memberships.roles })
+    .select({
+      id: schema.memberships.id,
+      userId: schema.memberships.userId,
+      roles: schema.memberships.roles,
+      isShadow: schema.memberships.isShadow,
+    })
     .from(schema.memberships)
     .where(
       and(
@@ -81,7 +89,7 @@ members.patch("/:id", requires("member:invite"), async (c) => {
     )
     .limit(1);
 
-  if (!membership) {
+  if (!membership || membership.isShadow) {
     return c.json({ error: "Member not found" }, 404);
   }
 
@@ -110,7 +118,12 @@ members.delete("/:id", requires("member:remove"), async (c) => {
   const myRoles = getRoles(c);
 
   const [membership] = await db
-    .select({ id: schema.memberships.id, userId: schema.memberships.userId, roles: schema.memberships.roles })
+    .select({
+      id: schema.memberships.id,
+      userId: schema.memberships.userId,
+      roles: schema.memberships.roles,
+      isShadow: schema.memberships.isShadow,
+    })
     .from(schema.memberships)
     .where(
       and(
@@ -120,7 +133,7 @@ members.delete("/:id", requires("member:remove"), async (c) => {
     )
     .limit(1);
 
-  if (!membership) {
+  if (!membership || membership.isShadow) {
     return c.json({ error: "Member not found" }, 404);
   }
 
