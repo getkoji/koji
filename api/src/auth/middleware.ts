@@ -195,34 +195,52 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       )
       .limit(1);
 
-    // JIT provisioning: if the user resolved via Clerk org but has no
-    // Koji membership, they accepted a Clerk invite that didn't create
-    // a local row. Auto-provision as member so they can access the tenant.
-    if (!membership && principal.orgId) {
+    // JIT provisioning + role sync for Clerk org members.
+    // When a user is in a Clerk org but has no Koji membership, create one.
+    // When they have one, sync roles from Clerk in case the org role changed.
+    if (principal.orgId) {
       const orgRole = principal.orgRole ?? "org:member";
       const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-        ? ["admin"]
+        ? ["owner"]
         : ["member"];
-      try {
-        await db.insert(schema.memberships).values({
-          userId: principal.userId,
-          tenantId: tenant.id,
-          roles: kojiRoles,
-        });
-        membership = { roles: kojiRoles };
-        console.log(`[auth] JIT provisioned membership for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
-      } catch (err: any) {
-        // Unique constraint = race condition, re-read
-        if (err.code === "23505") {
-          [membership] = await db
-            .select({ roles: schema.memberships.roles })
-            .from(schema.memberships)
-            .where(and(
-              eq(schema.memberships.userId, principal.userId),
-              eq(schema.memberships.tenantId, tenant.id),
-            ))
-            .limit(1);
+
+      if (!membership) {
+        try {
+          await db.insert(schema.memberships).values({
+            userId: principal.userId,
+            tenantId: tenant.id,
+            roles: kojiRoles,
+          });
+          membership = { roles: kojiRoles };
+          console.log(`[auth] JIT provisioned membership for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
+        } catch (err: any) {
+          // Unique constraint = race condition, re-read
+          if (err.code === "23505") {
+            [membership] = await db
+              .select({ roles: schema.memberships.roles })
+              .from(schema.memberships)
+              .where(and(
+                eq(schema.memberships.userId, principal.userId),
+                eq(schema.memberships.tenantId, tenant.id),
+              ))
+              .limit(1);
+          }
         }
+      } else if (
+        membership.roles.length === 1 &&
+        membership.roles[0] !== kojiRoles[0] &&
+        !membership.roles.includes("owner") // don't downgrade owners
+      ) {
+        // Sync: Clerk role changed since last JIT provision
+        await db
+          .update(schema.memberships)
+          .set({ roles: kojiRoles, updatedAt: new Date() })
+          .where(and(
+            eq(schema.memberships.userId, principal.userId),
+            eq(schema.memberships.tenantId, tenant.id),
+          ));
+        membership = { roles: kojiRoles };
+        console.log(`[auth] Synced membership roles for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
       }
     }
 
