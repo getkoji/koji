@@ -175,6 +175,24 @@ export function getEffectivePreflightLimits(
 }
 
 /**
+ * Check a document's page count and file size against preflight limits.
+ * Returns null if within limits, or a human-readable error string.
+ */
+export function checkPreflight(
+  limits: PreflightOverrides,
+  pages: number | null | undefined,
+  fileSizeMb?: number,
+): string | null {
+  if (limits.max_pages != null && pages != null && pages > limits.max_pages) {
+    return `Document exceeds page limit: ${pages} pages (max ${limits.max_pages} on your plan)`;
+  }
+  if (limits.max_size_mb != null && fileSizeMb != null && fileSizeMb > limits.max_size_mb) {
+    return `Document exceeds size limit: ${fileSizeMb.toFixed(1)}MB (max ${limits.max_size_mb}MB on your plan)`;
+  }
+  return null;
+}
+
+/**
  * Get the minimum plan required for a boolean feature.
  * Used in error messages: "X is available on Scale and Enterprise plans."
  */

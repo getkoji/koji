@@ -9,6 +9,8 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
+import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
+import type { PlanId } from "../billing/plans";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -41,6 +43,40 @@ function modalAuthHeaders(url: string): Record<string, string> {
 // Backwards compat alias
 function resolveParseUrl(baseUrl: string, path = "/parse"): string {
   return resolveServiceUrl(baseUrl, path);
+}
+
+/**
+ * Check document against tenant's preflight limits (max pages, max file size).
+ * Returns null if OK, or an error string if the document exceeds a limit.
+ */
+async function checkPreflightLimits(
+  db: any,
+  tenantId: string,
+  pages: number | null | undefined,
+  fileSizeMb?: number,
+): Promise<string | null> {
+  const [tenant] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        plan: schema.tenants.plan,
+        planOverridesJson: schema.tenants.planOverridesJson,
+      })
+      .from(schema.tenants)
+      .where(eq(schema.tenants.id, tenantId))
+      .limit(1),
+  );
+  if (!tenant) return null;
+
+  const baseLimits: PreflightOverrides = {
+    max_pages: 20,
+    max_size_mb: 10,
+  };
+  const limits = getEffectivePreflightLimits(
+    { plan: (tenant.plan ?? "free") as PlanId, planOverridesJson: tenant.planOverridesJson as any },
+    baseLimits,
+  );
+
+  return checkPreflight(limits, pages, fileSizeMb);
 }
 
 
@@ -244,6 +280,17 @@ extract.post("/process", requires("job:run"), async (c) => {
 
   const parseResult = (await parseResp.json()) as Record<string, unknown>;
 
+  // Enforce preflight limits
+  const preflightError = await checkPreflightLimits(
+    c.get("db"),
+    getTenantId(c),
+    parseResult.pages as number | null,
+    file.size / (1024 * 1024),
+  );
+  if (preflightError) {
+    return c.json({ error: preflightError }, 413);
+  }
+
   if (!schemaField) {
     return c.json(parseResult);
   }
@@ -410,6 +457,20 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         await stream.writeSSE({
           event: "error",
           data: JSON.stringify({ error: "Parse returned no markdown" }),
+        });
+        return;
+      }
+
+      // Enforce preflight limits
+      const preflightErr = await checkPreflightLimits(
+        db,
+        tenantId,
+        parseResult.pages as number | null,
+      );
+      if (preflightErr) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ error: preflightErr }),
         });
         return;
       }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   PLANS,
+  checkPreflight,
   getEffectivePlan,
   getRequiredPlan,
   getEffectivePreflightLimits,
@@ -130,6 +131,43 @@ describe("getRequiredPlan", () => {
 
   it("returns enterprise for SSO", () => {
     expect(getRequiredPlan("sso")).toBe("enterprise");
+  });
+});
+
+describe("checkPreflight", () => {
+  it("returns null when within limits", () => {
+    expect(checkPreflight({ max_pages: 20, max_size_mb: 10 }, 15, 5)).toBeNull();
+  });
+
+  it("rejects documents exceeding page limit", () => {
+    const err = checkPreflight({ max_pages: 20, max_size_mb: 10 }, 25);
+    expect(err).toContain("exceeds page limit");
+    expect(err).toContain("25 pages");
+    expect(err).toContain("max 20");
+  });
+
+  it("rejects documents exceeding size limit", () => {
+    const err = checkPreflight({ max_pages: 20, max_size_mb: 10 }, 5, 15);
+    expect(err).toContain("exceeds size limit");
+    expect(err).toContain("15.0MB");
+    expect(err).toContain("max 10");
+  });
+
+  it("allows unlimited when limit is null", () => {
+    expect(checkPreflight({ max_pages: null, max_size_mb: null }, 1000, 500)).toBeNull();
+  });
+
+  it("allows when pages is null (unknown page count)", () => {
+    expect(checkPreflight({ max_pages: 20, max_size_mb: 10 }, null)).toBeNull();
+  });
+
+  it("allows exactly at the limit", () => {
+    expect(checkPreflight({ max_pages: 20, max_size_mb: 10 }, 20, 10)).toBeNull();
+  });
+
+  it("rejects one page over", () => {
+    const err = checkPreflight({ max_pages: 20, max_size_mb: 10 }, 21);
+    expect(err).not.toBeNull();
   });
 });
 
