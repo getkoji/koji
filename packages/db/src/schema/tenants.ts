@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   decimal,
   index,
   integer,
@@ -125,6 +126,7 @@ export const memberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
     roles: text("roles").array().notNull(),
+    isShadow: boolean("is_shadow").default(false).notNull(),
     invitedBy: uuid("invited_by").references(() => users.id),
     invitedAt: timestamp("invited_at", { withTimezone: true, mode: "date" }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true, mode: "date" }),
