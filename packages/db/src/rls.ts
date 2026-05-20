@@ -45,6 +45,19 @@ export async function withRLS<T>(
     // same connection. Quoting via sql.raw is safe because we reject any
     // value that doesn't match the strict UUID regex above.
     await tx.execute(sql.raw(`SET LOCAL app.current_tenant_id = '${tenantId}'`));
+
+    // On managed Postgres (Neon, Supabase, etc.) the default role often
+    // has BYPASSRLS, which silently disables all RLS policies. SET ROLE
+    // to app_user (which does NOT have BYPASSRLS) forces the policies
+    // to evaluate. If app_user doesn't exist, we skip — the migration
+    // runner logs a warning about this at startup.
+    try {
+      await tx.execute(sql.raw(`SET LOCAL ROLE app_user`));
+    } catch {
+      // app_user role doesn't exist — RLS won't enforce. This is OK
+      // for local dev (single tenant) but MUST be fixed for production.
+    }
+
     return fn(tx);
   });
 }
