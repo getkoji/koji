@@ -65,6 +65,10 @@ export const RLS_POLICIES: readonly string[] = [
   "agent_proposed_edits",
   "webhook_targets",
   "webhook_deliveries",
+  "extraction_runs",
+  "form_mappings",
+  "pipeline_step_runs",
+  "pipeline_versions",
 ].flatMap((table) => [
   `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
   `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
@@ -85,4 +89,7 @@ export const GLOBAL_TABLES: readonly string[] = [
   "playground_sessions", // Anonymous marketing demo.
   "playground_extractions",
   "playground_rate_limits",
+  "parse_cache", // Shared by content hash — same file = same parse regardless of tenant.
+  "model_catalog", // Global model catalog, not tenant-specific.
+  "background_jobs", // System-level job queue, not tenant-scoped data.
 ];
