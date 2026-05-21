@@ -12,12 +12,14 @@ For a walkthrough of setting up your first config, see [Getting Started](getting
 ## Minimal config
 
 ```yaml
+kind: config
 project: myproject
 ```
 
 ## Full example
 
 ```yaml
+kind: config
 project: myproject
 
 cluster:

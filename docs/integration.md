@@ -323,7 +323,9 @@ koji pull -o ./schemas
 
 ### YAML `kind` field
 
-Every YAML file should declare its type:
+Every YAML file **must** declare its type with a `kind` field.
+`koji push` only processes files with `kind: schema` or `kind: pipeline` —
+all other files (including `koji.yaml` which uses `kind: config`) are skipped.
 
 ```yaml
 # Schema — defines what to extract
@@ -342,7 +344,7 @@ schema: claim          # references schema by name
 ```
 
 `koji push` reads `kind` and routes to the right API. Files without
-`kind` default to schema (backward compatible). Pipelines auto-link
+`kind: schema` or `kind: pipeline` are skipped. Pipelines auto-link
 to the first active model endpoint.
 
 ### Authentication
