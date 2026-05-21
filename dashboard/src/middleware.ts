@@ -21,6 +21,12 @@ const API_TARGET =
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Expose the API URL to the client for SSE/streaming endpoints
+  // that can't go through the middleware proxy (timeout issues).
+  if (pathname === "/_koji/api-url") {
+    return NextResponse.json({ url: API_TARGET });
+  }
+
   if (pathname.startsWith("/api/")) {
     const target = new URL(pathname + request.nextUrl.search, API_TARGET);
 
@@ -35,5 +41,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: "/api/:path*",
+  matcher: ["/api/:path*", "/_koji/:path*"],
 };

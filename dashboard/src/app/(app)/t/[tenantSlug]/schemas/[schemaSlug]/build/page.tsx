@@ -353,7 +353,24 @@ export default function BuildPage() {
     setGtSaved(false);
     setParseProgress({ pages: 0, scanned: false, ocr_skipped: false, estimated_seconds: 0, percent: 0, estimated_remaining_seconds: 0, phase: "detecting" });
 
-    const API_BASE = ""; // Relative — Next.js rewrites /api/* to the Koji API
+    // SSE streaming can't go through the Next.js middleware proxy (socket
+    // hang up on long connections). Discover the direct API URL at runtime.
+    let API_BASE = "";
+    try {
+      const disco = await fetch("/_koji/api-url");
+      if (disco.ok) {
+        const { url } = await disco.json();
+        // Only use direct URL if it's not localhost inside a container
+        if (url && !url.includes("koji-")) API_BASE = url;
+      }
+    } catch {}
+    // In Docker, the internal URL (koji-*-api:9401) isn't reachable from
+    // the browser. Fall back to the host-mapped port via window.location.
+    if (!API_BASE) {
+      // Guess: API is on the next port from the dashboard
+      const dashPort = parseInt(window.location.port, 10);
+      if (dashPort) API_BASE = `http://localhost:${dashPort + 1}`;
+    }
     try {
       // Raw fetch needed for SSE streaming — can't use api.post which parses JSON.
       // Build auth headers through the same path as api.post.
