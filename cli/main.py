@@ -783,6 +783,183 @@ def _derive_profile_name(url: str) -> str:
 
 
 @app.command()
+def push(
+    schemas_dir: str = typer.Option("./schemas", "--schemas", "-s", help="Directory containing schema YAML files"),
+    message: str = typer.Option(None, "--message", "-m", help="Commit message for the version"),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use"),
+):
+    """Push local schema YAML files to the Koji platform.
+
+    Reads all .yaml files from the schemas directory and creates or updates
+    each schema on the server. If the schema already exists and the YAML has
+    changed, a new version is created.
+    """
+    import httpx
+    import yaml as yaml_mod
+
+    from .credentials import get_active_profile, load_credentials
+
+    # Resolve profile
+    if profile_name:
+        creds = load_credentials()
+        profile = creds.profiles.get(profile_name)
+        if not profile:
+            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+            raise SystemExit(1)
+    else:
+        profile = get_active_profile()
+
+    if not profile:
+        console.print("[red]Not authenticated. Run [bold]koji login[/bold] first.[/red]")
+        raise SystemExit(1)
+
+    headers = {"Authorization": f"Bearer {profile.api_key}"}
+    base_url = profile.url.rstrip("/")
+
+    # Find schema files
+    schemas_path = Path(schemas_dir)
+    if not schemas_path.is_dir():
+        console.print(f"[red]Schemas directory not found: {schemas_dir}[/red]")
+        raise SystemExit(1)
+
+    yaml_files = sorted(schemas_path.glob("*.yaml")) + sorted(schemas_path.glob("*.yml"))
+    if not yaml_files:
+        console.print(f"[yellow]No .yaml files found in {schemas_dir}[/yellow]")
+        raise SystemExit(0)
+
+    console.print(f"\n[bold]koji push[/bold] — {len(yaml_files)} schema(s) → {base_url}\n")
+
+    with httpx.Client(timeout=30) as client:
+        for yaml_path in yaml_files:
+            yaml_content = yaml_path.read_text()
+            slug = yaml_path.stem
+
+            # Parse to get display name
+            try:
+                parsed = yaml_mod.safe_load(yaml_content) or {}
+            except Exception:
+                console.print(f"  [red]✗[/red] {slug} — invalid YAML")
+                continue
+
+            display_name = parsed.get("name", slug)
+
+            # Try to get existing schema
+            resp = client.get(f"{base_url}/api/schemas/{slug}", headers=headers)
+
+            if resp.status_code == 200:
+                # Schema exists — check if YAML changed, create new version
+                existing = resp.json()
+                existing_yaml = existing.get("latestVersion", {}).get("yamlSource", "")
+
+                if existing_yaml.strip() == yaml_content.strip():
+                    console.print(f"  [dim]—[/dim] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})")
+                    continue
+
+                # Create new version
+                resp = client.post(
+                    f"{base_url}/api/schemas/{slug}/versions",
+                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
+                    headers=headers,
+                )
+                if resp.status_code == 201:
+                    ver = resp.json()
+                    console.print(f"  [green]✓[/green] {slug} — updated to v{ver.get('versionNumber', '?')}")
+                else:
+                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
+                    console.print(f"  [red]✗[/red] {slug} — {error}")
+            elif resp.status_code == 404:
+                # Schema doesn't exist — create it
+                resp = client.post(
+                    f"{base_url}/api/schemas",
+                    json={
+                        "slug": slug,
+                        "display_name": display_name,
+                        "initial_yaml": yaml_content,
+                    },
+                    headers=headers,
+                )
+                if resp.status_code == 201:
+                    result = resp.json()
+                    console.print(f"  [green]✓[/green] {slug} — created (v1)")
+                else:
+                    error = resp.json().get("error", resp.text[:200])
+                    console.print(f"  [red]✗[/red] {slug} — {error}")
+            else:
+                console.print(f"  [red]✗[/red] {slug} — HTTP {resp.status_code}")
+
+    console.print()
+
+
+@app.command()
+def pull(
+    output_dir: str = typer.Option("./schemas", "--output", "-o", help="Directory to write schema YAML files"),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use"),
+):
+    """Pull schemas from the Koji platform to local YAML files.
+
+    Downloads the latest version of every schema and writes them to the
+    output directory. Existing files are overwritten.
+    """
+    import httpx
+
+    from .credentials import get_active_profile, load_credentials
+
+    # Resolve profile
+    if profile_name:
+        creds = load_credentials()
+        profile = creds.profiles.get(profile_name)
+        if not profile:
+            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+            raise SystemExit(1)
+    else:
+        profile = get_active_profile()
+
+    if not profile:
+        console.print("[red]Not authenticated. Run [bold]koji login[/bold] first.[/red]")
+        raise SystemExit(1)
+
+    headers = {"Authorization": f"Bearer {profile.api_key}"}
+    base_url = profile.url.rstrip("/")
+
+    # Get all schemas
+    resp = httpx.get(f"{base_url}/api/schemas", headers=headers, timeout=30)
+    if resp.status_code != 200:
+        console.print(f"[red]Failed to list schemas: HTTP {resp.status_code}[/red]")
+        raise SystemExit(1)
+
+    schemas = resp.json().get("data", [])
+    if not schemas:
+        console.print("[yellow]No schemas found on the server.[/yellow]")
+        raise SystemExit(0)
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"\n[bold]koji pull[/bold] — {len(schemas)} schema(s) → {output_dir}/\n")
+
+    with httpx.Client(timeout=30) as client:
+        for s in schemas:
+            slug = s["slug"]
+            resp = client.get(f"{base_url}/api/schemas/{slug}", headers=headers)
+            if resp.status_code != 200:
+                console.print(f"  [red]✗[/red] {slug} — HTTP {resp.status_code}")
+                continue
+
+            detail = resp.json()
+            yaml_source = detail.get("latestVersion", {}).get("yamlSource")
+            if not yaml_source:
+                console.print(f"  [yellow]—[/yellow] {slug} — no published version")
+                continue
+
+            file_path = out_path / f"{slug}.yaml"
+            file_path.write_text(yaml_source)
+            ver = detail.get("latestVersion", {}).get("versionNumber", "?")
+            console.print(f"  [green]✓[/green] {slug}.yaml (v{ver})")
+
+    console.print()
+
+
+@app.command()
 def version():
     """Show Koji version."""
     console.print(f"koji {KOJI_VERSION}")
