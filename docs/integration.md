@@ -241,12 +241,32 @@ fields:
     type: number
 EOF
 
-# Push to Koji Cloud
+# Push to Koji Cloud (uses active CLI profile)
 koji push -s ./schemas -m "initial claim schema"
+
+# Push to a local cluster (env var override)
+KOJI_API_URL=http://localhost:9501 KOJI_API_KEY=koji_yourkey \
+  koji push -s ./schemas -m "initial schema setup"
 
 # Pull latest from Koji Cloud
 koji pull -o ./schemas
 ```
+
+### Authentication
+
+**Koji Cloud**: Run `koji login` to create a profile, or set env vars:
+```bash
+export KOJI_API_URL=https://api.getkoji.dev
+export KOJI_API_KEY=koji_yourkey
+```
+
+**Local cluster**: After setup at `http://localhost:9500/setup`, create an API key in **Settings → API Keys**, then:
+```bash
+export KOJI_API_URL=http://localhost:9501
+export KOJI_API_KEY=koji_yourkey
+```
+
+All CLI commands (`push`, `pull`, `bench`) respect `KOJI_API_URL` and `KOJI_API_KEY` env vars. These override the active CLI profile.
 
 ---
 

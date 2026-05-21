@@ -811,27 +811,37 @@ def push(
     each schema on the server. If the schema already exists and the YAML has
     changed, a new version is created.
     """
+    import os
+
     import httpx
     import yaml as yaml_mod
 
     from .credentials import get_active_profile, load_credentials
 
-    # Resolve profile
-    if profile_name:
-        creds = load_credentials()
-        profile = creds.profiles.get(profile_name)
-        if not profile:
-            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
-            raise SystemExit(1)
+    # Env vars override profile (useful for CI and local Docker clusters)
+    env_url = os.environ.get("KOJI_API_URL")
+    env_key = os.environ.get("KOJI_API_KEY")
+
+    if env_url and env_key:
+        base_url = env_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {env_key}"}
     else:
-        profile = get_active_profile()
+        # Resolve profile
+        if profile_name:
+            creds = load_credentials()
+            profile = creds.profiles.get(profile_name)
+            if not profile:
+                console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+                raise SystemExit(1)
+        else:
+            profile = get_active_profile()
 
-    if not profile:
-        console.print("[red]Not authenticated. Run [bold]koji login[/bold] first.[/red]")
-        raise SystemExit(1)
+        if not profile:
+            console.print("[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]")
+            raise SystemExit(1)
 
-    headers = {"Authorization": f"Bearer {profile.api_key}"}
-    base_url = profile.url.rstrip("/")
+        headers = {"Authorization": f"Bearer {profile.api_key}"}
+        base_url = profile.url.rstrip("/")
 
     # Find schema files
     schemas_path = Path(schemas_dir)
@@ -918,26 +928,36 @@ def pull(
     Downloads the latest version of every schema and writes them to the
     output directory. Existing files are overwritten.
     """
+    import os
+
     import httpx
 
     from .credentials import get_active_profile, load_credentials
 
-    # Resolve profile
-    if profile_name:
-        creds = load_credentials()
-        profile = creds.profiles.get(profile_name)
-        if not profile:
-            console.print(f"[red]Profile '{profile_name}' not found.[/red]")
-            raise SystemExit(1)
+    # Env vars override profile
+    env_url = os.environ.get("KOJI_API_URL")
+    env_key = os.environ.get("KOJI_API_KEY")
+
+    if env_url and env_key:
+        base_url = env_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {env_key}"}
     else:
-        profile = get_active_profile()
+        # Resolve profile
+        if profile_name:
+            creds = load_credentials()
+            profile = creds.profiles.get(profile_name)
+            if not profile:
+                console.print(f"[red]Profile '{profile_name}' not found.[/red]")
+                raise SystemExit(1)
+        else:
+            profile = get_active_profile()
 
-    if not profile:
-        console.print("[red]Not authenticated. Run [bold]koji login[/bold] first.[/red]")
-        raise SystemExit(1)
+        if not profile:
+            console.print("[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]")
+            raise SystemExit(1)
 
-    headers = {"Authorization": f"Bearer {profile.api_key}"}
-    base_url = profile.url.rstrip("/")
+        headers = {"Authorization": f"Bearer {profile.api_key}"}
+        base_url = profile.url.rstrip("/")
 
     # Get all schemas
     resp = httpx.get(f"{base_url}/api/schemas", headers=headers, timeout=30)
