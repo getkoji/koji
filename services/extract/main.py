@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from .normalize import normalize_extracted
 from .validate import validate_extracted
 
-app = FastAPI(title="Koji Extract Service", version="0.9.0")
+app = FastAPI(title="Koji Extract Service", version="0.9.1")
 
 
 def _apply_post_extract(result: dict, schema_def: dict) -> dict:
@@ -107,7 +107,7 @@ class ExtractionRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-extract", "version": "0.9.0"}
+    return {"status": "healthy", "service": "koji-extract", "version": "0.9.1"}
 
 
 @app.post("/extract")
