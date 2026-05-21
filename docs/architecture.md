@@ -398,7 +398,7 @@ Each cluster gets its own Docker network, containers, and volumes. They do not i
 ```
 koji start  →  docker pull ghcr.io/getkoji/parse:latest
                docker pull ghcr.io/getkoji/extract:latest
-               docker pull ghcr.io/getkoji/server:latest
+               docker pull ghcr.io/getkoji/api:latest
                docker compose up
 ```
 
