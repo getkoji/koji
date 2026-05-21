@@ -132,7 +132,7 @@ fields:
     }
   });
 
-  it("rejects enum without values", () => {
+  it("rejects enum without values or options", () => {
     const result = compileSchema(`
 name: test
 fields:
@@ -140,8 +140,19 @@ fields:
 `);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("requires 'values' array"))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes("requires 'values' or 'options'"))).toBe(true);
     }
+  });
+
+  it("accepts enum with options (alias for values)", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  status:
+    type: enum
+    options: [active, inactive, pending]
+`);
+    expect(result.ok).toBe(true);
   });
 
   it("rejects array without items", () => {

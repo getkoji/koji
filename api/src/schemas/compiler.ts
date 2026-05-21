@@ -22,9 +22,11 @@ const VALID_TYPES = new Set(["string", "number", "date", "boolean", "enum", "arr
 
 const VALID_FIELD_PROPS = new Set([
   "type", "required", "nullable", "importance", "review_below",
-  "extraction_guidance", "validate", "normalize", "derived_from",
+  "extraction_guidance", "extraction_hint", "extraction_hint_by",
+  "validate", "normalize", "derived_from", "depends_on",
   "method", "values", "items", "fields", "merge", "description",
   "format", "default", "hints", "options", "signals", "resolve",
+  "verbatim", "mappings", "properties", "enum",
 ]);
 
 const VALID_NORMALIZE = new Set([
@@ -95,10 +97,11 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       errors.push({ field: name, message: `Field '${name}': unknown type '${def.type}'. Valid: ${[...VALID_TYPES].join(", ")}` });
     }
 
-    // Enum must have values
+    // Enum must have values or options
     if (def.type === "enum") {
-      if (!def.values || !Array.isArray(def.values)) {
-        errors.push({ field: name, message: `Field '${name}': enum type requires 'values' array` });
+      const enumValues = def.values ?? def.options;
+      if (!enumValues || !Array.isArray(enumValues)) {
+        errors.push({ field: name, message: `Field '${name}': enum type requires 'values' or 'options' array` });
       }
     }
 
