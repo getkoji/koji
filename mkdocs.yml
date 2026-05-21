@@ -52,9 +52,11 @@ nav:
   - Getting Started: getting-started.md
   - Schemas: schema-guide.md
   - Configuration: configuration.md
+  - Integration: integration.md
   - Architecture: architecture.md
   - CLI Reference: cli.md
   - API Reference: api-reference.md
+  - Forms: forms-guide.md
   - Trace Format: trace-format.md
 
 hooks:
