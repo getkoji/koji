@@ -83,6 +83,21 @@ function findExact(haystack: string, needle: string): { offset: number; length: 
   return null;
 }
 
+/**
+ * For short values (≤4 chars like state codes, abbreviations), prefer
+ * word-boundary matches to avoid matching inside longer words
+ * (e.g. "NC" inside "INCORPORATION").
+ */
+function findWordBoundary(haystack: string, needle: string): { offset: number; length: number } | null {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`, "i");
+  const m = haystack.match(pattern);
+  if (m && m.index !== undefined) {
+    return { offset: m.index, length: m[0].length };
+  }
+  return null;
+}
+
 function findCaseInsensitive(haystack: string, needle: string): { offset: number; length: number } | null {
   const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
   if (idx !== -1) return { offset: idx, length: needle.length };
@@ -404,11 +419,18 @@ export function resolveProvenance(
     let result: { offset: number; length: number } | null = null;
 
     if (typeof value === "string") {
-      // Try exact → case-insensitive → normalized whitespace
-      result =
-        findExact(markdown, value) ??
-        findCaseInsensitive(markdown, value) ??
-        findNormalized(markdown, value);
+      // For short values (state codes, abbreviations), prefer word-boundary
+      // matches to avoid matching inside longer words (e.g. "NC" in "INCORPORATION").
+      if (value.length <= 4) {
+        result = findWordBoundary(markdown, value);
+      }
+      // Fall through to standard search if word-boundary didn't match
+      if (!result) {
+        result =
+          findExact(markdown, value) ??
+          findCaseInsensitive(markdown, value) ??
+          findNormalized(markdown, value);
+      }
 
       // If it looks like a date (YYYY-MM-DD), try date formats
       if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
