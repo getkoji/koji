@@ -343,9 +343,11 @@ export default function BuildPage() {
       .then((data) => { setYaml(data.yamlSource); setShowHistory(false); });
   }
 
+  const hasModelEndpoint = (catalogModels ?? []).length > 0;
+
   async function handleRun() {
     const currentYaml = yamlRef.current;
-    if (!selectedDocId || !currentYaml) return;
+    if (!selectedDocId || !currentYaml || !hasModelEndpoint) return;
     setExtracting(true);
     setExtractionResult(null);
     setGtSaved(false);
