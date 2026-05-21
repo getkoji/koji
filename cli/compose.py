@@ -46,6 +46,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
     dev_mode = cluster.dev if dev is None else dev
     net = f"koji-{project}"
 
+    db_port = cluster.db_port
     db_url = f"postgres://koji:koji@koji-{project}-db:5432/koji"
 
     services: dict = {
@@ -53,7 +54,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
         "koji-db": {
             "image": "postgres:16-alpine",
             "container_name": f"koji-{project}-db",
-            "ports": ["127.0.0.1:5432:5432"],
+            "ports": [f"127.0.0.1:{db_port}:5432"],
             "environment": {
                 "POSTGRES_USER": "koji",
                 "POSTGRES_PASSWORD": "koji",

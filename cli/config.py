@@ -57,6 +57,10 @@ class ClusterConfig(BaseModel):
     def minio_console_port(self) -> int:
         return self.base_port + 16
 
+    @property
+    def db_port(self) -> int:
+        return self.base_port + 34
+
 
 class ClassifyTypeConfig(BaseModel):
     """A document type the classifier can emit for a section."""

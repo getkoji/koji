@@ -106,6 +106,7 @@ Base port for the cluster. All service ports are derived from this value using f
 | Ollama | +10 | 9410 |
 | Parse | +11 | 9411 |
 | Extract | +12 | 9412 |
+| Postgres | +34 | 9434 |
 
 To run a second cluster on the same machine, set a different `base_port`:
 
