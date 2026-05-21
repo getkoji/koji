@@ -307,10 +307,11 @@ function buildConfidence(
       continue;
     }
 
-    // Provenance strength: continuous 0.0-1.0
+    // Provenance strength: text was found in source → 1.0.
+    // bbox is for UI highlighting, not confidence scoring.
     let provStrength = 0;
-    if (prov) {
-      provStrength = prov.bbox ? 1.0 : 0.85;
+    if (prov && prov.offset >= 0) {
+      provStrength = 1.0;
     }
 
     // Validation bonus
