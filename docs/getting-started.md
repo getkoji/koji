@@ -16,17 +16,23 @@ Zero to structured data in five minutes. This guide walks you through installing
 ## Install
 
 ```bash
-pip install koji-cli
+uv tool install git+https://github.com/getkoji/koji.git
+```
+
+Or with pipx:
+
+```bash
+pipx install git+https://github.com/getkoji/koji.git
 ```
 
 Verify it worked:
 
 ```bash
 koji version
-# koji 0.1.0
+# koji 0.9.0
 ```
 
-> Installing from source? Clone the repo and `pip install -e .` from the project root.
+> **Updating?** `uv tool upgrade koji` pulls the latest.
 
 ## Initialize a project
 
