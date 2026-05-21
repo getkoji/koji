@@ -121,11 +121,18 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "KOJI_PARSE_URL": f"http://koji-{project}-parse:9410",
                 "KOJI_EXTRACT_URL": f"http://koji-{project}-extract:9420",
                 "KOJI_MASTER_KEY": _resolve_master_key(),
+                "KOJI_S3_ENDPOINT": f"http://koji-{project}-minio:9000",
+                "KOJI_S3_ACCESS_KEY": config.storage.access_key,
+                "KOJI_S3_SECRET_KEY": config.storage.secret_key,
+                "KOJI_S3_BUCKET": config.storage.bucket,
+                "KOJI_S3_REGION": config.storage.region,
+                "KOJI_S3_FORCE_PATH_STYLE": "true",
                 "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
                 "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
             },
             "depends_on": {
                 "koji-db": {"condition": "service_healthy"},
+                "koji-minio": {"condition": "service_started"},
             },
             "healthcheck": {
                 "test": ["CMD", "wget", "-q", "--spider", "http://localhost:9401/health"],
