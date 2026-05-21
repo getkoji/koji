@@ -22,7 +22,19 @@ export default async function RootPage() {
   const cookieStore = await cookies();
   const session = cookieStore.get("koji_session")?.value;
 
-  if (!session) redirect("/login");
+  if (!session) {
+    // Check if first-run setup is needed before sending to login
+    try {
+      const setupResp = await fetch(`${API_BASE}/api/setup/status`, { cache: "no-store" });
+      if (setupResp.ok) {
+        const { needed } = (await setupResp.json()) as { needed: boolean };
+        if (needed) redirect("/setup");
+      }
+    } catch {
+      // API not reachable — fall through to login
+    }
+    redirect("/login");
+  }
 
   let resp: Response;
   try {

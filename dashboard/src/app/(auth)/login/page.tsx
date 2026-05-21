@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
@@ -29,6 +29,13 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Redirect to /setup if first-run setup is needed
+  useEffect(() => {
+    api.get<{ needed: boolean }>("/api/setup/status")
+      .then((res) => { if (res.needed) router.replace("/setup"); })
+      .catch(() => {});
+  }, [router]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
