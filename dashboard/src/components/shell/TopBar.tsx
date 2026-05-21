@@ -236,7 +236,7 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
                       return;
                     }
                     try {
-                      await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401"}/api/auth/session`, {
+                      await fetch(`/api/auth/session`, {
                         method: "DELETE",
                         credentials: "include",
                       });

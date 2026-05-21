@@ -351,7 +351,7 @@ export default function BuildPage() {
     setGtSaved(false);
     setParseProgress({ pages: 0, scanned: false, ocr_skipped: false, estimated_seconds: 0, percent: 0, estimated_remaining_seconds: 0, phase: "detecting" });
 
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
+    const API_BASE = ""; // Relative — Next.js rewrites /api/* to the Koji API
     try {
       // Raw fetch needed for SSE streaming — can't use api.post which parses JSON.
       // Build auth headers through the same path as api.post.

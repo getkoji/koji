@@ -7,7 +7,11 @@
  * All responses are JSON. Errors throw with the Problem detail body.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
+// Client-side: use relative URLs — Next.js rewrites /api/* to the Koji API.
+// Server-side (SSR): use the env var for direct container-to-container calls.
+const API_BASE = typeof window === "undefined"
+  ? (process.env.KOJI_API_URL ?? "http://localhost:9401")
+  : "";
 
 /**
  * Optional auth token provider. When set, every request includes an

@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:9401";
+// Server-side: use env var for direct container-to-container calls
+const API_BASE = process.env.KOJI_API_URL ?? "http://localhost:9401";
 
 /**
  * Root redirect. Runs server-side so the user never sees a loading
