@@ -122,6 +122,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "KOJI_EXTRACT_URL": f"http://koji-{project}-extract:9420",
                 "KOJI_MASTER_KEY": _resolve_master_key(),
                 "KOJI_S3_ENDPOINT": f"http://koji-{project}-minio:9000",
+                "KOJI_S3_PUBLIC_ENDPOINT": f"http://localhost:{cluster.minio_port}",
                 "KOJI_S3_ACCESS_KEY": config.storage.access_key,
                 "KOJI_S3_SECRET_KEY": config.storage.secret_key,
                 "KOJI_S3_BUCKET": config.storage.bucket,
