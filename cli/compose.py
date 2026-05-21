@@ -2,9 +2,42 @@
 
 from __future__ import annotations
 
+import json
+import os
+import secrets
+from pathlib import Path
+
 import yaml
 
 from cli.config import KojiConfig
+
+KOJI_DIR = ".koji"
+
+
+def _resolve_master_key() -> str:
+    """Return the master key, generating and persisting one if needed.
+
+    Checked in order:
+    1. KOJI_MASTER_KEY env var (explicit override)
+    2. .koji/master.key file (persisted from a previous run)
+    3. Auto-generate, save to .koji/master.key, and return
+    """
+    env_key = os.environ.get("KOJI_MASTER_KEY")
+    if env_key and len(env_key) >= 32:
+        return env_key
+
+    key_path = Path.cwd() / KOJI_DIR / "master.key"
+    if key_path.exists():
+        stored = key_path.read_text().strip()
+        if stored and len(stored) >= 32:
+            return stored
+
+    # Generate a new key
+    new_key = secrets.token_hex(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(new_key)
+    key_path.chmod(0o600)
+    return new_key
 
 # Registry for pre-built Koji images. Override the tag via cluster.version.
 GHCR_NAMESPACE = "ghcr.io/getkoji"
@@ -87,7 +120,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "PORT": "9401",
                 "KOJI_PARSE_URL": f"http://koji-{project}-parse:9410",
                 "KOJI_EXTRACT_URL": f"http://koji-{project}-extract:9420",
-                "KOJI_MASTER_KEY": "${KOJI_MASTER_KEY:-}",
+                "KOJI_MASTER_KEY": _resolve_master_key(),
                 "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
                 "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
             },
