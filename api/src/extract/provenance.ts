@@ -184,6 +184,12 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   ];
 
+  const yy = year!.slice(-2);
+  const ordinal = day === 1 || day === 21 || day === 31 ? `${day}st`
+    : day === 2 || day === 22 ? `${day}nd`
+    : day === 3 || day === 23 ? `${day}rd`
+    : `${day}th`;
+
   const candidates: string[] = [
     // MM/DD/YYYY
     `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${year}`,
@@ -201,6 +207,12 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     `${monthAbbr[month - 1]} ${String(day).padStart(2, "0")}, ${year}`,
     // MM-DD-YYYY
     `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${year}`,
+    // Two-digit year variants
+    `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${yy}`,
+    `${month}/${day}/${yy}`,
+    // Ordinal formats: "29th of April, 2003", "29th day of April, 2003"
+    `${ordinal} of ${monthNames[month - 1]}, ${year}`,
+    `${ordinal} of ${monthNames[month - 1]} ${year}`,
   ];
 
   for (const c of candidates) {
@@ -208,7 +220,43 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     if (result) return result;
   }
 
+  // Regex fallback: match ordinal + optional "day" + "of" + month + year
+  // Handles OCR variations like "29th day\n\nof April, 2003"
+  const ordinalPattern = new RegExp(
+    `${ordinal}\\s+(?:day\\s+)?(?:of\\s+)?${monthNames[month - 1]}[,\\s]+${year}`,
+    "i",
+  );
+  const ordMatch = haystack.match(ordinalPattern);
+  if (ordMatch && ordMatch.index !== undefined) {
+    return { offset: ordMatch.index, length: ordMatch[0].length };
+  }
+
   return null;
+}
+
+// US state code → full name mapping for provenance expansion
+const STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", FL: "Florida", GA: "Georgia",
+  HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa",
+  KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
+  MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada", NH: "New Hampshire",
+  NJ: "New Jersey", NM: "New Mexico", NY: "New York", NC: "North Carolina",
+  ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee",
+  TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
+  WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming", DC: "District of Columbia",
+};
+
+/**
+ * Search for a US state by its full name when the extracted value is a
+ * 2-letter code. E.g., extracted "NC" → search for "North Carolina".
+ */
+function findStateName(haystack: string, code: string): { offset: number; length: number } | null {
+  const fullName = STATE_NAMES[code.toUpperCase()];
+  if (!fullName) return null;
+  return findCaseInsensitive(haystack, fullName);
 }
 
 /**
@@ -430,6 +478,11 @@ export function resolveProvenance(
           findExact(markdown, value) ??
           findCaseInsensitive(markdown, value) ??
           findNormalized(markdown, value);
+      }
+
+      // If it looks like a US state code, search for the full state name
+      if (!result && /^[A-Z]{2}$/.test(value)) {
+        result = findStateName(markdown, value);
       }
 
       // If it looks like a date (YYYY-MM-DD), try date formats
