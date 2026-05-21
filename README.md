@@ -8,7 +8,7 @@ Koji is a self-hosted document processing platform. Parse, classify, and extract
 
 ```bash
 # Install the CLI
-pip install koji-cli
+uv tool install git+https://github.com/getkoji/koji.git
 
 # Check your environment
 koji doctor
