@@ -112,7 +112,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "container_name": f"koji-{project}-dashboard",
             "ports": [f"127.0.0.1:{cluster.ui_port}:3000"],
             "environment": {
-                "NEXT_PUBLIC_API_URL": f"http://koji-{project}-api:9401",
+                "NEXT_PUBLIC_API_URL": f"http://localhost:{cluster.server_port}",
             },
             "depends_on": {
                 "koji-api": {"condition": "service_healthy"},
