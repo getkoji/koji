@@ -837,7 +837,9 @@ def push(
             profile = get_active_profile()
 
         if not profile:
-            console.print("[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]")
+            console.print(
+                "[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]"
+            )
             raise SystemExit(1)
 
         headers = {"Authorization": f"Bearer {profile.api_key}"}
@@ -953,7 +955,9 @@ def pull(
             profile = get_active_profile()
 
         if not profile:
-            console.print("[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]")
+            console.print(
+                "[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]"
+            )
             raise SystemExit(1)
 
         headers = {"Authorization": f"Bearer {profile.api_key}"}
