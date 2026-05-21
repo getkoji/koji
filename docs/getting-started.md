@@ -29,7 +29,7 @@ Verify it worked:
 
 ```bash
 koji version
-# koji 0.9.0
+# koji 0.9.1
 ```
 
 > **Updating?** `uv tool upgrade koji` pulls the latest.
