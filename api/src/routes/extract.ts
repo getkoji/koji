@@ -304,6 +304,8 @@ extract.post("/process", requires("job:run"), async (c) => {
   }
 
   const schemaDef = schemaObj as Record<string, unknown>;
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
   let ep1 = null;
   try {
     const requestedModel = (schemaDef.model as string) ?? null;
@@ -311,8 +313,12 @@ extract.post("/process", requires("job:run"), async (c) => {
       tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model }).from(schema.modelEndpoints)
         .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel ? [eq(schema.modelEndpoints.model, requestedModel)] : [])))
         .limit(1));
-    if (found) ep1 = await resolveExtractEndpoint(db, tenantId, found.id);
-  } catch {}
+    if (found) {
+      ep1 = await resolveExtractEndpoint(db, tenantId, found.id);
+    }
+  } catch (err) {
+    console.warn("[process] Failed to resolve model endpoint:", err instanceof Error ? err.message : err);
+  }
   const modelStr = (schemaDef.model as string) ?? ep1?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
   const provider = createProvider(modelStr, ep1);
   const extractResult = await extractFields(
