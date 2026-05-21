@@ -44,18 +44,18 @@ services:
       - koji-db:/var/lib/postgresql/data
 
   koji-parse:
-    image: ghcr.io/getkoji/koji-parse:latest
+    image: ghcr.io/getkoji/parse:latest
     ports: ["9411:9411"]
 
   koji-extract:
-    image: ghcr.io/getkoji/koji-extract:latest
+    image: ghcr.io/getkoji/extract:latest
     ports: ["9412:9420"]
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       KOJI_EXTRACT_MODEL: openai/gpt-4o-mini
 
   koji-api:
-    image: ghcr.io/getkoji/koji-api:latest
+    image: ghcr.io/getkoji/api:latest
     ports: ["9401:9401"]
     environment:
       DATABASE_URL: postgres://koji:koji@koji-db:5432/koji
@@ -256,14 +256,14 @@ All images are published to GitHub Container Registry:
 
 | Image | Purpose | Default Port |
 |-------|---------|-------------|
-| `ghcr.io/getkoji/koji-api` | API server + dashboard | 9401 |
-| `ghcr.io/getkoji/koji-parse` | Document parsing (PDF, Word, images) | 9411 |
-| `ghcr.io/getkoji/koji-extract` | LLM extraction engine | 9412 |
+| `ghcr.io/getkoji/api` | API server + dashboard | 9401 |
+| `ghcr.io/getkoji/parse` | Document parsing (PDF, Word, images) | 9411 |
+| `ghcr.io/getkoji/extract` | LLM extraction engine | 9412 |
 
 Pull with:
 
 ```bash
-docker pull ghcr.io/getkoji/koji-api:latest
-docker pull ghcr.io/getkoji/koji-parse:latest
-docker pull ghcr.io/getkoji/koji-extract:latest
+docker pull ghcr.io/getkoji/api:latest
+docker pull ghcr.io/getkoji/parse:latest
+docker pull ghcr.io/getkoji/extract:latest
 ```
