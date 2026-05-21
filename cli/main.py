@@ -801,15 +801,19 @@ def _derive_profile_name(url: str) -> str:
 
 @app.command()
 def push(
-    schemas_dir: str = typer.Option("./schemas", "--schemas", "-s", help="Directory containing schema YAML files"),
-    message: str = typer.Option(None, "--message", "-m", help="Commit message for the version"),
+    directory: str = typer.Option(".", "--dir", "-d", help="Directory containing YAML files (schemas/, pipelines/)"),
+    message: str = typer.Option(None, "--message", "-m", help="Commit message for schema versions"),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use"),
 ):
-    """Push local schema YAML files to the Koji platform.
+    """Push local YAML files to the Koji platform.
 
-    Reads all .yaml files from the schemas directory and creates or updates
-    each schema on the server. If the schema already exists and the YAML has
-    changed, a new version is created.
+    Reads all .yaml files from the directory and pushes them based on their
+    `kind` field: schemas go to /api/schemas, pipelines go to /api/pipelines.
+
+    Files without a `kind` field are assumed to be schemas (backward compat).
+
+    Searches for YAML files in the directory root and in schemas/ and
+    pipelines/ subdirectories if they exist.
     """
     import os
 
@@ -824,9 +828,8 @@ def push(
 
     if env_url and env_key:
         base_url = env_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {env_key}"}
+        headers: dict[str, str] = {"Authorization": f"Bearer {env_key}"}
     else:
-        # Resolve profile
         if profile_name:
             creds = load_credentials()
             profile = creds.profiles.get(profile_name)
@@ -845,48 +848,62 @@ def push(
         headers = {"Authorization": f"Bearer {profile.api_key}"}
         base_url = profile.url.rstrip("/")
 
-    # Find schema files
-    schemas_path = Path(schemas_dir)
-    if not schemas_path.is_dir():
-        console.print(f"[red]Schemas directory not found: {schemas_dir}[/red]")
+    # Collect YAML files from the directory and common subdirectories
+    root = Path(directory)
+    if not root.is_dir():
+        console.print(f"[red]Directory not found: {directory}[/red]")
         raise SystemExit(1)
 
-    yaml_files = sorted(schemas_path.glob("*.yaml")) + sorted(schemas_path.glob("*.yml"))
+    yaml_files: list[Path] = []
+    for search_dir in [root, root / "schemas", root / "pipelines"]:
+        if search_dir.is_dir():
+            yaml_files.extend(sorted(search_dir.glob("*.yaml")))
+            yaml_files.extend(sorted(search_dir.glob("*.yml")))
+    # Deduplicate (in case root == schemas/)
+    yaml_files = list(dict.fromkeys(yaml_files))
+
     if not yaml_files:
-        console.print(f"[yellow]No .yaml files found in {schemas_dir}[/yellow]")
+        console.print(f"[yellow]No .yaml files found in {directory}[/yellow]")
         raise SystemExit(0)
 
-    console.print(f"\n[bold]koji push[/bold] — {len(yaml_files)} schema(s) → {base_url}\n")
+    # Parse all files and group by kind
+    schemas: list[tuple[Path, dict, str]] = []  # (path, parsed, raw_yaml)
+    pipelines: list[tuple[Path, dict, str]] = []
+
+    for yaml_path in yaml_files:
+        raw = yaml_path.read_text()
+        try:
+            parsed = yaml_mod.safe_load(raw) or {}
+        except Exception:
+            console.print(f"  [red]✗[/red] {yaml_path.name} — invalid YAML")
+            continue
+
+        kind = parsed.get("kind", "schema")
+        if kind == "pipeline":
+            pipelines.append((yaml_path, parsed, raw))
+        else:
+            schemas.append((yaml_path, parsed, raw))
+
+    console.print(f"\n[bold]koji push[/bold] — {len(schemas)} schema(s), {len(pipelines)} pipeline(s) → {base_url}\n")
 
     with httpx.Client(timeout=30) as client:
-        for yaml_path in yaml_files:
-            yaml_content = yaml_path.read_text()
-            slug = yaml_path.stem
-
-            # Parse to get display name
-            try:
-                parsed = yaml_mod.safe_load(yaml_content) or {}
-            except Exception:
-                console.print(f"  [red]✗[/red] {slug} — invalid YAML")
-                continue
-
+        # ── Push schemas ──
+        for yaml_path, parsed, yaml_content in schemas:
+            slug = parsed.get("name", yaml_path.stem)
             display_name = parsed.get("name", slug)
 
-            # Try to get existing schema
             resp = client.get(f"{base_url}/api/schemas/{slug}", headers=headers)
 
             if resp.status_code == 200:
-                # Schema exists — check if YAML changed, create new version
                 existing = resp.json()
                 existing_yaml = existing.get("latestVersion", {}).get("yamlSource", "")
 
                 if existing_yaml.strip() == yaml_content.strip():
                     console.print(
-                        f"  [dim]—[/dim] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})"
+                        f"  [dim]—[/dim] [schema] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})"
                     )
                     continue
 
-                # Create new version
                 resp = client.post(
                     f"{base_url}/api/schemas/{slug}/versions",
                     json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
@@ -894,28 +911,90 @@ def push(
                 )
                 if resp.status_code == 201:
                     ver = resp.json()
-                    console.print(f"  [green]✓[/green] {slug} — updated to v{ver.get('versionNumber', '?')}")
+                    console.print(f"  [green]✓[/green] [schema] {slug} — updated to v{ver.get('versionNumber', '?')}")
                 else:
                     error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] [schema] {slug} — {error}")
             elif resp.status_code == 404:
-                # Schema doesn't exist — create it
                 resp = client.post(
                     f"{base_url}/api/schemas",
-                    json={
-                        "slug": slug,
-                        "display_name": display_name,
-                        "initial_yaml": yaml_content,
-                    },
+                    json={"slug": slug, "display_name": display_name, "initial_yaml": yaml_content},
                     headers=headers,
                 )
                 if resp.status_code == 201:
-                    console.print(f"  [green]✓[/green] {slug} — created (v1)")
+                    console.print(f"  [green]✓[/green] [schema] {slug} — created (v1)")
                 else:
                     error = resp.json().get("error", resp.text[:200])
-                    console.print(f"  [red]✗[/red] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] [schema] {slug} — {error}")
             else:
-                console.print(f"  [red]✗[/red] {slug} — HTTP {resp.status_code}")
+                console.print(f"  [red]✗[/red] [schema] {slug} — HTTP {resp.status_code}")
+
+        # ── Resolve schema name → ID lookup (needed for pipeline.schema) ──
+        schema_id_map: dict[str, str] = {}
+        if pipelines:
+            resp = client.get(f"{base_url}/api/schemas", headers=headers)
+            if resp.status_code == 200:
+                for s in resp.json().get("data", []):
+                    schema_id_map[s["slug"]] = s["id"]
+
+            # Also resolve model provider (use first active)
+            model_provider_id = None
+            resp = client.get(f"{base_url}/api/model-providers", headers=headers)
+            if resp.status_code == 200:
+                providers = resp.json().get("data", [])
+                if providers:
+                    model_provider_id = providers[0]["id"]
+
+        # ── Push pipelines ──
+        for yaml_path, parsed, yaml_content in pipelines:
+            slug = parsed.get("slug", yaml_path.stem)
+            display_name = parsed.get("name", slug)
+            schema_ref = parsed.get("schema")  # schema name/slug reference
+            schema_id = schema_id_map.get(schema_ref) if schema_ref else None
+
+            resp = client.get(f"{base_url}/api/pipelines/{slug}", headers=headers)
+
+            if resp.status_code == 200:
+                # Pipeline exists — update it
+                patch_body: dict = {"name": display_name}
+                if schema_id:
+                    patch_body["schema_id"] = schema_id
+                if model_provider_id:
+                    patch_body["model_provider_id"] = model_provider_id
+                if "yaml" in parsed.get("kind", ""):
+                    patch_body["yaml"] = yaml_content
+
+                resp = client.patch(
+                    f"{base_url}/api/pipelines/{slug}",
+                    json=patch_body,
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    console.print(f"  [green]✓[/green] [pipeline] {slug} — updated")
+                else:
+                    error = resp.json().get("error", resp.text[:200])
+                    console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
+            elif resp.status_code == 404:
+                # Create pipeline
+                create_body: dict = {"name": display_name, "slug": slug}
+                if schema_id:
+                    create_body["schema_id"] = schema_id
+                if model_provider_id:
+                    create_body["model_provider_id"] = model_provider_id
+
+                resp = client.post(
+                    f"{base_url}/api/pipelines",
+                    json=create_body,
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code == 201:
+                    schema_note = f" → {schema_ref}" if schema_ref else ""
+                    console.print(f"  [green]✓[/green] [pipeline] {slug} — created{schema_note}")
+                else:
+                    error = resp.json().get("error", resp.text[:200])
+                    console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
+            else:
+                console.print(f"  [red]✗[/red] [pipeline] {slug} — HTTP {resp.status_code}")
 
     console.print()
 
