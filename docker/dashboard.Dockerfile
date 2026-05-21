@@ -22,9 +22,9 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
 COPY --from=builder /app/dashboard/.next/standalone ./
-COPY --from=builder /app/dashboard/.next/static ./.next/static
-COPY --from=builder /app/dashboard/public ./public
+COPY --from=builder /app/dashboard/.next/static ./dashboard/.next/static
+COPY --from=builder /app/dashboard/public ./dashboard/public
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "dashboard/server.js"]
