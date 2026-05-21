@@ -852,7 +852,9 @@ def push(
                 existing_yaml = existing.get("latestVersion", {}).get("yamlSource", "")
 
                 if existing_yaml.strip() == yaml_content.strip():
-                    console.print(f"  [dim]—[/dim] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})")
+                    console.print(
+                        f"  [dim]—[/dim] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})"
+                    )
                     continue
 
                 # Create new version
@@ -879,7 +881,6 @@ def push(
                     headers=headers,
                 )
                 if resp.status_code == 201:
-                    result = resp.json()
                     console.print(f"  [green]✓[/green] {slug} — created (v1)")
                 else:
                     error = resp.json().get("error", resp.text[:200])
