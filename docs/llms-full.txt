@@ -56,7 +56,7 @@ Verify it worked:
 
 ```bash
 koji version
-# koji 0.1.0
+# koji 0.9.0
 ```
 
 > Installing from source? Clone the repo and `pip install -e .` from the project root.
@@ -2651,7 +2651,7 @@ Print the installed Koji version.
 
 ```bash
 koji version
-# koji 0.1.0
+# koji 0.9.0
 ```
 
 ---
@@ -2692,7 +2692,7 @@ Liveness check for the API server.
 {
   "status": "healthy",
   "service": "koji-server",
-  "version": "0.1.0"
+  "version": "0.9.0"
 }
 ```
 
