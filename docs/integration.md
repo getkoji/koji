@@ -95,18 +95,54 @@ koji start
 
 ## HTTP API
 
-### Extract from a file
+### `POST /api/process` — Parse + extract from a file
+
+Upload a document and get structured data back in one call. The `schema`
+field must be the **full schema definition as JSON** — not a slug or filename.
 
 ```bash
-curl -X POST http://localhost:9401/extract/upload \
+# Convert YAML schema to JSON and send with the file
+curl -X POST http://localhost:9401/api/process \
+  -H "Authorization: Bearer koji_yourkey" \
   -F "file=@document.pdf" \
-  -F "schema=$(cat schemas/claim.yaml)"
+  -F "schema=$(python3 -c 'import yaml,json; print(json.dumps(yaml.safe_load(open(\"schemas/claim.yaml\"))))')"
 ```
 
-### Extract from pre-parsed markdown
+If you omit `schema`, the endpoint returns just the parsed markdown (no extraction).
+
+**The `schema` field must be JSON, not a slug.** Sending `"schema": "claim"` will not work — send the full `{"name": "claim", "fields": {...}}` object.
+
+**Response:**
+
+```json
+{
+  "filename": "document.pdf",
+  "pages": 3,
+  "parse_seconds": 2.1,
+  "model": "gpt-4o-mini",
+  "elapsed_ms": 1200,
+  "extracted": {
+    "vendor": "Acme Corp",
+    "total": 1500.00
+  },
+  "confidence": {
+    "vendor": "high",
+    "total": "high"
+  },
+  "confidence_scores": {
+    "vendor": 1.0,
+    "total": 1.0
+  }
+}
+```
+
+### `POST /api/extract` — Extract from pre-parsed markdown
+
+If you've already parsed the document (or have text/markdown), skip the parse step:
 
 ```bash
-curl -X POST http://localhost:9401/extract \
+curl -X POST http://localhost:9401/api/extract \
+  -H "Authorization: Bearer koji_yourkey" \
   -H "Content-Type: application/json" \
   -d '{
     "markdown": "# Invoice\n\nVendor: Acme Corp\nTotal: $1,500.00",
@@ -120,34 +156,56 @@ curl -X POST http://localhost:9401/extract \
   }'
 ```
 
-**Response:**
-
-```json
-{
-  "extracted": {
-    "vendor": "Acme Corp",
-    "total": 1500.00
-  },
-  "confidence": {
-    "vendor": "high",
-    "total": "high"
-  },
-  "confidence_scores": {
-    "vendor": 1.0,
-    "total": 1.0
-  },
-  "elapsed_ms": 1200
-}
-```
-
-### Parse a document (without extraction)
+### `POST /api/parse` — Parse only (no extraction)
 
 ```bash
-curl -X POST http://localhost:9411/parse \
+curl -X POST http://localhost:9401/api/parse \
+  -H "Authorization: Bearer koji_yourkey" \
   -F "file=@document.pdf"
 ```
 
 Returns parsed markdown, page count, and text map for provenance.
+
+### Programmatic usage (Node.js / Python)
+
+```typescript
+// Node.js — call /api/process with a file + schema
+import fs from "fs";
+import yaml from "yaml";
+
+const schema = yaml.parse(fs.readFileSync("schemas/claim.yaml", "utf8"));
+const form = new FormData();
+form.append("file", new Blob([fs.readFileSync("document.pdf")]));
+form.append("schema", JSON.stringify(schema));
+
+const resp = await fetch(`${KOJI_URL}/api/process`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${KOJI_API_KEY}` },
+  body: form,
+});
+const { extracted } = await resp.json();
+```
+
+```python
+# Python — call /api/process with a file + schema
+import httpx, yaml, json
+
+schema = yaml.safe_load(open("schemas/claim.yaml"))
+resp = httpx.post(
+    f"{KOJI_URL}/api/process",
+    headers={"Authorization": f"Bearer {KOJI_API_KEY}"},
+    files={"file": open("document.pdf", "rb")},
+    data={"schema": json.dumps(schema)},
+)
+extracted = resp.json()["extracted"]
+```
+
+### Model configuration
+
+The model used for extraction is configured in the **dashboard** under
+**Settings → Model Endpoints** — not in `koji.yaml`. Add your OpenAI,
+Anthropic, or other LLM API key there. The endpoint you configure in
+the dashboard is what `/api/process` and `/api/extract` use.
 
 ---
 
