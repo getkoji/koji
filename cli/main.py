@@ -878,7 +878,17 @@ def push(
             console.print(f"  [red]✗[/red] {yaml_path.name} — invalid YAML")
             continue
 
-        kind = parsed.get("kind", "schema")
+        kind = parsed.get("kind")
+
+        # Skip files that aren't schemas or pipelines (e.g. koji.yaml config)
+        if kind is None:
+            # Auto-detect: has 'fields' → schema, has 'steps' → pipeline, else skip
+            if "fields" in parsed:
+                kind = "schema"
+            elif "steps" in parsed:
+                kind = "pipeline"
+            else:
+                continue
         if kind == "pipeline":
             pipelines.append((yaml_path, parsed, raw))
         else:
