@@ -32,6 +32,11 @@ COPY packages/ui/src packages/ui/src
 COPY packages/ui/tsconfig.json packages/ui/tsconfig.json
 COPY packages/ui/components.json packages/ui/components.json
 
+# KOJI_API_INTERNAL is baked into the middleware at build time for Docker.
+# The compose generator passes the correct container-to-container URL.
+ARG KOJI_API_INTERNAL=http://localhost:9401
+ENV KOJI_API_INTERNAL=$KOJI_API_INTERNAL
+
 RUN pnpm --filter @koji/dashboard build
 
 FROM node:22-alpine AS runner

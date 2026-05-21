@@ -106,15 +106,22 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
     }
 
     # ── Dashboard (Next.js) ──
+    api_internal_url = f"http://koji-{project}-api:9401"
     if svc_cfg.dashboard:
+        dashboard_block = _image_or_build("dashboard", "docker/dashboard.Dockerfile", version, project_dir, dev_mode)
+        # In dev/build mode, pass the API URL as a build arg so the
+        # middleware can proxy /api/* to the correct container.
+        if "build" in dashboard_block:
+            dashboard_block["build"]["args"] = {
+                "KOJI_API_INTERNAL": api_internal_url,
+            }
         services["koji-dashboard"] = {
-            **_image_or_build("dashboard", "docker/dashboard.Dockerfile", version, project_dir, dev_mode),
+            **dashboard_block,
             "container_name": f"koji-{project}-dashboard",
             "ports": [f"127.0.0.1:{cluster.ui_port}:3000"],
             "environment": {
-                # Runtime env var — NOT baked at build time. The Next.js
-                # rewrite proxy reads this to route /api/* to the Koji API.
-                "KOJI_API_URL": f"http://koji-{project}-api:9401",
+                "KOJI_API_URL": api_internal_url,
+                "KOJI_API_INTERNAL": api_internal_url,
             },
             "depends_on": {
                 "koji-api": {"condition": "service_healthy"},
