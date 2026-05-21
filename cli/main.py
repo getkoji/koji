@@ -9,6 +9,7 @@ from rich.console import Console
 
 from .cluster import (
     cluster_status,
+    destroy_cluster,
     load_cluster_state,
     load_project_config,
     start_cluster,
@@ -95,6 +96,22 @@ def start(
 def stop():
     """Stop the Koji cluster."""
     stop_cluster()
+
+
+@app.command()
+def destroy(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Destroy the Koji cluster and delete all data.
+
+    Stops all containers, removes volumes (database, uploads, cache),
+    and cleans up the generated compose file. This is irreversible.
+    """
+    if not force:
+        confirm = typer.confirm("This will permanently delete all data. Continue?")
+        if not confirm:
+            raise SystemExit(0)
+    destroy_cluster()
 
 
 @app.command()

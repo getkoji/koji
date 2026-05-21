@@ -216,6 +216,31 @@ def stop_cluster() -> None:
     console.print("[bold green]Cluster stopped.[/bold green]\n")
 
 
+def destroy_cluster() -> None:
+    """Stop the cluster and remove all containers, volumes, and data."""
+    koji_dir = Path.cwd() / KOJI_DIR
+    state = load_cluster_state()
+
+    if not (koji_dir / "docker-compose.yaml").exists():
+        console.print("[yellow]No cluster found in this directory.[/yellow]")
+        raise SystemExit(1)
+
+    project_name = state["project"] if state else "unknown"
+    console.print(f"\n[bold red]Destroying Koji cluster [cyan]{project_name}[/cyan]...[/bold red]")
+    console.print("  This will delete all data (database, uploads, cache).\n")
+
+    result = run_compose(["down", "-v", "--remove-orphans"], koji_dir)
+    if result.returncode != 0:
+        console.print(f"[red]Destroy failed:[/red]\n{result.stderr}")
+        raise SystemExit(1)
+
+    # Remove the generated compose file and state
+    (koji_dir / "docker-compose.yaml").unlink(missing_ok=True)
+    (koji_dir / "state.json").unlink(missing_ok=True)
+
+    console.print("[bold green]Cluster destroyed. All data removed.[/bold green]\n")
+
+
 def cluster_status() -> None:
     """Show cluster status."""
     state = load_cluster_state()
