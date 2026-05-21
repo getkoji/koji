@@ -222,11 +222,14 @@ koji login
 
 Or create one in the dashboard: **Settings → API Keys**.
 
-### 2. Push your schemas
+### 2. Push schemas and pipelines
 
 ```bash
-koji push -s ./schemas
+koji push -d .
 ```
+
+This scans for YAML files in `schemas/` and `pipelines/` subdirectories.
+Each file declares its type with a `kind` field.
 
 ### 3. Call the API
 
@@ -299,16 +302,48 @@ fields:
     type: number
 EOF
 
-# Push to Koji Cloud (uses active CLI profile)
-koji push -s ./schemas -m "initial claim schema"
+# Create a pipeline that uses the schema
+cat > pipelines/claims.yaml << 'EOF'
+kind: pipeline
+name: Claims Processing
+slug: claims
+schema: claim
+EOF
+
+# Push everything (schemas + pipelines)
+koji push -d . -m "initial setup"
 
 # Push to a local cluster (env var override)
 KOJI_API_URL=http://localhost:9501 KOJI_API_KEY=koji_yourkey \
-  koji push -s ./schemas -m "initial schema setup"
+  koji push -d . -m "initial setup"
 
 # Pull latest from Koji Cloud
 koji pull -o ./schemas
 ```
+
+### YAML `kind` field
+
+Every YAML file should declare its type:
+
+```yaml
+# Schema — defines what to extract
+kind: schema
+name: claim
+fields:
+  claimant_name:
+    type: string
+    required: true
+
+# Pipeline — connects a schema to processing
+kind: pipeline
+name: Claims Processing
+slug: claims
+schema: claim          # references schema by name
+```
+
+`koji push` reads `kind` and routes to the right API. Files without
+`kind` default to schema (backward compatible). Pipelines auto-link
+to the first active model endpoint.
 
 ### Authentication
 
