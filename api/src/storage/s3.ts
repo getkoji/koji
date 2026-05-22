@@ -132,9 +132,21 @@ export class S3Storage implements StorageProvider {
   }
 
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
+    // Infer content type from extension so the browser renders inline
+    // instead of forcing a download (MinIO defaults to application/octet-stream).
+    const ext = key.split(".").pop()?.toLowerCase();
+    const contentType = ext === "pdf" ? "application/pdf"
+      : ext === "png" ? "image/png"
+      : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+      : undefined;
+
     return s3GetSignedUrl(
       this.publicClient ?? this.client,
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ...(contentType ? { ResponseContentType: contentType, ResponseContentDisposition: "inline" } : {}),
+      }),
       { expiresIn },
     );
   }
