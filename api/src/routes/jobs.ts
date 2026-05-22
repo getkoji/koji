@@ -311,17 +311,11 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
       .orderBy(asc(schema.pipelineStepRuns.stepOrder)),
   );
 
-  // Sign a short-lived URL for "Open doc" if we have the file in storage.
-  // Best-effort — old rows (or seed rows pointing at keys that never got
-  // uploaded) will return null and the UI will just disable the button.
-  let documentPreviewUrl: string | null = null;
-  if (row.storageKey) {
-    try {
-      documentPreviewUrl = await storage.getSignedUrl(row.storageKey, 3600);
-    } catch {
-      documentPreviewUrl = null;
-    }
-  }
+  // Use the API proxy endpoint for document preview instead of a direct
+  // MinIO signed URL — the browser can't reach MinIO in Docker.
+  const documentPreviewUrl = row.storageKey
+    ? `/api/jobs/${slug}/documents/${row.id}/preview`
+    : null;
 
   // For DAG pipelines, convert step runs into the trace stage shape
   // so the frontend renders them without changes.
@@ -483,8 +477,19 @@ jobs.get("/:slug/documents/:docId/preview", requires("job:read"), async (c) => {
   }
 
   try {
-    const url = await storage.getSignedUrl(doc.storageKey, 3600);
-    return c.redirect(url, 302);
+    const file = await storage.getBuffer(doc.storageKey);
+    if (!file) return c.json({ error: "File not available in storage" }, 404);
+
+    const ext = doc.storageKey.split(".").pop()?.toLowerCase();
+    const contentType = ext === "pdf" ? "application/pdf"
+      : ext === "png" ? "image/png"
+      : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+      : file.contentType;
+
+    c.header("Content-Type", contentType);
+    c.header("Content-Disposition", "inline");
+    c.header("Cache-Control", "private, max-age=3600");
+    return c.body(file.data);
   } catch {
     return c.json({ error: "File not available in storage" }, 404);
   }
