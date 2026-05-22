@@ -18,7 +18,7 @@ export interface CompileError {
   errors: Array<{ field?: string; message: string; line?: number }>;
 }
 
-const VALID_TYPES = new Set(["string", "number", "date", "boolean", "enum", "array", "object"]);
+const VALID_TYPES = new Set(["string", "number", "date", "boolean", "enum", "mapping", "array", "object"]);
 
 const VALID_FIELD_PROPS = new Set([
   "type", "required", "nullable", "importance", "review_below",
@@ -103,6 +103,13 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       const hasMappings = def.mappings && typeof def.mappings === "object" && Object.keys(def.mappings as object).length > 0;
       if (!hasMappings && (!enumValues || !Array.isArray(enumValues))) {
         errors.push({ field: name, message: `Field '${name}': enum type requires 'values', 'options', or 'mappings'` });
+      }
+    }
+
+    // Mapping type requires mappings property
+    if (def.type === "mapping") {
+      if (!def.mappings || typeof def.mappings !== "object" || Object.keys(def.mappings as object).length === 0) {
+        errors.push({ field: name, message: `Field '${name}': mapping type requires 'mappings' object` });
       }
     }
 
