@@ -76,6 +76,8 @@ export const documents = pgTable(
     schemaVersionId: uuid("schema_version_id").references(() => schemaVersions.id),
     status: varchar("status", { length: 16 }).notNull(),
     extractionJson: jsonb("extraction_json"),
+    confidenceScoresJson: jsonb("confidence_scores_json"),
+    provenanceJson: jsonb("provenance_json"),
     confidence: decimal("confidence", { precision: 6, scale: 4 }),
     validationJson: jsonb("validation_json"),
     durationMs: integer("duration_ms"),

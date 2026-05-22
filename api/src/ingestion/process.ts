@@ -454,6 +454,8 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         .set({
           status: "review",
           extractionJson: docExtraction,
+          confidenceScoresJson: fieldScores,
+          provenanceJson: extractResult.provenance ?? null,
           confidence: docConfidence,
           durationMs: extractDurationMs,
           completedAt: now,
@@ -491,6 +493,8 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         .set({
           status: "delivered",
           extractionJson: docExtraction,
+          confidenceScoresJson: fieldScores,
+          provenanceJson: extractResult.provenance ?? null,
           confidence: docConfidence,
           durationMs: extractDurationMs,
           completedAt: now,
