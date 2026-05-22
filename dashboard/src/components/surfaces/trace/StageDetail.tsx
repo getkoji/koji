@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { jobs as jobsApi } from "@/lib/api";
@@ -227,6 +227,19 @@ function ParseBody({
   const [view, setView] = useState<"original" | "rendered" | "raw">(
     hasOriginal ? "original" : "rendered",
   );
+  // Fetch PDF via authenticated request and create a blob URL for the iframe.
+  // Direct iframe src= doesn't work because the middleware proxy doesn't
+  // forward auth cookies on subrequests.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!documentPreviewUrl) return;
+    fetch(documentPreviewUrl, { credentials: "include" })
+      .then((r) => r.ok ? r.blob() : null)
+      .then((blob) => {
+        if (blob) setBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
+      })
+      .catch(() => {});
+  }, [documentPreviewUrl]);
 
   const isMissing = error?.message.includes("No cached markdown") || error?.message.includes("not found");
   const isPdf = (documentMimeType ?? "").toLowerCase().includes("pdf");
@@ -299,17 +312,22 @@ function ParseBody({
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {view === "original" && hasOriginal && isPdf && (
+        {view === "original" && hasOriginal && isPdf && blobUrl && (
           <iframe
-            src={documentPreviewUrl!}
+            src={blobUrl}
             title="Original document"
             className="w-full h-full min-h-[600px] border-0 bg-cream-2"
           />
         )}
+        {view === "original" && hasOriginal && isPdf && !blobUrl && (
+          <div className="p-8 text-center font-mono text-[11px] text-ink-4 animate-pulse">
+            Loading PDF...
+          </div>
+        )}
         {view === "original" && hasOriginal && isImage && (
           <div className="p-4 flex items-start justify-center bg-cream-2 min-h-full">
             <img
-              src={documentPreviewUrl!}
+              src={blobUrl ?? documentPreviewUrl!}
               alt="Original document"
               className="max-w-full h-auto border border-border"
             />
