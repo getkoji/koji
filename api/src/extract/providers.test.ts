@@ -51,7 +51,7 @@ describe("OpenAIProvider", () => {
 
     expect(result).toBe('{"a":1}');
 
-    const [url, init] = fakeFetch.mock.calls[0];
+    const [url, init] = fakeFetch.mock.calls[0]!;
     expect(url).toBe("https://api.example.com/v1/chat/completions");
     expect(init.method).toBe("POST");
     expect(init.headers.Authorization).toBe("Bearer sk-test");
@@ -72,7 +72,7 @@ describe("OpenAIProvider", () => {
     const provider = new OpenAIProvider("gpt-4o", "sk-test");
     await provider.generate("hello", false);
 
-    const payload = JSON.parse(fakeFetch.mock.calls[0][1].body);
+    const payload = JSON.parse(fakeFetch.mock.calls[0]![1].body);
     expect(payload.response_format).toBeUndefined();
   });
 
@@ -107,7 +107,7 @@ describe("AnthropicProvider", () => {
 
     expect(result).toBe('{"b":2}');
 
-    const [url, init] = fakeFetch.mock.calls[0];
+    const [url, init] = fakeFetch.mock.calls[0]!;
     expect(url).toBe("https://api.anthropic.com/v1/messages");
     expect(init.headers["x-api-key"]).toBe("sk-ant-test");
     expect(init.headers["anthropic-version"]).toBe("2023-06-01");
@@ -168,7 +168,7 @@ describe("OllamaProvider", () => {
 
     expect(result).toBe('{"c":3}');
 
-    const [url, init] = fakeFetch.mock.calls[0];
+    const [url, init] = fakeFetch.mock.calls[0]!;
     expect(url).toBe("http://localhost:11434/api/generate");
 
     const payload = JSON.parse(init.body);
@@ -231,7 +231,7 @@ describe("AzureOpenAIProvider", () => {
 
     expect(result).toBe('{"d":4}');
 
-    const [url, init] = fakeFetch.mock.calls[0];
+    const [url, init] = fakeFetch.mock.calls[0]!;
     expect(url).toBe(
       "https://myresource.openai.azure.com/openai/deployments/gpt-4-deployment/chat/completions?api-version=2024-02-01",
     );

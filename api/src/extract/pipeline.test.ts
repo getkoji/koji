@@ -92,7 +92,7 @@ describe("prompt building", () => {
 
     await extractFields("some markdown", schema, provider, "test-model");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("field_alpha");
     expect(prompt).toContain("field_beta");
     expect(prompt).toContain("field_gamma");
@@ -106,7 +106,7 @@ describe("prompt building", () => {
 
     await extractFields("## My Document\n\nHere is some content.", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("## My Document");
     expect(prompt).toContain("Here is some content.");
   });
@@ -123,7 +123,7 @@ describe("prompt building", () => {
 
     await extractFields("doc", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("active");
     expect(prompt).toContain("inactive");
     expect(prompt).toContain("pending");
@@ -141,7 +141,7 @@ describe("prompt building", () => {
 
     await extractFields("doc", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("Look near the header");
   });
 
@@ -156,7 +156,7 @@ describe("prompt building", () => {
 
     await extractFields("doc", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("DD/MM/YYYY");
   });
 
@@ -171,7 +171,7 @@ describe("prompt building", () => {
 
     await extractFields("doc", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("BLANK unfilled form");
   });
 
@@ -518,7 +518,7 @@ describe("array fields", () => {
 
     await extractFields("doc", schema, provider, "m");
 
-    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(prompt).toContain("line_items");
     expect(prompt).toContain("array");
     expect(prompt).toContain("desc");

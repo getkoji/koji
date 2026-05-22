@@ -221,7 +221,7 @@ function unwrapNestedResult(
       v != null && typeof v === "object" && !Array.isArray(v) &&
       Object.keys(v).some((k) => expectedFields.has(k)),
   );
-  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 1) return candidates[0]!;
   return result;
 }
 
@@ -345,12 +345,12 @@ export function validateField(
 
   const fieldType = (spec.type as string) ?? "string";
   let issues: string | null = null;
-  let result = value;
+  let result: unknown = value;
 
   if (fieldType === "date" && typeof result === "string") {
     const dateMatch = result.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
     if (dateMatch) {
-      result = `${dateMatch[1]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[3].padStart(2, "0")}`;
+      result = `${dateMatch[1]}-${dateMatch[2]!.padStart(2, "0")}-${dateMatch[3]!.padStart(2, "0")}`;
     } else {
       issues = `could not parse date: ${result}`;
     }

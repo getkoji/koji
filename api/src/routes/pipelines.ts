@@ -1056,7 +1056,7 @@ function resolveTestNextSteps(edges: TestEdge[], output: Record<string, unknown>
 
 async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
-  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; fileBuffer?: Buffer; parseProvider?: any },
+  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; fileBuffer?: Buffer; parseProvider?: any; storage?: any },
   priorOutputs: Record<string, unknown>,
   ctx?: { db: unknown; tenantId: string; pipelineId: string },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
@@ -1328,9 +1328,9 @@ async function executeTestStep(
         const { resolveTenantProvider } = await import("../extract/resolve-endpoint");
         const { provider } = await resolveTenantProvider(ctx.db as any, ctx.tenantId);
         const labelDesc = labels.length > 0
-          ? `\nKnown document types:\n${labels.map(l => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n")}\n`
+          ? `\nKnown document types:\n${labels.map((l: any) => `- "${l.id}"${l.description ? `: ${l.description}` : ""}`).join("\n")}\n`
           : "";
-        const headerList = headers.map(h => `Page ${h.page}: "${h.header_text}"`).join("\n");
+        const headerList = headers.map((h: any) => `Page ${h.page}: "${h.header_text}"`).join("\n");
         const prompt = `This is a multi-document PDF submission. Here are the first ~200 characters from each page:\n\n${headerList}\n${labelDesc}\nIdentify where new documents begin. Return a JSON array:\n[{"start_page": 1, "end_page": 3, "type": "document_type"},...]`;
         const raw = await provider.generate(prompt, true);
         let parsed: unknown;
@@ -1455,8 +1455,8 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   const storage = c.get("storage");
   // Copy fileBytes into a new Buffer — Buffer.from(ArrayBuffer) creates a view
   // that shares memory, which can be detached after the first fetch call consumes it.
-  const fileBufferCopy = Buffer.from(new Uint8Array(fileBytes));
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy, parseProvider, storage };
+  const fileBufferCopy: Buffer = Buffer.from(new Uint8Array(fileBytes));
+  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
@@ -1550,7 +1550,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
                 if (childBuffer && sliceCtx?.parseProvider?.parse && nextIds.some((id) => pSteps.find((s) => s.id === id)?.type === "extract")) {
                   try { childText = (await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer })).markdown; } catch {}
                 }
-                const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: childBuffer ?? activeDocInfo.fileBuffer };
+                const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
                 const childStepOutputs = { ...stepOutputs };
                 childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl };
                 Object.assign(stepOutputs, childStepOutputs);
@@ -1640,7 +1640,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
             }
           }
 
-          const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: childBuffer ?? activeDocInfo.fileBuffer };
+          const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
           const childStepOutputs = { ...stepOutputs };
           childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl, storage_key: storageKey };
 

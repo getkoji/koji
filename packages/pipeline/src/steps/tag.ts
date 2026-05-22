@@ -1,4 +1,4 @@
-import type { StepImplementation, StepContext, StepResult } from '../step-types.js';
+import type { StepImplementation, StepContext, StepResult } from './types';
 
 interface TagConfig {
   tags: Record<string, string>;
@@ -8,7 +8,7 @@ export const tagStep: StepImplementation = {
   type: 'tag',
 
   async run(ctx: StepContext, config: Record<string, unknown>): Promise<StepResult> {
-    const cfg = config as TagConfig;
+    const cfg = config as unknown as TagConfig;
 
     // Persist tags to the document row.
     // The documents table has extraction_json (jsonb) — we store tags there

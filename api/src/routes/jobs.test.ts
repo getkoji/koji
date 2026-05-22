@@ -97,19 +97,19 @@ describe("document rerun reset", () => {
   });
 
   it("allows rerun on delivered documents", () => {
-    const status = "delivered";
+    const status: string = "delivered";
     const shouldReject = status === "extracting";
     expect(shouldReject).toBe(false);
   });
 
   it("allows rerun on failed documents", () => {
-    const status = "failed";
+    const status: string = "failed";
     const shouldReject = status === "extracting";
     expect(shouldReject).toBe(false);
   });
 
   it("allows rerun on review documents", () => {
-    const status = "review";
+    const status: string = "review";
     const shouldReject = status === "extracting";
     expect(shouldReject).toBe(false);
   });

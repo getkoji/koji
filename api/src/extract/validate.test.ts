@@ -37,7 +37,7 @@ describe("ValidationReport shape", () => {
     const report = runRule("required", ["missing_field"], {});
     expect(report.ok).toBe(false);
     expect(report.issues).toHaveLength(1);
-    expect(report.issues[0]).toEqual({
+    expect(report.issues[0]!).toEqual({
       rule: "required",
       field: "missing_field",
       message: expect.stringContaining("missing"),
@@ -61,7 +61,7 @@ describe("required rule", () => {
   it("fails when a required field is null", () => {
     const report = runRule("required", ["name"], { name: null });
     expect(report.ok).toBe(false);
-    expect(report.issues[0].field).toBe("name");
+    expect(report.issues[0]!.field).toBe("name");
   });
 
   it("fails when a required field is missing", () => {
@@ -143,8 +143,8 @@ describe("enum_in rule", () => {
       { status: "pending" },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].rule).toBe("enum_in");
-    expect(report.issues[0].message).toContain("pending");
+    expect(report.issues[0]!.rule).toBe("enum_in");
+    expect(report.issues[0]!.message).toContain("pending");
   });
 
   it("passes when value is null (not checked)", () => {
@@ -181,7 +181,7 @@ describe("date_order rule", () => {
       end_date: "2025-01-01",
     });
     expect(report.ok).toBe(false);
-    expect(report.issues[0].rule).toBe("date_order");
+    expect(report.issues[0]!.rule).toBe("date_order");
   });
 
   it("passes when dates are equal", () => {
@@ -213,7 +213,7 @@ describe("date_order rule", () => {
       c: "2025-03-01",
     });
     expect(report.ok).toBe(false);
-    expect(report.issues[0].message).toContain("b");
+    expect(report.issues[0]!.message).toContain("b");
   });
 });
 
@@ -256,7 +256,7 @@ describe("sum_equals rule", () => {
       },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].rule).toBe("sum_equals");
+    expect(report.issues[0]!.rule).toBe("sum_equals");
   });
 
   it("skips when field value is null", () => {
@@ -310,7 +310,7 @@ describe("field_sum rule", () => {
     );
     expect(report.ok).toBe(false); // Still reported as issue
     expect(data.total).toBe(110); // But corrected
-    expect(report.issues[0].message).toContain("corrected");
+    expect(report.issues[0]!.message).toContain("corrected");
   });
 });
 
@@ -333,7 +333,7 @@ describe("min_words rule", () => {
     const report = runRule("min_words", { field: "description", min: 3 }, data);
     expect(report.ok).toBe(false);
     expect(data.description).toBeNull();
-    expect(report.issues[0].message).toContain("1 words");
+    expect(report.issues[0]!.message).toContain("1 words");
   });
 
   it("skips non-string values", () => {
@@ -374,7 +374,7 @@ describe("regex rule", () => {
       { invoice_no: "PO-12345" },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].message).toContain("does not match");
+    expect(report.issues[0]!.message).toContain("does not match");
   });
 
   it("skips when value is null", () => {
@@ -393,7 +393,7 @@ describe("regex rule", () => {
       { f: "test" },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].message).toContain("invalid pattern");
+    expect(report.issues[0]!.message).toContain("invalid pattern");
   });
 });
 
@@ -408,7 +408,7 @@ describe("validateExtracted edge cases", () => {
       { validation: [{ rule1: [], rule2: [] }] },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].rule).toBe("malformed");
+    expect(report.issues[0]!.rule).toBe("malformed");
   });
 
   it("reports unknown rule name", () => {
@@ -417,7 +417,7 @@ describe("validateExtracted edge cases", () => {
       { validation: [{ nonexistent_rule: [] }] },
     );
     expect(report.ok).toBe(false);
-    expect(report.issues[0].rule).toBe("unknown");
+    expect(report.issues[0]!.rule).toBe("unknown");
   });
 
   it("runs multiple rules", () => {

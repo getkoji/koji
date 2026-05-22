@@ -97,7 +97,7 @@ export class OpenAIProvider implements ModelProvider {
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
-    return body.choices[0].message.content;
+    return body.choices[0]!.message.content;
   }
 
   async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {
@@ -128,7 +128,7 @@ export class OpenAIProvider implements ModelProvider {
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
-    return body.choices[0].message.content;
+    return body.choices[0]!.message.content;
   }
 }
 
@@ -173,7 +173,7 @@ export class AzureOpenAIProvider implements ModelProvider {
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
-    return body.choices[0].message.content;
+    return body.choices[0]!.message.content;
   }
 }
 
@@ -220,7 +220,7 @@ export class AnthropicProvider implements ModelProvider {
       signal: AbortSignal.timeout(300_000),
     });
     if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`);
-    return AnthropicProvider.extractText(await resp.json());
+    return AnthropicProvider.extractText(await resp.json() as { content?: Array<{ type: string; text?: string }> });
   }
 
   async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {
@@ -249,7 +249,7 @@ export class AnthropicProvider implements ModelProvider {
       signal: AbortSignal.timeout(300_000),
     });
     if (!resp.ok) throw new Error(`Anthropic vision ${resp.status}: ${await resp.text()}`);
-    return AnthropicProvider.extractText(await resp.json());
+    return AnthropicProvider.extractText(await resp.json() as { content?: Array<{ type: string; text?: string }> });
   }
 }
 
@@ -320,7 +320,7 @@ function buildFromModelString(modelStr: string): ModelProvider {
   if (modelStr.includes("/")) {
     const [provider, ...rest] = modelStr.split("/");
     const model = rest.join("/");
-    switch (provider.toLowerCase()) {
+    switch (provider!.toLowerCase()) {
       case "openai":
         return new OpenAIProvider(model);
       case "ollama":

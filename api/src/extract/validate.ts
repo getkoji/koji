@@ -130,8 +130,8 @@ function checkDateOrder(params: unknown, data: Record<string, unknown>, report: 
     values.push([fname, v]);
   }
   for (let i = 0; i < values.length - 1; i++) {
-    const [aName, a] = values[i];
-    const [bName, b] = values[i + 1];
+    const [aName, a] = values[i]!;
+    const [bName, b] = values[i + 1]!;
     if (a > b) {
       fail(report, "date_order", bName, `'${aName}' (${a}) must not be after '${bName}' (${b})`);
       return;
@@ -254,7 +254,7 @@ export function validateExtracted(
       fail(report, "malformed", null, "validation rule must be a single-key dict");
       continue;
     }
-    const [ruleName, params] = entries[0];
+    const [ruleName, params] = entries[0]!;
     const handler = RULES[ruleName];
     if (!handler) {
       fail(report, "unknown", null, `unknown validation rule '${ruleName}'`);

@@ -24,7 +24,7 @@ type TransformOperation =
 export const transformStep: StepImplementation = {
   type: 'transform',
   async run(ctx, config) {
-    const cfg = config as TransformConfig;
+    const cfg = config as unknown as TransformConfig;
 
     if (!cfg.operations || !Array.isArray(cfg.operations)) {
       return { ok: true, output: {}, costUsd: 0 };

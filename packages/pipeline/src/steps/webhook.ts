@@ -23,7 +23,7 @@ interface WebhookConfig {
 export const webhookStep: StepImplementation = {
   type: 'webhook',
   async run(ctx, config) {
-    const cfg = config as WebhookConfig;
+    const cfg = config as unknown as WebhookConfig;
 
     if (!cfg.url) {
       return { ok: false, output: {}, costUsd: 0, error: 'Webhook URL is required' };

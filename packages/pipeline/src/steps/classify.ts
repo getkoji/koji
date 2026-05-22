@@ -192,7 +192,7 @@ export const classifyStep: StepImplementation = {
   type: 'classify',
 
   async run(ctx: StepContext, config: Record<string, unknown>): Promise<StepResult> {
-    const cfg = config as ClassifyConfig;
+    const cfg = config as unknown as ClassifyConfig;
 
     // 1. Get document text (from previous steps, storage, or filename)
     const text = await getDocumentText(ctx, cfg.scope);

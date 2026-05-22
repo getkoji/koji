@@ -392,10 +392,10 @@ describe("array item normalization", () => {
     };
     const [result] = normalizeExtracted(extracted, schema);
     const items = result.items as Array<Record<string, unknown>>;
-    expect(items[0].name).toBe("Widget");
-    expect(items[0].price).toBe(1000);
-    expect(items[1].name).toBe("Gadget");
-    expect(items[1].price).toBe(2000);
+    expect(items[0]!.name).toBe("Widget");
+    expect(items[0]!.price).toBe(1000);
+    expect(items[1]!.name).toBe("Gadget");
+    expect(items[1]!.price).toBe(2000);
   });
 });
 

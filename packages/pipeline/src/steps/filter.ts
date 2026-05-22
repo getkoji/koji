@@ -1,4 +1,4 @@
-import type { StepImplementation, StepContext, StepResult } from '../step-types.js';
+import type { StepImplementation, StepContext, StepResult } from './types';
 
 interface FilterConfig {
   condition: string;
@@ -10,7 +10,7 @@ export const filterStep: StepImplementation = {
   type: 'filter',
 
   async run(ctx: StepContext, config: Record<string, unknown>): Promise<StepResult> {
-    const cfg = config as FilterConfig;
+    const cfg = config as unknown as FilterConfig;
 
     // Build evaluation context from document metadata and upstream step outputs
     const evalContext: Record<string, unknown> = {

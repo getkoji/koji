@@ -86,27 +86,27 @@ function iso8601(value: unknown, dayfirst = false): unknown {
 
   // ISO: 2025-01-15
   let m = ISO_DATE_RE.exec(s);
-  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  if (m) return `${m[1]}-${pad2(m[2]!)}-${pad2(m[3]!)}`;
 
   // Verbose MDY: January 15, 2025
   m = VERBOSE_MDY_RE.exec(s);
   if (m) {
-    const mo = MONTH_NAMES[m[1].toLowerCase()];
-    if (mo) return `${m[3]}-${pad2(mo)}-${pad2(parseInt(m[2]))}`;
+    const mo = MONTH_NAMES[m[1]!.toLowerCase()];
+    if (mo) return `${m[3]}-${pad2(mo)}-${pad2(parseInt(m[2]!))}`;
   }
 
   // Verbose DMY: 15 January 2025
   m = VERBOSE_DMY_RE.exec(s);
   if (m) {
-    const mo = MONTH_NAMES[m[2].toLowerCase()];
-    if (mo) return `${m[3]}-${pad2(mo)}-${pad2(parseInt(m[1]))}`;
+    const mo = MONTH_NAMES[m[2]!.toLowerCase()];
+    if (mo) return `${m[3]}-${pad2(mo)}-${pad2(parseInt(m[1]!))}`;
   }
 
   // Numeric with / or -
   m = US_DATE_RE.exec(s);
   if (m) {
-    const a = pad2(m[1]), b = pad2(m[2]);
-    const y = expandYear(m[3]);
+    const a = pad2(m[1]!), b = pad2(m[2]!);
+    const y = expandYear(m[3]!);
     const [moStr, dStr] = dayfirst ? [b, a] : [a, b];
     return `${y}-${moStr}-${dStr}`;
   }
@@ -114,8 +114,8 @@ function iso8601(value: unknown, dayfirst = false): unknown {
   // European DD.MM.YYYY
   m = EU_DATE_RE.exec(s);
   if (m) {
-    const d = pad2(m[1]), mo = pad2(m[2]);
-    const y = expandYear(m[3]);
+    const d = pad2(m[1]!), mo = pad2(m[2]!);
+    const y = expandYear(m[3]!);
     return `${y}-${mo}-${d}`;
   }
 
@@ -198,8 +198,8 @@ function usStateLookup(text: string, prefer: string = "last"): string | null {
   if (!text) return null;
   const matches = [...text.matchAll(new RegExp(STATE_ABBREV_RE.source, "gi"))];
   if (matches.length > 0) {
-    const pick = prefer === "last" ? matches[matches.length - 1] : matches[0];
-    return pick[1].toUpperCase();
+    const pick = prefer === "last" ? matches[matches.length - 1]! : matches[0]!;
+    return pick[1]!.toUpperCase();
   }
   const textLower = text.toLowerCase();
   const found: Array<[number, string]> = [];
@@ -209,7 +209,7 @@ function usStateLookup(text: string, prefer: string = "last"): string | null {
   }
   if (found.length > 0) {
     found.sort((a, b) => prefer === "last" ? b[0] - a[0] : a[0] - b[0]);
-    return found[0][1];
+    return found[0]![1];
   }
   return null;
 }
@@ -289,11 +289,11 @@ function levenshtein(a: string, b: string): number {
   for (let i = 0; i < a.length; i++) {
     const curr = [i + 1];
     for (let j = 0; j < b.length; j++) {
-      curr.push(Math.min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (a[i] !== b[j] ? 1 : 0)));
+      curr.push(Math.min(prev[j + 1]! + 1, curr[j]! + 1, prev[j]! + (a[i] !== b[j] ? 1 : 0)));
     }
     prev = curr;
   }
-  return prev[b.length];
+  return prev[b.length]!;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ const TRANSFORMS: Record<string, TransformFn> = {
 };
 
 const DERIVATION_METHODS: Record<string, (text: string, ...args: unknown[]) => string | null> = {
-  us_state_lookup: usStateLookup,
+  us_state_lookup: usStateLookup as (text: string, ...args: unknown[]) => string | null,
 };
 
 // ---------------------------------------------------------------------------

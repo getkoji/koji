@@ -41,7 +41,7 @@ async function resolveSchemaId(c: any, db: any, tenantId: string): Promise<strin
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
       .limit(1),
-  );
+  ) as any[];
   return s?.id ?? null;
 }
 
@@ -64,7 +64,7 @@ forms.get("/", requires("schema:read"), async (c) => {
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
       .limit(1),
-  );
+  ) as any[];
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
   const rows = await withRLS(db, tenantId, (tx) =>
@@ -87,9 +87,9 @@ forms.get("/", requires("schema:read"), async (c) => {
         isNull(formMappings.deletedAt),
       ))
       .orderBy(desc(formMappings.createdAt)),
-  );
+  ) as any[];
 
-  const data = rows.map((r) => ({
+  const data = (rows as any[]).map((r: any) => ({
     ...r,
     fieldCount: r.mappingsJson && typeof r.mappingsJson === "object"
       ? Object.keys(r.mappingsJson as object).length
@@ -123,7 +123,7 @@ forms.post("/", requires("schema:write"), async (c) => {
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
       .limit(1),
-  );
+  ) as any[];
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
   let sampleStorageKey: string | null = null;
@@ -148,7 +148,7 @@ forms.post("/", requires("schema:write"), async (c) => {
       samplePageCount,
       createdBy: principal.userId,
     }).returning(),
-  );
+  ) as any[];
 
   return c.json(row, 201);
 });
@@ -174,7 +174,7 @@ forms.get("/:slug", requires("schema:read"), async (c) => {
       .from(formMappings)
       .where(and(...conditions))
       .limit(1),
-  );
+  ) as any[];
 
   if (!row) return c.json({ error: "Form mapping not found" }, 404);
   return c.json(row);
@@ -218,7 +218,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
       .from(formMappings)
       .where(and(...conditions))
       .limit(1),
-  );
+  ) as any[];
   if (!current) return c.json({ error: "Form mapping not found" }, 404);
 
   if (body.mappings_json) {
@@ -256,7 +256,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
       .set(updates)
       .where(eq(formMappings.id, current.id))
       .returning(),
-  );
+  ) as any[];
 
   return c.json(updated);
 });
@@ -298,7 +298,7 @@ forms.get("/:slug/sample-url", requires("schema:read"), async (c) => {
       .from(formMappings)
       .where(and(...conditions))
       .limit(1),
-  );
+  ) as any[];
 
   if (!row?.sampleStorageKey) return c.json({ error: "No sample PDF" }, 404);
 
@@ -326,13 +326,13 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
       .from(formMappings)
       .where(and(...conditions))
       .limit(1),
-  );
+  ) as any[];
   if (!form) return c.json({ error: "Form mapping not found" }, 404);
 
   const mappings = form.mappingsJson as Record<string, {
     page: number; x: number; y: number; w: number; h: number;
     mapping_type?: string; value_type: string; sample_text: string;
-    llm_prompt?: string; target_fields?: string[];
+    llm_prompt?: string; target_fields?: string[]; use_vision?: boolean;
   }>;
 
   if (!mappings || Object.keys(mappings).length === 0) {
@@ -366,7 +366,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
         .where(eq(schema.schemaVersions.schemaId, schemaId))
         .orderBy(desc(schema.schemaVersions.versionNumber))
         .limit(1),
-    );
+    ) as any[];
     if (ver?.yamlSource) {
       schemaYaml = ver.yamlSource;
     } else {
@@ -376,7 +376,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
           .from(schemasTable)
           .where(eq(schemasTable.id, schemaId))
           .limit(1),
-      );
+      ) as any[];
       schemaYaml = s?.draftYaml ?? null;
     }
   }

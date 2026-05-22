@@ -10,7 +10,7 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
-import type { PlanId } from "../billing/plans";
+import type { PlanId } from "../billing/adapter";
 
 /**
  * Extraction routes — proxies to the parse + extract services.
@@ -658,7 +658,7 @@ async function handleExtractRunJSON(
       extractProvider,
       extractModel,
       (parseResult.text_map as any[]) ?? undefined,
-    ) as Record<string, unknown>;
+    ) as unknown as Record<string, unknown>;
 
     // Persist the run
     const yamlHash = crypto.createHash("sha256").update(schemaYaml).digest("hex");
