@@ -765,6 +765,19 @@ async function getOrParse(
           const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string };
           if (payload.markdown) {
             console.log(`[ingestion.process] parse cache hit for ${fileHash.slice(0, 12)}…`);
+            // Copy cached searchable PDF to this document's storage key if available
+            const cachedSearchableKey = `${cached.storageKey}.searchable.pdf`;
+            const docSearchableKey = `${document.storageKey}.searchable.pdf`;
+            try {
+              const existing = await storage.getBuffer(docSearchableKey).catch(() => null);
+              if (!existing) {
+                const cachedSearchable = await storage.getBuffer(cachedSearchableKey).catch(() => null);
+                if (cachedSearchable) {
+                  await storage.put(docSearchableKey, cachedSearchable.data, { contentType: "application/pdf" });
+                  console.log(`[ingestion.process] copied cached searchable PDF to ${docSearchableKey}`);
+                }
+              }
+            } catch { /* best-effort */ }
             return payload.markdown;
           }
         } catch {
@@ -791,9 +804,9 @@ async function getOrParse(
   // text on scanned pages so the result has selectable text. Store it next to
   // the original so the preview endpoint can serve it instead.
   if (parseResult.searchable_pdf_base64) {
+    const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
     const searchableKey = `${document.storageKey}.searchable.pdf`;
     try {
-      const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
       await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
       console.log(`[ingestion.process] stored searchable PDF: ${searchableKey} (${pdfBuf.length} bytes)`);
     } catch (err) {
@@ -801,6 +814,13 @@ async function getOrParse(
         `[ingestion.process] searchable PDF write failed:`,
         err instanceof Error ? err.message : err,
       );
+    }
+    // Also store alongside the cache entry so future cache hits can copy it
+    if (fileHash) {
+      const cacheSearchableKey = `cache/${tenantId}/${fileHash}.json.searchable.pdf`;
+      try {
+        await storage.put(cacheSearchableKey, pdfBuf, { contentType: "application/pdf" });
+      } catch { /* best-effort */ }
     }
   }
 
