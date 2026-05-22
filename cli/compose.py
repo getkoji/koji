@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 from pathlib import Path
@@ -38,6 +37,7 @@ def _resolve_master_key() -> str:
     key_path.write_text(new_key)
     key_path.chmod(0o600)
     return new_key
+
 
 # Registry for pre-built Koji images. Override the tag via cluster.version.
 GHCR_NAMESPACE = "ghcr.io/getkoji"
