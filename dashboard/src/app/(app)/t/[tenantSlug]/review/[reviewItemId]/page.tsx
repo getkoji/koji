@@ -39,6 +39,38 @@ export default function ReviewDetailPage() {
 
   const { data: queueIds } = useApi(useCallback(() => reviewApi.queueIds("pending"), []));
 
+  // Fetch schema to get field options for enum/mapping dropdowns
+  const [fieldOptions, setFieldOptions] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!item?.schemaSlug || !item?.fieldName) return;
+    import("@/lib/api").then(({ api }) => {
+      api.get<{ latestVersion?: { yamlSource?: string } }>(`/api/schemas/${item.schemaSlug}`)
+        .then((schema) => {
+          if (schema.latestVersion?.yamlSource) {
+            // Simple YAML parse for the field's options/mappings
+            const yaml = schema.latestVersion.yamlSource;
+            const fieldMatch = yaml.match(new RegExp(`${item.fieldName}:[\\s\\S]*?(?=\\n  \\w|\\n\\w|$)`));
+            if (fieldMatch) {
+              const block = fieldMatch[0];
+              // Check for mappings (keys are the options)
+              const mappingKeys = [...block.matchAll(/^\s{4,6}(\w+):\s*\[/gm)].map(m => m[1]!);
+              if (mappingKeys.length > 0) {
+                setFieldOptions(mappingKeys);
+                return;
+              }
+              // Check for options array
+              const optMatch = block.match(/options:\s*\[([^\]]+)\]/);
+              if (optMatch) {
+                setFieldOptions(optMatch[1]!.split(",").map(s => s.trim().replace(/^["']|["']$/g, "")));
+                return;
+              }
+            }
+          }
+        })
+        .catch(() => {});
+    });
+  }, [item?.schemaSlug, item?.fieldName]);
+
   // Queue position math
   const queuePosition = useMemo(() => {
     if (!queueIds || !item) return null;
@@ -232,6 +264,7 @@ export default function ReviewDetailPage() {
               overrideValue={userOverride ?? stringifyValue(item.proposedValue)}
               overrideChanged={userOverride !== null}
               onOverrideChange={setUserOverride}
+              fieldOptions={fieldOptions}
               note={note}
               onNoteChange={setNote}
               submitting={submitting}
@@ -533,6 +566,7 @@ function DecisionPanel({
   overrideValue,
   overrideChanged,
   onOverrideChange,
+  fieldOptions,
   note,
   onNoteChange,
   submitting,
@@ -546,6 +580,7 @@ function DecisionPanel({
   overrideValue: string;
   overrideChanged: boolean;
   onOverrideChange: (v: string) => void;
+  fieldOptions: string[] | null;
   note: string;
   onNoteChange: (n: string) => void;
   submitting: DecisionKind | null;
@@ -576,12 +611,27 @@ function DecisionPanel({
             <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
               Your override
             </span>
-            <input
-              type="text"
-              value={overrideValue}
-              onChange={(e) => onOverrideChange(e.target.value)}
-              className="font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1.5 outline-none focus:border-ink transition-colors"
-            />
+            {fieldOptions && fieldOptions.length > 0 ? (
+              <select
+                value={overrideValue}
+                onChange={(e) => onOverrideChange(e.target.value)}
+                className="font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1.5 outline-none focus:border-ink transition-colors"
+              >
+                {!fieldOptions.includes(overrideValue) && (
+                  <option value={overrideValue}>{overrideValue}</option>
+                )}
+                {fieldOptions.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={overrideValue}
+                onChange={(e) => onOverrideChange(e.target.value)}
+                className="font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1.5 outline-none focus:border-ink transition-colors"
+              />
+            )}
           </div>
         </div>
 
