@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PdfViewer } from "@/components/shared/PdfViewer";
 import { jobs as jobsApi } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import type { TraceField, TraceStage } from "@/lib/types";
@@ -227,18 +228,17 @@ function ParseBody({
   const [view, setView] = useState<"original" | "rendered" | "raw">(
     hasOriginal ? "original" : "rendered",
   );
-  // Fetch PDF via authenticated request and create a blob URL for the iframe.
-  // Direct iframe src= doesn't work because the middleware proxy doesn't
-  // forward auth cookies on subrequests.
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // Fetch a signed URL for the PDF via authenticated API call.
+  // Same pattern as the build page — api.get returns a signed URL,
+  // PdfViewer fetches the PDF directly from storage.
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!documentPreviewUrl) return;
-    fetch(documentPreviewUrl, { credentials: "include" })
-      .then((r) => r.ok ? r.blob() : null)
-      .then((blob) => {
-        if (blob) setBlobUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
-      })
-      .catch(() => {});
+    import("@/lib/api").then(({ api }) => {
+      api.get<{ url: string }>(documentPreviewUrl)
+        .then((r) => setPdfUrl(r.url))
+        .catch(() => setPdfUrl(null));
+    });
   }, [documentPreviewUrl]);
 
   const isMissing = error?.message.includes("No cached markdown") || error?.message.includes("not found");
@@ -312,14 +312,10 @@ function ParseBody({
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {view === "original" && hasOriginal && isPdf && blobUrl && (
-          <iframe
-            src={blobUrl}
-            title="Original document"
-            className="w-full h-full min-h-[600px] border-0 bg-cream-2"
-          />
+        {view === "original" && hasOriginal && isPdf && pdfUrl && (
+          <PdfViewer url={pdfUrl} />
         )}
-        {view === "original" && hasOriginal && isPdf && !blobUrl && (
+        {view === "original" && hasOriginal && isPdf && !pdfUrl && (
           <div className="p-8 text-center font-mono text-[11px] text-ink-4 animate-pulse">
             Loading PDF...
           </div>
@@ -327,7 +323,7 @@ function ParseBody({
         {view === "original" && hasOriginal && isImage && (
           <div className="p-4 flex items-start justify-center bg-cream-2 min-h-full">
             <img
-              src={blobUrl ?? documentPreviewUrl!}
+              src={pdfUrl ?? documentPreviewUrl!}
               alt="Original document"
               className="max-w-full h-auto border border-border"
             />

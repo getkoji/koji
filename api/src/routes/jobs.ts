@@ -477,19 +477,8 @@ jobs.get("/:slug/documents/:docId/preview", requires("job:read"), async (c) => {
   }
 
   try {
-    const file = await storage.getBuffer(doc.storageKey);
-    if (!file) return c.json({ error: "File not available in storage" }, 404);
-
-    const ext = doc.storageKey.split(".").pop()?.toLowerCase();
-    const contentType = ext === "pdf" ? "application/pdf"
-      : ext === "png" ? "image/png"
-      : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-      : file.contentType;
-
-    c.header("Content-Type", contentType);
-    c.header("Content-Disposition", "inline");
-    c.header("Cache-Control", "private, max-age=3600");
-    return c.body(file.data);
+    const url = await storage.getSignedUrl(doc.storageKey, 3600);
+    return c.json({ url });
   } catch {
     return c.json({ error: "File not available in storage" }, 404);
   }
