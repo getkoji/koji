@@ -19,6 +19,7 @@ interface ModelProvider {
   awsRegion: string | null;
   keyHint: string | null;
   hasKey: boolean;
+  credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
   status: string;
   lastHealthCheckAt: string | null;
   createdAt: string;
@@ -126,6 +127,11 @@ export default function ModelProvidersPage() {
                 </div>
                 <div className="flex items-center gap-4">
                   {p.keyHint && <Meta>••••{p.keyHint}</Meta>}
+                  {p.credentialStatus === "invalid" && (
+                    <span className="font-mono text-[10px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded" title="Credentials cannot be decrypted. Re-enter the API key to fix.">
+                      key error
+                    </span>
+                  )}
                   <Badge variant={p.status === "active" ? "active" : "neutral"}>{p.status}</Badge>
                   {hasPermission("endpoint:write") && (
                     <>

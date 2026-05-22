@@ -207,11 +207,32 @@ modelProviders.get("/", requires("endpoint:read"), async (c) => {
       .where(sql`deleted_at IS NULL`)
   );
 
+  const masterKey = c.get("masterKey") as string | null;
+
   return c.json({
     data: rows.map((r) => {
       const auth = r.authJson as AuthJson | null;
       const cfg = r.configJson as ConfigJson | null;
       const pub = publicConfig(r.provider, cfg);
+
+      // Test if stored credentials can actually be decrypted with the
+      // current master key. Surfaces "invalid" when the key has rotated
+      // or the blob is corrupt — saves users from debugging silent
+      // extraction failures.
+      let credentialStatus: "ok" | "invalid" | "none" | "no_master_key" = "none";
+      const hasBlob = !!(auth?.key_blob || auth?.aws_secret_access_key_blob);
+      if (hasBlob && !masterKey) {
+        credentialStatus = "no_master_key";
+      } else if (hasBlob && masterKey) {
+        try {
+          const blob = auth!.key_blob ?? auth!.aws_secret_access_key_blob!;
+          decrypt(blob, masterKey, tenantId);
+          credentialStatus = "ok";
+        } catch {
+          credentialStatus = "invalid";
+        }
+      }
+
       return {
         id: r.id,
         slug: r.slug,
@@ -223,7 +244,8 @@ modelProviders.get("/", requires("endpoint:read"), async (c) => {
         apiVersion: pub.apiVersion,
         awsRegion: pub.awsRegion,
         keyHint: auth?.key_hint ?? null,
-        hasKey: !!(auth?.key_blob || auth?.aws_secret_access_key_blob),
+        hasKey: hasBlob,
+        credentialStatus,
         status: r.status,
         lastHealthCheckAt: r.lastHealthCheckAt,
         createdAt: r.createdAt,
