@@ -97,11 +97,12 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       errors.push({ field: name, message: `Field '${name}': unknown type '${def.type}'. Valid: ${[...VALID_TYPES].join(", ")}` });
     }
 
-    // Enum must have values or options
+    // Enum must have values, options, or mappings
     if (def.type === "enum") {
       const enumValues = def.values ?? def.options;
-      if (!enumValues || !Array.isArray(enumValues)) {
-        errors.push({ field: name, message: `Field '${name}': enum type requires 'values' or 'options' array` });
+      const hasMappings = def.mappings && typeof def.mappings === "object" && Object.keys(def.mappings as object).length > 0;
+      if (!hasMappings && (!enumValues || !Array.isArray(enumValues))) {
+        errors.push({ field: name, message: `Field '${name}': enum type requires 'values', 'options', or 'mappings'` });
       }
     }
 

@@ -132,7 +132,7 @@ fields:
     }
   });
 
-  it("rejects enum without values or options", () => {
+  it("rejects enum without values, options, or mappings", () => {
     const result = compileSchema(`
 name: test
 fields:
@@ -140,7 +140,7 @@ fields:
 `);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("requires 'values' or 'options'"))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes("requires 'values', 'options', or 'mappings'"))).toBe(true);
     }
   });
 
@@ -151,6 +151,19 @@ fields:
   status:
     type: enum
     options: [active, inactive, pending]
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts enum with mappings (canonical values as keys)", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  policy_type:
+    type: enum
+    mappings:
+      property: ["Property", "Commercial Property"]
+      general_liability: ["GL", "General Liability"]
 `);
     expect(result.ok).toBe(true);
   });
