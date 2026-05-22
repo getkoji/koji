@@ -193,16 +193,70 @@ def _build_text_map(document) -> list[dict]:
         return []
 
 
+def _generate_searchable_pdf(file_path: str) -> bytes | None:
+    """Generate a searchable PDF by overlaying OCR text on the scanned image.
+
+    Uses pytesseract to produce a PDF with an invisible text layer.
+    Returns the PDF bytes, or None if generation fails.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+
+        ext = Path(file_path).suffix.lower()
+        if ext == ".pdf":
+            # Convert PDF pages to images, OCR each, combine into searchable PDF
+            doc = pdfium.PdfDocument(file_path)
+            pdf_pages = []
+            for i in range(len(doc)):
+                page = doc[i]
+                bitmap = page.render(scale=2)  # 2x for better OCR
+                pil_image = bitmap.to_pil()
+                pdf_bytes = pytesseract.image_to_pdf_or_hocr(pil_image, extension="pdf")
+                pdf_pages.append(pdf_bytes)
+            doc.close()
+
+            if not pdf_pages:
+                return None
+
+            # Merge pages using pypdfium2
+            if len(pdf_pages) == 1:
+                return pdf_pages[0]
+
+            merged = pdfium.PdfDocument.new()
+            for page_bytes in pdf_pages:
+                src = pdfium.PdfDocument(page_bytes)
+                merged.import_pages(src)
+            out = merged.save()
+            return bytes(out)
+        else:
+            # Single image
+            img = Image.open(file_path)
+            return pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
+    except Exception as e:
+        print(f"[koji-parse] Warning: searchable PDF generation failed: {e}")
+        return None
+
+
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
     conv = get_converter(ocr=not skip_ocr)
     result = conv.convert(file_path)
     markdown = result.document.export_to_markdown()
-    return {
+
+    # Generate searchable PDF for scanned documents
+    searchable_pdf = None
+    if not skip_ocr:
+        searchable_pdf = _generate_searchable_pdf(file_path)
+
+    out: dict = {
         "markdown": markdown,
         "pages": result.document.num_pages(),
         "text_map": _build_text_map(result.document),
     }
+    if searchable_pdf:
+        out["searchable_pdf_base64"] = base64.b64encode(searchable_pdf).decode("ascii")
+    return out
 
 
 def image_to_base64(file_path: str) -> list[str]:
