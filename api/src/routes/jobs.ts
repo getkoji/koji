@@ -314,7 +314,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
   // Use the API proxy endpoint for document preview instead of a direct
   // MinIO signed URL — the browser can't reach MinIO in Docker.
   const documentPreviewUrl = row.storageKey
-    ? `/api/jobs/${slug}/documents/${row.id}/preview`
+    ? `/api/jobs/${slug}/documents/${row.documentId}/preview`
     : null;
 
   // For DAG pipelines, convert step runs into the trace stage shape
