@@ -45,6 +45,7 @@ interface RawParseResponse {
   pages?: number;
   ocr_skipped?: boolean;
   elapsed_seconds?: number;
+  searchable_pdf_base64?: string;
   error?: string;
 }
 
@@ -204,6 +205,7 @@ export class ModalParseProvider implements ParseProvider {
       markdown: result.markdown,
       pages: result.pages ?? null,
       ocr_skipped: result.ocr_skipped ?? false,
+      searchable_pdf_base64: result.searchable_pdf_base64,
     };
   }
 
@@ -233,7 +235,7 @@ export class ModalParseProvider implements ParseProvider {
       throw new Error(`Coordinate extraction failed: ${err}`);
     }
 
-    return resp.json();
+    return await resp.json() as import("./provider").CoordinateExtractionResult;
   }
 
   async renderRegion(input: {
@@ -268,7 +270,7 @@ export class ModalParseProvider implements ParseProvider {
       throw new Error(`Region render failed: ${err}`);
     }
 
-    return resp.json();
+    return await resp.json() as { image_base64: string; width: number; height: number };
   }
 
   async pageHeaders(input: {
@@ -285,7 +287,7 @@ export class ModalParseProvider implements ParseProvider {
       redirect: "follow",
     });
     if (!resp.ok) throw new Error(`page_headers failed: ${await resp.text()}`);
-    return resp.json();
+    return await resp.json() as { pages: number; headers: Array<{ page: number; header_text: string }> };
   }
 
   async slicePdf(input: {
@@ -307,12 +309,12 @@ export class ModalParseProvider implements ParseProvider {
       redirect: "follow",
     });
     if (!resp.ok) throw new Error(`slice_pdf failed: ${await resp.text()}`);
-    return resp.json();
+    return await resp.json() as { pdf_base64: string; pages: number; byte_size: number };
   }
 
   async analyzePages(input: {
     fileBuffer: Buffer;
-  }): Promise<import("./provider").PageAnalysis[]> {
+  }): Promise<{ pages: number; data: import("./provider").PageAnalysis[] }> {
     const analyzeUrl = this.url.replace("parse-http", "analyze-pages");
     const fd = new FormData();
     fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: "application/pdf" }), "doc.pdf");
@@ -324,7 +326,6 @@ export class ModalParseProvider implements ParseProvider {
       redirect: "follow",
     });
     if (!resp.ok) throw new Error(`analyze_pages failed: ${await resp.text()}`);
-    const result = await resp.json() as { pages: number; data: import("./provider").PageAnalysis[] };
-    return result.data;
+    return await resp.json() as { pages: number; data: import("./provider").PageAnalysis[] };
   }
 }

@@ -306,7 +306,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           }
 
           return {
-            value: formResult as ExtractResult,
+            value: formResult as unknown as ExtractResult,
             summary: {
               model: formResult.model ?? "coordinates",
               strategy: formResult.strategy ?? "form-mapping",
@@ -336,7 +336,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           const provider = createProvider(modelStr, endpointPayload);
           const res = await extractFields(markdown, schemaDef, provider, modelStr);
           return {
-            value: res as ExtractResult,
+            value: res as unknown as ExtractResult,
             summary: {
               model: res.model ?? "unknown",
               fields: Object.keys(
@@ -716,6 +716,7 @@ interface ExtractResult {
   confidence_scores?: Record<string, number>;
   model?: string;
   elapsed_ms?: number;
+  provenance?: Record<string, unknown> | null;
 }
 
 /**
@@ -785,6 +786,23 @@ async function getOrParse(
     fileBuffer: blob.data,
   });
   const parseElapsedMs = Date.now() - liveStart;
+
+  // 2b. Store searchable PDF (best-effort) — the parse service overlays OCR
+  // text on scanned pages so the result has selectable text. Store it next to
+  // the original so the preview endpoint can serve it instead.
+  if (parseResult.searchable_pdf_base64) {
+    const searchableKey = `${document.storageKey}.searchable.pdf`;
+    try {
+      const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
+      await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
+      console.log(`[ingestion.process] stored searchable PDF: ${searchableKey} (${pdfBuf.length} bytes)`);
+    } catch (err) {
+      console.warn(
+        `[ingestion.process] searchable PDF write failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   // 3. Cache write (best-effort)
   if (fileHash) {

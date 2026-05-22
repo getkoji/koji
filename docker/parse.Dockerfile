@@ -17,7 +17,7 @@ FROM ghcr.io/getkoji/parse-base:latest
 WORKDIR /app
 
 # Additional deps not in the base image
-RUN pip install --no-cache-dir sse-starlette==2.1.3
+RUN pip install --no-cache-dir sse-starlette==2.1.3 pytesseract==0.3.13 pdf2image==1.17.0
 
 # Copy only what the parse service needs. Keeping this list minimal means
 # touching unrelated files in the repo does not invalidate the cache.

@@ -10,6 +10,8 @@ export interface ParseResponse {
   markdown: string;
   pages: number | null;
   ocr_skipped: boolean;
+  /** Base64-encoded PDF with OCR text layer overlaid. Present when OCR ran. */
+  searchable_pdf_base64?: string;
 }
 
 export interface CoordinateExtractionResult {

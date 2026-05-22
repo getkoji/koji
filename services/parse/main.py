@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import io
 import json
 import tempfile
 import time
@@ -227,14 +228,17 @@ def _generate_searchable_pdf(file_path: str) -> bytes | None:
             for page_bytes in pdf_pages:
                 src = pdfium.PdfDocument(page_bytes)
                 merged.import_pages(src)
-            out = merged.save()
-            return bytes(out)
+            buf = io.BytesIO()
+            merged.save(buf)
+            return buf.getvalue()
         else:
             # Single image
             img = Image.open(file_path)
             return pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
     except Exception as e:
+        import traceback as _tb
         print(f"[koji-parse] Warning: searchable PDF generation failed: {e}")
+        _tb.print_exc()
         return None
 
 
@@ -336,16 +340,17 @@ async def parse(file: UploadFile = File(...)):
         )
         elapsed = round(time.time() - start, 2)
 
-        return JSONResponse(
-            {
-                "filename": file.filename,
-                "markdown": result["markdown"],
-                "pages": result["pages"],
-                "elapsed_seconds": elapsed,
-                "ocr_skipped": skip_ocr,
-                "text_map": result.get("text_map", []),
-            }
-        )
+        resp: dict = {
+            "filename": file.filename,
+            "markdown": result["markdown"],
+            "pages": result["pages"],
+            "elapsed_seconds": elapsed,
+            "ocr_skipped": skip_ocr,
+            "text_map": result.get("text_map", []),
+        }
+        if result.get("searchable_pdf_base64"):
+            resp["searchable_pdf_base64"] = result["searchable_pdf_base64"]
+        return JSONResponse(resp)
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[koji-parse] Error processing {file.filename}:\n{tb}")

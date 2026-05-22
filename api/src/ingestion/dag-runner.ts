@@ -69,9 +69,10 @@ async function executeSplit(
   // Use full structural analysis if available, otherwise fall back to page headers
   let groups: Array<{ startPage: number; endPage: number; type: string; confidence: number; method: string }>;
 
+  const { detectSections } = await import("../extract/split-detect");
   if (_parseProvider.analyzePages) {
-    const { detectSections } = await import("../extract/split-detect");
-    const pageData = await _parseProvider.analyzePages({ fileBuffer: file.data });
+    const analysisResult = await _parseProvider.analyzePages({ fileBuffer: file.data });
+    const pageData = analysisResult.data;
     let llmProvider: any = undefined;
     if (endpoint) { llmProvider = createProvider(endpoint.model, endpoint); }
     groups = await detectSections(pageData, { labels, llmProvider });
@@ -81,13 +82,17 @@ async function executeSplit(
     const pageData = headersResult.headers.map((h: { page: number; header_text: string }) => ({
       page: h.page,
       content_preview: h.header_text,
-      bold_headings: [] as Array<{ text: string; y: number }>,
+      bold_headings: [] as Array<{ text: string; y: number; size: number }>,
       form_numbers: [] as string[],
       text_density: 1,
+      text_chars: 0,
+      tables: [] as Array<{ y: number; h: number; cols: number; header: string }>,
+      horizontal_rules: [] as number[],
       image_ratio: 0,
       blank_bottom_ratio: 0,
       table_count: 0,
       has_dollar_amounts: false,
+      has_dates: false,
       page_label: null as number | null,
       page_of: null as number | null,
     }));
@@ -309,6 +314,16 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         });
         docText = parseResult.markdown;
         pageCount = parseResult.pages ?? undefined;
+        // Store searchable PDF if available
+        if (parseResult.searchable_pdf_base64) {
+          const searchableKey = `${doc.storageKey}.searchable.pdf`;
+          try {
+            const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
+            await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
+          } catch (err) {
+            console.warn(`[dag-runner] searchable PDF write failed:`, (err as Error).message);
+          }
+        }
         // Chunk the parsed markdown and persist
         chunks = chunkMarkdown(docText);
         await withRLS(db, tenantId, (tx) =>

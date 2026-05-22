@@ -19,6 +19,7 @@ interface RawParseResponse {
   markdown: string;
   pages?: number;
   ocr_skipped?: boolean;
+  searchable_pdf_base64?: string;
 }
 
 export class DockerParseProvider implements ParseProvider {
@@ -51,6 +52,7 @@ export class DockerParseProvider implements ParseProvider {
       markdown: result.markdown,
       pages: result.pages ?? null,
       ocr_skipped: result.ocr_skipped ?? false,
+      searchable_pdf_base64: result.searchable_pdf_base64,
     };
   }
 }

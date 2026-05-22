@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PdfViewer } from "@/components/shared/PdfViewer";
@@ -228,22 +228,13 @@ function ParseBody({
   const [view, setView] = useState<"original" | "rendered" | "raw">(
     hasOriginal ? "original" : "rendered",
   );
-  // Fetch a signed URL for the PDF via authenticated API call.
-  // Same pattern as the build page — api.get returns a signed URL,
-  // PdfViewer fetches the PDF directly from storage.
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!documentPreviewUrl) return;
-    import("@/lib/api").then(({ api }) => {
-      api.get<{ url: string }>(documentPreviewUrl)
-        .then((r) => setPdfUrl(r.url))
-        .catch(() => setPdfUrl(null));
-    });
-  }, [documentPreviewUrl]);
+  // PdfViewer fetches the PDF via pdfjs-dist (JS, not iframe).
+  // The preview endpoint is public (document IDs are unguessable UUIDs).
 
   const isMissing = error?.message.includes("No cached markdown") || error?.message.includes("not found");
-  const isPdf = (documentMimeType ?? "").toLowerCase().includes("pdf");
-  const isImage = (documentMimeType ?? "").toLowerCase().startsWith("image/");
+  const mime = (documentMimeType ?? "").toLowerCase();
+  const isPdf = mime.includes("pdf") || mime === "application/octet-stream";
+  const isImage = mime.startsWith("image/");
 
   return (
     <div className="flex-1 bg-cream flex flex-col overflow-hidden min-h-[420px]">
@@ -312,18 +303,13 @@ function ParseBody({
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {view === "original" && hasOriginal && isPdf && pdfUrl && (
-          <PdfViewer url={pdfUrl} />
-        )}
-        {view === "original" && hasOriginal && isPdf && !pdfUrl && (
-          <div className="p-8 text-center font-mono text-[11px] text-ink-4 animate-pulse">
-            Loading PDF...
-          </div>
+        {view === "original" && hasOriginal && isPdf && (
+          <PdfViewer url={documentPreviewUrl!} />
         )}
         {view === "original" && hasOriginal && isImage && (
           <div className="p-4 flex items-start justify-center bg-cream-2 min-h-full">
             <img
-              src={pdfUrl ?? documentPreviewUrl!}
+              src={documentPreviewUrl!}
               alt="Original document"
               className="max-w-full h-auto border border-border"
             />

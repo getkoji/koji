@@ -39,6 +39,7 @@ interface PdfViewerProps {
 
 export function PdfViewer({ url, highlights = [], activeField, onPageChange }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -96,6 +97,23 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
 
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // Render text layer for selectable text (pdfjs v5 uses TextLayer class)
+      if (textLayerRef.current) {
+        const textDiv = textLayerRef.current;
+        textDiv.innerHTML = "";
+        textDiv.style.width = `${viewport.width}px`;
+        textDiv.style.height = `${viewport.height}px`;
+
+        const textContent = await page.getTextContent();
+        const { TextLayer } = await import("pdfjs-dist");
+        const textLayer = new TextLayer({
+          textContentSource: textContent,
+          container: textDiv,
+          viewport,
+        });
+        await textLayer.render();
+      }
     } catch (err) {
       console.warn("[PdfViewer] Render error:", err);
     } finally {
@@ -156,6 +174,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       {/* PDF canvas + overlay */}
       <div ref={containerRef} className="relative flex-1 min-h-0 overflow-auto">
         <canvas ref={canvasRef} className="w-full" />
+        <div
+          ref={textLayerRef}
+          className="textLayer"
+        />
 
         {/* Bounding box overlays */}
         {canvasRef.current && pageHighlights.length > 0 && (
