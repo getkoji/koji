@@ -13,25 +13,42 @@ from cli.config import KojiConfig
 KOJI_DIR = ".koji"
 
 
+def _find_koji_dir() -> Path:
+    """Walk up from cwd to find the nearest .koji/ directory."""
+    current = Path.cwd()
+    for parent in [current, *current.parents]:
+        candidate = parent / KOJI_DIR
+        if candidate.is_dir():
+            return candidate
+    return current / KOJI_DIR
+
+
 def _resolve_master_key() -> str:
     """Return the master key, generating and persisting one if needed.
 
     Checked in order:
     1. KOJI_MASTER_KEY env var (explicit override)
-    2. .koji/master.key file (persisted from a previous run)
-    3. Auto-generate, save to .koji/master.key, and return
+    2. .koji/master.key file (searched upward from cwd)
+    3. Auto-generate, save to .koji/master.key in cwd, and return
+
+    The upward search prevents accidentally generating a new key when
+    running from a subdirectory — losing the master key means all
+    encrypted credentials in the database become unrecoverable.
     """
     env_key = os.environ.get("KOJI_MASTER_KEY")
     if env_key and len(env_key) >= 32:
         return env_key
 
-    key_path = Path.cwd() / KOJI_DIR / "master.key"
+    # Search upward for an existing key
+    koji_dir = _find_koji_dir()
+    key_path = koji_dir / "master.key"
     if key_path.exists():
         stored = key_path.read_text().strip()
         if stored and len(stored) >= 32:
             return stored
 
-    # Generate a new key
+    # Generate a new key — always in cwd/.koji/
+    key_path = Path.cwd() / KOJI_DIR / "master.key"
     new_key = secrets.token_hex(32)
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_text(new_key)
