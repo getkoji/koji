@@ -23,6 +23,7 @@ import {
   Search,
 } from "lucide-react";
 import {
+  api,
   schemas as schemasApi,
   jobs as jobsApi,
   pipelines as pipelinesApi,
@@ -48,6 +49,22 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [pipelinesData, setPipelinesData] = useState<PipelineRow[]>([]);
   const [sourcesData, setSourcesData] = useState<SourceRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [traceResult, setTraceResult] = useState<{
+    traceExternalId: string;
+    documentId: string;
+    jobSlug: string;
+    filename: string;
+    status: string;
+  } | null>(null);
+  const [searchValue, setSearchValue] = useState("");
+
+  // Clear state when palette closes
+  useEffect(() => {
+    if (!open) {
+      setSearchValue("");
+      setTraceResult(null);
+    }
+  }, [open]);
 
   // Fetch entity lists when the palette opens
   useEffect(() => {
@@ -67,6 +84,20 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       setLoading(false);
     });
   }, [open, tenantSlug]);
+
+  // Trace ID lookup — debounced search when input looks like a trace ID
+  useEffect(() => {
+    if (!searchValue.startsWith("trc_") || searchValue.length < 8) {
+      setTraceResult(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api.get<{ traceExternalId: string; documentId: string; jobSlug: string; filename: string; status: string }>(
+        `/api/jobs/traces/lookup?id=${encodeURIComponent(searchValue)}`
+      ).then(setTraceResult).catch(() => setTraceResult(null));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchValue]);
 
   const navigate = useCallback(
     (path: string) => {
@@ -96,11 +127,25 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       title="Command Palette"
       description="Search schemas, pipelines, jobs, and more"
     >
-      <CommandInput placeholder="Search or jump to..." />
+      <CommandInput placeholder="Search or jump to... (paste trc_ to find a trace)" onValueChange={setSearchValue} />
       <CommandList>
         <CommandEmpty>
           {loading ? "Loading..." : "No results found."}
         </CommandEmpty>
+
+        {traceResult && (
+          <CommandGroup heading="Trace">
+            <CommandItem
+              value={`trace ${traceResult.traceExternalId} ${traceResult.filename}`}
+              onSelect={() => navigate(`${base}/jobs/${traceResult.jobSlug}/documents/${traceResult.documentId}`)}
+            >
+              <Search className="w-4 h-4 text-ink-3" />
+              <span className="font-mono text-xs">{traceResult.traceExternalId}</span>
+              <span className="text-xs text-ink-3 truncate max-w-[200px]">{traceResult.filename}</span>
+              <span className="ml-auto font-mono text-[11px] text-ink-4">{traceResult.status}</span>
+            </CommandItem>
+          </CommandGroup>
+        )}
 
         <CommandGroup heading="Navigation">
           {navItems.map((item) => (

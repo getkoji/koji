@@ -106,6 +106,43 @@ jobs.get("/", requires("job:read"), async (c) => {
 });
 
 /**
+ * GET /api/jobs/traces/lookup?id=trc_... — resolve a trace external ID to
+ * its job slug + document ID. Powers the command palette trace search.
+ * Must be registered before /:slug to avoid being caught by the wildcard.
+ */
+jobs.get("/traces/lookup", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const externalId = c.req.query("id");
+
+  if (!externalId) {
+    return c.json({ error: "id query param is required" }, 400);
+  }
+
+  const [row] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        traceExternalId: schema.traces.traceExternalId,
+        documentId: schema.traces.documentId,
+        jobSlug: schema.jobs.slug,
+        filename: schema.documents.filename,
+        status: schema.documents.status,
+      })
+      .from(schema.traces)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.traces.jobId))
+      .innerJoin(schema.documents, eq(schema.documents.id, schema.traces.documentId))
+      .where(eq(schema.traces.traceExternalId, externalId))
+      .limit(1),
+  );
+
+  if (!row) {
+    return c.json({ error: "Trace not found" }, 404);
+  }
+
+  return c.json(row);
+});
+
+/**
  * GET /api/jobs/:slug — single job with joined pipeline + schema info.
  */
 jobs.get("/:slug", requires("job:read"), async (c) => {
@@ -708,3 +745,4 @@ jobs.get("/:slug/documents/:docId/steps", requires("job:read"), async (c) => {
 
   return c.json({ data: rows });
 });
+
