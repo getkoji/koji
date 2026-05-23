@@ -410,7 +410,10 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
 
   if (!entry) return c.json({ error: "Corpus entry not found" }, 404);
 
-  const url = await storage.getSignedUrl(entry.storageKey, 3600);
+  // Prefer the searchable PDF (OCR text layer) when available
+  const searchableKey = `${entry.storageKey}.searchable.pdf`;
+  const hasSearchable = await storage.getBuffer(searchableKey).then(() => true).catch(() => false);
+  const url = await storage.getSignedUrl(hasSearchable ? searchableKey : entry.storageKey, 3600);
   return c.json({ url });
 });
 
@@ -763,6 +766,15 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
           fileBuffer: fileResult.data,
         });
         markdown = parseResult.markdown;
+
+        // Store searchable PDF alongside corpus entry (best-effort)
+        if (parseResult.searchable_pdf_base64) {
+          const searchableKey = `${entry.storageKey}.searchable.pdf`;
+          try {
+            const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
+            await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
+          } catch { /* best-effort */ }
+        }
       }
 
       if (!markdown) continue;
