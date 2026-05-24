@@ -237,6 +237,7 @@ def _generate_searchable_pdf(file_path: str) -> bytes | None:
             return pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
     except Exception as e:
         import traceback as _tb
+
         print(f"[koji-parse] Warning: searchable PDF generation failed: {e}")
         _tb.print_exc()
         return None
