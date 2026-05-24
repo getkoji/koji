@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { getPrincipal } from "../auth/middleware";
@@ -29,7 +29,7 @@ tenants.get("/", async (c) => {
     })
     .from(schema.tenants)
     .innerJoin(schema.memberships, eq(schema.memberships.tenantId, schema.tenants.id))
-    .where(eq(schema.memberships.userId, principal.userId));
+    .where(and(eq(schema.memberships.userId, principal.userId), isNull(schema.tenants.deletedAt)));
 
   return c.json({ data: rows });
 });

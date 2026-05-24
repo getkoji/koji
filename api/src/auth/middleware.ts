@@ -178,14 +178,14 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       [tenant] = await db
         .select({ id: schema.tenants.id })
         .from(schema.tenants)
-        .where(eq(schema.tenants.slug, tenantSlug))
+        .where(and(eq(schema.tenants.slug, tenantSlug), isNull(schema.tenants.deletedAt)))
         .limit(1);
     } else if (principal.orgId) {
       // Org-based path: resolve by external auth ID (Clerk org, OIDC group, etc.)
       [tenant] = await db
         .select({ id: schema.tenants.id })
         .from(schema.tenants)
-        .where(eq(schema.tenants.externalAuthId, principal.orgId))
+        .where(and(eq(schema.tenants.externalAuthId, principal.orgId), isNull(schema.tenants.deletedAt)))
         .limit(1);
     } else if (apiKeyTenantId) {
       // API key path: tenant is embedded in the key row

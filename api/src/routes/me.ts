@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, isNull } from "drizzle-orm";
 import { deleteCookie } from "hono/cookie";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
@@ -52,7 +52,7 @@ me.get("/grants", async (c) => {
   const [tenant] = await db
     .select({ id: schema.tenants.id })
     .from(schema.tenants)
-    .where(eq(schema.tenants.slug, tenantSlug))
+    .where(and(eq(schema.tenants.slug, tenantSlug), isNull(schema.tenants.deletedAt)))
     .limit(1);
 
   if (!tenant) {
