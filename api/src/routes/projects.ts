@@ -55,6 +55,13 @@ projects.post("/setup", async (c) => {
   const principal = c.get("principal");
   if (!principal) return c.json({ error: "Authentication required" }, 401);
 
+  // On hosted (Clerk auth), tenants are created through the admin portal,
+  // not by end users. Block self-service setup to prevent orphan tenants
+  // that have no Clerk org backing them.
+  if (principal.orgId) {
+    return c.json({ error: "Workspaces are managed by your organization admin" }, 403);
+  }
+
   const body = await c.req.json<{
     slug: string;
     display_name: string;

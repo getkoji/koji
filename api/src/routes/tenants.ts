@@ -20,6 +20,50 @@ tenants.get("/", async (c) => {
   const db = c.get("db");
   const principal = getPrincipal(c);
 
+  // JIT provisioning for Clerk users: if the principal has an orgId but no
+  // Koji membership for that org's tenant, create one now. Without this,
+  // newly invited Clerk org members see 0 tenants and get routed to
+  // /new-project (which creates an orphan tenant with no Clerk org).
+  if (principal.orgId) {
+    const orgRole = principal.orgRole ?? "org:member";
+    const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
+      ? ["owner"]
+      : ["member"];
+
+    const [orgTenant] = await db
+      .select({ id: schema.tenants.id })
+      .from(schema.tenants)
+      .where(and(
+        eq(schema.tenants.externalAuthId, principal.orgId),
+        isNull(schema.tenants.deletedAt),
+      ))
+      .limit(1);
+
+    if (orgTenant) {
+      const [existing] = await db
+        .select({ id: schema.memberships.id })
+        .from(schema.memberships)
+        .where(and(
+          eq(schema.memberships.userId, principal.userId),
+          eq(schema.memberships.tenantId, orgTenant.id),
+        ))
+        .limit(1);
+
+      if (!existing) {
+        try {
+          await db.insert(schema.memberships).values({
+            userId: principal.userId,
+            tenantId: orgTenant.id,
+            roles: kojiRoles,
+          });
+          console.log(`[tenants] JIT provisioned membership for user ${principal.userId} in tenant ${orgTenant.id}`);
+        } catch (err: any) {
+          if (err.code !== "23505") throw err; // ignore unique constraint race
+        }
+      }
+    }
+  }
+
   const rows = await db
     .select({
       id: schema.tenants.id,
