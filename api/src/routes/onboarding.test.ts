@@ -8,41 +8,68 @@ import { resolvePermissions } from "../auth/roles";
  */
 
 describe("JIT provisioning for Clerk org members", () => {
-  it("Clerk admin maps to owner role", () => {
+  it("Clerk admin maps to tenant-admin role", () => {
     const orgRole = "org:admin";
     const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-      ? ["owner"]
-      : ["member"];
-    expect(kojiRoles).toEqual(["owner"]);
+      ? ["tenant-admin"]
+      : ["schema-editor"];
+    expect(kojiRoles).toEqual(["tenant-admin"]);
   });
 
-  it("Clerk member maps to member role", () => {
+  it("Clerk member maps to schema-editor role", () => {
     const orgRole = "org:member";
     const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-      ? ["owner"]
-      : ["member"];
-    expect(kojiRoles).toEqual(["member"]);
+      ? ["tenant-admin"]
+      : ["schema-editor"];
+    expect(kojiRoles).toEqual(["schema-editor"]);
   });
 
-  it("undefined orgRole defaults to org:member → member", () => {
+  it("undefined orgRole defaults to org:member → schema-editor", () => {
     const orgRole = undefined ?? "org:member";
     const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-      ? ["owner"]
-      : ["member"];
-    expect(kojiRoles).toEqual(["member"]);
+      ? ["tenant-admin"]
+      : ["schema-editor"];
+    expect(kojiRoles).toEqual(["schema-editor"]);
   });
 
-  it("owner role resolves to all permissions including api_key:write", () => {
-    const perms = resolvePermissions(["owner"]);
+  it("tenant-admin resolves to all admin permissions", () => {
+    const perms = resolvePermissions(["tenant-admin"]);
     expect(perms.has("api_key:write")).toBe(true);
     expect(perms.has("endpoint:write")).toBe(true);
     expect(perms.has("tenant:admin")).toBe(true);
-    expect(perms.has("tenant:delete")).toBe(true);
+    // tenant-admin does NOT have delete/transfer (that's owner only)
+    expect(perms.has("tenant:delete")).toBe(false);
+  });
+
+  it("schema-editor has meaningful permissions (not zero)", () => {
+    const perms = resolvePermissions(["schema-editor"]);
+    expect(perms.size).toBeGreaterThan(0);
+    expect(perms.has("schema:write")).toBe(true);
+    expect(perms.has("schema:validate")).toBe(true);
+    expect(perms.has("job:read")).toBe(true);
+    expect(perms.has("corpus:write")).toBe(true);
+    // schema-editor does NOT have admin perms
+    expect(perms.has("api_key:write")).toBe(false);
+    expect(perms.has("tenant:admin")).toBe(false);
   });
 
   it("'member' is not a valid role — resolves to zero permissions", () => {
     const perms = resolvePermissions(["member"]);
     expect(perms.size).toBe(0);
+  });
+
+  it("JIT and webhook mappings must agree", () => {
+    // JIT (middleware.ts) and webhook (clerk-role-map.ts) must produce
+    // the same Koji roles for the same Clerk roles. Divergence causes
+    // users to get different permissions depending on which fires first.
+    // JIT mapping:
+    const jitAdmin = ["tenant-admin"];
+    const jitMember = ["schema-editor"];
+    // Webhook mapping (from clerk-role-map.ts):
+    const webhookAdmin = ["tenant-admin"];
+    const webhookMember = ["schema-editor"];
+    expect(jitAdmin).toEqual(webhookAdmin);
+    expect(jitMember).toEqual(webhookMember);
   });
 });
 
@@ -112,9 +139,9 @@ describe("tenant listing JIT provisioning", () => {
     const existingMembership = null;
     expect(existingMembership).toBeNull();
 
-    // JIT should create membership with owner role (admin maps to owner)
-    const kojiRoles = principal.orgRole!.includes("admin") ? ["owner"] : ["member"];
-    expect(kojiRoles).toEqual(["owner"]);
+    // JIT should create membership with tenant-admin role (admin maps to tenant-admin)
+    const kojiRoles = principal.orgRole!.includes("admin") ? ["tenant-admin"] : ["schema-editor"];
+    expect(kojiRoles).toEqual(["tenant-admin"]);
   });
 
   it("skips JIT when membership already exists", () => {
@@ -139,33 +166,48 @@ describe("tenant listing JIT provisioning", () => {
 });
 
 describe("role sync on existing memberships", () => {
-  it("upgrades member to owner when Clerk role changes to admin", () => {
-    const membership = { roles: ["member"] };
-    const kojiRoles = ["owner"]; // admin in Clerk
+  it("upgrades schema-editor to tenant-admin when Clerk role changes to admin", () => {
+    const membership = { roles: ["schema-editor"] };
+    const kojiRoles = ["tenant-admin"]; // admin in Clerk
 
     const shouldSync =
       membership.roles.length === 1 &&
       membership.roles[0] !== kojiRoles[0] &&
-      !membership.roles.includes("owner");
+      !membership.roles.includes("owner") &&
+      !membership.roles.includes("tenant-admin");
 
     expect(shouldSync).toBe(true);
   });
 
   it("does not downgrade owner even if Clerk role is member", () => {
     const membership = { roles: ["owner"] };
-    const kojiRoles = ["member"]; // member in Clerk
+    const kojiRoles = ["schema-editor"]; // member in Clerk
 
     const shouldSync =
       membership.roles.length === 1 &&
       membership.roles[0] !== kojiRoles[0] &&
-      !membership.roles.includes("owner"); // guard: don't downgrade owners
+      !membership.roles.includes("owner") &&
+      !membership.roles.includes("tenant-admin");
+
+    expect(shouldSync).toBe(false);
+  });
+
+  it("does not downgrade tenant-admin even if Clerk role is member", () => {
+    const membership = { roles: ["tenant-admin"] };
+    const kojiRoles = ["schema-editor"]; // member in Clerk
+
+    const shouldSync =
+      membership.roles.length === 1 &&
+      membership.roles[0] !== kojiRoles[0] &&
+      !membership.roles.includes("owner") &&
+      !membership.roles.includes("tenant-admin");
 
     expect(shouldSync).toBe(false);
   });
 
   it("does not sync when roles already match", () => {
-    const membership = { roles: ["owner"] };
-    const kojiRoles = ["owner"];
+    const membership = { roles: ["tenant-admin"] };
+    const kojiRoles = ["tenant-admin"];
 
     const shouldSync =
       membership.roles.length === 1 &&

@@ -219,8 +219,8 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     if (principal.orgId) {
       const orgRole = principal.orgRole ?? "org:member";
       const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-        ? ["owner"]
-        : ["member"];
+        ? ["tenant-admin"]
+        : ["schema-editor"];
 
       if (!membership) {
         try {
@@ -247,7 +247,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       } else if (
         membership.roles.length === 1 &&
         membership.roles[0] !== kojiRoles[0] &&
-        !membership.roles.includes("owner") // don't downgrade owners
+        !membership.roles.includes("owner") && !membership.roles.includes("tenant-admin") // don't downgrade admins/owners
       ) {
         // Sync: Clerk role changed since last JIT provision
         await db

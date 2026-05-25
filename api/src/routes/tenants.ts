@@ -27,8 +27,8 @@ tenants.get("/", async (c) => {
   if (principal.orgId) {
     const orgRole = principal.orgRole ?? "org:member";
     const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
-      ? ["owner"]
-      : ["member"];
+      ? ["tenant-admin"]
+      : ["schema-editor"];
 
     const [orgTenant] = await db
       .select({ id: schema.tenants.id })
