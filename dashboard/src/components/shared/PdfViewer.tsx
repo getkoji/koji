@@ -101,6 +101,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
     }, 150);
   }, [activeField]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Memoize file object — react-pdf uses === equality check and re-loads
+  // the PDF on every render if the object reference changes.
+  const file = useMemo(() => ({ url }), [url]);
+
   const pageHighlights = useMemo(
     () => highlights.filter((h) => h.page === currentPage),
     [highlights, currentPage],
@@ -134,8 +138,9 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       {/* PDF document */}
       <div ref={containerRef} className="flex-1 min-h-0 overflow-auto">
         <ReactPdfDocument
-          file={url}
+          file={file}
           onLoadSuccess={(pdf) => setTotalPages(pdf.numPages)}
+          onLoadError={(err) => console.error("[PdfViewer] Load error:", err)}
           loading={
             <div className="flex items-center justify-center h-full">
               <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading PDF...</span>
