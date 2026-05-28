@@ -45,8 +45,6 @@ interface PdfViewerProps {
 
 export function PdfViewer({ url, highlights = [], activeField, onPageChange }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const textLayerRef = useRef<HTMLDivElement>(null);
-  const textLayerInstance = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -110,33 +108,6 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       // Store viewport size for text layer + highlight overlays
       setViewportSize({ w: unscaledViewport.width, h: unscaledViewport.height, scale });
 
-      // Render text layer at the SAME viewport as the canvas — no separate
-      // CSS transform. This guarantees pixel-perfect alignment because pdfjs
-      // positions text spans using the exact same coordinates as the canvas.
-      requestAnimationFrame(() => {
-        if (!textLayerRef.current) return;
-        if (textLayerInstance.current) {
-          try { textLayerInstance.current.cancel(); } catch { /* ok */ }
-        }
-        const textDiv = textLayerRef.current;
-        textDiv.innerHTML = "";
-
-        // Use the same scaled viewport as the canvas
-        textDiv.style.width = `${viewport.width}px`;
-        textDiv.style.height = `${viewport.height}px`;
-        textDiv.style.setProperty("--total-scale-factor", String(scale));
-
-        page.getTextContent().then(async (textContent: any) => {
-          const { TextLayer } = await import("pdfjs-dist");
-          const tl = new TextLayer({
-            textContentSource: textContent,
-            container: textDiv,
-            viewport, // same viewport as canvas render
-          });
-          await tl.render();
-          textLayerInstance.current = tl;
-        });
-      });
     } catch (err) {
       console.warn("[PdfViewer] Render error:", err);
     } finally {
@@ -204,17 +175,6 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
         */}
         <canvas ref={canvasRef} className="w-full" style={{ display: viewportSize ? "block" : "none" }} />
 
-        {/* Text layer — same scale as canvas, no separate transform */}
-        <div
-          ref={textLayerRef}
-          className="textLayer"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            // Size is set by renderPage to match the canvas viewport exactly
-          }}
-        />
 
         {/* Bounding box highlights — same scale transform as text layer */}
         {viewportSize && pageHighlights.length > 0 && (

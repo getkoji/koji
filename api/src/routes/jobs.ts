@@ -386,6 +386,9 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
     documentPreviewUrl,
     documentToken,
+    embedUrl: documentToken
+      ? `/embed/viewer?job=${slug}&doc=${row.documentId}&token=${documentToken}`
+      : null,
   });
 });
 
