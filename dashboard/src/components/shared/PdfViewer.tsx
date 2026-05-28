@@ -8,10 +8,7 @@ import dynamic from "next/dynamic";
 // exist during SSR. Import the entire component client-side only.
 const ReactPdfDocument = dynamic(
   () => import("react-pdf").then((mod) => {
-    mod.pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-      "pdfjs-dist/build/pdf.worker.mjs",
-      import.meta.url,
-    ).toString();
+    mod.pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.mjs";
     return { default: mod.Document };
   }),
   { ssr: false },
