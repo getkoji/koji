@@ -46,6 +46,7 @@ interface RawParseResponse {
   ocr_skipped?: boolean;
   elapsed_seconds?: number;
   searchable_pdf_base64?: string;
+  text_map?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
   error?: string;
 }
 
@@ -206,6 +207,7 @@ export class ModalParseProvider implements ParseProvider {
       pages: result.pages ?? null,
       ocr_skipped: result.ocr_skipped ?? false,
       searchable_pdf_base64: result.searchable_pdf_base64,
+      text_map: result.text_map,
     };
   }
 
