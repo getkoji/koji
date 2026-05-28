@@ -26,6 +26,12 @@ export interface BBoxHighlight {
   reasoning?: string;
 }
 
+/** Messages the embed viewer listens for from a parent frame. */
+export type EmbedMessage =
+  | { type: "koji:setActiveField"; field: string | null }
+  | { type: "koji:setHighlights"; highlights: BBoxHighlight[] }
+  | { type: "koji:goToPage"; page: number };
+
 interface PdfViewerProps {
   url: string;
   highlights?: BBoxHighlight[];
@@ -39,12 +45,16 @@ interface PdfViewerProps {
 
 export function PdfViewer({ url, highlights = [], activeField, onPageChange }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
+  const textLayerInstance = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [rendering, setRendering] = useState(false);
   const [pdfjsLib, setPdfjsLib] = useState<any>(null);
+  // Store viewport dimensions for the overlay layer
+  const [viewportSize, setViewportSize] = useState<{ w: number; h: number; scale: number } | null>(null);
 
   // Load pdfjs-dist dynamically (client-only)
   useEffect(() => {
@@ -74,7 +84,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
     return () => { cancelled = true; };
   }, [pdfjsLib, url]);
 
-  // Render current page to canvas
+  // Render current page: canvas + text layer
   const renderPage = useCallback(async () => {
     if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
     if (rendering) return;
@@ -85,18 +95,52 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       const container = containerRef.current;
       const containerWidth = container.clientWidth;
 
-      // Scale to fit container width
+      // Render at 1:1 PDF scale — CSS transform handles display scaling
       const unscaledViewport = page.getViewport({ scale: 1 });
       const scale = containerWidth / unscaledViewport.width;
-      const viewport = page.getViewport({ scale });
+
+      // Use a higher render scale for crisp text (2x or device pixel ratio)
+      const renderScale = Math.max(2, window.devicePixelRatio ?? 1);
+      const renderViewport = page.getViewport({ scale: renderScale });
 
       const canvas = canvasRef.current;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = renderViewport.width;
+      canvas.height = renderViewport.height;
+      // CSS size matches the 1:1 viewport (the container div handles scaling)
+      canvas.style.width = `${unscaledViewport.width}px`;
+      canvas.style.height = `${unscaledViewport.height}px`;
 
       const ctx = canvas.getContext("2d")!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
 
+      // Render text layer (pdfjs v5 TextLayer class)
+      if (textLayerRef.current) {
+        // Clean up previous text layer
+        if (textLayerInstance.current) {
+          try { textLayerInstance.current.cancel(); } catch { /* ok */ }
+        }
+        const textDiv = textLayerRef.current;
+        textDiv.innerHTML = "";
+
+        // The text layer must match the 1:1 viewport (same coordinate system as canvas CSS size)
+        const textViewport = page.getViewport({ scale: 1 });
+        textDiv.style.width = `${textViewport.width}px`;
+        textDiv.style.height = `${textViewport.height}px`;
+        textDiv.style.setProperty("--total-scale-factor", "1");
+
+        const textContent = await page.getTextContent();
+        const { TextLayer } = await import("pdfjs-dist");
+        const tl = new TextLayer({
+          textContentSource: textContent,
+          container: textDiv,
+          viewport: textViewport,
+        });
+        await tl.render();
+        textLayerInstance.current = tl;
+      }
+
+      // Store viewport size for highlight overlay
+      setViewportSize({ w: unscaledViewport.width, h: unscaledViewport.height, scale });
     } catch (err) {
       console.warn("[PdfViewer] Render error:", err);
     } finally {
@@ -154,76 +198,92 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
         </div>
       )}
 
-      {/* PDF canvas + overlay */}
-      <div ref={containerRef} className="relative flex-1 min-h-0 overflow-auto">
-        <canvas ref={canvasRef} className="w-full" />
-
-        {/* Bounding box overlays */}
-        {canvasRef.current && pageHighlights.length > 0 && (
-          <div
-            className="absolute top-0 left-0"
-            style={{
-              width: canvasRef.current.width,
-              height: canvasRef.current.height,
+      {/* PDF canvas + text layer + highlight overlays */}
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto">
+        {/*
+          All three layers (canvas, text, highlights) live inside one container
+          at 1:1 PDF-point scale. The outer div clips to the scaled size so
+          scrolling works correctly. Everything aligns because pdfjs positions
+          text spans using the same coordinate system as the canvas.
+        */}
+        {viewportSize && (
+          <div style={{ width: viewportSize.w * viewportSize.scale, height: viewportSize.h * viewportSize.scale, position: "relative", overflow: "hidden" }}>
+            <div style={{
+              width: viewportSize.w,
+              height: viewportSize.h,
+              position: "relative",
+              transform: `scale(${viewportSize.scale})`,
               transformOrigin: "top left",
-              transform: `scale(${(containerRef.current?.clientWidth ?? canvasRef.current.width) / canvasRef.current.width})`,
-            }}
-          >
-            {pageHighlights.map((h, i) => {
-              const isActive = h.field === activeField;
-              const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
-                isActive
-                  ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
-                  : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
-              }`;
-              const cw = canvasRef.current!.width;
-              const ch = canvasRef.current!.height;
+            }}>
+              {/* Canvas — rendered at high DPI, CSS-sized to 1:1 viewport */}
+              <canvas ref={canvasRef} style={{ display: "block", position: "absolute", top: 0, left: 0 }} />
 
-              // Per-word boxes (precise highlights)
-              if (h.words && h.words.length > 0) {
-                return h.words
-                  .filter((w) => w.page === currentPage)
-                  .map((w, wi) => (
-                    <HoverBox
-                      key={`${h.field}-${i}-w${wi}`}
-                      className={boxClass}
-                      style={{
-                        left: w.x * cw,
-                        top: w.y * ch,
-                        width: w.w * cw,
-                        height: w.h * ch,
-                      }}
-                      field={h.field}
-                      reasoning={h.reasoning}
-                      isActive={isActive}
-                    />
-                  ));
-              }
+              {/* Text layer — pdfjs positions spans absolutely within this div */}
+              <div ref={textLayerRef} className="textLayer" style={{ position: "absolute", top: 0, left: 0 }} />
 
-              // Fallback: single enclosing bbox
-              if (!h.bbox) return null;
-              return (
-                <HoverBox
-                  key={`${h.field}-${i}`}
-                  className={boxClass}
-                  style={{
-                    left: h.bbox.x * cw,
-                    top: h.bbox.y * ch,
-                    width: h.bbox.w * cw,
-                    height: h.bbox.h * ch,
-                  }}
-                  field={h.field}
-                  reasoning={h.reasoning}
-                  isActive={isActive}
-                />
-              );
-            })}
+              {/* Bounding box highlights — same coordinate space as canvas/text */}
+              {pageHighlights.length > 0 && (
+                <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+                  {pageHighlights.map((h, i) => {
+                    const isActive = h.field === activeField;
+                    const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
+                      isActive
+                        ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
+                        : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
+                    }`;
+                    const vw = viewportSize.w;
+                    const vh = viewportSize.h;
+
+                    // Per-word boxes (precise highlights)
+                    if (h.words && h.words.length > 0) {
+                      return h.words
+                        .filter((w) => w.page === currentPage)
+                        .map((w, wi) => (
+                          <HoverBox
+                            key={`${h.field}-${i}-w${wi}`}
+                            className={boxClass}
+                            style={{
+                              left: w.x * vw,
+                              top: w.y * vh,
+                              width: w.w * vw,
+                              height: w.h * vh,
+                              pointerEvents: "auto",
+                            }}
+                            field={h.field}
+                            reasoning={h.reasoning}
+                            isActive={isActive}
+                          />
+                        ));
+                    }
+
+                    // Fallback: single enclosing bbox
+                    if (!h.bbox) return null;
+                    return (
+                      <HoverBox
+                        key={`${h.field}-${i}`}
+                        className={boxClass}
+                        style={{
+                          left: h.bbox.x * vw,
+                          top: h.bbox.y * vh,
+                          width: h.bbox.w * vw,
+                          height: h.bbox.h * vh,
+                          pointerEvents: "auto",
+                        }}
+                        field={h.field}
+                        reasoning={h.reasoning}
+                        isActive={isActive}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
         {/* Loading state */}
         {!pdfDoc && (
-          <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex items-center justify-center h-full">
             <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading PDF...</span>
           </div>
         )}

@@ -25,7 +25,7 @@ describe("JIT provisioning for Clerk org members", () => {
   });
 
   it("undefined orgRole defaults to org:member → schema-editor", () => {
-    const orgRole = undefined ?? "org:member";
+    const orgRole = (undefined as string | undefined) ?? "org:member";
     const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
       ? ["tenant-admin"]
       : ["schema-editor"];

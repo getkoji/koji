@@ -21,6 +21,14 @@ const API_TARGET =
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Embed routes — allow any origin to iframe them
+  if (pathname.startsWith("/embed/")) {
+    const response = NextResponse.next();
+    response.headers.delete("X-Frame-Options");
+    response.headers.set("Content-Security-Policy", "frame-ancestors *");
+    return response;
+  }
+
   // Expose the API URL to the client for SSE/streaming endpoints
   // that can't go through the middleware proxy (timeout issues).
   if (pathname === "/_koji/api-url") {
@@ -41,5 +49,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/_koji/:path*"],
+  matcher: ["/api/:path*", "/_koji/:path*", "/embed/:path*"],
 };

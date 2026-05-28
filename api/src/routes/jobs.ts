@@ -555,6 +555,69 @@ jobs.get("/:slug/documents/:docId/preview", async (c) => {
 });
 
 /**
+ * GET /api/jobs/:slug/documents/:docId/embed-data — everything the embeddable
+ * viewer needs in one call: preview URL + provenance highlights.
+ *
+ * Auth via HMAC token (same as preview endpoint). External clients iframe
+ * the embed viewer page, which calls this endpoint to get the data.
+ */
+jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
+  const db = c.get("db");
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+  const masterKey = c.get("masterKey") as string | null;
+
+  const [doc] = await db
+    .select({
+      filename: schema.documents.filename,
+      pageCount: schema.documents.pageCount,
+      provenanceJson: schema.documents.provenanceJson,
+      storageKey: schema.documents.storageKey,
+    })
+    .from(schema.documents)
+    .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+    .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+    .limit(1);
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  // Build the signed preview URL
+  const previewPath = `/api/jobs/${slug}/documents/${docId}/preview`;
+  let previewUrl: string;
+  if (masterKey) {
+    const token = generatePreviewToken(previewPath, masterKey);
+    previewUrl = `${previewPath}?token=${token}`;
+  } else {
+    previewUrl = previewPath;
+  }
+
+  // Convert provenance to BBoxHighlight format
+  const provenance = (doc.provenanceJson ?? {}) as Record<
+    string,
+    { offset?: number; length?: number; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string } | null
+  >;
+
+  const highlights = Object.entries(provenance)
+    .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
+    .map(([field, v]) => ({
+      field,
+      page: v!.words?.[0]?.page ?? v!.page ?? 1,
+      bbox: v!.bbox,
+      words: v!.words,
+      reasoning: v!.reasoning,
+    }));
+
+  return c.json({
+    previewUrl,
+    highlights,
+    filename: doc.filename,
+    pageCount: doc.pageCount,
+  });
+});
+
+/**
  * GET /api/jobs/:slug/documents/:docId/markdown — the parsed markdown.
  *
  * Powers the "Parse" stage detail pane. Every parse result is written to
