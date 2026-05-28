@@ -352,14 +352,15 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
   // without requiring the viewer to have a session cookie (e.g. react-pdf
   // fetches the PDF via JS, not through the middleware's auth chain).
   let documentPreviewUrl: string | null = null;
+  let documentToken: string | null = null;
   if (row.storageKey) {
     const previewPath = `/api/jobs/${slug}/documents/${row.documentId}/preview`;
+    const basePath = `/api/jobs/${slug}/documents/${row.documentId}`;
     const masterKey = c.get("masterKey") as string | null;
     if (masterKey) {
-      const token = generatePreviewToken(previewPath, masterKey);
-      documentPreviewUrl = `${previewPath}?token=${token}`;
+      documentToken = generatePreviewToken(basePath, masterKey);
+      documentPreviewUrl = `${previewPath}?token=${documentToken}`;
     } else {
-      // No master key (local dev without KOJI_MASTER_KEY) — fall back to unsigned
       documentPreviewUrl = previewPath;
     }
   }
@@ -384,6 +385,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     stages: dagStages.length > 0 ? dagStages : stages,
     stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
     documentPreviewUrl,
+    documentToken,
   });
 });
 
@@ -583,11 +585,13 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  // Build the signed preview URL
-  const previewPath = `/api/jobs/${slug}/documents/${docId}/preview`;
+  // Build the signed preview URL — sign the base path so the same token
+  // works for /preview, /embed-data, and any future sub-endpoints.
+  const basePath = `/api/jobs/${slug}/documents/${docId}`;
+  const previewPath = `${basePath}/preview`;
   let previewUrl: string;
   if (masterKey) {
-    const token = generatePreviewToken(previewPath, masterKey);
+    const token = generatePreviewToken(basePath, masterKey);
     previewUrl = `${previewPath}?token=${token}`;
   } else {
     previewUrl = previewPath;
