@@ -47,7 +47,7 @@ const storage = new S3Storage({
   forcePathStyle: process.env.KOJI_S3_FORCE_PATH_STYLE === "true",
 });
 const queue = new PostgresQueue(db);
-const parseProvider = createParseProvider({
+const parseProvider = await createParseProvider({
   backend: (process.env.KOJI_PARSE_BACKEND ?? "docker") as "docker" | "modal",
   dockerUrl: PARSE_URL,
   modalUrl: process.env.KOJI_PARSE_MODAL_URL,
