@@ -1,7 +1,26 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import dynamic from "next/dynamic";
+
+// react-pdf uses pdfjs which requires DOM APIs (DOMMatrix, canvas) that don't
+// exist during SSR. Import the entire component client-side only.
+const ReactPdfDocument = dynamic(
+  () => import("react-pdf").then((mod) => {
+    mod.pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.mjs",
+      import.meta.url,
+    ).toString();
+    return { default: mod.Document };
+  }),
+  { ssr: false },
+);
+
+const ReactPdfPage = dynamic(
+  () => import("react-pdf").then((mod) => ({ default: mod.Page })),
+  { ssr: false },
+);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,13 +39,10 @@ export interface BBoxHighlight {
   field: string;
   page: number;
   bbox?: { x: number; y: number; w: number; h: number };
-  /** Per-word bounding boxes for precise highlighting */
   words?: WordBox[];
-  /** LLM reasoning for why this value was selected */
   reasoning?: string;
 }
 
-/** Messages the embed viewer listens for from a parent frame. */
 export type EmbedMessage =
   | { type: "koji:setActiveField"; field: string | null }
   | { type: "koji:setHighlights"; highlights: BBoxHighlight[] }
@@ -44,80 +60,32 @@ interface PdfViewerProps {
 // ---------------------------------------------------------------------------
 
 export function PdfViewer({ url, highlights = [], activeField, onPageChange }: PdfViewerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(0);
-  const [pdfDoc, setPdfDoc] = useState<any>(null);
-  const [rendering, setRendering] = useState(false);
-  const [pdfjsLib, setPdfjsLib] = useState<any>(null);
-  // Store viewport dimensions for the overlay layer
-  const [viewportSize, setViewportSize] = useState<{ w: number; h: number; scale: number } | null>(null);
 
-  // Load pdfjs-dist dynamically (client-only)
+  // Load react-pdf CSS client-side
   useEffect(() => {
-    import("pdfjs-dist").then((lib) => {
-      lib.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.mjs",
-        import.meta.url,
-      ).toString();
-      setPdfjsLib(lib);
-    });
+    import("react-pdf/dist/Page/TextLayer.css");
+    import("react-pdf/dist/Page/AnnotationLayer.css");
   }, []);
+  const [totalPages, setTotalPages] = useState(0);
+  const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined);
 
-  // Load the PDF document
+  // Measure container width for responsive page sizing
   useEffect(() => {
-    if (!pdfjsLib || !url) return;
-    let cancelled = false;
+    const container = containerRef.current;
+    if (!container) return;
 
-    pdfjsLib.getDocument(url).promise.then((doc: any) => {
-      if (cancelled) return;
-      setPdfDoc(doc);
-      setTotalPages(doc.numPages);
-      setCurrentPage(1);
-    }).catch((err: any) => {
-      console.warn("[PdfViewer] Failed to load PDF:", err);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
     });
+    observer.observe(container);
+    setContainerWidth(container.clientWidth);
 
-    return () => { cancelled = true; };
-  }, [pdfjsLib, url]);
-
-  // Render current page: canvas + text layer
-  const renderPage = useCallback(async () => {
-    if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
-    if (rendering) return;
-    setRendering(true);
-
-    try {
-      const page = await pdfDoc.getPage(currentPage);
-      const container = containerRef.current;
-      const containerWidth = container.clientWidth;
-
-      // Scale to fit container width (same as the original working approach)
-      const unscaledViewport = page.getViewport({ scale: 1 });
-      const scale = containerWidth / unscaledViewport.width;
-      const viewport = page.getViewport({ scale });
-
-      const canvas = canvasRef.current;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-
-      const ctx = canvas.getContext("2d")!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      // Store viewport size for text layer + highlight overlays
-      setViewportSize({ w: unscaledViewport.width, h: unscaledViewport.height, scale });
-
-    } catch (err) {
-      console.warn("[PdfViewer] Render error:", err);
-    } finally {
-      setRendering(false);
-    }
-  }, [pdfDoc, currentPage, rendering]);
-
-  useEffect(() => {
-    renderPage();
-  }, [pdfDoc, currentPage]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => observer.disconnect();
+  }, []);
 
   // Auto-navigate to highlighted field's page + scroll to highlight
   useEffect(() => {
@@ -128,7 +96,6 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       setCurrentPage(hit.page);
       onPageChange?.(hit.page);
     }
-    // Scroll to the highlight box after a short delay (allow page render)
     setTimeout(() => {
       const el = containerRef.current?.querySelector(`[data-highlight-field="${activeField}"]`);
       if (el) {
@@ -137,8 +104,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
     }, 150);
   }, [activeField]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Filter highlights for current page
-  const pageHighlights = highlights.filter((h) => h.page === currentPage);
+  const pageHighlights = useMemo(
+    () => highlights.filter((h) => h.page === currentPage),
+    [highlights, currentPage],
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -165,95 +134,124 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
         </div>
       )}
 
-      {/* PDF canvas + text layer + highlight overlays */}
-      <div ref={containerRef} className="relative flex-1 min-h-0 overflow-auto">
-        {/*
-          The canvas is always in the DOM so renderPage can draw to it.
-          After render, viewportSize is set and the scaling wrapper + text
-          layer + highlights appear on top. Canvas uses w-full so it fills
-          the container; the internal resolution is set by renderPage.
-        */}
-        <canvas ref={canvasRef} className="w-full" style={{ display: viewportSize ? "block" : "none" }} />
-
-
-        {/* Bounding box highlights — same scale transform as text layer */}
-        {viewportSize && pageHighlights.length > 0 && (
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: viewportSize.w,
-              height: viewportSize.h,
-              transformOrigin: "top left",
-              transform: `scale(${viewportSize.scale})`,
-              pointerEvents: "none",
-            }}
+      {/* PDF document */}
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto">
+        <ReactPdfDocument
+          file={url}
+          onLoadSuccess={(pdf) => setTotalPages(pdf.numPages)}
+          loading={
+            <div className="flex items-center justify-center h-full">
+              <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading PDF...</span>
+            </div>
+          }
+          error={
+            <div className="flex items-center justify-center h-full">
+              <span className="font-mono text-[11px] text-vermillion-2">Failed to load PDF</span>
+            </div>
+          }
+        >
+          <ReactPdfPage
+            pageNumber={currentPage}
+            width={containerWidth}
+            renderAnnotationLayer={false}
           >
-            {pageHighlights.map((h, i) => {
-              const isActive = h.field === activeField;
-              const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
-                isActive
-                  ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
-                  : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
-              }`;
-              const vw = viewportSize.w;
-              const vh = viewportSize.h;
-
-              if (h.words && h.words.length > 0) {
-                return h.words
-                  .filter((w) => w.page === currentPage)
-                  .map((w, wi) => (
-                    <HoverBox
-                      key={`${h.field}-${i}-w${wi}`}
-                      className={boxClass}
-                      style={{
-                        left: w.x * vw,
-                        top: w.y * vh,
-                        width: w.w * vw,
-                        height: w.h * vh,
-                        pointerEvents: "auto",
-                      }}
-                      field={h.field}
-                      reasoning={h.reasoning}
-                      isActive={isActive}
-                    />
-                  ));
-              }
-
-              if (!h.bbox) return null;
-              return (
-                <HoverBox
-                  key={`${h.field}-${i}`}
-                  className={boxClass}
-                  style={{
-                    left: h.bbox.x * vw,
-                    top: h.bbox.y * vh,
-                    width: h.bbox.w * vw,
-                    height: h.bbox.h * vh,
-                    pointerEvents: "auto",
-                  }}
-                  field={h.field}
-                  reasoning={h.reasoning}
-                  isActive={isActive}
-                />
-              );
-            })}
-          </div>
-        )}
-
-        {/* Loading state */}
-        {!pdfDoc && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading PDF...</span>
-          </div>
-        )}
+            {/* Bounding box highlights — children of Page share its coordinate space */}
+            {pageHighlights.length > 0 && (
+              <HighlightOverlay
+                highlights={pageHighlights}
+                activeField={activeField ?? null}
+                currentPage={currentPage}
+              />
+            )}
+          </ReactPdfPage>
+        </ReactPdfDocument>
       </div>
     </div>
   );
 }
 
-/** Highlight box with a styled popover on hover showing field name + reasoning. */
+// ---------------------------------------------------------------------------
+// Highlight overlay — rendered as a child of <Page>
+// ---------------------------------------------------------------------------
+
+function HighlightOverlay({
+  highlights,
+  activeField,
+  currentPage,
+}: {
+  highlights: BBoxHighlight[];
+  activeField: string | null;
+  currentPage: number;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        zIndex: 3,
+      }}
+    >
+      {highlights.map((h, i) => {
+        const isActive = h.field === activeField;
+        const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
+          isActive
+            ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
+            : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
+        }`;
+
+        // Per-word boxes (precise highlights) — use percentage positioning
+        if (h.words && h.words.length > 0) {
+          return h.words
+            .filter((w) => w.page === currentPage)
+            .map((w, wi) => (
+              <HoverBox
+                key={`${h.field}-${i}-w${wi}`}
+                className={boxClass}
+                style={{
+                  left: `${w.x * 100}%`,
+                  top: `${w.y * 100}%`,
+                  width: `${w.w * 100}%`,
+                  height: `${w.h * 100}%`,
+                  pointerEvents: "auto",
+                }}
+                field={h.field}
+                reasoning={h.reasoning}
+                isActive={isActive}
+              />
+            ));
+        }
+
+        // Fallback: single enclosing bbox
+        if (!h.bbox) return null;
+        return (
+          <HoverBox
+            key={`${h.field}-${i}`}
+            className={boxClass}
+            style={{
+              left: `${h.bbox.x * 100}%`,
+              top: `${h.bbox.y * 100}%`,
+              width: `${h.bbox.w * 100}%`,
+              height: `${h.bbox.h * 100}%`,
+              pointerEvents: "auto",
+            }}
+            field={h.field}
+            reasoning={h.reasoning}
+            isActive={isActive}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hover box with tooltip
+// ---------------------------------------------------------------------------
+
 function HoverBox({
   className,
   style,
