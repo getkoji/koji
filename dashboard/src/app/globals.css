@@ -158,5 +158,3 @@ body {
 }
 .prose-parse img { max-width: 100%; height: auto; }
 
-/* pdfjs text layer — selectable text overlay */
-@import "pdfjs-dist/web/pdf_viewer.css" layer(pdfjs);
