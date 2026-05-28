@@ -10,7 +10,7 @@
  * format that downstream consumers (extractFields, provenance, UI) expect.
  */
 
-import type { ParseProvider, ParseResponse } from "./provider";
+import type { ParseProvider, ParseResponse, TextMapSegment } from "./provider";
 import { spatialToMarkdown } from "./spatial-to-markdown";
 
 export class LiteParseProvider implements ParseProvider {
@@ -19,20 +19,33 @@ export class LiteParseProvider implements ParseProvider {
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
-    // Dynamic import — if @llamaindex/liteparse isn't installed, this throws
-    // and SmartParseProvider catches it, falling back to the heavy provider.
     const { default: LiteParse } = await import("@llamaindex/liteparse");
 
     const parser = new LiteParse({ quiet: true });
     const result = await parser.parse(input.fileBuffer);
 
-    // Convert spatial output to markdown
     const markdown = spatialToMarkdown(result.pages);
+
+    // Build text_map from LiteParse's spatial data — normalized 0-1 coords
+    const text_map: TextMapSegment[] = [];
+    for (const page of result.pages) {
+      for (const item of page.textItems) {
+        text_map.push({
+          text: item.text,
+          page: page.pageNum,
+          x: page.width > 0 ? item.x / page.width : 0,
+          y: page.height > 0 ? item.y / page.height : 0,
+          w: page.width > 0 ? item.width / page.width : 0,
+          h: page.height > 0 ? item.height / page.height : 0,
+        });
+      }
+    }
 
     return {
       markdown,
       pages: result.pages.length,
-      ocr_skipped: true, // LiteParse extracts from text layer, never runs OCR
+      ocr_skipped: true,
+      text_map,
     };
   }
 }

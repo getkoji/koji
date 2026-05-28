@@ -756,6 +756,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       // Parse the document (use parse provider)
       const parseProvider = c.get("parseProvider") as any;
       let markdown = "";
+      let textMap: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> | undefined;
       if (parseProvider) {
         const parseResult = await parseProvider.parse({
           filename: entry.filename,
@@ -763,6 +764,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
           fileBuffer: fileResult.data,
         });
         markdown = parseResult.markdown;
+        textMap = parseResult.text_map;
 
         // Store searchable PDF alongside corpus entry (best-effort)
         if (parseResult.searchable_pdf_base64) {
@@ -776,8 +778,14 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 
       if (!markdown) continue;
 
-      // Extract
-      const extractResult = await extractFields(markdown, schemaDef, provider, extractModel);
+      // Extract — pass text_map for bounding box resolution
+      // Convert flat coords to TextMap format (bbox object)
+      const provenanceTextMap = textMap?.map((seg) => ({
+        text: seg.text,
+        page: seg.page,
+        bbox: { x: seg.x, y: seg.y, w: seg.w, h: seg.h },
+      }));
+      const extractResult = await extractFields(markdown, schemaDef, provider, extractModel, provenanceTextMap);
 
       results.push({
         entryId: entry.id,

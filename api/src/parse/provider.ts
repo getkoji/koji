@@ -6,12 +6,24 @@
  * provider for the cloud tier (see platform-60).
  */
 
+/** A word/segment with its spatial position on the page. */
+export interface TextMapSegment {
+  text: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface ParseResponse {
   markdown: string;
   pages: number | null;
   ocr_skipped: boolean;
   /** Base64-encoded PDF with OCR text layer overlaid. Present when OCR ran. */
   searchable_pdf_base64?: string;
+  /** Per-word spatial positions — used by provenance to resolve bounding boxes. */
+  text_map?: TextMapSegment[];
 }
 
 export interface CoordinateExtractionResult {
