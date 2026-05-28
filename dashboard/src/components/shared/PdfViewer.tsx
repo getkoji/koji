@@ -174,10 +174,22 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       {/* PDF canvas + overlay */}
       <div ref={containerRef} className="relative flex-1 min-h-0 overflow-auto">
         <canvas ref={canvasRef} className="w-full" />
-        <div
-          ref={textLayerRef}
-          className="textLayer"
-        />
+        {/* Text layer: positioned over the canvas, scaled from internal resolution to CSS display size */}
+        {canvasRef.current && (
+          <div
+            ref={textLayerRef}
+            className="textLayer"
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: canvasRef.current.width,
+              height: canvasRef.current.height,
+              transformOrigin: "top left",
+              transform: `scale(${(containerRef.current?.clientWidth ?? canvasRef.current.width) / canvasRef.current.width})`,
+            }}
+          />
+        )}
 
         {/* Bounding box overlays */}
         {canvasRef.current && pageHighlights.length > 0 && (
