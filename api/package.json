@@ -19,6 +19,7 @@
     "@koji/db": "workspace:*",
     "@koji/pipeline": "workspace:^",
     "@koji/types": "workspace:*",
+    "@llamaindex/liteparse": "^2.0.1",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
     "nodemailer": "^8.0.5",
@@ -32,8 +33,5 @@
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^3.2.0"
-  },
-  "optionalDependencies": {
-    "@llamaindex/liteparse": "^2.0.1"
   }
 }

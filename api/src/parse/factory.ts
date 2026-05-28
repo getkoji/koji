@@ -21,6 +21,8 @@
 import type { ParseProvider } from "./provider";
 import { DockerParseProvider } from "./docker";
 import { ModalParseProvider } from "./modal";
+import { LiteParseProvider } from "./liteparse";
+import { SmartParseProvider } from "./smart";
 
 export type ParseBackend = "docker" | "modal";
 
@@ -43,21 +45,17 @@ export interface ParseConfig {
  * Auto-wrap a provider with SmartParseProvider if LiteParse is available.
  * Silently returns the original provider if the native binary isn't installed.
  */
-function maybeWrapWithLiteParse(provider: ParseProvider): ParseProvider {
-  if (process.env.KOJI_LITEPARSE === "false") return provider;
+import { createRequire } from "node:module";
 
+function liteparseAvailable(): boolean {
+  if (process.env.KOJI_LITEPARSE === "false") return false;
   try {
-    require.resolve("@llamaindex/liteparse");
+    const require = createRequire(import.meta.url);
+    require.resolve("@llamaindex/liteparse/package.json");
+    return true;
   } catch {
-    return provider; // not installed — use heavy provider only
+    return false;
   }
-
-  // Dynamic imports to avoid loading LiteParse at module eval time
-  const { LiteParseProvider } = require("./liteparse") as typeof import("./liteparse");
-  const { SmartParseProvider } = require("./smart") as typeof import("./smart");
-
-  console.log("[parse] LiteParse detected — enabling smart routing (digital→liteparse, scanned→heavy)");
-  return new SmartParseProvider(new LiteParseProvider(), provider);
 }
 
 export function createParseProvider(config: ParseConfig): ParseProvider {
@@ -86,5 +84,10 @@ export function createParseProvider(config: ParseConfig): ParseProvider {
     }
   }
 
-  return maybeWrapWithLiteParse(provider);
+  if (liteparseAvailable()) {
+    console.log("[parse] LiteParse detected — enabling smart routing (digital→liteparse, scanned→heavy)");
+    return new SmartParseProvider(new LiteParseProvider(), provider);
+  }
+
+  return provider;
 }
