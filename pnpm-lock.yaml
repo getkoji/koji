@@ -46,12 +46,19 @@ importers:
       nodemailer:
         specifier: ^8.0.5
         version: 8.0.5
+      pdfjs-dist:
+        specifier: ^5.6.205
+        version: 5.6.205
       postgres:
         specifier: ^3.4.4
         version: 3.4.9
       yaml:
         specifier: ^2.8.3
         version: 2.8.3
+    optionalDependencies:
+      '@llamaindex/liteparse':
+        specifier: ^2.0.1
+        version: 2.0.1
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -1211,6 +1218,31 @@ packages:
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
+
+  '@llamaindex/liteparse-darwin-arm64@2.0.1':
+    resolution: {integrity: sha512-/f8hH6R8CEtc5/2QMQvER4gt3RKgvcM4K6OzCvqlEIiJtyob67RkZhkFA8x2h4dAzgAtqMegQCo1vFHs31IPXg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@llamaindex/liteparse-linux-arm64-gnu@2.0.1':
+    resolution: {integrity: sha512-oir+ZNsDs9aAPG4BmYHTAhQRb+wBVTXvWgPDY+qn6bAJjY4qMIrlVbUPSzRnKCXZ+4nuuj7PJsRxkXHrmxoQ5A==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@llamaindex/liteparse-linux-x64-gnu@2.0.1':
+    resolution: {integrity: sha512-cMoAkgMMF9V/Mwy7kkeGMBC0q22xVHGTR27ZYpmh56eQdsLTt7YnjcACNLlD9ULJ5ha7DvKIuS0Bmu+agiJvsg==}
+    cpu: [x64]
+    os: [linux]
+
+  '@llamaindex/liteparse-win32-x64-msvc@2.0.1':
+    resolution: {integrity: sha512-d/CD/Hidf1GL72pQTyy3gKTeJScElDyRZyPDhFzZYHdFBQY/3zRaUfzzdMZGnjhdwMB10uJeuCYux8pKEcW2Kw==}
+    cpu: [x64]
+    os: [win32]
+
+  '@llamaindex/liteparse@2.0.1':
+    resolution: {integrity: sha512-8LGmIflr6AL3zFqy7PU/bRBIgRJtZWLco6XQc9Hsvk6GKpQ4GFsH6GDlk5HTdvuAbdoDb0g4PYLxd/r8SNCENg==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
 
   '@napi-rs/canvas-android-arm64@0.1.100':
     resolution: {integrity: sha512-hjhCKhntPv9+t4ckHymdx0phYNcVW+GKQR6Lzw2zE+pOVjOplSmtx9nNNknTjbEDLcuLZqA1y8ufKg1XfgftzQ==}
@@ -3367,6 +3399,10 @@ packages:
   commander@11.1.0:
     resolution: {integrity: sha512-yPVavfyCcRhmorC7rWlkHn15b4wDVgVmBA7kV4QVBsF7kv/9TKJAbAXVTxvTnwP8HHKjRCJDClKbciiYS7p0DQ==}
     engines: {node: '>=16'}
+
+  commander@12.1.0:
+    resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
+    engines: {node: '>=18'}
 
   commander@2.20.3:
     resolution: {integrity: sha512-GpVkmM8vF2vQUkj2LvZmD35JxeJOLCwJ9cUkugyk2nuhbv3+mJvpLYYt+0+USMxE+oj+ey/lJEnhZw75x/OMcQ==}
@@ -7506,6 +7542,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@llamaindex/liteparse-darwin-arm64@2.0.1':
+    optional: true
+
+  '@llamaindex/liteparse-linux-arm64-gnu@2.0.1':
+    optional: true
+
+  '@llamaindex/liteparse-linux-x64-gnu@2.0.1':
+    optional: true
+
+  '@llamaindex/liteparse-win32-x64-msvc@2.0.1':
+    optional: true
+
+  '@llamaindex/liteparse@2.0.1':
+    dependencies:
+      commander: 12.1.0
+    optionalDependencies:
+      '@llamaindex/liteparse-darwin-arm64': 2.0.1
+      '@llamaindex/liteparse-linux-arm64-gnu': 2.0.1
+      '@llamaindex/liteparse-linux-x64-gnu': 2.0.1
+      '@llamaindex/liteparse-win32-x64-msvc': 2.0.1
+    optional: true
+
   '@napi-rs/canvas-android-arm64@0.1.100':
     optional: true
 
@@ -9849,6 +9907,9 @@ snapshots:
   comma-separated-tokens@2.0.3: {}
 
   commander@11.1.0: {}
+
+  commander@12.1.0:
+    optional: true
 
   commander@2.20.3: {}
 

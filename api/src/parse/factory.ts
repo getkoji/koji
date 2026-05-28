@@ -5,6 +5,12 @@
  * `modal` routes to a Modal-hosted Docling service used by the hosted-cloud
  * tier; see `modal.ts` for the 303-polling + proxy-auth details.
  *
+ * When `@llamaindex/liteparse` is installed (optional dep), the factory
+ * auto-wraps the configured backend with SmartParseProvider. This routes
+ * digital PDFs to LiteParse (sub-second, Rust, in-process) and scanned
+ * PDFs to the heavy backend (Docling/Modal, OCR-capable). Disable with
+ * KOJI_LITEPARSE=false.
+ *
  * Config is injected so the same factory works under Node (where `index.ts`
  * reads `process.env`) and under Cloudflare Workers (where the entry point
  * reads `env.*` bindings). The providers themselves still allow constructor-
@@ -33,25 +39,52 @@ export interface ParseConfig {
   modalTimeoutMs?: number;
 }
 
+/**
+ * Auto-wrap a provider with SmartParseProvider if LiteParse is available.
+ * Silently returns the original provider if the native binary isn't installed.
+ */
+function maybeWrapWithLiteParse(provider: ParseProvider): ParseProvider {
+  if (process.env.KOJI_LITEPARSE === "false") return provider;
+
+  try {
+    require.resolve("@llamaindex/liteparse");
+  } catch {
+    return provider; // not installed — use heavy provider only
+  }
+
+  // Dynamic imports to avoid loading LiteParse at module eval time
+  const { LiteParseProvider } = require("./liteparse") as typeof import("./liteparse");
+  const { SmartParseProvider } = require("./smart") as typeof import("./smart");
+
+  console.log("[parse] LiteParse detected — enabling smart routing (digital→liteparse, scanned→heavy)");
+  return new SmartParseProvider(new LiteParseProvider(), provider);
+}
+
 export function createParseProvider(config: ParseConfig): ParseProvider {
+  let provider: ParseProvider;
+
   switch (config.backend) {
     case "docker": {
       if (!config.dockerUrl) {
         throw new Error("parse config: dockerUrl is required for the docker backend");
       }
-      return new DockerParseProvider({ url: config.dockerUrl });
+      provider = new DockerParseProvider({ url: config.dockerUrl });
+      break;
     }
     case "modal": {
-      return new ModalParseProvider({
+      provider = new ModalParseProvider({
         url: config.modalUrl,
         tokenId: config.modalTokenId,
         tokenSecret: config.modalTokenSecret,
         timeoutMs: config.modalTimeoutMs,
       });
+      break;
     }
     default: {
       const exhaustive: never = config.backend;
       throw new Error(`Unknown parse backend: ${exhaustive}`);
     }
   }
+
+  return maybeWrapWithLiteParse(provider);
 }

@@ -22,6 +22,7 @@
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
     "nodemailer": "^8.0.5",
+    "pdfjs-dist": "^5.6.205",
     "postgres": "^3.4.4",
     "yaml": "^2.8.3"
   },
@@ -31,5 +32,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^3.2.0"
+  },
+  "optionalDependencies": {
+    "@llamaindex/liteparse": "^2.0.1"
   }
 }
