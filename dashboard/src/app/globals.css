@@ -158,6 +158,32 @@ body {
 }
 .prose-parse img { max-width: 100%; height: auto; }
 
-/* pdfjs text layer — selectable text overlay rendered by pdfjs TextLayer */
-@import "pdfjs-dist/web/pdf_viewer.css" layer(pdfjs);
+/* pdfjs text layer — invisible text positioned over the canvas for selection.
+   Inlined from pdfjs-dist/web/pdf_viewer.css because @import with layer()
+   gets stripped by Tailwind v4's CSS processing. */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+}
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.textLayer ::selection {
+  background: rgba(0, 100, 200, 0.3);
+}
 
