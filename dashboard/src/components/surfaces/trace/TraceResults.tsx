@@ -114,30 +114,65 @@ export function TraceResults({
                     const itemActive = activeField === itemKey;
                     const itemProv = prov?.items?.[idx];
                     const hasItemProv = itemProv != null;
+                    const itemExpanded = expandedArrays.has(itemKey);
+                    const entries = Object.entries(item).filter(([, v]) => v != null);
 
                     return (
-                      <button
-                        key={itemKey}
-                        type="button"
-                        onClick={() => onFieldClick(itemActive ? null : itemKey)}
-                        className={`w-full text-left px-4 pl-8 py-1.5 border-b border-dotted border-border text-[11px] cursor-pointer transition-colors hover:bg-cream-2 ${
-                          itemActive
-                            ? "border-l-[3px] border-l-vermillion-2 pl-[calc(2rem-3px)] bg-vermillion-3/10"
-                            : "border-l-[3px] border-l-transparent"
-                        }`}
-                      >
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums">
-                            [{idx}]
-                          </span>
-                          <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0 flex items-center gap-1.5">
-                            {hasItemProv && (
-                              <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />
-                            )}
-                            {summarizeObject(item)}
-                          </span>
-                        </div>
-                      </button>
+                      <div key={itemKey}>
+                        {/* Item header row */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            toggleExpand(itemKey);
+                            onFieldClick(itemActive ? null : itemKey);
+                          }}
+                          className={`w-full text-left px-4 pl-8 py-1.5 border-b border-dotted border-border text-[11px] cursor-pointer transition-colors hover:bg-cream-2 ${
+                            itemActive
+                              ? "border-l-[3px] border-l-vermillion-2 pl-[calc(2rem-3px)] bg-vermillion-3/10"
+                              : "border-l-[3px] border-l-transparent"
+                          }`}
+                        >
+                          <div className="flex items-baseline gap-2">
+                            <ChevronRight
+                              className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform ${itemExpanded ? "rotate-90" : ""}`}
+                            />
+                            <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums">
+                              [{idx}]
+                            </span>
+                            <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0 flex items-center gap-1.5">
+                              {hasItemProv && (
+                                <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />
+                              )}
+                              {summarizeObject(item)}
+                            </span>
+                          </div>
+                        </button>
+
+                        {/* Expanded property rows */}
+                        {itemExpanded &&
+                          entries.map(([propName, propValue]) => (
+                            <button
+                              key={`${itemKey}.${propName}`}
+                              type="button"
+                              onClick={() => onFieldClick(itemActive ? null : itemKey)}
+                              className={`w-full text-left pl-14 pr-4 py-1 border-b border-dotted border-border/50 text-[10.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
+                                itemActive
+                                  ? "bg-vermillion-3/5"
+                                  : ""
+                              }`}
+                              style={{ gridTemplateColumns: "auto 1fr" }}
+                            >
+                              <div className="flex items-baseline gap-2 min-w-0">
+                                <span className="font-mono text-[10px] text-ink-4 shrink-0">
+                                  {propName}
+                                </span>
+                                <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0">
+                                  {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                      </div>
                     );
                   })}
               </div>
