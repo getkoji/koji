@@ -77,6 +77,9 @@ def _describe_array_item(spec: dict) -> str:
         parts = []
         for prop_name, prop_spec in properties.items():
             parts.append(_describe_property(prop_name, prop_spec))
+        parts.append(
+            "__source_text: string — copy the EXACT verbatim text from the document that this item was extracted from"
+        )
         return " of objects with properties {" + ", ".join(parts) + "}"
 
     if item_type == "array":
@@ -409,7 +412,7 @@ def build_group_prompt(
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text.{extra_block}
+Return a FLAT JSON object with the listed field NAMES as top-level keys — do NOT nest the result under a schema name or a wrapper object. Example: return `{{"field_a": ..., "field_b": ...}}`, not `{{"{schema_name}": {{"field_a": ..., "field_b": ...}}}}`. {date_instruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data — only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear — do not paraphrase or reformat.{extra_block}
 
 JSON:"""
 
@@ -462,6 +465,28 @@ def _extract_llm_confidence(parsed: dict, expected_fields: set[str]) -> dict[str
     return result
 
 
+def _extract_source_texts(parsed: dict) -> dict[str, list[str]]:
+    """Extract and strip __source_text from array-of-objects items.
+
+    Returns a map of field name → source texts (one per array item).
+    Mutates `parsed` by deleting __source_text from each item.
+    """
+    result: dict[str, list[str]] = {}
+    for field, value in parsed.items():
+        if not isinstance(value, list):
+            continue
+        texts: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                src = item.pop("__source_text", None)
+                texts.append(src if isinstance(src, str) else "")
+            else:
+                texts.append("")
+        if any(t for t in texts):
+            result[field] = texts
+    return result
+
+
 async def extract_group(
     group: dict,
     schema_name: str,
@@ -493,6 +518,8 @@ async def extract_group(
                     return {}
 
             llm_conf = _extract_llm_confidence(parsed, expected_fields)
+            # Strip __source_text from array items before unwrapping
+            _extract_source_texts(parsed)
             result = _unwrap_nested_result(parsed, expected_fields)
             if llm_conf:
                 result["__llm_confidence"] = llm_conf

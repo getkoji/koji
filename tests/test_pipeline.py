@@ -223,8 +223,8 @@ class TestBuildGroupPrompt:
         prompt = build_group_prompt(group, "coi")
         # Outer array is described
         assert "policies: array of objects" in prompt
-        # Inner limits array carries its own object shape
-        assert "limits: array of objects with properties {name: string, amount: number}" in prompt
+        # Inner limits array carries its own object shape (includes __source_text)
+        assert "limits: array of objects with properties {name: string, amount: number, __source_text:" in prompt
         # Inner primitive array is rendered as `array of string`, not bare `array`
         assert "additional_insureds: array of string" in prompt
 

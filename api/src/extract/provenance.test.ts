@@ -630,3 +630,50 @@ describe("duplicate text across pages", () => {
     expect(result2.amount!.page).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Array provenance with source texts
+// ---------------------------------------------------------------------------
+
+describe("array provenance with source texts", () => {
+  it("uses source texts for precise array item matching", () => {
+    const markdown =
+      "Page 1: Widget 2 pcs $10.00\n\n---\n\nPage 2: Gadget 5 pcs $25.00";
+    const sourceTexts = {
+      items: ["Widget 2 pcs $10.00", "Gadget 5 pcs $25.00"],
+    };
+
+    const result = resolveProvenance(
+      { items: [{ desc: "Widget", qty: 2 }, { desc: "Gadget", qty: 5 }] },
+      markdown,
+      undefined,
+      sourceTexts,
+    );
+
+    expect(result.items).not.toBeNull();
+    expect(result.items!.items).toHaveLength(2);
+    // First item should have a precise offset matching the source text
+    expect(result.items!.items![0]!.chunk).toBe("Widget 2 pcs $10.00");
+    expect(result.items!.items![0]!.page).toBe(1);
+    // Second item on page 2
+    expect(result.items!.items![1]!.chunk).toBe("Gadget 5 pcs $25.00");
+    expect(result.items!.items![1]!.page).toBe(2);
+  });
+
+  it("falls back to heuristic when source text not found", () => {
+    const markdown = "Page 1: Widget info here";
+    const sourceTexts = {
+      items: ["text that does not appear anywhere"],
+    };
+
+    const result = resolveProvenance(
+      { items: [{ desc: "Widget" }] },
+      markdown,
+      undefined,
+      sourceTexts,
+    );
+
+    // Should still resolve via heuristic fallback
+    expect(result.items).not.toBeNull();
+  });
+});

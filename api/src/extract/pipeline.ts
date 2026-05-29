@@ -38,6 +38,8 @@ export interface ExtractionResult {
   };
   /** Field-level text provenance: where each value was found in the source markdown. */
   provenance?: ProvenanceMap;
+  /** Per-item verbatim source text for array-of-objects fields (from LLM). */
+  source_texts?: Record<string, string[]>;
   /** All key-value pairs found in the document via pattern matching (no LLM). */
   kv_pairs?: Array<{ label: string; value: string }>;
 }
@@ -55,6 +57,7 @@ function describeArrayItem(spec: Record<string, unknown>): string {
     const properties = itemSpec.properties as Record<string, unknown> | undefined;
     if (!properties) return " of objects";
     const parts = Object.entries(properties).map(([n, s]) => describeProperty(n, s));
+    parts.push("__source_text: string — copy the EXACT verbatim text from the document that this item was extracted from");
     return ` of objects with properties {${parts.join(", ")}}`;
   }
   if (itemType === "array") return " of arrays" + describeArrayItem(itemSpec);
@@ -174,7 +177,7 @@ ${markdown}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear — do not paraphrase or reformat.
 
 ${extraBlock}
 
@@ -277,6 +280,35 @@ export function extractLlmReasoning(
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof v === "string") {
       result[k] = v;
+    }
+  }
+  return result;
+}
+
+/**
+ * Extract and strip `__source_text` from array-of-objects items.
+ * Returns a map of field name → source texts (one per array item).
+ * Mutates `parsed` by deleting `__source_text` from each item.
+ */
+export function extractSourceTexts(
+  parsed: Record<string, unknown>,
+): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  for (const [field, value] of Object.entries(parsed)) {
+    if (!Array.isArray(value)) continue;
+    const texts: string[] = [];
+    for (const item of value) {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const obj = item as Record<string, unknown>;
+        const src = obj.__source_text;
+        delete obj.__source_text;
+        texts.push(typeof src === "string" ? src : "");
+      } else {
+        texts.push("");
+      }
+    }
+    if (texts.some((t) => t.length > 0)) {
+      result[field] = texts;
     }
   }
   return result;
@@ -503,6 +535,10 @@ export async function extractFields(
   const llmConfidence = extractLlmConfidence(parsed);
   const llmReasoning = extractLlmReasoning(parsed);
 
+  // Extract and strip __source_text from array-of-objects items before
+  // field validation — these are LLM-injected provenance hints, not user data.
+  const sourceTexts = extractSourceTexts(parsed);
+
   // Field validation + type normalization
   const extracted: Record<string, unknown> = {};
   for (const [fieldName, spec] of Object.entries(fields)) {
@@ -515,7 +551,9 @@ export async function extractFields(
   // extracted values match the source text directly. Normalized values
   // (e.g. dates transformed to ISO) would require reverse-engineering
   // the original format, which is fragile and lossy.
-  const provenance = resolveProvenance(extracted, markdown, textMap);
+  // Pass source texts so array-of-objects items get precise bbox matching
+  // from the LLM-provided verbatim text instead of heuristic page-scoring.
+  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts);
 
   // Post-extraction normalization
   const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);
@@ -546,6 +584,7 @@ export async function extractFields(
       issues: validationReport.issues,
     },
     provenance,
+    ...(Object.keys(sourceTexts).length > 0 ? { source_texts: sourceTexts } : {}),
     kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
   };
 }
