@@ -166,8 +166,8 @@ export default function TraceViewPage() {
   const hasExtraction = displayExtraction != null;
 
   // Convert provenanceJson → BBoxHighlight[]. Array fields with `items`
-  // are flattened into one highlight per item, all keyed to the parent field
-  // name so clicking the field highlights all items on the PDF.
+  // are flattened into indexed highlights (field[0], field[1]) so clicking
+  // an individual array item highlights just that item on the PDF.
   const highlights = useMemo(() => {
     const prov = displayExtraction?.provenanceJson as Record<string, any> | null;
     if (!prov) return [];
@@ -175,12 +175,13 @@ export default function TraceViewPage() {
     for (const [field, v] of Object.entries(prov)) {
       if (!v) continue;
       if (v.items && Array.isArray(v.items)) {
-        for (const item of v.items) {
+        for (let i = 0; i < v.items.length; i++) {
+          const item = v.items[i];
           if (!item) continue;
           // Array object items may only have page-level provenance (no bbox).
           // Include them so clicking the field navigates to the right page.
           if (item.words?.length || (item.bbox && item.page) || item.page) {
-            out.push({ field, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+            out.push({ field: `${field}[${i}]`, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
           }
         }
         continue;
