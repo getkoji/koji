@@ -925,7 +925,7 @@ export default function BuildPage() {
                                               else next.add(itemKey);
                                               return next;
                                             });
-                                            setHighlightedField(itemActive ? null : itemKey);
+                                            setHighlightedField(itemKey);
                                           }}
                                         >
                                           <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform mt-0.5 ${itemExpanded ? "rotate-90" : ""}`} />
@@ -939,7 +939,7 @@ export default function BuildPage() {
                                           <div
                                             key={`${itemKey}.${propName}`}
                                             className={`flex items-baseline gap-2 px-3 pl-14 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${itemActive ? "bg-vermillion-3/5" : ""}`}
-                                            onClick={() => setHighlightedField(itemActive ? null : itemKey)}
+                                            onClick={() => setHighlightedField(itemKey)}
                                           >
                                             <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
                                             <span className="text-[11px] text-ink-2 truncate min-w-0">
