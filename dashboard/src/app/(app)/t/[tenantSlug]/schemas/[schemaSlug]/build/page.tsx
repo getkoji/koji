@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles, ChevronRight } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -177,6 +177,7 @@ export default function BuildPage() {
     error?: string;
   } | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
   const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
   const bboxHighlights = useMemo(() => {
     const prov = extractionResult?.provenance ?? {};
@@ -184,10 +185,11 @@ export default function BuildPage() {
     for (const [field, v] of Object.entries(prov)) {
       if (!v) continue;
       if (v.items && Array.isArray(v.items)) {
-        for (const item of v.items) {
+        for (let i = 0; i < v.items.length; i++) {
+          const item = v.items[i];
           if (!item) continue;
           if (item.words?.length || (item.bbox != null && item.page != null) || item.page != null) {
-            out.push({ field, page: item.words?.[0]?.page ?? item.page!, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+            out.push({ field: `${field}[${i}]`, page: item.words?.[0]?.page ?? item.page!, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
           }
         }
         continue;
@@ -869,6 +871,65 @@ export default function BuildPage() {
                             const prov = extractionResult.provenance?.[key];
                             const hasProvenance = prov != null;
                             const isHighlighted = highlightedField === key;
+                            const isArrayOfObjects = Array.isArray(value) && value.length > 0 && value.every((v: unknown) => v != null && typeof v === "object" && !Array.isArray(v));
+                            const isExpanded = expandedBuildArrays.has(key);
+
+                            if (isArrayOfObjects) {
+                              const items = value as Record<string, unknown>[];
+                              return (
+                                <div key={key}>
+                                  <div
+                                    className={`flex items-start justify-between px-3 py-2 gap-3 cursor-pointer hover:bg-cream-2/80 transition-colors`}
+                                    onClick={() => {
+                                      setExpandedBuildArrays((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(key)) next.delete(key);
+                                        else next.add(key);
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
+                                      <ChevronRight className={`w-3 h-3 text-ink-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                                      {hasProvenance && (
+                                        <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
+                                      )}
+                                      {key}
+                                    </span>
+                                    <span className="text-[12px] text-ink-3 shrink-0">
+                                      {items.length} item{items.length !== 1 ? "s" : ""}
+                                    </span>
+                                    {extractionResult.confidence_scores?.[key] !== undefined && (
+                                      <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
+                                        {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
+                                      </span>
+                                    )}
+                                  </div>
+                                  {isExpanded && items.map((item, idx) => {
+                                    const itemKey = `${key}[${idx}]`;
+                                    const itemActive = highlightedField === itemKey;
+                                    const itemProv = prov?.items?.[idx];
+                                    const hasItemProv = itemProv != null;
+                                    const summary = Object.entries(item).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(", ");
+                                    const display = summary.length > 80 ? `${summary.slice(0, 77)}...` : summary || "\u2014";
+                                    return (
+                                      <div
+                                        key={itemKey}
+                                        className={`flex items-start gap-2 px-3 pl-8 py-1.5 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border ${itemActive ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                                        onClick={() => setHighlightedField(itemActive ? null : itemKey)}
+                                      >
+                                        <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums flex items-center gap-1">
+                                          {hasItemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
+                                          [{idx}]
+                                        </span>
+                                        <span className="text-[11px] text-ink-2 truncate min-w-0">{display}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            }
+
                             return (
                               <div key={key}>
                                 <div
