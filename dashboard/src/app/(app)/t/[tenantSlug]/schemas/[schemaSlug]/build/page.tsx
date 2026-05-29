@@ -168,7 +168,7 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
-    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string } | null>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; items?: Array<{ offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string }> } | null>;
     markdown?: string;
     model?: string;
     elapsed_ms?: number;
@@ -178,18 +178,25 @@ export default function BuildPage() {
   } | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
-  const bboxHighlights = useMemo(() =>
-    Object.entries(extractionResult?.provenance ?? {})
-      .filter(([, v]) => v?.words?.length || (v?.bbox != null && v?.page != null))
-      .map(([field, v]) => ({
-        field,
-        page: v!.words?.[0]?.page ?? v!.page!,
-        bbox: v!.bbox,
-        words: v!.words,
-        reasoning: v!.reasoning,
-      })),
-    [extractionResult?.provenance]
-  );
+  const bboxHighlights = useMemo(() => {
+    const prov = extractionResult?.provenance ?? {};
+    const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string }> = [];
+    for (const [field, v] of Object.entries(prov)) {
+      if (!v) continue;
+      if (v.items && Array.isArray(v.items)) {
+        for (const item of v.items) {
+          if (item && (item.words?.length || (item.bbox != null && item.page != null))) {
+            out.push({ field, page: item.words?.[0]?.page ?? item.page!, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+          }
+        }
+        continue;
+      }
+      if (v.words?.length || (v.bbox != null && v.page != null)) {
+        out.push({ field, page: v.words?.[0]?.page ?? v.page!, bbox: v.bbox, words: v.words, reasoning: v.reasoning });
+      }
+    }
+    return out;
+  }, [extractionResult?.provenance]);
   const [parseProgress, setParseProgress] = useState<{
     pages: number;
     scanned: boolean;

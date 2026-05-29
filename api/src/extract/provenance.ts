@@ -51,6 +51,8 @@ export interface ProvenanceSpan {
   words?: WordBox[];
   /** LLM-provided reasoning for why this value was selected */
   reasoning?: string;
+  /** Per-item provenance for array fields */
+  items?: ProvenanceSpan[];
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -536,6 +538,111 @@ function resolveBbox(
  * When textMap is provided, also resolves bounding box coordinates for
  * highlighting on the rendered PDF.
  */
+/**
+ * Resolve provenance for a single scalar value (string or number).
+ * Returns a ProvenanceSpan with offset, chunk, and optional bbox, or null.
+ */
+function resolveScalar(
+  value: unknown,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  let result: { offset: number; length: number } | null = null;
+
+  if (typeof value === "string") {
+    if (value.length <= 4) {
+      result = findWordBoundary(markdown, value);
+    }
+    if (!result) {
+      result =
+        findExact(markdown, value) ??
+        findCaseInsensitive(markdown, value) ??
+        findNormalized(markdown, value);
+    }
+    if (!result && /^[A-Z]{2}$/.test(value)) {
+      result = findStateName(markdown, value);
+    }
+    if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
+      result = findDate(markdown, value);
+    }
+    if (!result && /^\$?[\d,.]+$/.test(value)) {
+      result = findDollarAmount(markdown, value);
+    }
+  } else if (typeof value === "number") {
+    result = findNumber(markdown, value);
+  }
+
+  if (!result) return null;
+
+  const chunk = markdown.slice(result.offset, result.offset + result.length);
+  const span: ProvenanceSpan = {
+    offset: result.offset,
+    length: result.length,
+    chunk,
+  };
+
+  if (textMap && textMap.length > 0) {
+    const bboxHit = resolveBbox(value, chunk, textMap, markdown, result.offset);
+    if (bboxHit) {
+      span.page = bboxHit.page;
+      span.bbox = bboxHit.bbox;
+      if (bboxHit.words) {
+        span.words = bboxHit.words;
+      }
+    }
+  }
+
+  return span;
+}
+
+/**
+ * Resolve provenance for an array value. Each item is resolved independently.
+ * String/number items use the scalar resolver directly. Object items resolve
+ * each scalar property and pick the best match (preferring bbox > offset).
+ */
+function resolveArray(
+  items: unknown[],
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  if (items.length === 0) return null;
+
+  const resolved: ProvenanceSpan[] = [];
+
+  for (const item of items) {
+    if (item == null) continue;
+
+    if (typeof item === "string" || typeof item === "number") {
+      const span = resolveScalar(item, markdown, textMap);
+      if (span) resolved.push(span);
+    } else if (typeof item === "object" && !Array.isArray(item)) {
+      const allSpans: ProvenanceSpan[] = [];
+      for (const val of Object.values(item as Record<string, unknown>)) {
+        if (val == null || (typeof val !== "string" && typeof val !== "number")) continue;
+        const span = resolveScalar(val, markdown, textMap);
+        if (span) allSpans.push(span);
+      }
+      if (allSpans.length > 0) {
+        const best = allSpans.find((s) => s.words) ?? allSpans.find((s) => s.bbox) ?? allSpans[0]!;
+        resolved.push(best);
+      }
+    }
+  }
+
+  if (resolved.length === 0) return null;
+
+  const first = resolved[0]!;
+  return {
+    offset: first.offset,
+    length: first.length,
+    chunk: first.chunk,
+    page: first.page,
+    bbox: first.bbox,
+    words: first.words,
+    items: resolved,
+  };
+}
+
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
@@ -549,64 +656,12 @@ export function resolveProvenance(
       continue;
     }
 
-    let result: { offset: number; length: number } | null = null;
-
-    if (typeof value === "string") {
-      // For short values (state codes, abbreviations), prefer word-boundary
-      // matches to avoid matching inside longer words (e.g. "NC" in "INCORPORATION").
-      if (value.length <= 4) {
-        result = findWordBoundary(markdown, value);
-      }
-      // Fall through to standard search if word-boundary didn't match
-      if (!result) {
-        result =
-          findExact(markdown, value) ??
-          findCaseInsensitive(markdown, value) ??
-          findNormalized(markdown, value);
-      }
-
-      // If it looks like a US state code, search for the full state name
-      if (!result && /^[A-Z]{2}$/.test(value)) {
-        result = findStateName(markdown, value);
-      }
-
-      // If it looks like a date (YYYY-MM-DD), try date formats
-      if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
-        result = findDate(markdown, value);
-      }
-
-      // If it looks like a dollar amount, try currency formats
-      if (!result && /^\$?[\d,.]+$/.test(value)) {
-        result = findDollarAmount(markdown, value);
-      }
-    } else if (typeof value === "number") {
-      result = findNumber(markdown, value);
+    if (Array.isArray(value)) {
+      provenance[field] = resolveArray(value, markdown, textMap);
+      continue;
     }
 
-    if (result) {
-      const chunk = markdown.slice(result.offset, result.offset + result.length);
-      const span: ProvenanceSpan = {
-        offset: result.offset,
-        length: result.length,
-        chunk,
-      };
-
-      // Resolve bounding box + per-word locations if text_map available
-      if (textMap && textMap.length > 0) {
-        const bboxHit = resolveBbox(value, chunk, textMap, markdown, result.offset);
-        if (bboxHit) {
-          span.page = bboxHit.page;
-          span.bbox = bboxHit.bbox;
-          if (bboxHit.words) {
-            span.words = bboxHit.words;
-          }
-        }
-      }
-
-      provenance[field] = span;
-    } else {
-      provenance[field] = null;
-    }
+    provenance[field] = resolveScalar(value, markdown, textMap) ?? null;
   }
 
   return provenance;

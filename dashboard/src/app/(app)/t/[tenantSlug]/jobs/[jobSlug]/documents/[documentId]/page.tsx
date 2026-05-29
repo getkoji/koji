@@ -165,19 +165,28 @@ export default function TraceViewPage() {
 
   const hasExtraction = displayExtraction != null;
 
-  // Convert provenanceJson → BBoxHighlight[] (same pattern as build page)
+  // Convert provenanceJson → BBoxHighlight[]. Array fields with `items`
+  // are flattened into one highlight per item, all keyed to the parent field
+  // name so clicking the field highlights all items on the PDF.
   const highlights = useMemo(() => {
-    const prov = displayExtraction?.provenanceJson;
+    const prov = displayExtraction?.provenanceJson as Record<string, any> | null;
     if (!prov) return [];
-    return Object.entries(prov)
-      .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
-      .map(([field, v]) => ({
-        field,
-        page: v!.words?.[0]?.page ?? v!.page ?? 1,
-        bbox: v!.bbox,
-        words: v!.words,
-        reasoning: v!.reasoning,
-      }));
+    const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string }> = [];
+    for (const [field, v] of Object.entries(prov)) {
+      if (!v) continue;
+      if (v.items && Array.isArray(v.items)) {
+        for (const item of v.items) {
+          if (item && (item.words?.length || (item.bbox && item.page))) {
+            out.push({ field, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+          }
+        }
+        continue;
+      }
+      if (v.words?.length || (v.bbox && v.page)) {
+        out.push({ field, page: v.words?.[0]?.page ?? v.page ?? 1, bbox: v.bbox, words: v.words, reasoning: v.reasoning });
+      }
+    }
+    return out;
   }, [displayExtraction?.provenanceJson]);
 
   const [selectedStage, setSelectedStage] = useState(0);
