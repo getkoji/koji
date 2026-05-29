@@ -77,7 +77,9 @@ def _describe_array_item(spec: dict) -> str:
         parts = []
         for prop_name, prop_spec in properties.items():
             parts.append(_describe_property(prop_name, prop_spec))
-        parts.append("__source_text: string — copy the EXACT verbatim text from the document that this item was extracted from")
+        parts.append(
+            "__source_text: string — copy the EXACT verbatim text from the document that this item was extracted from"
+        )
         return " of objects with properties {" + ", ".join(parts) + "}"
 
     if item_type == "array":
