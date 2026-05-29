@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -594,5 +594,159 @@ describe("extractLlmReasoning", () => {
     const reasoning = extractLlmReasoning(parsed);
 
     expect(Object.keys(reasoning)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractSourceTexts
+// ---------------------------------------------------------------------------
+
+describe("extractSourceTexts", () => {
+  it("extracts __source_text from array-of-objects items", () => {
+    const parsed: Record<string, unknown> = {
+      items: [
+        { name: "Widget", qty: 2, __source_text: "Widget  2 pcs" },
+        { name: "Gadget", qty: 5, __source_text: "Gadget  5 pcs" },
+      ],
+      total: 100,
+    };
+
+    const texts = extractSourceTexts(parsed);
+
+    expect(texts).toEqual({ items: ["Widget  2 pcs", "Gadget  5 pcs"] });
+    // __source_text stripped from items
+    const items = parsed.items as Record<string, unknown>[];
+    expect(items[0]).not.toHaveProperty("__source_text");
+    expect(items[1]).not.toHaveProperty("__source_text");
+    // other fields untouched
+    expect(parsed.total).toBe(100);
+  });
+
+  it("returns empty object when no arrays have source texts", () => {
+    const parsed: Record<string, unknown> = {
+      items: [{ name: "Widget" }],
+      total: 100,
+    };
+
+    const texts = extractSourceTexts(parsed);
+    expect(texts).toEqual({});
+  });
+
+  it("handles mixed items with and without source texts", () => {
+    const parsed: Record<string, unknown> = {
+      items: [
+        { name: "A", __source_text: "Line A" },
+        { name: "B" },
+        { name: "C", __source_text: "Line C" },
+      ],
+    };
+
+    const texts = extractSourceTexts(parsed);
+    expect(texts).toEqual({ items: ["Line A", "", "Line C"] });
+  });
+
+  it("skips non-array fields", () => {
+    const parsed: Record<string, unknown> = {
+      name: "test",
+      count: 5,
+    };
+
+    const texts = extractSourceTexts(parsed);
+    expect(texts).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractFields — __source_text integration
+// ---------------------------------------------------------------------------
+
+describe("extractFields __source_text integration", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("strips __source_text from extracted array items and includes source_texts in result", async () => {
+    const provider = mockProvider(
+      JSON.stringify({
+        line_items: [
+          { desc: "Widget", qty: 2, __source_text: "Widget  2 pcs  $10" },
+          { desc: "Gadget", qty: 5, __source_text: "Gadget  5 pcs  $25" },
+        ],
+      }),
+    );
+
+    const schema = {
+      name: "invoice",
+      fields: {
+        line_items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              desc: { type: "string" },
+              qty: { type: "number" },
+            },
+          },
+        },
+      },
+    };
+
+    const result = await extractFields(
+      "Widget  2 pcs  $10\nGadget  5 pcs  $25",
+      schema,
+      provider,
+      "gpt-4o",
+    );
+
+    // __source_text stripped from extracted items
+    const items = result.extracted.line_items as Record<string, unknown>[];
+    expect(items[0]).not.toHaveProperty("__source_text");
+    expect(items[1]).not.toHaveProperty("__source_text");
+
+    // source_texts included in result
+    expect(result.source_texts).toEqual({
+      line_items: ["Widget  2 pcs  $10", "Gadget  5 pcs  $25"],
+    });
+  });
+
+  it("omits source_texts from result when no arrays have them", async () => {
+    const provider = mockProvider(
+      JSON.stringify({ name: "Acme Corp" }),
+    );
+
+    const schema = {
+      name: "company",
+      fields: {
+        name: { type: "string" },
+      },
+    };
+
+    const result = await extractFields("Acme Corp", schema, provider, "gpt-4o");
+    expect(result.source_texts).toBeUndefined();
+  });
+
+  it("includes __source_text instruction in the prompt for array-of-objects", async () => {
+    const provider = mockProvider(
+      JSON.stringify({ items: [] }),
+    );
+
+    const schema = {
+      name: "test",
+      fields: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+            },
+          },
+        },
+      },
+    };
+
+    await extractFields("doc", schema, provider, "m");
+    const prompt = (provider.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+    expect(prompt).toContain("__source_text");
   });
 });

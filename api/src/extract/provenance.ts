@@ -596,6 +596,45 @@ function resolveScalar(
 }
 
 /**
+ * Resolve provenance for an array item using its LLM-provided source text.
+ * Searches the markdown for the verbatim text and resolves bbox via text_map.
+ * Returns null if the source text can't be located.
+ */
+function resolveObjectItemFromSourceText(
+  sourceText: string,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  if (!sourceText) return null;
+
+  // Try exact match first, then normalized whitespace
+  let result = findExact(markdown, sourceText)
+    ?? findNormalized(markdown, sourceText);
+
+  if (!result) return null;
+
+  const chunk = markdown.slice(result.offset, result.offset + result.length);
+  const page = estimatePageFromOffset(markdown, result.offset);
+  const span: ProvenanceSpan = {
+    offset: result.offset,
+    length: result.length,
+    chunk,
+    page,
+  };
+
+  if (textMap && textMap.length > 0) {
+    const bboxHit = resolveBbox(sourceText, chunk, textMap, markdown, result.offset);
+    if (bboxHit) {
+      span.bbox = bboxHit.bbox;
+      span.page = bboxHit.page;
+      if (bboxHit.words) span.words = bboxHit.words;
+    }
+  }
+
+  return span;
+}
+
+/**
  * For an object array item, find the page in the markdown that contains the
  * most of the item's property values. Returns page-level provenance only —
  * no bbox or word highlighting, since object items are assembled from
@@ -645,25 +684,35 @@ function resolveObjectItem(
 
 /**
  * Resolve provenance for an array value. Each item is resolved independently.
- * String/number items use the scalar resolver. Object items find the
- * paragraph containing the most of their property values.
+ * String/number items use the scalar resolver. Object items prefer LLM-provided
+ * source texts for precise matching, falling back to heuristic page-scoring.
  */
 function resolveArray(
   items: unknown[],
   markdown: string,
   textMap?: TextMap,
+  itemSourceTexts?: string[],
 ): ProvenanceSpan | null {
   if (items.length === 0) return null;
 
   const resolved: ProvenanceSpan[] = [];
 
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     if (item == null) continue;
     if (typeof item === "string" || typeof item === "number") {
       const span = resolveScalar(item, markdown, textMap);
       if (span) resolved.push(span);
     } else if (typeof item === "object" && !Array.isArray(item)) {
-      const span = resolveObjectItem(item as Record<string, unknown>, markdown);
+      // Prefer LLM-provided source text for precise matching
+      const srcText = itemSourceTexts?.[i];
+      let span: ProvenanceSpan | null = null;
+      if (srcText) {
+        span = resolveObjectItemFromSourceText(srcText, markdown, textMap);
+      }
+      if (!span) {
+        span = resolveObjectItem(item as Record<string, unknown>, markdown);
+      }
       if (span) resolved.push(span);
     }
   }
@@ -686,6 +735,7 @@ export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
   textMap?: TextMap,
+  sourceTexts?: Record<string, string[]>,
 ): ProvenanceMap {
   const provenance: ProvenanceMap = {};
 
@@ -696,7 +746,7 @@ export function resolveProvenance(
     }
 
     if (Array.isArray(value)) {
-      provenance[field] = resolveArray(value, markdown, textMap);
+      provenance[field] = resolveArray(value, markdown, textMap, sourceTexts?.[field]);
       continue;
     }
 
