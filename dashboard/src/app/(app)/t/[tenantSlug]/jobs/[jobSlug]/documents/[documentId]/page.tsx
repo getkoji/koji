@@ -447,14 +447,16 @@ export default function TraceViewPage() {
         sidebarWidth="1fr"
       >
         <div className="flex flex-col h-full min-h-0" data-testid="trace-results-panel">
+          {/* Re-extracting banner — above the table so it doesn't overlap */}
+          {isProcessing && !liveExtraction && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-[#2B6A9E]/[0.08] border border-[#2B6A9E]/20 rounded-sm mb-2 shrink-0">
+              <span className="inline-block w-3 h-3 border-2 border-[#2B6A9E]/30 border-t-[#2B6A9E] rounded-full animate-spin" />
+              <span className="font-mono text-[11px] text-[#2B6A9E]">Re-extracting — showing previous results</span>
+            </div>
+          )}
+
           {/* Extraction results — click a field to highlight in PDF */}
-          <div className={`flex-1 min-h-0 overflow-y-auto border border-border rounded-sm relative ${isProcessing && !liveExtraction ? "opacity-60" : ""}`}>
-            {isProcessing && !liveExtraction && (
-              <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 px-4 py-2 bg-[#2B6A9E]/[0.08] border-b border-[#2B6A9E]/20">
-                <span className="inline-block w-3 h-3 border-2 border-[#2B6A9E]/30 border-t-[#2B6A9E] rounded-full animate-spin" />
-                <span className="font-mono text-[11px] text-[#2B6A9E]">Re-extracting — showing previous results</span>
-              </div>
-            )}
+          <div className={`flex-1 min-h-0 border border-border rounded-sm flex flex-col ${isProcessing && !liveExtraction ? "opacity-60" : ""}`}>
             <TraceResults
               extractionJson={displayExtraction!.extractionJson}
               confidenceScoresJson={displayExtraction!.confidenceScoresJson}

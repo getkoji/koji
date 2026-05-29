@@ -37,8 +37,8 @@ export function TraceResults({
   const fields = Object.entries(extractionJson);
 
   return (
-    <div className="flex flex-col">
-      <div className="flex items-baseline justify-between px-4 py-3 border-b border-border">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-baseline justify-between px-4 py-3 border-b border-border shrink-0 bg-cream">
         <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
           Extraction results
         </span>
@@ -46,7 +46,7 @@ export function TraceResults({
           {fields.length} field{fields.length !== 1 ? "s" : ""}
         </span>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {fields.map(([name, value]) => {
           const confidence = confidenceScoresJson?.[name] ?? null;
           const hasProvenance =

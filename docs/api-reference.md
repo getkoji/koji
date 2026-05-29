@@ -119,9 +119,20 @@ Send a document to the parse service and get markdown back. This calls the parse
   "filename": "invoice.pdf",
   "pages": 3,
   "markdown": "# Invoice\n\nInvoice Number: INV-2026-0042\n...",
+  "text_map": [
+    { "text": "Invoice", "page": 1, "bbox": { "x": 72, "y": 50, "w": 120, "h": 18 }, "level": "word" },
+    { "text": "Number:", "page": 1, "bbox": { "x": 72, "y": 75, "w": 80, "h": 14 }, "level": "word" }
+  ],
   "elapsed_seconds": 4.2
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `markdown` | string | The document converted to markdown. |
+| `pages` | integer | Page count of the source document. |
+| `text_map` | array | Word-level bounding boxes mapping text to positions in the source document. Used by the extraction pipeline to resolve provenance highlights. See [Provenance](#provenance). |
+| `elapsed_seconds` | number | Parse time in seconds. |
 
 **Errors**
 
@@ -525,3 +536,99 @@ Delete a schema.
 | Status | Description |
 |--------|-------------|
 | `404` | Schema not found. |
+
+---
+
+## Provenance
+
+When extraction runs with a `text_map` (returned by the parse service), Koji resolves **provenance** for each extracted field — the exact location in the source document where the value was found. Provenance is returned in the `provenance` field of extraction responses and used by the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer) to render highlights.
+
+### Provenance span
+
+Each field maps to a provenance span (or `null` if the value couldn't be located in the source):
+
+```json
+{
+  "vendor_name": {
+    "offset": 245,
+    "length": 10,
+    "chunk": "Acme Corp.",
+    "page": 1,
+    "bbox": { "x": 150, "y": 200, "w": 120, "h": 16 },
+    "words": [
+      { "text": "Acme", "page": 1, "x": 150, "y": 200, "w": 55, "h": 16 },
+      { "text": "Corp.", "page": 1, "x": 210, "y": 200, "w": 60, "h": 16 }
+    ]
+  },
+  "date": null
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `offset` | integer | Character offset in the parsed markdown where the value was found. |
+| `length` | integer | Length of the matched text in the markdown. |
+| `chunk` | string | The matched text snippet. |
+| `page` | integer | Page number in the source document (1-indexed). Present when `text_map` was available. |
+| `bbox` | object | Bounding box (`x`, `y`, `w`, `h`) in PDF points. Present when `text_map` was available. |
+| `words` | array | Per-word bounding boxes for precise multi-word highlighting. |
+| `reasoning` | string | LLM-provided reasoning for why this value was selected (when available). |
+| `items` | array | Per-item provenance for array fields. See below. |
+
+### Array field provenance
+
+When a schema field has type `array`, provenance resolves each item independently. The top-level span points to the first item's location, and the `items` array contains a span per element:
+
+```json
+{
+  "line_items": {
+    "offset": 500,
+    "length": 12,
+    "chunk": "Widget A",
+    "page": 1,
+    "bbox": { "x": 72, "y": 300, "w": 100, "h": 14 },
+    "items": [
+      {
+        "offset": 500,
+        "length": 12,
+        "chunk": "Widget A",
+        "page": 1,
+        "bbox": { "x": 72, "y": 300, "w": 100, "h": 14 },
+        "words": [{ "text": "Widget", "page": 1, "x": 72, "y": 300, "w": 60, "h": 14 }]
+      },
+      {
+        "offset": 580,
+        "length": 12,
+        "chunk": "Widget B",
+        "page": 1,
+        "bbox": { "x": 72, "y": 320, "w": 100, "h": 14 },
+        "words": [{ "text": "Widget", "page": 1, "x": 72, "y": 320, "w": 60, "h": 14 }]
+      }
+    ]
+  }
+}
+```
+
+For array items that are objects (e.g. `{ "description": "Widget A", "amount": 100 }`), provenance resolves each scalar property within the object and picks the best match — preferring spans with word-level bounding boxes.
+
+### `text_map` format
+
+The `text_map` array returned by `POST /api/parse` contains word-level position data from the source document. Each entry maps a word to its page and bounding box:
+
+```json
+{
+  "text": "Invoice",
+  "page": 1,
+  "bbox": { "x": 72, "y": 50, "w": 120, "h": 18 },
+  "level": "word"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | string | The word or text segment. |
+| `page` | integer | Page number (1-indexed). |
+| `bbox` | object | Bounding box in PDF points. Origin is top-left of the page. |
+| `level` | string | Always `"word"` for word-level segments. |
+
+The `text_map` is threaded automatically from parse → extract when using `POST /api/process`. When using `POST /api/extract` with pre-parsed content, pass the `text_map` from the parse response to enable provenance resolution.
