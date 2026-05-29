@@ -191,13 +191,15 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 
   let extractResult: ExtractResult;
   try {
-    const markdown = await recorder.run(
+    const parseOutput = await recorder.run(
       "parse",
       async () => {
-        const md = await getOrParse(db, storage, parseProvider, tenantId, document);
-        return { value: md, summary: { markdown_chars: md.length } };
+        const result = await getOrParse(db, storage, parseProvider, tenantId, document);
+        return { value: result, summary: { markdown_chars: result.markdown.length } };
       },
     );
+    const markdown = parseOutput.markdown;
+    const textMap = parseOutput.textMap;
     // ── Form-mapping early exit ──────────────────────────────────────────
     // Check if this document matches an active form mapping. If so, use
     // coordinate extraction (+ optional LLM interpret) instead of the
@@ -284,7 +286,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
               const { provider, model: modelStr } = await resolveTenantProvider(db, tenantId, {
                 modelProviderId: pipeline.modelProviderId,
               });
-              const llmResult = await extractFields(markdown, schemaDef, provider, modelStr);
+              const llmResult = await extractFields(markdown, schemaDef, provider, modelStr, textMap);
 
               // Merge: form extraction wins for mapped fields, LLM fills the rest
               for (const field of nullFields) {
@@ -334,7 +336,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           }
           const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
           const provider = createProvider(modelStr, endpointPayload);
-          const res = await extractFields(markdown, schemaDef, provider, modelStr);
+          const res = await extractFields(markdown, schemaDef, provider, modelStr, textMap);
           return {
             value: res as unknown as ExtractResult,
             summary: {
@@ -740,7 +742,7 @@ async function getOrParse(
     mimeType: string | null;
     contentHash: string;
   },
-): Promise<string> {
+): Promise<{ markdown: string; textMap?: any[] }> {
   const fileHash = document.contentHash;
 
   // 1. Cache lookup
@@ -762,7 +764,7 @@ async function getOrParse(
       const cacheBlob = await storage.getBuffer(cached.storageKey);
       if (cacheBlob) {
         try {
-          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string };
+          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string; text_map?: any[] };
           if (payload.markdown) {
             console.log(`[ingestion.process] parse cache hit for ${fileHash.slice(0, 12)}…`);
             // Copy cached searchable PDF to this document's storage key if available
@@ -778,7 +780,7 @@ async function getOrParse(
                 }
               }
             } catch { /* best-effort */ }
-            return payload.markdown;
+            return { markdown: payload.markdown, textMap: payload.text_map };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.
@@ -832,6 +834,7 @@ async function getOrParse(
         markdown: parseResult.markdown,
         pages: parseResult.pages,
         ocr_skipped: parseResult.ocr_skipped,
+        text_map: parseResult.text_map ?? [],
       }),
     );
     try {
@@ -857,7 +860,7 @@ async function getOrParse(
     }
   }
 
-  return parseResult.markdown;
+  return { markdown: parseResult.markdown, textMap: (parseResult.text_map as any[]) ?? undefined };
 }
 
 /**
