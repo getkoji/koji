@@ -439,7 +439,13 @@ export default function TraceViewPage() {
       >
         <div className="flex flex-col h-full min-h-0" data-testid="trace-results-panel">
           {/* Extraction results — click a field to highlight in PDF */}
-          <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-sm">
+          <div className={`flex-1 min-h-0 overflow-y-auto border border-border rounded-sm relative ${isProcessing && !liveExtraction ? "opacity-60" : ""}`}>
+            {isProcessing && !liveExtraction && (
+              <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 px-4 py-2 bg-[#2B6A9E]/[0.08] border-b border-[#2B6A9E]/20">
+                <span className="inline-block w-3 h-3 border-2 border-[#2B6A9E]/30 border-t-[#2B6A9E] rounded-full animate-spin" />
+                <span className="font-mono text-[11px] text-[#2B6A9E]">Re-extracting — showing previous results</span>
+              </div>
+            )}
             <TraceResults
               extractionJson={displayExtraction!.extractionJson}
               confidenceScoresJson={displayExtraction!.confidenceScoresJson}
@@ -451,8 +457,16 @@ export default function TraceViewPage() {
 
           {/* Compact stage timeline */}
           <div className="mt-3 border border-border rounded-sm p-3 overflow-y-auto max-h-[240px] shrink-0" data-testid="trace-stage-timeline">
-            <div className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4 mb-2">
-              Pipeline stages
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4">
+                Pipeline stages
+              </span>
+              {isProcessing && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-block w-2.5 h-2.5 border-[1.5px] border-[#2B6A9E]/30 border-t-[#2B6A9E] rounded-full animate-spin" />
+                  <span className="font-mono text-[10px] text-[#2B6A9E]">Running</span>
+                </span>
+              )}
             </div>
             <StageTimeline
               stages={mergedStageRows}
