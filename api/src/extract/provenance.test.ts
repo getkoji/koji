@@ -400,15 +400,13 @@ describe("array of strings", () => {
   });
 });
 
-describe("array of objects", () => {
-  it("maps object items to the paragraph containing their values", () => {
+describe("array of objects — page-level provenance", () => {
+  it("resolves to the page containing the most property values", () => {
     const markdown = [
-      "Endorsements:",
-      "",
-      "CG 20 10 — Additional Insured, premium $500",
-      "",
-      "CG 20 37 — Products Completed Operations, premium $750",
-    ].join("\n");
+      "Page one: CG 20 10 — Additional Insured",
+      "\n\n---\n\n",
+      "Page two: CG 20 37 — Products Completed Operations",
+    ].join("");
 
     const result = resolveProvenance(
       {
@@ -422,26 +420,24 @@ describe("array of objects", () => {
     expect(result.endorsements).not.toBeNull();
     expect(result.endorsements!.items).toBeDefined();
     expect(result.endorsements!.items!.length).toBe(2);
-    expect(result.endorsements!.items![0]!.chunk).toContain("CG 20 10");
-    expect(result.endorsements!.items![1]!.chunk).toContain("CG 20 37");
+    expect(result.endorsements!.items![0]!.page).toBe(1);
+    expect(result.endorsements!.items![1]!.page).toBe(2);
   });
 
-  it("resolves bbox using the longest matched property", () => {
-    const textMap: TextMap = [
-      { text: "Additional", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 } },
-      { text: "Insured", page: 1, bbox: { x: 0.21, y: 0.1, w: 0.08, h: 0.02 } },
-    ];
+  it("returns page only, no bbox or words", () => {
     const markdown = "CG 20 10 — Additional Insured";
     const result = resolveProvenance(
       { endorsements: [{ form_number: "CG 20 10", title: "Additional Insured" }] },
       markdown,
-      textMap,
     );
     expect(result.endorsements).not.toBeNull();
-    expect(result.endorsements!.items![0]!.page).toBe(1);
+    const item = result.endorsements!.items![0]!;
+    expect(item.page).toBe(1);
+    expect(item.bbox).toBeUndefined();
+    expect(item.words).toBeUndefined();
   });
 
-  it("skips null and short properties", () => {
+  it("skips null and short properties when scoring pages", () => {
     const markdown = "Name: John Smith, Role: Director";
     const result = resolveProvenance(
       { members: [{ name: "John Smith", phone: null, id: "A" }] },
@@ -449,17 +445,17 @@ describe("array of objects", () => {
     );
     expect(result.members).not.toBeNull();
     expect(result.members!.items!.length).toBe(1);
-    expect(result.members!.items![0]!.chunk).toContain("John Smith");
+    expect(result.members!.items![0]!.page).toBe(1);
   });
 
-  it("maps to correct paragraph instead of grabbing unrelated values", () => {
+  it("maps coverages to correct pages, not unrelated content", () => {
     const markdown = [
       "Building: 001, Protection Class: 1",
-      "",
+      "\n\n---\n\n",
       "Coverage A — Dwelling, premium 196, deductible 1000",
-      "",
+      "\n\n---\n\n",
       "Coverage B — Liability, premium 350, deductible 500",
-    ].join("\n");
+    ].join("");
 
     const result = resolveProvenance(
       {
@@ -472,8 +468,20 @@ describe("array of objects", () => {
     );
     expect(result.coverages).not.toBeNull();
     expect(result.coverages!.items!.length).toBe(2);
-    expect(result.coverages!.items![0]!.chunk).toContain("Coverage A");
-    expect(result.coverages!.items![1]!.chunk).toContain("Coverage B");
+    // Coverage A on page 2 (after building info on page 1)
+    expect(result.coverages!.items![0]!.page).toBe(2);
+    // Coverage B on page 3
+    expect(result.coverages!.items![1]!.page).toBe(3);
+  });
+
+  it("returns null when no properties match any page", () => {
+    const markdown = "Unrelated document content";
+    const result = resolveProvenance(
+      { items: [{ name: "NOTFOUND_ITEM", code: "XX" }] },
+      markdown,
+    );
+    // "XX" is too short, "NOTFOUND_ITEM" doesn't appear → null
+    expect(result.items).toBeNull();
   });
 });
 

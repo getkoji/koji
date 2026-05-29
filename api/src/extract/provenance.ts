@@ -596,14 +596,14 @@ function resolveScalar(
 }
 
 /**
- * For an object array item, find the paragraph in the markdown that contains
- * the most property values. Maps the item to a region of the document rather
- * than a single property, avoiding false matches from ambiguous short values.
+ * For an object array item, find the page in the markdown that contains the
+ * most of the item's property values. Returns page-level provenance only —
+ * no bbox or word highlighting, since object items are assembled from
+ * multiple places and any single highlight would be misleading.
  */
 function resolveObjectItem(
   obj: Record<string, unknown>,
   markdown: string,
-  textMap?: TextMap,
 ): ProvenanceSpan | null {
   // Collect searchable scalar values (strings ≥3 chars, numbers ≥4 digits)
   const needles: string[] = [];
@@ -613,61 +613,34 @@ function resolveObjectItem(
   }
   if (needles.length === 0) return null;
 
-  // Split markdown into paragraphs and score each by needle hits
-  const paragraphs = markdown.split(/\n{2,}/);
-  let bestPara = "";
-  let bestParaStart = 0;
+  // Split markdown into pages and score each by needle hits
+  const pages = markdown.split(PAGE_SEPARATOR);
+  let bestPage = 1;
   let bestHits = 0;
-  let cursor = 0;
+  let bestPageOffset = 0;
+  let offset = 0;
 
-  for (const para of paragraphs) {
-    const start = markdown.indexOf(para, cursor);
-    const paraLower = para.toLowerCase();
+  for (let i = 0; i < pages.length; i++) {
+    const pageLower = pages[i]!.toLowerCase();
     let hits = 0;
     for (const needle of needles) {
-      if (paraLower.includes(needle.toLowerCase())) hits++;
+      if (pageLower.includes(needle.toLowerCase())) hits++;
     }
     if (hits > bestHits) {
       bestHits = hits;
-      bestPara = para;
-      bestParaStart = start >= 0 ? start : cursor;
+      bestPage = i + 1;
+      bestPageOffset = offset;
     }
-    cursor = (start >= 0 ? start : cursor) + para.length;
+    offset += pages[i]!.length + PAGE_SEPARATOR.length;
   }
 
-  if (bestHits === 0) {
-    // Fallback: resolve the longest string value directly
-    const longest = needles.sort((a, b) => b.length - a.length)[0];
-    return longest ? resolveScalar(longest, markdown, textMap) : null;
-  }
+  if (bestHits === 0) return null;
 
-  // Use the longest matched needle for bbox resolution
-  let anchorNeedle: string | null = null;
-  for (const needle of needles.sort((a, b) => b.length - a.length)) {
-    if (bestPara.toLowerCase().includes(needle.toLowerCase())) {
-      anchorNeedle = needle;
-      break;
-    }
-  }
-
-  const span: ProvenanceSpan = {
-    offset: bestParaStart,
-    length: bestPara.length,
-    chunk: bestPara.slice(0, 80).trim(),
+  return {
+    offset: bestPageOffset,
+    length: 0,
+    page: bestPage,
   };
-
-  if (textMap && textMap.length > 0 && anchorNeedle) {
-    const bboxHit = resolveBbox(anchorNeedle, anchorNeedle, textMap, markdown, bestParaStart);
-    if (bboxHit) {
-      span.page = bboxHit.page;
-      span.bbox = bboxHit.bbox;
-      if (bboxHit.words) span.words = bboxHit.words;
-    }
-  }
-
-  if (!span.page) span.page = estimatePageFromOffset(markdown, bestParaStart);
-
-  return span;
 }
 
 /**
@@ -690,7 +663,7 @@ function resolveArray(
       const span = resolveScalar(item, markdown, textMap);
       if (span) resolved.push(span);
     } else if (typeof item === "object" && !Array.isArray(item)) {
-      const span = resolveObjectItem(item as Record<string, unknown>, markdown, textMap);
+      const span = resolveObjectItem(item as Record<string, unknown>, markdown);
       if (span) resolved.push(span);
     }
   }
