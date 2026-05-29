@@ -1,5 +1,93 @@
 import { describe, it, expect } from "vitest";
 
+describe("embed-data highlights from provenanceJson", () => {
+  /** Mirrors the provenance → highlights transform in the embed-data endpoint. */
+  function buildHighlights(
+    provenance: Record<
+      string,
+      {
+        offset?: number;
+        length?: number;
+        page?: number;
+        bbox?: { x: number; y: number; w: number; h: number };
+        words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+        reasoning?: string;
+      } | null
+    >,
+  ) {
+    return Object.entries(provenance)
+      .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
+      .map(([field, v]) => ({
+        field,
+        page: v!.words?.[0]?.page ?? v!.page ?? 1,
+        bbox: v!.bbox,
+        words: v!.words,
+        reasoning: v!.reasoning,
+      }));
+  }
+
+  it("returns highlights array from provenance with words", () => {
+    const provenance = {
+      insured_name: {
+        page: 1,
+        bbox: { x: 100, y: 200, w: 300, h: 20 },
+        words: [{ text: "Acme", page: 1, x: 100, y: 200, w: 50, h: 20 }],
+        reasoning: "Found in header",
+      },
+    };
+
+    const highlights = buildHighlights(provenance);
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]!.field).toBe("insured_name");
+    expect(highlights[0]!.page).toBe(1);
+    expect(highlights[0]!.words).toHaveLength(1);
+    expect(highlights[0]!.reasoning).toBe("Found in header");
+  });
+
+  it("returns highlights from bbox-only provenance (no words)", () => {
+    const provenance = {
+      policy_number: {
+        page: 2,
+        bbox: { x: 50, y: 100, w: 200, h: 15 },
+      },
+    };
+
+    const highlights = buildHighlights(provenance);
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]!.field).toBe("policy_number");
+    expect(highlights[0]!.page).toBe(2);
+    expect(highlights[0]!.bbox).toEqual({ x: 50, y: 100, w: 200, h: 15 });
+  });
+
+  it("skips null provenance entries", () => {
+    const provenance = {
+      insured_name: null,
+      policy_number: {
+        page: 1,
+        bbox: { x: 10, y: 20, w: 100, h: 10 },
+      },
+    };
+
+    const highlights = buildHighlights(provenance);
+    expect(highlights).toHaveLength(1);
+    expect(highlights[0]!.field).toBe("policy_number");
+  });
+
+  it("skips entries without bbox or words", () => {
+    const provenance = {
+      some_field: { offset: 100, length: 50 },
+    };
+
+    const highlights = buildHighlights(provenance as any);
+    expect(highlights).toHaveLength(0);
+  });
+
+  it("returns empty array for empty provenance", () => {
+    const highlights = buildHighlights({});
+    expect(highlights).toHaveLength(0);
+  });
+});
+
 describe("document rerun reset", () => {
   it("clears extraction results so UI shows clean extracting state", () => {
     const before = {

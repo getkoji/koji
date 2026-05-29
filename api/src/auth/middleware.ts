@@ -89,7 +89,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     // The token is signed against the document base path (without the
     // trailing /preview or /embed-data), so one token works for all
     // sub-endpoints on the same document.
-    const docEndpointMatch = path.match(/^(\/api\/jobs\/[^/]+\/documents\/[^/]+)\/(preview|embed-data)$/);
+    const docEndpointMatch = path.match(/^(\/api\/jobs\/[^/]+\/documents\/[^/]+)\/(preview|embed-data|stream)$/);
     if (docEndpointMatch) {
       const basePath = docEndpointMatch[1]!;
       const masterKey = c.get("masterKey") as string | null;

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { and, eq, desc, asc, gte, isNull, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -140,6 +141,138 @@ jobs.get("/traces/lookup", requires("job:read"), async (c) => {
   }
 
   return c.json(row);
+});
+
+/** Terminal document statuses — no more stages will appear. */
+const TERMINAL_STATUSES = new Set(["delivered", "failed"]);
+
+/**
+ * GET /api/jobs/:slug/documents/:docId/stream — SSE stream of trace stage
+ * updates. Polls every 1.5s and emits new stages as they appear. Closes when
+ * the document reaches a terminal status or after 5 minutes (safety net).
+ *
+ * Dual-auth: works with session cookie (normal auth middleware → RLS) or
+ * with an HMAC preview token (embed viewer — bypasses auth, uses raw db).
+ */
+jobs.get("/:slug/documents/:docId/stream", async (c) => {
+  const db = c.get("db");
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  // Dual-auth: if auth middleware resolved a tenant, use RLS. Otherwise
+  // (HMAC token path), use raw db — same pattern as preview/embed-data.
+  const tenantId = c.get("tenantId") as string | undefined;
+
+  async function query<T>(fn: (tx: typeof db) => Promise<T>): Promise<T> {
+    if (tenantId) return withRLS(db, tenantId, fn as any);
+    return fn(db);
+  }
+
+  // Look up the document
+  const [doc] = await query((tx) =>
+    tx
+      .select({ id: schema.documents.id, status: schema.documents.status })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+      .limit(1),
+  ) as any[];
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  // If already terminal, return final state as JSON (not SSE)
+  if (TERMINAL_STATUSES.has(doc.status)) {
+    return c.json({ documentStatus: doc.status, terminal: true });
+  }
+
+  // Start SSE stream
+  const POLL_INTERVAL_MS = 1500;
+  const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+  return streamSSE(c, async (stream) => {
+    const sentStageIds = new Set<string>();
+    const startedAt = Date.now();
+
+    while (true) {
+      // Safety timeout
+      if (Date.now() - startedAt > TIMEOUT_MS) {
+        await stream.writeSSE({ event: "done", data: JSON.stringify({ reason: "timeout" }) });
+        break;
+      }
+
+      // Check current document status
+      const [currentDoc] = await query((tx) =>
+        tx
+          .select({ status: schema.documents.status, completedAt: schema.documents.completedAt })
+          .from(schema.documents)
+          .where(eq(schema.documents.id, docId))
+          .limit(1),
+      ) as any[];
+
+      if (!currentDoc) break;
+
+      // Get the most recent trace
+      const [trace] = await query((tx) =>
+        tx
+          .select({ id: schema.traces.id })
+          .from(schema.traces)
+          .where(eq(schema.traces.documentId, docId))
+          .orderBy(desc(schema.traces.startedAt))
+          .limit(1),
+      ) as any[];
+
+      if (trace) {
+        // Get all stages for this trace
+        const stages = await query((tx) =>
+          tx
+            .select({
+              id: schema.traceStages.id,
+              stageName: schema.traceStages.stageName,
+              status: schema.traceStages.status,
+              durationMs: schema.traceStages.durationMs,
+              summaryJson: schema.traceStages.summaryJson,
+            })
+            .from(schema.traceStages)
+            .where(eq(schema.traceStages.traceId, trace.id))
+            .orderBy(asc(schema.traceStages.stageOrder)),
+        ) as any[];
+
+        // Emit new stages only
+        for (const stage of stages) {
+          if (!sentStageIds.has(stage.id)) {
+            sentStageIds.add(stage.id);
+            await stream.writeSSE({
+              event: "stage",
+              data: JSON.stringify({
+                name: stage.stageName,
+                status: stage.status,
+                durationMs: stage.durationMs,
+                summary: stage.summaryJson,
+              }),
+            });
+          }
+        }
+      }
+
+      // If document reached a terminal status, emit final event and close
+      if (TERMINAL_STATUSES.has(currentDoc.status)) {
+        await stream.writeSSE({
+          event: "status",
+          data: JSON.stringify({
+            documentStatus: currentDoc.status,
+            completedAt: currentDoc.completedAt,
+          }),
+        });
+        await stream.writeSSE({ event: "done", data: JSON.stringify({}) });
+        break;
+      }
+
+      // Wait before next poll
+      await stream.sleep(POLL_INTERVAL_MS);
+    }
+  });
 });
 
 /**
