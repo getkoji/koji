@@ -2,13 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import type { TraceStage, TraceField } from "@/lib/types";
 import { Timeline } from "@/components/surfaces/trace/Timeline";
 import { StageDetail } from "@/components/surfaces/trace/StageDetail";
+import { TraceResults } from "@/components/surfaces/trace/TraceResults";
+import { StageTimeline } from "@/components/surfaces/trace/StageTimeline";
 import { DetailLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { jobs as jobsApi, type DocumentDetail, type TraceStageRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+
+const PdfViewer = dynamic(
+  () => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer),
+  { ssr: false },
+);
 
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
@@ -57,33 +65,94 @@ export default function TraceViewPage() {
     useCallback(() => jobsApi.document(jobSlug, documentId), [jobSlug, documentId]),
   );
 
-  // Poll every 3s while the document is still being processed. Stops as
-  // soon as we see a terminal status so idle trace views don't hammer the
-  // API. Mirrors the job detail page's polling loop.
   const isProcessing = data
     ? !["delivered", "review", "failed"].includes(data.status)
     : false;
+
+  // ── SSE subscription for in-progress documents ──
+  // Replaces setInterval polling: subscribes to real-time stage updates,
+  // refetches on status changes, and auto-closes on terminal state.
+  const [sseStages, setSseStages] = useState<TraceStageRow[]>([]);
   useEffect(() => {
-    if (!isProcessing) return;
-    const h = setInterval(() => refetch(), 3000);
-    return () => clearInterval(h);
-  }, [isProcessing, refetch]);
+    if (!isProcessing || !data) return;
+    const es = new EventSource(`/api/jobs/${jobSlug}/documents/${documentId}/stream`);
+
+    es.addEventListener("stage", (e) => {
+      try {
+        const stage = JSON.parse(e.data) as TraceStageRow;
+        setSseStages((prev) => {
+          const exists = prev.some((s) => s.id === stage.id);
+          if (exists) return prev.map((s) => (s.id === stage.id ? stage : s));
+          return [...prev, stage];
+        });
+      } catch { /* ignore malformed events */ }
+    });
+
+    es.addEventListener("status", () => {
+      refetch();
+    });
+
+    es.addEventListener("done", () => {
+      es.close();
+      refetch();
+    });
+
+    es.onerror = () => {
+      // EventSource auto-reconnects on transient errors. If the connection
+      // is fully dead the browser will stop retrying — fall back to a single
+      // refetch so the page isn't stuck.
+      es.close();
+      refetch();
+    };
+
+    return () => es.close();
+  }, [isProcessing, jobSlug, documentId, data, refetch]);
+
+  // Merge SSE stages with the initial data stages. SSE stages take precedence
+  // (they're newer) and are appended if not already present.
+  const mergedStageRows = useMemo(() => {
+    const base = data?.stages ?? [];
+    if (sseStages.length === 0) return base;
+    const map = new Map(base.map((s) => [s.id, s]));
+    for (const s of sseStages) map.set(s.id, s);
+    return Array.from(map.values()).sort((a, b) => a.stageOrder - b.stageOrder);
+  }, [data?.stages, sseStages]);
 
   const stages = useMemo<TraceStage[]>(
-    () => (data ? mapStages(data.stages, data.trace?.totalDurationMs ?? null) : []),
-    [data],
+    () => (data ? mapStages(mergedStageRows, data.trace?.totalDurationMs ?? null) : []),
+    [data, mergedStageRows],
   );
 
   // Memoize the preview URL so the PDF viewer doesn't re-mount on every poll.
-  // The URL is a presigned S3 link that changes on each API response, but the
-  // underlying document is the same — keep the first URL until the doc ID changes.
   const previewUrl = useRef<string | null>(null);
   if (data?.documentPreviewUrl && !previewUrl.current) {
     previewUrl.current = data.documentPreviewUrl;
   }
   const fields = useMemo<TraceField[]>(() => (data ? mapFields(data) : []), [data]);
 
-  // Clamp selected index to stages length so a short trace doesn't blow up.
+  // ── Side-by-side state ──
+  const [activeField, setActiveField] = useState<string | null>(null);
+
+  // Convert provenanceJson → BBoxHighlight[] (same pattern as build page)
+  const highlights = useMemo(() => {
+    const prov = data?.provenanceJson;
+    if (!prov) return [];
+    return Object.entries(prov)
+      .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
+      .map(([field, v]) => ({
+        field,
+        page: v!.words?.[0]?.page ?? v!.page ?? 1,
+        bbox: v!.bbox,
+        words: v!.words,
+        reasoning: v!.reasoning,
+      }));
+  }, [data?.provenanceJson]);
+
+  // Does this document have extraction results to show in the side-by-side?
+  const hasExtraction = data?.extractionJson != null
+    && typeof data.extractionJson === "object"
+    && Object.keys(data.extractionJson as Record<string, unknown>).length > 0;
+
   const [selectedStage, setSelectedStage] = useState(0);
   const [copiedTrace, setCopiedTrace] = useState(false);
   const [rerunning, setRerunning] = useState(false);
@@ -93,12 +162,9 @@ export default function TraceViewPage() {
     setRerunning(true);
     try {
       await jobsApi.rerunDocument(jobSlug, documentId);
-      // Polling loop (every 3s) will pick up the status flip to `extracting`,
-      // but kick a refetch immediately so the UI feels responsive.
       await refetch();
     } catch {
-      // Swallow — the refetch below will surface the real state, and the
-      // button falls back to "Rerun" so the user can try again.
+      // Swallow — the refetch below will surface the real state.
     } finally {
       setRerunning(false);
     }
@@ -312,6 +378,67 @@ export default function TraceViewPage() {
     );
   }
 
+  // ── Side-by-side layout: PDF left, results + timeline right ──
+  // Only when extraction results exist. Otherwise fall back to the
+  // original Timeline + StageDetail layout.
+  if (hasExtraction) {
+    const pdfUrl = previewUrl.current ?? data.documentPreviewUrl;
+    return (
+      <DetailLayout
+        header={header}
+        metricsStrip={metricsStrip}
+        sidebar={
+          pdfUrl && data.mimeType === "application/pdf" ? (
+            <div className="border border-border rounded-sm h-full overflow-hidden" data-testid="trace-pdf-viewer">
+              <PdfViewer
+                url={pdfUrl}
+                highlights={highlights}
+                activeField={activeField}
+              />
+            </div>
+          ) : pdfUrl ? (
+            <img
+              src={pdfUrl}
+              alt={data.filename}
+              className="w-full h-full border border-border rounded-sm object-contain"
+            />
+          ) : (
+            <div className="border border-border rounded-sm h-full flex items-center justify-center">
+              <span className="font-mono text-[11px] text-ink-4">No preview available</span>
+            </div>
+          )
+        }
+        sidebarWidth="1fr"
+      >
+        <div className="flex flex-col h-full min-h-0" data-testid="trace-results-panel">
+          {/* Extraction results — click a field to highlight in PDF */}
+          <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-sm">
+            <TraceResults
+              extractionJson={data.extractionJson as Record<string, unknown>}
+              confidenceScoresJson={data.confidenceScoresJson}
+              provenanceJson={data.provenanceJson}
+              activeField={activeField}
+              onFieldClick={setActiveField}
+            />
+          </div>
+
+          {/* Compact stage timeline */}
+          <div className="mt-3 border border-border rounded-sm p-3 overflow-y-auto max-h-[240px] shrink-0" data-testid="trace-stage-timeline">
+            <div className="font-mono text-[9px] font-medium tracking-[0.14em] uppercase text-ink-4 mb-2">
+              Pipeline stages
+            </div>
+            <StageTimeline
+              stages={mergedStageRows}
+              documentStatus={data.status}
+            />
+          </div>
+        </div>
+      </DetailLayout>
+    );
+  }
+
+  // ── Fallback: original Timeline + StageDetail layout ──
+  // Used when no extraction results exist (e.g. still processing, parse-only).
   return (
     <DetailLayout
       header={header}
@@ -352,9 +479,6 @@ function mapStages(
 ): TraceStage[] {
   if (rows.length === 0) return [];
 
-  // Anchor the percent scale to the real trace duration when we have it;
-  // otherwise sum the stage durations as a fallback so the Timeline always
-  // fills its bar.
   const total =
     totalDurationMs && totalDurationMs > 0
       ? totalDurationMs
@@ -386,8 +510,6 @@ function mapFields(doc: DocumentDetail): TraceField[] {
       : {};
   const baseConfidence = doc.confidence === null ? 0 : Number(doc.confidence);
 
-  // Pull review_item-style diagnostics off the validation blob if present —
-  // a failed doc stores { error_cause, message } there.
   const validation =
     doc.validationJson && typeof doc.validationJson === "object"
       ? (doc.validationJson as { error_cause?: string; message?: string })
@@ -409,8 +531,6 @@ function mapFields(doc: DocumentDetail): TraceField[] {
     return {
       name,
       value: formatted,
-      // Per-field chunk attribution + confidence isn't persisted yet — show
-      // a doc-level confidence uniformly until we save confidence_scores.
       chunk: "—",
       confidence: Number.isFinite(baseConfidence) ? baseConfidence : 0,
       ...(validation?.error_cause && value == null
@@ -500,9 +620,6 @@ function buildMetrics(
 function normalizeStatus(s: string): "ok" | "warn" | "fail" {
   if (s === "fail" || s === "failed") return "fail";
   if (s === "warn" || s === "review") return "warn";
-  // `in_flight` means the Deliver stage is still fanning out — treat it
-  // as a warning so the timeline row visually stands out from the
-  // already-settled stages above it.
   if (s === "in_flight") return "warn";
   return "ok";
 }
@@ -532,11 +649,6 @@ function stageMeta(r: TraceStageRow): string {
   const s = r.summaryJson;
   if (!s || typeof s !== "object") return "—";
 
-  // Deliver stage gets a fixed summary shape. The per-target breakdown
-  // (which target is `delivered` / `failed` / `in_flight` and how many
-  // attempts each took) lives in `summary.targets` for any future callers
-  // that want to render the detail — the summary line itself stays at the
-  // aggregate level so the timeline row doesn't balloon.
   if (r.stageName === "deliver") {
     const delivered = Number((s as Record<string, unknown>).targets_delivered ?? 0);
     const failed = Number((s as Record<string, unknown>).targets_failed ?? 0);
@@ -553,8 +665,6 @@ function stageMeta(r: TraceStageRow): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(s)) {
     if (v === null || v === undefined) continue;
-    // Skip the per-target breakdown — it blows up the summary line.
-    // Callers that want it can read `summaryJson.targets` directly.
     if (k === "targets") continue;
     const formatted =
       typeof v === "number" || typeof v === "boolean" || typeof v === "string"

@@ -247,6 +247,16 @@ export interface DocumentDetail {
   costUsd: string | null;
   pageCount: number | null;
   extractionJson: unknown;
+  confidenceScoresJson: Record<string, number> | null;
+  provenanceJson: Record<string, {
+    offset?: number;
+    length?: number;
+    chunk?: string;
+    page?: number;
+    bbox?: { x: number; y: number; w: number; h: number };
+    words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+    reasoning?: string;
+  } | null> | null;
   validationJson: unknown;
   startedAt: string | null;
   completedAt: string | null;
