@@ -133,9 +133,41 @@ export default function TraceViewPage() {
   // ── Side-by-side state ──
   const [activeField, setActiveField] = useState<string | null>(null);
 
+  // Stash the last known extraction results so a rerun doesn't flash to the
+  // empty/fallback layout while the document is reprocessing. The stash is
+  // cleared once fresh results arrive.
+  const lastExtraction = useRef<{
+    extractionJson: Record<string, unknown>;
+    confidenceScoresJson: Record<string, number> | null;
+    provenanceJson: DocumentDetail["provenanceJson"];
+  } | null>(null);
+
+  const liveExtraction = data?.extractionJson != null
+    && typeof data.extractionJson === "object"
+    && Object.keys(data.extractionJson as Record<string, unknown>).length > 0;
+
+  if (liveExtraction) {
+    lastExtraction.current = {
+      extractionJson: data.extractionJson as Record<string, unknown>,
+      confidenceScoresJson: data.confidenceScoresJson ?? null,
+      provenanceJson: data.provenanceJson ?? null,
+    };
+  }
+
+  // Use live data if available, otherwise fall back to stashed results
+  const displayExtraction = liveExtraction
+    ? {
+        extractionJson: data.extractionJson as Record<string, unknown>,
+        confidenceScoresJson: data.confidenceScoresJson,
+        provenanceJson: data.provenanceJson,
+      }
+    : lastExtraction.current;
+
+  const hasExtraction = displayExtraction != null;
+
   // Convert provenanceJson → BBoxHighlight[] (same pattern as build page)
   const highlights = useMemo(() => {
-    const prov = data?.provenanceJson;
+    const prov = displayExtraction?.provenanceJson;
     if (!prov) return [];
     return Object.entries(prov)
       .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
@@ -146,12 +178,7 @@ export default function TraceViewPage() {
         words: v!.words,
         reasoning: v!.reasoning,
       }));
-  }, [data?.provenanceJson]);
-
-  // Does this document have extraction results to show in the side-by-side?
-  const hasExtraction = data?.extractionJson != null
-    && typeof data.extractionJson === "object"
-    && Object.keys(data.extractionJson as Record<string, unknown>).length > 0;
+  }, [displayExtraction?.provenanceJson]);
 
   const [selectedStage, setSelectedStage] = useState(0);
   const [copiedTrace, setCopiedTrace] = useState(false);
@@ -388,7 +415,13 @@ export default function TraceViewPage() {
         header={header}
         metricsStrip={metricsStrip}
         sidebar={
-          pdfUrl && data.mimeType === "application/pdf" ? (
+          pdfUrl && data.mimeType?.startsWith("image/") ? (
+            <img
+              src={pdfUrl}
+              alt={data.filename}
+              className="w-full h-full border border-border rounded-sm object-contain"
+            />
+          ) : pdfUrl ? (
             <div className="border border-border rounded-sm h-full overflow-hidden" data-testid="trace-pdf-viewer">
               <PdfViewer
                 url={pdfUrl}
@@ -396,12 +429,6 @@ export default function TraceViewPage() {
                 activeField={activeField}
               />
             </div>
-          ) : pdfUrl ? (
-            <img
-              src={pdfUrl}
-              alt={data.filename}
-              className="w-full h-full border border-border rounded-sm object-contain"
-            />
           ) : (
             <div className="border border-border rounded-sm h-full flex items-center justify-center">
               <span className="font-mono text-[11px] text-ink-4">No preview available</span>
@@ -414,9 +441,9 @@ export default function TraceViewPage() {
           {/* Extraction results — click a field to highlight in PDF */}
           <div className="flex-1 min-h-0 overflow-y-auto border border-border rounded-sm">
             <TraceResults
-              extractionJson={data.extractionJson as Record<string, unknown>}
-              confidenceScoresJson={data.confidenceScoresJson}
-              provenanceJson={data.provenanceJson}
+              extractionJson={displayExtraction!.extractionJson}
+              confidenceScoresJson={displayExtraction!.confidenceScoresJson}
+              provenanceJson={displayExtraction!.provenanceJson}
               activeField={activeField}
               onFieldClick={setActiveField}
             />
