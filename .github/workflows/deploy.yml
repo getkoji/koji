@@ -13,10 +13,14 @@ jobs:
       !contains(github.event.head_commit.message, '[skip deploy]')
     steps:
       - name: Trigger platform update
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          curl -X POST \
+          PAYLOAD=$(jq -nc --arg sha "${{ github.sha }}" --arg msg "$COMMIT_MSG" \
+            '{"event_type": "koji-updated", "client_payload": {"sha": $sha, "message": $msg}}')
+          curl -fsSL -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.PLATFORM_DEPLOY_TOKEN }}" \
             https://api.github.com/repos/getkoji/platform/dispatches \
-            -d '{"event_type": "koji-updated", "client_payload": {"sha": "${{ github.sha }}", "message": "${{ github.event.head_commit.message }}"}}'
+            -d "$PAYLOAD"
           echo "Triggered platform deploy for ${{ github.sha }}"
