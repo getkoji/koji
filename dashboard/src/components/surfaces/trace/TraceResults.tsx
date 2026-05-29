@@ -124,7 +124,7 @@ export function TraceResults({
                           type="button"
                           onClick={() => {
                             toggleExpand(itemKey);
-                            onFieldClick(itemActive ? null : itemKey);
+                            onFieldClick(itemKey);
                           }}
                           className={`w-full text-left px-4 pl-8 py-1.5 border-b border-dotted border-border text-[11px] cursor-pointer transition-colors hover:bg-cream-2 ${
                             itemActive
@@ -154,7 +154,7 @@ export function TraceResults({
                             <button
                               key={`${itemKey}.${propName}`}
                               type="button"
-                              onClick={() => onFieldClick(itemActive ? null : itemKey)}
+                              onClick={() => onFieldClick(itemKey)}
                               className={`w-full text-left pl-14 pr-4 py-1 border-b border-dotted border-border/50 text-[10.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
                                 itemActive
                                   ? "bg-vermillion-3/5"
