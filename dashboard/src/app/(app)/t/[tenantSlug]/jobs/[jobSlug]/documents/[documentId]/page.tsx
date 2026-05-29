@@ -388,7 +388,13 @@ export default function TraceViewPage() {
         header={header}
         metricsStrip={metricsStrip}
         sidebar={
-          pdfUrl && data.mimeType === "application/pdf" ? (
+          pdfUrl && data.mimeType?.startsWith("image/") ? (
+            <img
+              src={pdfUrl}
+              alt={data.filename}
+              className="w-full h-full border border-border rounded-sm object-contain"
+            />
+          ) : pdfUrl ? (
             <div className="border border-border rounded-sm h-full overflow-hidden" data-testid="trace-pdf-viewer">
               <PdfViewer
                 url={pdfUrl}
@@ -396,12 +402,6 @@ export default function TraceViewPage() {
                 activeField={activeField}
               />
             </div>
-          ) : pdfUrl ? (
-            <img
-              src={pdfUrl}
-              alt={data.filename}
-              className="w-full h-full border border-border rounded-sm object-contain"
-            />
           ) : (
             <div className="border border-border rounded-sm h-full flex items-center justify-center">
               <span className="font-mono text-[11px] text-ink-4">No preview available</span>
