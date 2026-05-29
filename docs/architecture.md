@@ -72,11 +72,28 @@ All mutation endpoints support both synchronous and asynchronous modes. Pass `?a
 
 **Port:** 9410 (internal) | **Technology:** Docling + FastAPI
 
-The Parse Service converts any document into clean markdown. It handles PDFs, Word documents, images, and scanned documents. Under the hood it uses [Docling](https://github.com/DS4SD/docling), which provides OCR, table detection, and layout analysis.
+The Parse Service converts any document into clean markdown. It handles PDFs, Word documents, images, and scanned documents.
+
+#### Smart parse routing
+
+The API automatically routes documents to the fastest parser that can handle them:
+
+| Document type | Parser | Speed | How it's detected |
+|--------------|--------|-------|-------------------|
+| Digital PDFs (has text layer) | **LiteParse** (Rust) | Fast (~100ms) | Average ≥ 50 chars/page over first 3 pages |
+| Scanned PDFs (no text layer) | **Docling** (OCR + layout) | Slow (~5-10s) | Average < 50 chars/page |
+| Images (JPEG, PNG, TIFF, etc.) | **Docling** | Slow | Detected by MIME type or extension |
+| Other formats (DOCX, HTML, etc.) | **LiteParse** | Fast | Everything that isn't a PDF or image |
+
+This is transparent — callers don't choose a parser. If LiteParse fails (unsupported format, corrupt file), the request falls back to Docling automatically with zero caller-side changes.
+
+#### Docling (heavy provider)
+
+[Docling](https://github.com/DS4SD/docling) provides OCR, table detection, and layout analysis:
 
 - Accepts file uploads at `/parse`
 - Runs Docling conversion in a thread pool to avoid blocking the event loop
-- Returns markdown text plus page count
+- Returns markdown text, page count, and a `text_map` of word-level bounding boxes
 - Caches Hugging Face and Torch model weights in Docker volumes for fast restarts
 
 This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.

@@ -149,11 +149,13 @@ Every `summary_json` is a flat object. Keys are stable within a major version; c
 
 ```json
 {
-  "engine": "docling",
+  "engine": "liteparse",
   "pages": 3,
   "markdown_bytes": 12480
 }
 ```
+
+The `engine` field reflects which parser handled the document: `"liteparse"` for digital PDFs and standard formats (fast, Rust-based), or `"docling"` for scanned PDFs and images (OCR-capable). The [smart parse router](architecture.md#smart-parse-routing) selects the engine automatically.
 
 ### `map`
 
