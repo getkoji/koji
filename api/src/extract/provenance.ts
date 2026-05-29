@@ -596,22 +596,108 @@ function resolveScalar(
 }
 
 /**
- * Score a candidate span for ranking within an object item. Higher is better.
- * Prefers: long string matches > short strings > numbers.
- * Word-level bbox adds a bonus.
+ * For an object array item, find the paragraph/line in the markdown that
+ * contains the most property values. This maps the item to a *region* of
+ * the document rather than a single property, avoiding false matches from
+ * ambiguous short values like numbers or codes.
+ *
+ * Strategy: split markdown into paragraphs (double newline), score each
+ * paragraph by how many of the item's scalar values appear in it, and
+ * pick the highest-scoring paragraph. Then resolve bbox for that region.
  */
-function spanScore(span: ProvenanceSpan, valueLength: number): number {
-  let score = valueLength; // longer matched text = more specific
-  if (span.words) score += 100; // word-level bbox is strong signal
-  else if (span.bbox) score += 50;
-  return score;
+function resolveObjectItem(
+  obj: Record<string, unknown>,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  // Collect searchable scalar values (strings ≥3 chars, numbers ≥4 digits)
+  const needles: string[] = [];
+  for (const val of Object.values(obj)) {
+    if (typeof val === "string" && val.length >= 3) {
+      needles.push(val);
+    } else if (typeof val === "number" && Math.abs(val) >= 1000) {
+      needles.push(String(val));
+    }
+  }
+
+  if (needles.length === 0) return null;
+
+  // Split markdown into paragraphs and score each by needle hits
+  const paragraphs = markdown.split(/\n{2,}/);
+  let bestPara = "";
+  let bestOffset = 0;
+  let bestHits = 0;
+
+  let offset = 0;
+  for (const para of paragraphs) {
+    const paraLower = para.toLowerCase();
+    let hits = 0;
+    for (const needle of needles) {
+      if (paraLower.includes(needle.toLowerCase())) hits++;
+    }
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestPara = para;
+      bestOffset = offset;
+    }
+    offset += para.length;
+    // Account for the split separator (2+ newlines) — approximate
+    const nextInMarkdown = markdown.indexOf(para, offset - para.length);
+    if (nextInMarkdown >= 0) {
+      bestOffset = hits > bestHits ? bestOffset : bestOffset; // already set above
+      offset = nextInMarkdown + para.length;
+    }
+  }
+
+  if (bestHits === 0) {
+    // Fallback: try to find the longest string value directly
+    const longest = needles.sort((a, b) => b.length - a.length)[0];
+    if (longest) return resolveScalar(longest, markdown, textMap);
+    return null;
+  }
+
+  // Find the exact offset of the best paragraph in the original markdown
+  const paraOffset = markdown.indexOf(bestPara);
+  const finalOffset = paraOffset >= 0 ? paraOffset : bestOffset;
+
+  // Use the longest matched needle within that paragraph for bbox resolution
+  let anchorNeedle: string | null = null;
+  for (const needle of needles.sort((a, b) => b.length - a.length)) {
+    if (bestPara.toLowerCase().includes(needle.toLowerCase())) {
+      anchorNeedle = needle;
+      break;
+    }
+  }
+
+  const chunk = bestPara.slice(0, 80).trim();
+  const span: ProvenanceSpan = {
+    offset: finalOffset,
+    length: bestPara.length,
+    chunk,
+  };
+
+  // Resolve bbox using the anchor needle for precise highlighting
+  if (textMap && textMap.length > 0 && anchorNeedle) {
+    const bboxHit = resolveBbox(anchorNeedle, anchorNeedle, textMap, markdown, finalOffset);
+    if (bboxHit) {
+      span.page = bboxHit.page;
+      span.bbox = bboxHit.bbox;
+      if (bboxHit.words) span.words = bboxHit.words;
+    }
+  }
+
+  // If no bbox but we have an offset, estimate the page
+  if (!span.page && markdown) {
+    span.page = estimatePageFromOffset(markdown, finalOffset);
+  }
+
+  return span;
 }
 
 /**
  * Resolve provenance for an array value. Each item is resolved independently.
- * String/number items use the scalar resolver directly. Object items resolve
- * each scalar property, preferring longer string matches over short numbers
- * to avoid grabbing unrelated values like "1" or "001".
+ * String/number items use the scalar resolver. Object items find the
+ * paragraph in the markdown that contains the most of their property values.
  */
 function resolveArray(
   items: unknown[],
@@ -629,34 +715,8 @@ function resolveArray(
       const span = resolveScalar(item, markdown, textMap);
       if (span) resolved.push(span);
     } else if (typeof item === "object" && !Array.isArray(item)) {
-      let best: ProvenanceSpan | null = null;
-      let bestScore = -1;
-
-      for (const [, val] of Object.entries(item as Record<string, unknown>)) {
-        if (val == null) continue;
-
-        // Skip non-scalar values (nested objects/arrays)
-        if (typeof val !== "string" && typeof val !== "number") continue;
-
-        // Skip short numbers — they match too many places in a document.
-        // e.g. premium=196 matches "196" in addresses, page numbers, etc.
-        if (typeof val === "number" && Math.abs(val) < 1000) continue;
-
-        // Skip very short strings (1-2 chars) — too ambiguous
-        if (typeof val === "string" && val.length <= 2) continue;
-
-        const span = resolveScalar(val, markdown, textMap);
-        if (!span) continue;
-
-        const valLen = typeof val === "string" ? val.length : String(val).length;
-        const score = spanScore(span, valLen);
-        if (score > bestScore) {
-          best = span;
-          bestScore = score;
-        }
-      }
-
-      if (best) resolved.push(best);
+      const span = resolveObjectItem(item as Record<string, unknown>, markdown, textMap);
+      if (span) resolved.push(span);
     }
   }
 

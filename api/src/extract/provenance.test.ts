@@ -401,13 +401,20 @@ describe("array of strings", () => {
 });
 
 describe("array of objects", () => {
-  it("resolves provenance for object items using their scalar properties", () => {
-    const markdown = "Endorsements:\nCG 20 10 — Additional Insured\nCG 20 37 — Products";
+  it("resolves provenance for object items by finding their paragraph", () => {
+    const markdown = [
+      "Endorsements:",
+      "",
+      "CG 20 10 — Additional Insured, premium $500",
+      "",
+      "CG 20 37 — Products Completed Operations, premium $750",
+    ].join("\n");
+
     const result = resolveProvenance(
       {
         endorsements: [
           { form_number: "CG 20 10", title: "Additional Insured" },
-          { form_number: "CG 20 37", title: "Products" },
+          { form_number: "CG 20 37", title: "Products Completed Operations" },
         ],
       },
       markdown,
@@ -415,35 +422,62 @@ describe("array of objects", () => {
     expect(result.endorsements).not.toBeNull();
     expect(result.endorsements!.items).toBeDefined();
     expect(result.endorsements!.items!.length).toBe(2);
-    expect(result.endorsements!.items![0]!.chunk).toBeDefined();
-    expect(result.endorsements!.items![1]!.chunk).toBeDefined();
+    // Each item mapped to its paragraph
+    expect(result.endorsements!.items![0]!.chunk).toContain("CG 20 10");
+    expect(result.endorsements!.items![1]!.chunk).toContain("CG 20 37");
   });
 
-  it("prefers properties with bbox when textMap is provided", () => {
+  it("resolves bbox using the longest matched property value", () => {
     const textMap: TextMap = [
-      { text: "CG", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.03, h: 0.02 } },
-      { text: "20", page: 1, bbox: { x: 0.14, y: 0.1, w: 0.03, h: 0.02 } },
-      { text: "10", page: 1, bbox: { x: 0.18, y: 0.1, w: 0.03, h: 0.02 } },
+      { text: "Additional", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 } },
+      { text: "Insured", page: 1, bbox: { x: 0.21, y: 0.1, w: 0.08, h: 0.02 } },
     ];
-    const markdown = "Form: CG 20 10 — Additional Insured";
+    const markdown = "CG 20 10 — Additional Insured";
     const result = resolveProvenance(
       { endorsements: [{ form_number: "CG 20 10", title: "Additional Insured" }] },
       markdown,
       textMap,
     );
     expect(result.endorsements).not.toBeNull();
-    expect(result.endorsements!.items![0]!.words).toBeDefined();
+    // Should resolve bbox from "Additional Insured" (longest matching needle)
+    expect(result.endorsements!.items![0]!.page).toBe(1);
   });
 
-  it("skips null properties in object items", () => {
-    const markdown = "Name: John Smith\nRole: Director";
+  it("skips null and short properties in object items", () => {
+    const markdown = "Name: John Smith, Role: Director";
     const result = resolveProvenance(
-      { members: [{ name: "John Smith", phone: null }] },
+      { members: [{ name: "John Smith", phone: null, id: "A" }] },
       markdown,
     );
     expect(result.members).not.toBeNull();
     expect(result.members!.items!.length).toBe(1);
-    expect(result.members!.items![0]!.chunk).toBe("John Smith");
+    // Maps to the paragraph containing "John Smith"
+    expect(result.members!.items![0]!.chunk).toContain("John Smith");
+  });
+
+  it("ignores short numbers that match everywhere", () => {
+    const markdown = [
+      "Building: 001, Protection Class: 1",
+      "",
+      "Coverage A — Dwelling, premium 196, deductible 1000",
+      "",
+      "Coverage B — Liability, premium 350, deductible 500",
+    ].join("\n");
+
+    const result = resolveProvenance(
+      {
+        coverages: [
+          { name: "Coverage A — Dwelling", premium: 196, deductible: 1000 },
+          { name: "Coverage B — Liability", premium: 350, deductible: 500 },
+        ],
+      },
+      markdown,
+    );
+    expect(result.coverages).not.toBeNull();
+    expect(result.coverages!.items!.length).toBe(2);
+    // Should map to Coverage paragraphs, not the Building/Protection Class line
+    expect(result.coverages!.items![0]!.chunk).toContain("Coverage A");
+    expect(result.coverages!.items![1]!.chunk).toContain("Coverage B");
   });
 });
 
