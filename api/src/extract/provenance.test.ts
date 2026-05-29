@@ -348,6 +348,165 @@ describe("estimatePageFromOffset", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Array provenance — per-item resolution
+// ---------------------------------------------------------------------------
+
+describe("array of strings", () => {
+  it("resolves provenance for each string item in an array", () => {
+    const markdown = "Board Members:\n- John Smith\n- Jane Doe\n- Bob Johnson";
+    const result = resolveProvenance(
+      { board_members: ["John Smith", "Jane Doe", "Bob Johnson"] },
+      markdown,
+    );
+    expect(result.board_members).not.toBeNull();
+    expect(result.board_members!.items).toBeDefined();
+    expect(result.board_members!.items!.length).toBe(3);
+    expect(result.board_members!.items![0]!.chunk).toBe("John Smith");
+    expect(result.board_members!.items![1]!.chunk).toBe("Jane Doe");
+    expect(result.board_members!.items![2]!.chunk).toBe("Bob Johnson");
+  });
+
+  it("parent span uses first item's provenance", () => {
+    const markdown = "Names: Alice, Bob, Charlie";
+    const result = resolveProvenance({ names: ["Alice", "Bob"] }, markdown);
+    expect(result.names).not.toBeNull();
+    expect(result.names!.chunk).toBe("Alice");
+    expect(result.names!.offset).toBe(markdown.indexOf("Alice"));
+  });
+
+  it("skips items that cannot be found", () => {
+    const markdown = "Present: Alice and Bob";
+    const result = resolveProvenance(
+      { attendees: ["Alice", "NOT_IN_DOCUMENT", "Bob"] },
+      markdown,
+    );
+    expect(result.attendees).not.toBeNull();
+    expect(result.attendees!.items!.length).toBe(2);
+    expect(result.attendees!.items![0]!.chunk).toBe("Alice");
+    expect(result.attendees!.items![1]!.chunk).toBe("Bob");
+  });
+
+  it("returns null for empty arrays", () => {
+    const result = resolveProvenance({ tags: [] }, "Some content");
+    expect(result.tags).toBeNull();
+  });
+
+  it("returns null when no items can be found", () => {
+    const result = resolveProvenance(
+      { names: ["AAAA_NOTFOUND", "BBBB_NOTFOUND"] },
+      "Unrelated document content",
+    );
+    expect(result.names).toBeNull();
+  });
+});
+
+describe("array of objects", () => {
+  it("resolves provenance for object items using their scalar properties", () => {
+    const markdown = "Endorsements:\nCG 20 10 — Additional Insured\nCG 20 37 — Products";
+    const result = resolveProvenance(
+      {
+        endorsements: [
+          { form_number: "CG 20 10", title: "Additional Insured" },
+          { form_number: "CG 20 37", title: "Products" },
+        ],
+      },
+      markdown,
+    );
+    expect(result.endorsements).not.toBeNull();
+    expect(result.endorsements!.items).toBeDefined();
+    expect(result.endorsements!.items!.length).toBe(2);
+    expect(result.endorsements!.items![0]!.chunk).toBeDefined();
+    expect(result.endorsements!.items![1]!.chunk).toBeDefined();
+  });
+
+  it("prefers properties with bbox when textMap is provided", () => {
+    const textMap: TextMap = [
+      { text: "CG", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.03, h: 0.02 } },
+      { text: "20", page: 1, bbox: { x: 0.14, y: 0.1, w: 0.03, h: 0.02 } },
+      { text: "10", page: 1, bbox: { x: 0.18, y: 0.1, w: 0.03, h: 0.02 } },
+    ];
+    const markdown = "Form: CG 20 10 — Additional Insured";
+    const result = resolveProvenance(
+      { endorsements: [{ form_number: "CG 20 10", title: "Additional Insured" }] },
+      markdown,
+      textMap,
+    );
+    expect(result.endorsements).not.toBeNull();
+    expect(result.endorsements!.items![0]!.words).toBeDefined();
+  });
+
+  it("skips null properties in object items", () => {
+    const markdown = "Name: John Smith\nRole: Director";
+    const result = resolveProvenance(
+      { members: [{ name: "John Smith", phone: null }] },
+      markdown,
+    );
+    expect(result.members).not.toBeNull();
+    expect(result.members!.items!.length).toBe(1);
+    expect(result.members!.items![0]!.chunk).toBe("John Smith");
+  });
+});
+
+describe("array of numbers", () => {
+  it("resolves provenance for numeric array items", () => {
+    const markdown = "Unit numbers: 100, 200, 305";
+    const result = resolveProvenance({ units: [100, 200, 305] }, markdown);
+    expect(result.units).not.toBeNull();
+    expect(result.units!.items!.length).toBe(3);
+    expect(result.units!.items![0]!.chunk).toBe("100");
+    expect(result.units!.items![1]!.chunk).toBe("200");
+    expect(result.units!.items![2]!.chunk).toBe("305");
+  });
+});
+
+describe("mixed scalar and array fields", () => {
+  it("resolves both scalar and array fields in the same call", () => {
+    const markdown = "Policy: POL-001\nInsured: Acme\nAdditional:\n- Widget Inc\n- Gadget LLC";
+    const result = resolveProvenance(
+      {
+        policy_number: "POL-001",
+        insured: "Acme",
+        additional_insureds: ["Widget Inc", "Gadget LLC"],
+      },
+      markdown,
+    );
+    expect(result.policy_number).not.toBeNull();
+    expect(result.policy_number!.chunk).toBe("POL-001");
+    expect(result.policy_number!.items).toBeUndefined();
+    expect(result.additional_insureds).not.toBeNull();
+    expect(result.additional_insureds!.items!.length).toBe(2);
+    expect(result.additional_insureds!.items![0]!.chunk).toBe("Widget Inc");
+    expect(result.additional_insureds!.items![1]!.chunk).toBe("Gadget LLC");
+  });
+});
+
+describe("array with textMap bounding boxes", () => {
+  const textMap: TextMap = [
+    { text: "Widget", page: 1, bbox: { x: 0.1, y: 0.3, w: 0.08, h: 0.02 } },
+    { text: "Inc", page: 1, bbox: { x: 0.19, y: 0.3, w: 0.04, h: 0.02 } },
+    { text: "Gadget", page: 1, bbox: { x: 0.1, y: 0.35, w: 0.08, h: 0.02 } },
+    { text: "LLC", page: 1, bbox: { x: 0.19, y: 0.35, w: 0.04, h: 0.02 } },
+  ];
+
+  it("resolves per-item bounding boxes for array items", () => {
+    const markdown = "Additional Insureds:\n- Widget Inc\n- Gadget LLC";
+    const result = resolveProvenance(
+      { additional_insureds: ["Widget Inc", "Gadget LLC"] },
+      markdown,
+      textMap,
+    );
+    expect(result.additional_insureds).not.toBeNull();
+    const items = result.additional_insureds!.items!;
+    expect(items.length).toBe(2);
+    expect(items[0]!.words).toBeDefined();
+    expect(items[0]!.words!.length).toBe(2);
+    expect(items[0]!.page).toBe(1);
+    expect(items[1]!.words).toBeDefined();
+    expect(items[1]!.words!.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Duplicate text across pages — bbox should match the correct page
 // ---------------------------------------------------------------------------
 
