@@ -185,7 +185,8 @@ export default function BuildPage() {
       if (!v) continue;
       if (v.items && Array.isArray(v.items)) {
         for (const item of v.items) {
-          if (item && (item.words?.length || (item.bbox != null && item.page != null))) {
+          if (!item) continue;
+          if (item.words?.length || (item.bbox != null && item.page != null) || item.page != null) {
             out.push({ field, page: item.words?.[0]?.page ?? item.page!, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
           }
         }

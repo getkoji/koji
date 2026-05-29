@@ -176,7 +176,10 @@ export default function TraceViewPage() {
       if (!v) continue;
       if (v.items && Array.isArray(v.items)) {
         for (const item of v.items) {
-          if (item && (item.words?.length || (item.bbox && item.page))) {
+          if (!item) continue;
+          // Array object items may only have page-level provenance (no bbox).
+          // Include them so clicking the field navigates to the right page.
+          if (item.words?.length || (item.bbox && item.page) || item.page) {
             out.push({ field, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
           }
         }
