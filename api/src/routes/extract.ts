@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { eq, and, desc } from "drizzle-orm";
-import http from "node:http";
-import https from "node:https";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -29,15 +27,6 @@ export const extract = new Hono<Env>();
 function resolveServiceUrl(baseUrl: string, path: string): string {
   if (baseUrl.includes("modal.run")) return baseUrl;
   return `${baseUrl}${path}`;
-}
-
-/** Auth headers for Modal proxy-auth endpoints. */
-function modalAuthHeaders(url: string): Record<string, string> {
-  if (!url.includes("modal.run")) return {};
-  return {
-    "Modal-Key": process.env.MODAL_PROXY_KEY ?? process.env.MODAL_TOKEN_ID ?? "",
-    "Modal-Secret": process.env.MODAL_PROXY_SECRET ?? process.env.MODAL_TOKEN_SECRET ?? "",
-  };
 }
 
 // Backwards compat alias
@@ -79,160 +68,6 @@ async function checkPreflightLimits(
   return checkPreflight(limits, pages, fileSizeMb);
 }
 
-
-/** POST multipart/form-data via node:http and read the SSE response as an async iterator. */
-function postMultipartSSE(
-  url: string,
-  filename: string,
-  mimeType: string,
-  fileBuffer: Buffer,
-): AsyncIterable<{ event: string; data: string }> {
-  const boundary = `----koji${Date.now()}`;
-  const header = Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-  );
-  const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-
-  const parsed = new URL(url);
-  const body = Buffer.concat([header, fileBuffer, footer]);
-
-  return {
-    [Symbol.asyncIterator]() {
-      let resolveNext: ((val: IteratorResult<{ event: string; data: string }>) => void) | null = null;
-      const queue: Array<{ event: string; data: string }> = [];
-      let done = false;
-
-      const transport = parsed.protocol === "https:" ? https : http;
-      const authHeaders: Record<string, string> = {};
-      if (process.env.MODAL_TOKEN_ID && parsed.hostname.includes("modal.run")) {
-        authHeaders["Modal-Key"] = process.env.MODAL_TOKEN_ID;
-        authHeaders["Modal-Secret"] = process.env.MODAL_TOKEN_SECRET ?? "";
-      }
-      const req = transport.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-          path: parsed.pathname,
-          method: "POST",
-          headers: {
-            "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            "Content-Length": body.length,
-            ...authHeaders,
-          },
-        },
-        (res) => {
-          let buffer = "";
-          let currentEvent = "message";
-
-          res.on("data", (chunk: Buffer) => {
-            buffer += chunk.toString();
-            // Parse SSE lines
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                currentEvent = line.slice(7).trim();
-              } else if (line.startsWith("data: ")) {
-                const data = line.slice(6);
-                const item = { event: currentEvent, data };
-                if (resolveNext) {
-                  resolveNext({ value: item, done: false });
-                  resolveNext = null;
-                } else {
-                  queue.push(item);
-                }
-                currentEvent = "message";
-              }
-            }
-          });
-
-          res.on("end", () => {
-            done = true;
-            if (resolveNext) {
-              resolveNext({ value: undefined as any, done: true });
-              resolveNext = null;
-            }
-          });
-        },
-      );
-
-      req.on("error", () => {
-        done = true;
-        if (resolveNext) {
-          resolveNext({ value: undefined as any, done: true });
-          resolveNext = null;
-        }
-      });
-
-      req.end(body);
-
-      return {
-        next(): Promise<IteratorResult<{ event: string; data: string }>> {
-          if (queue.length > 0) {
-            return Promise.resolve({ value: queue.shift()!, done: false });
-          }
-          if (done) {
-            return Promise.resolve({ value: undefined as any, done: true });
-          }
-          return new Promise((resolve) => {
-            resolveNext = resolve;
-          });
-        },
-      };
-    },
-  };
-}
-
-/** POST multipart/form-data via node:http, return the full response. */
-function postMultipart(
-  url: string,
-  filename: string,
-  mimeType: string,
-  fileBuffer: Buffer,
-): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const boundary = `----koji${Date.now()}`;
-    const header = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-    );
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([header, fileBuffer, footer]);
-
-    const parsed = new URL(url);
-    const transport = parsed.protocol === "https:" ? https : http;
-    const authHeaders: Record<string, string> = {};
-    // Modal proxy auth — required for hosted parse endpoints
-    if (parsed.hostname.includes("modal.run")) {
-      authHeaders["Modal-Key"] = process.env.MODAL_PROXY_KEY ?? process.env.MODAL_TOKEN_ID ?? "";
-      authHeaders["Modal-Secret"] = process.env.MODAL_PROXY_SECRET ?? process.env.MODAL_TOKEN_SECRET ?? "";
-    }
-    const req = transport.request(
-      {
-        hostname: parsed.hostname,
-        port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-        path: parsed.pathname,
-        method: "POST",
-        headers: {
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          "Content-Length": body.length,
-          ...authHeaders,
-        },
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () =>
-          resolve({
-            status: res.statusCode ?? 500,
-            body: Buffer.concat(chunks).toString(),
-          }),
-        );
-      },
-    );
-    req.on("error", reject);
-    req.end(body);
-  });
-}
 
 // ── Simple proxy endpoints ──────────────────────────────────────────────
 
@@ -429,34 +264,41 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 
   return streamSSE(c, async (stream) => {
     try {
-      // Step 1: Parse with streaming progress
+      // Step 1: Parse via ParseProvider (gets LiteParse routing, text_map, etc.)
       let parseResult: Record<string, unknown> | null = null;
 
-      for await (const event of postMultipartSSE(
-        `${resolveParseUrl(c.get("parseUrl"), "/parse/stream")}`,
-        entry.filename,
-        entry.mimeType,
-        fileBuffer,
-      )) {
-        if (event.event === "started" || event.event === "progress") {
-          await stream.writeSSE({
-            event: event.event === "started" ? "parse_started" : "parse_progress",
-            data: event.data,
-          });
-        } else if (event.event === "complete") {
-          parseResult = JSON.parse(event.data);
-          await stream.writeSSE({
-            event: "parse_complete",
-            data: JSON.stringify({
-              pages: parseResult!.pages,
-              elapsed_seconds: parseResult!.elapsed_seconds,
-              ocr_skipped: parseResult!.ocr_skipped,
-            }),
-          });
-        } else if (event.event === "error") {
-          await stream.writeSSE({ event: "error", data: event.data });
-          return;
-        }
+      await stream.writeSSE({
+        event: "parse_started",
+        data: JSON.stringify({ message: "Parsing document..." }),
+      });
+
+      try {
+        const parseProvider = c.get("parseProvider");
+        const parsed = await parseProvider.parse({
+          filename: entry.filename,
+          mimeType: entry.mimeType,
+          fileBuffer,
+        });
+        parseResult = {
+          markdown: parsed.markdown,
+          pages: parsed.pages,
+          ocr_skipped: parsed.ocr_skipped,
+          text_map: parsed.text_map ?? [],
+          searchable_pdf_base64: parsed.searchable_pdf_base64,
+        };
+        await stream.writeSSE({
+          event: "parse_complete",
+          data: JSON.stringify({
+            pages: parsed.pages,
+            ocr_skipped: parsed.ocr_skipped,
+          }),
+        });
+      } catch (err: unknown) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
+        });
+        return;
       }
 
       if (!parseResult?.markdown) {
@@ -567,20 +409,21 @@ async function handleExtractRunJSON(
     // Cache hit
     parseResult = cachedParse;
   } else {
-    // Cache miss — parse and store
+    // Cache miss — parse via ParseProvider (gets LiteParse routing, text_map, etc.)
     try {
-      const resp = await postMultipart(
-        `${resolveParseUrl(c.get("parseUrl"))}`,
-        entry.filename,
-        entry.mimeType,
+      const parseProvider = c.get("parseProvider");
+      const parsed = await parseProvider.parse({
+        filename: entry.filename,
+        mimeType: entry.mimeType,
         fileBuffer,
-      );
-      if (resp.status !== 200) {
-        let err: unknown = {};
-        try { err = JSON.parse(resp.body); } catch {}
-        return c.json({ error: "Parse failed", detail: err }, 502);
-      }
-      parseResult = JSON.parse(resp.body);
+      });
+      parseResult = {
+        markdown: parsed.markdown,
+        pages: parsed.pages,
+        ocr_skipped: parsed.ocr_skipped,
+        text_map: parsed.text_map ?? [],
+        searchable_pdf_base64: parsed.searchable_pdf_base64,
+      };
     } catch (err: unknown) {
       return c.json({
         error: "Parse service unreachable",
