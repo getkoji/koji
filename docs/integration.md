@@ -365,6 +365,135 @@ All CLI commands (`push`, `pull`, `bench`) respect `KOJI_API_URL` and `KOJI_API_
 
 ---
 
+## Embedding the PDF Viewer
+
+Koji includes a standalone PDF viewer that you can embed in your application via an iframe. It renders the original document with provenance highlights showing where each extracted field was found.
+
+### Quick start
+
+```html
+<iframe
+  src="https://console.getkoji.dev/embed/viewer?job=JOB_SLUG&doc=DOC_ID&token=PREVIEW_TOKEN"
+  style="width: 100%; height: 600px; border: none;"
+></iframe>
+```
+
+### Getting the embed parameters
+
+When you fetch a document's detail via the API, the response includes a signed preview token:
+
+```bash
+curl https://api.getkoji.dev/api/jobs/JOB_SLUG/documents/DOC_ID \
+  -H "Authorization: Bearer koji_yourkey" \
+  -H "x-koji-tenant: your-tenant-slug"
+```
+
+The response includes `documentPreviewUrl` and `documentToken`. Use these to construct the embed URL:
+
+```typescript
+const detail = await fetch(`${KOJI_URL}/api/jobs/${jobSlug}/documents/${docId}`, {
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "x-koji-tenant": tenantSlug,
+  },
+}).then((r) => r.json());
+
+const embedUrl = new URL("/embed/viewer", KOJI_DASHBOARD_URL);
+embedUrl.searchParams.set("job", jobSlug);
+embedUrl.searchParams.set("doc", docId);
+embedUrl.searchParams.set("token", detail.documentToken);
+// Optional: jump to a specific field
+embedUrl.searchParams.set("field", "vendor_name");
+
+document.getElementById("viewer").src = embedUrl.toString();
+```
+
+### Two modes
+
+| Mode | When to use | Query params |
+|------|-------------|--------------|
+| **Document mode** | You have a Koji job/document and want the API to provide the PDF and highlights | `job`, `doc`, `token` |
+| **URL mode** | You have your own PDF URL and want to provide highlights directly | `url`, `highlights` (base64 JSON) |
+
+**Document mode** fetches the PDF and provenance highlights from the Koji API automatically. The HMAC token grants 1-hour access without requiring the iframe to have a session cookie.
+
+**URL mode** lets you bring your own PDF — no Koji API calls from the iframe:
+
+```html
+<iframe src="https://console.getkoji.dev/embed/viewer?url=https://example.com/doc.pdf&highlights=BASE64_JSON"></iframe>
+```
+
+The `highlights` param is a base64-encoded JSON array:
+
+```typescript
+const highlights = [
+  { field: "vendor", page: 1, bbox: { x: 100, y: 200, w: 300, h: 20 } },
+  { field: "total",  page: 1, bbox: { x: 100, y: 250, w: 200, h: 20 } },
+];
+const encoded = btoa(JSON.stringify(highlights));
+// → use as ?highlights=<encoded>
+```
+
+### Controlling the viewer from your app
+
+The embed viewer listens for `postMessage` events from the parent frame. All messages use a `koji:` prefix:
+
+```typescript
+const iframe = document.getElementById("viewer") as HTMLIFrameElement;
+
+// Highlight a specific extracted field
+iframe.contentWindow.postMessage(
+  { type: "koji:setActiveField", field: "vendor_name" },
+  "*"
+);
+
+// Replace all highlights (e.g. after re-extraction)
+iframe.contentWindow.postMessage(
+  { type: "koji:setHighlights", highlights: [
+    { field: "vendor", page: 1, bbox: { x: 100, y: 200, w: 300, h: 20 } },
+  ]},
+  "*"
+);
+
+// Navigate to a specific page
+iframe.contentWindow.postMessage(
+  { type: "koji:goToPage", page: 3 },
+  "*"
+);
+```
+
+**Typical integration pattern** — link extracted fields to the document:
+
+```typescript
+// When a user clicks on an extracted field in your UI,
+// tell the viewer to highlight it in the PDF
+function onFieldClick(fieldName: string) {
+  iframe.contentWindow.postMessage(
+    { type: "koji:setActiveField", field: fieldName },
+    "*"
+  );
+}
+```
+
+### Authentication
+
+The embed viewer uses HMAC-signed tokens — not session cookies. This means:
+
+- **Tokens are time-limited** (1 hour). Generate a fresh one when loading the viewer.
+- **Tokens are path-scoped** — signed against `/api/jobs/{slug}/documents/{docId}`, so a token for one document cannot access another.
+- **No CORS configuration needed** — the iframe loads the viewer page directly, and the viewer fetches the PDF from the same origin.
+- **`X-Frame-Options` is removed** for `/embed/*` routes, so the viewer can be iframed from any domain.
+
+### Self-hosted
+
+If you're running Koji locally or self-hosted, replace `console.getkoji.dev` with your dashboard URL (e.g. `http://localhost:9400`):
+
+```html
+<iframe src="http://localhost:9400/embed/viewer?job=my-job&doc=DOC_ID&token=TOKEN"></iframe>
+```
+
+---
+
 ## Docker Images
 
 All images are published to GitHub Container Registry:
