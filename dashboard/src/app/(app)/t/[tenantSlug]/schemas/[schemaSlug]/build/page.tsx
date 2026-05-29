@@ -910,19 +910,43 @@ export default function BuildPage() {
                                     const itemActive = highlightedField === itemKey;
                                     const itemProv = prov?.items?.[idx];
                                     const hasItemProv = itemProv != null;
+                                    const itemExpanded = expandedBuildArrays.has(itemKey);
                                     const summary = Object.entries(item).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(", ");
                                     const display = summary.length > 80 ? `${summary.slice(0, 77)}...` : summary || "\u2014";
+                                    const entries = Object.entries(item).filter(([, v]) => v != null);
                                     return (
-                                      <div
-                                        key={itemKey}
-                                        className={`flex items-start gap-2 px-3 pl-8 py-1.5 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border ${itemActive ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
-                                        onClick={() => setHighlightedField(itemActive ? null : itemKey)}
-                                      >
-                                        <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums flex items-center gap-1">
-                                          {hasItemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
-                                          [{idx}]
-                                        </span>
-                                        <span className="text-[11px] text-ink-2 truncate min-w-0">{display}</span>
+                                      <div key={itemKey}>
+                                        <div
+                                          className={`flex items-start gap-2 px-3 pl-8 py-1.5 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border ${itemActive ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                                          onClick={() => {
+                                            setExpandedBuildArrays((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(itemKey)) next.delete(itemKey);
+                                              else next.add(itemKey);
+                                              return next;
+                                            });
+                                            setHighlightedField(itemActive ? null : itemKey);
+                                          }}
+                                        >
+                                          <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform mt-0.5 ${itemExpanded ? "rotate-90" : ""}`} />
+                                          <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums flex items-center gap-1">
+                                            {hasItemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
+                                            [{idx}]
+                                          </span>
+                                          <span className="text-[11px] text-ink-2 truncate min-w-0">{display}</span>
+                                        </div>
+                                        {itemExpanded && entries.map(([propName, propValue]) => (
+                                          <div
+                                            key={`${itemKey}.${propName}`}
+                                            className={`flex items-baseline gap-2 px-3 pl-14 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${itemActive ? "bg-vermillion-3/5" : ""}`}
+                                            onClick={() => setHighlightedField(itemActive ? null : itemKey)}
+                                          >
+                                            <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
+                                            <span className="text-[11px] text-ink-2 truncate min-w-0">
+                                              {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
+                                            </span>
+                                          </div>
+                                        ))}
                                       </div>
                                     );
                                   })}
