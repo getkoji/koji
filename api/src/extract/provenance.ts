@@ -596,9 +596,22 @@ function resolveScalar(
 }
 
 /**
+ * Score a candidate span for ranking within an object item. Higher is better.
+ * Prefers: long string matches > short strings > numbers.
+ * Word-level bbox adds a bonus.
+ */
+function spanScore(span: ProvenanceSpan, valueLength: number): number {
+  let score = valueLength; // longer matched text = more specific
+  if (span.words) score += 100; // word-level bbox is strong signal
+  else if (span.bbox) score += 50;
+  return score;
+}
+
+/**
  * Resolve provenance for an array value. Each item is resolved independently.
  * String/number items use the scalar resolver directly. Object items resolve
- * each scalar property and pick the best match (preferring bbox > offset).
+ * each scalar property, preferring longer string matches over short numbers
+ * to avoid grabbing unrelated values like "1" or "001".
  */
 function resolveArray(
   items: unknown[],
@@ -616,16 +629,34 @@ function resolveArray(
       const span = resolveScalar(item, markdown, textMap);
       if (span) resolved.push(span);
     } else if (typeof item === "object" && !Array.isArray(item)) {
-      const allSpans: ProvenanceSpan[] = [];
-      for (const val of Object.values(item as Record<string, unknown>)) {
-        if (val == null || (typeof val !== "string" && typeof val !== "number")) continue;
+      let best: ProvenanceSpan | null = null;
+      let bestScore = -1;
+
+      for (const [, val] of Object.entries(item as Record<string, unknown>)) {
+        if (val == null) continue;
+
+        // Skip non-scalar values (nested objects/arrays)
+        if (typeof val !== "string" && typeof val !== "number") continue;
+
+        // Skip short numbers — they match too many places in a document.
+        // e.g. premium=196 matches "196" in addresses, page numbers, etc.
+        if (typeof val === "number" && Math.abs(val) < 1000) continue;
+
+        // Skip very short strings (1-2 chars) — too ambiguous
+        if (typeof val === "string" && val.length <= 2) continue;
+
         const span = resolveScalar(val, markdown, textMap);
-        if (span) allSpans.push(span);
+        if (!span) continue;
+
+        const valLen = typeof val === "string" ? val.length : String(val).length;
+        const score = spanScore(span, valLen);
+        if (score > bestScore) {
+          best = span;
+          bestScore = score;
+        }
       }
-      if (allSpans.length > 0) {
-        const best = allSpans.find((s) => s.words) ?? allSpans.find((s) => s.bbox) ?? allSpans[0]!;
-        resolved.push(best);
-      }
+
+      if (best) resolved.push(best);
     }
   }
 
