@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveProvenance, type TextMap } from "./provenance";
+import { resolveProvenance, estimatePageFromOffset, type TextMap } from "./provenance";
 
 // ---------------------------------------------------------------------------
 // Exact string match
@@ -319,5 +319,117 @@ describe("dollar amount word matching", () => {
     expect(result.total!.words).toBeDefined();
     expect(result.total!.words!.length).toBe(1);
     expect(result.total!.words![0]!.text).toBe("$1,500.00");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page estimation from markdown offset
+// ---------------------------------------------------------------------------
+
+describe("estimatePageFromOffset", () => {
+  it("returns page 1 when no separators exist", () => {
+    expect(estimatePageFromOffset("hello world", 5)).toBe(1);
+  });
+
+  it("returns page 1 for offset before first separator", () => {
+    const md = "page one\n\n---\n\npage two";
+    expect(estimatePageFromOffset(md, 3)).toBe(1);
+  });
+
+  it("returns page 2 for offset after first separator", () => {
+    const md = "page one\n\n---\n\npage two";
+    expect(estimatePageFromOffset(md, md.indexOf("page two"))).toBe(2);
+  });
+
+  it("returns page 3 for offset after second separator", () => {
+    const md = "page one\n\n---\n\npage two\n\n---\n\npage three content";
+    expect(estimatePageFromOffset(md, md.indexOf("page three"))).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate text across pages — bbox should match the correct page
+// ---------------------------------------------------------------------------
+
+describe("duplicate text across pages", () => {
+  // Simulate a document where "December 4, 2025" appears on page 1 (declarations)
+  // and page 3 (endorsements). The text_map has entries for both occurrences.
+  const textMap: TextMap = [
+    { text: "Declarations", page: 1, bbox: { x: 0.1, y: 0.05, w: 0.2, h: 0.02 } },
+    { text: "December", page: 1, bbox: { x: 0.3, y: 0.1, w: 0.1, h: 0.02 } },
+    { text: "4,", page: 1, bbox: { x: 0.41, y: 0.1, w: 0.03, h: 0.02 } },
+    { text: "2025", page: 1, bbox: { x: 0.45, y: 0.1, w: 0.05, h: 0.02 } },
+    { text: "Endorsements", page: 3, bbox: { x: 0.1, y: 0.05, w: 0.2, h: 0.02 } },
+    { text: "December", page: 3, bbox: { x: 0.3, y: 0.2, w: 0.1, h: 0.02 } },
+    { text: "4,", page: 3, bbox: { x: 0.41, y: 0.2, w: 0.03, h: 0.02 } },
+    { text: "2025", page: 3, bbox: { x: 0.45, y: 0.2, w: 0.05, h: 0.02 } },
+  ];
+
+  // Markdown with page separators: page 1, page 2, page 3
+  const markdown = [
+    "Declarations\nEffective: December 4, 2025",
+    "Some other page content",
+    "Endorsements\nDate: December 4, 2025",
+  ].join("\n\n---\n\n");
+
+  it("resolves bbox to page 1 when markdown offset points to page 1", () => {
+    // The LLM extracts the date and the text search finds it on page 1 first
+    const result = resolveProvenance(
+      { effective_date: "December 4, 2025" },
+      markdown,
+      textMap,
+    );
+
+    expect(result.effective_date).not.toBeNull();
+    // The first occurrence in markdown is on page 1
+    expect(result.effective_date!.offset).toBe(markdown.indexOf("December 4, 2025"));
+    expect(result.effective_date!.page).toBe(1);
+    expect(result.effective_date!.words).toBeDefined();
+    expect(result.effective_date!.words![0]!.page).toBe(1);
+  });
+
+  it("resolves bbox to page 3 when a second field matches the page-3 occurrence", () => {
+    // Build a markdown where the page-3 occurrence is found by the text search.
+    // We need the extracted value to match the second occurrence.
+    // Use a field that only appears on page 3 to force the offset there.
+    const page3Markdown = [
+      "Declarations\nEffective: January 1, 2025",
+      "Some other page content",
+      "Endorsements\nDate: December 4, 2025",
+    ].join("\n\n---\n\n");
+
+    const result = resolveProvenance(
+      { endorsement_date: "December 4, 2025" },
+      page3Markdown,
+      textMap,
+    );
+
+    expect(result.endorsement_date).not.toBeNull();
+    // The only occurrence in this markdown is on page 3
+    expect(result.endorsement_date!.page).toBe(3);
+    expect(result.endorsement_date!.words).toBeDefined();
+    expect(result.endorsement_date!.words![0]!.page).toBe(3);
+  });
+
+  it("prefers page-2 text_map match when markdown offset is on page 2", () => {
+    // Text map has "$500" on pages 1 and 2
+    const amountTextMap: TextMap = [
+      { text: "$500", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.05, h: 0.02 } },
+      { text: "$500", page: 2, bbox: { x: 0.3, y: 0.3, w: 0.05, h: 0.02 } },
+    ];
+    const md = "Page one: $500\n\n---\n\nPage two: $500";
+    // findExact returns the first occurrence (page 1), but we also test
+    // that the second field would get page 2 if only that occurrence existed.
+    const result = resolveProvenance({ amount: "$500" }, md, amountTextMap);
+
+    // findExact finds the first "$500" in the markdown (page 1 offset)
+    expect(result.amount).not.toBeNull();
+    expect(result.amount!.page).toBe(1);
+
+    // Now test with markdown where "$500" only appears on page 2
+    const md2 = "Page one: some text\n\n---\n\nPage two: $500";
+    const result2 = resolveProvenance({ amount: "$500" }, md2, amountTextMap);
+    expect(result2.amount).not.toBeNull();
+    expect(result2.amount!.page).toBe(2);
   });
 });

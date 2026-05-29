@@ -286,36 +286,83 @@ function findNumber(haystack: string, value: number): { offset: number; length: 
 }
 
 // ---------------------------------------------------------------------------
+// Page estimation from markdown offset
+// ---------------------------------------------------------------------------
+
+/** Page break separator used when joining pages into markdown. */
+const PAGE_SEPARATOR = "\n\n---\n\n";
+
+/**
+ * Estimate the 1-indexed page number for a character offset in the markdown.
+ * Pages are separated by `\n\n---\n\n`. Returns 1 if no separators are found.
+ */
+export function estimatePageFromOffset(markdown: string, offset: number): number {
+  let page = 1;
+  let pos = 0;
+  while (true) {
+    const idx = markdown.indexOf(PAGE_SEPARATOR, pos);
+    if (idx === -1 || idx >= offset) break;
+    page++;
+    pos = idx + PAGE_SEPARATOR.length;
+  }
+  return page;
+}
+
+// ---------------------------------------------------------------------------
 // Bounding box resolver
 // ---------------------------------------------------------------------------
 
 /**
  * Search the text_map for a segment whose text contains the given needle.
- * Returns the best matching segment.
+ * When preferredPage is provided and multiple matches exist, returns the
+ * match on the preferred page (or closest page).
  */
-function findBbox(needle: string, textMap: TextMap): { page: number; bbox: BBox } | null {
+function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { page: number; bbox: BBox } | null {
   if (!needle || textMap.length === 0) return null;
 
   const lowerNeedle = needle.toLowerCase();
 
-  // First pass: exact substring match (case-insensitive)
+  // First pass: exact substring match (case-insensitive) — collect all matches
+  const exactMatches: { page: number; bbox: BBox }[] = [];
   for (const seg of textMap) {
     if (seg.text.toLowerCase().includes(lowerNeedle)) {
-      return { page: seg.page, bbox: seg.bbox };
+      exactMatches.push({ page: seg.page, bbox: seg.bbox });
     }
+  }
+  if (exactMatches.length > 0) {
+    return pickClosest(exactMatches, preferredPage);
   }
 
   // Second pass: normalized whitespace match
   const normNeedle = normalizeWhitespace(needle).toLowerCase();
   if (normNeedle) {
+    const normMatches: { page: number; bbox: BBox }[] = [];
     for (const seg of textMap) {
       if (normalizeWhitespace(seg.text).toLowerCase().includes(normNeedle)) {
-        return { page: seg.page, bbox: seg.bbox };
+        normMatches.push({ page: seg.page, bbox: seg.bbox });
       }
+    }
+    if (normMatches.length > 0) {
+      return pickClosest(normMatches, preferredPage);
     }
   }
 
   return null;
+}
+
+/** From a list of matches, pick the one on or closest to the preferred page. */
+function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: number): T {
+  if (matches.length === 1 || preferredPage == null) return matches[0]!;
+  let best = matches[0]!;
+  let bestDist = Math.abs(best.page - preferredPage);
+  for (let i = 1; i < matches.length; i++) {
+    const dist = Math.abs(matches[i]!.page - preferredPage);
+    if (dist < bestDist) {
+      best = matches[i]!;
+      bestDist = dist;
+    }
+  }
+  return best;
 }
 
 /**
@@ -331,6 +378,7 @@ function locateWords(
   value: unknown,
   chunk: string | undefined,
   textMap: TextMap,
+  preferredPage?: number,
 ): WordBox[] | null {
   const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
   if (!strValue || textMap.length === 0) return null;
@@ -342,7 +390,8 @@ function locateWords(
     const needleWords = needle.trim().split(/\s+/).map((w) => w.toLowerCase());
     if (needleWords.length === 0) continue;
 
-    // Slide through text_map looking for consecutive word matches
+    // Slide through text_map looking for consecutive word matches — collect all
+    const allMatches: { startIdx: number; words: WordBox[] }[] = [];
     for (let i = 0; i <= textMap.length - needleWords.length; i++) {
       let matched = true;
       for (let j = 0; j < needleWords.length; j++) {
@@ -354,34 +403,59 @@ function locateWords(
         }
       }
       if (matched) {
-        return needleWords.map((_, j) => {
-          const seg = textMap[i + j]!;
-          return {
-            text: seg.text,
-            page: seg.page,
-            x: seg.bbox.x,
-            y: seg.bbox.y,
-            w: seg.bbox.w,
-            h: seg.bbox.h,
-          };
+        allMatches.push({
+          startIdx: i,
+          words: needleWords.map((_, j) => {
+            const seg = textMap[i + j]!;
+            return {
+              text: seg.text,
+              page: seg.page,
+              x: seg.bbox.x,
+              y: seg.bbox.y,
+              w: seg.bbox.w,
+              h: seg.bbox.h,
+            };
+          }),
         });
       }
+    }
+
+    if (allMatches.length > 0) {
+      if (allMatches.length === 1 || preferredPage == null) {
+        return allMatches[0]!.words;
+      }
+      // Pick the match whose first word is on/closest to the preferred page
+      let best = allMatches[0]!;
+      let bestDist = Math.abs(best.words[0]!.page - preferredPage);
+      for (let i = 1; i < allMatches.length; i++) {
+        const dist = Math.abs(allMatches[i]!.words[0]!.page - preferredPage);
+        if (dist < bestDist) {
+          best = allMatches[i]!;
+          bestDist = dist;
+        }
+      }
+      return best.words;
     }
 
     // Single-word containment: value is contained within one text_map word
     if (needleWords.length === 1) {
       const lowerNeedle = needleWords[0]!;
+      const singleMatches: WordBox[] = [];
       for (const seg of textMap) {
         if (seg.text.toLowerCase().replace(/[,.$()]/g, "").includes(lowerNeedle.replace(/[,.$()]/g, ""))) {
-          return [{
+          singleMatches.push({
             text: seg.text,
             page: seg.page,
             x: seg.bbox.x,
             y: seg.bbox.y,
             w: seg.bbox.w,
             h: seg.bbox.h,
-          }];
+          });
         }
+      }
+      if (singleMatches.length > 0) {
+        const picked = pickClosest(singleMatches, preferredPage);
+        return [picked];
       }
     }
   }
@@ -408,14 +482,25 @@ function enclosingBbox(words: WordBox[]): { page: number; bbox: BBox } | null {
 /**
  * Resolve bounding boxes for a value. Tries per-word matching first,
  * falls back to paragraph-level segment matching.
+ *
+ * When markdown and offset are provided, estimates the page from the
+ * markdown offset and prefers text_map matches on the same page. This
+ * resolves the bug where duplicate text across pages (e.g. the same
+ * date on declarations and endorsements) would match the wrong occurrence.
  */
 function resolveBbox(
   value: unknown,
   chunk: string | undefined,
   textMap: TextMap,
+  markdown?: string,
+  offset?: number,
 ): { page: number; bbox: BBox; words?: WordBox[] } | null {
+  const preferredPage = (markdown != null && offset != null)
+    ? estimatePageFromOffset(markdown, offset)
+    : undefined;
+
   // Try per-word matching first
-  const words = locateWords(value, chunk, textMap);
+  const words = locateWords(value, chunk, textMap, preferredPage);
   if (words && words.length > 0) {
     const enclosing = enclosingBbox(words);
     if (enclosing) {
@@ -425,13 +510,13 @@ function resolveBbox(
 
   // Fall back to paragraph-level segment matching
   if (chunk) {
-    const hit = findBbox(chunk, textMap);
+    const hit = findBbox(chunk, textMap, preferredPage);
     if (hit) return hit;
   }
 
   const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
   if (strValue) {
-    const hit = findBbox(strValue, textMap);
+    const hit = findBbox(strValue, textMap, preferredPage);
     if (hit) return hit;
   }
 
@@ -508,7 +593,7 @@ export function resolveProvenance(
 
       // Resolve bounding box + per-word locations if text_map available
       if (textMap && textMap.length > 0) {
-        const bboxHit = resolveBbox(value, chunk, textMap);
+        const bboxHit = resolveBbox(value, chunk, textMap, markdown, result.offset);
         if (bboxHit) {
           span.page = bboxHit.page;
           span.bbox = bboxHit.bbox;
