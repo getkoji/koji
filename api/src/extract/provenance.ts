@@ -435,9 +435,12 @@ function locateWords(
       for (let j = 0; j < needleWords.length; j++) {
         const segText = textMap[i + j]!.text.toLowerCase().replace(/[,.$()]/g, "");
         const needleWord = needleWords[j]!.replace(/[,.$()]/g, "");
-        // For digit-only words, require exact match to avoid "1000" matching "1000000"
+        // For digit-only words, require exact match to avoid "1000" matching "1000000".
+        // For words with digits + separators (e.g. "2025-12-04"), don't allow
+        // substring containment — it false-matches any component like "2025" or "04".
         const isDigitWord = /^\d+$/.test(needleWord);
-        if (isDigitWord) {
+        const isFormattedValue = /\d/.test(needleWord) && /[-/]/.test(needleWord);
+        if (isDigitWord || isFormattedValue) {
           if (segText !== needleWord) { matched = false; break; }
         } else if (segText !== needleWord && !segText.includes(needleWord) && !needleWord.includes(segText)) {
           matched = false;

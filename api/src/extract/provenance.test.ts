@@ -735,6 +735,45 @@ describe("numeric boundary matching", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Date bbox matching — ISO dates must not false-match components
+// ---------------------------------------------------------------------------
+
+describe("date bbox word matching", () => {
+  it("2025-12-04 does not bbox-match random '2025' or '04' words", () => {
+    const markdown = "Effective Date: December 4, 2025\nExpiration Date: December 4, 2026";
+    // Build a text_map with individual words
+    const textMap: TextMap = [
+      { text: "Effective", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 } },
+      { text: "Date:", page: 1, bbox: { x: 0.2, y: 0.1, w: 0.05, h: 0.02 } },
+      { text: "December", page: 1, bbox: { x: 0.3, y: 0.1, w: 0.1, h: 0.02 } },
+      { text: "4,", page: 1, bbox: { x: 0.4, y: 0.1, w: 0.02, h: 0.02 } },
+      { text: "2025", page: 1, bbox: { x: 0.42, y: 0.1, w: 0.05, h: 0.02 } },
+      { text: "Expiration", page: 1, bbox: { x: 0.1, y: 0.2, w: 0.1, h: 0.02 } },
+      { text: "Date:", page: 1, bbox: { x: 0.2, y: 0.2, w: 0.05, h: 0.02 } },
+      { text: "December", page: 1, bbox: { x: 0.3, y: 0.2, w: 0.1, h: 0.02 } },
+      { text: "4,", page: 1, bbox: { x: 0.4, y: 0.2, w: 0.02, h: 0.02 } },
+      { text: "2026", page: 1, bbox: { x: 0.42, y: 0.2, w: 0.05, h: 0.02 } },
+    ];
+
+    const result = resolveProvenance(
+      { effective_date: "2025-12-04", expiration_date: "2026-12-04" },
+      markdown,
+      textMap,
+    );
+
+    // Both should resolve to the correct date line
+    expect(result.effective_date).not.toBeNull();
+    expect(result.effective_date!.words).toBeDefined();
+    expect(result.effective_date!.words!.length).toBe(3); // December, 4, 2025
+    expect(result.effective_date!.words![2]!.text).toBe("2025");
+
+    expect(result.expiration_date).not.toBeNull();
+    expect(result.expiration_date!.words).toBeDefined();
+    expect(result.expiration_date!.words![2]!.text).toBe("2026");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // HTML entity matching — & vs &amp;
 // ---------------------------------------------------------------------------
 
