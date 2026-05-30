@@ -179,6 +179,15 @@ export default function BuildPage() {
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
   const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
+
+  // Auto-scroll parsed view to highlighted field
+  useEffect(() => {
+    if (docViewMode !== "parsed" || !highlightedField) return;
+    setTimeout(() => {
+      const el = document.querySelector(`[data-provenance-field="${highlightedField}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+  }, [highlightedField, docViewMode]);
   const bboxHighlights = useMemo(() => {
     const prov = extractionResult?.provenance ?? {};
     const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string }> = [];
