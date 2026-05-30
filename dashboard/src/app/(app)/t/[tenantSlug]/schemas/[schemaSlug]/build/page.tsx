@@ -168,7 +168,7 @@ export default function BuildPage() {
     extracted: Record<string, unknown>;
     confidence: number;
     confidence_scores?: Record<string, number>;
-    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; items?: Array<{ offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string }> } | null>;
+    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; items?: Array<{ offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; properties?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> } | null> }> } | null>;
     markdown?: string;
     model?: string;
     elapsed_ms?: number;
@@ -190,6 +190,14 @@ export default function BuildPage() {
           if (!item) continue;
           if (item.words?.length || (item.bbox != null && item.page != null) || item.page != null) {
             out.push({ field: `${field}[${i}]`, page: item.words?.[0]?.page ?? item.page!, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+          }
+          if (item.properties && typeof item.properties === "object") {
+            for (const [prop, pSpan] of Object.entries(item.properties as Record<string, any>)) {
+              if (!pSpan) continue;
+              if (pSpan.words?.length || (pSpan.bbox != null && pSpan.page != null) || pSpan.page != null) {
+                out.push({ field: `${field}[${i}].${prop}`, page: pSpan.words?.[0]?.page ?? pSpan.page!, bbox: pSpan.bbox, words: pSpan.words });
+              }
+            }
           }
         }
         continue;
@@ -935,18 +943,21 @@ export default function BuildPage() {
                                           </span>
                                           <span className="text-[11px] text-ink-2 truncate min-w-0">{display}</span>
                                         </div>
-                                        {itemExpanded && entries.map(([propName, propValue]) => (
+                                        {itemExpanded && entries.map(([propName, propValue]) => {
+                                          const propKey = `${itemKey}.${propName}`;
+                                          const propActive = highlightedField === propKey;
+                                          return (
                                           <div
-                                            key={`${itemKey}.${propName}`}
-                                            className={`flex items-baseline gap-2 px-3 pl-14 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${itemActive ? "bg-vermillion-3/5" : ""}`}
-                                            onClick={() => setHighlightedField(itemKey)}
+                                            key={propKey}
+                                            className={`flex items-baseline gap-2 px-3 pl-14 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${propActive ? "bg-vermillion-3/10 border-l-2 border-l-vermillion-2" : itemActive ? "bg-vermillion-3/5" : ""}`}
+                                            onClick={() => setHighlightedField(propKey)}
                                           >
                                             <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
                                             <span className="text-[11px] text-ink-2 truncate min-w-0">
                                               {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
                                             </span>
                                           </div>
-                                        ))}
+                                        );})}
                                       </div>
                                     );
                                   })}
