@@ -900,6 +900,46 @@ function resolveViaAliases(
   return null;
 }
 
+/**
+ * For boolean fields, search for common representations in the markdown
+ * when "true"/"false" can't be found directly.
+ * Documents use "Yes", "No", "X", "✓", "☑", "Included", etc.
+ */
+function resolveBoolean(
+  value: boolean,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  const truthy = ["Yes", "YES", "yes", "Y", "X", "✓", "☑", "✔", "Included", "INCLUDED", "Active", "ACTIVE"];
+  const falsy = ["No", "NO", "no", "N", "☐", "Excluded", "EXCLUDED", "Inactive", "INACTIVE", "N/A", "n/a", "None", "NONE"];
+  const candidates = value ? truthy : falsy;
+
+  for (const candidate of candidates) {
+    const span = candidate.length <= 4
+      ? findWordBoundary(markdown, candidate)
+      : findExact(markdown, candidate);
+    if (span) {
+      const chunk = markdown.slice(span.offset, span.offset + span.length);
+      const result: ProvenanceSpan = {
+        offset: span.offset,
+        length: span.length,
+        chunk,
+        page: estimatePageFromOffset(markdown, span.offset),
+      };
+      if (textMap && textMap.length > 0) {
+        const bboxHit = resolveBbox(candidate, chunk, textMap, markdown, span.offset);
+        if (bboxHit) {
+          result.page = bboxHit.page;
+          result.bbox = bboxHit.bbox;
+          if (bboxHit.words) result.words = bboxHit.words;
+        }
+      }
+      return result;
+    }
+  }
+  return null;
+}
+
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
@@ -924,6 +964,10 @@ export function resolveProvenance(
     // For enum/mapping fields, try aliases when canonical value isn't found
     if (!span && typeof value === "string" && fieldSpecs?.[field]) {
       span = resolveViaAliases(value, fieldSpecs[field]!, markdown, textMap);
+    }
+    // For boolean fields, search for common representations
+    if (!span && typeof value === "boolean") {
+      span = resolveBoolean(value, markdown, textMap);
     }
     provenance[field] = span ?? null;
   }
