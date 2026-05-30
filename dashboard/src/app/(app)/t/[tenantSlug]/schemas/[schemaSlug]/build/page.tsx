@@ -180,12 +180,23 @@ export default function BuildPage() {
   const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
   const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
 
-  // Auto-scroll parsed view to highlighted field
+  // Auto-scroll parsed view to highlighted field.
+  // For nested keys like "coverages[0].limit", fall back to parent keys
+  // since the parsed view only marks top-level field provenance spans.
   useEffect(() => {
     if (docViewMode !== "parsed" || !highlightedField) return;
     setTimeout(() => {
-      const el = document.querySelector(`[data-provenance-field="${highlightedField}"]`);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      let key = highlightedField;
+      while (key) {
+        const el = document.querySelector(`[data-provenance-field="${key}"]`);
+        if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+        // Strip last segment: "a[0].b" → "a[0]" → "a"
+        const dotIdx = key.lastIndexOf(".");
+        const bracketIdx = key.lastIndexOf("[");
+        const cutAt = Math.max(dotIdx, bracketIdx);
+        if (cutAt <= 0) break;
+        key = key.slice(0, cutAt);
+      }
     }, 50);
   }, [highlightedField, docViewMode]);
   const bboxHighlights = useMemo(() => {
