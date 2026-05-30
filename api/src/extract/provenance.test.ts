@@ -677,3 +677,87 @@ describe("array provenance with source texts", () => {
     expect(result.items).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Numeric boundary matching — $1,000 must not match inside $1,000,000
+// ---------------------------------------------------------------------------
+
+describe("numeric boundary matching", () => {
+  it("$1,000 does not match inside $1,000,000", () => {
+    const markdown = "Limit: $1,000,000\nRetention: $1,000 each claim";
+    const result = resolveProvenance({ deductible: 1000 }, markdown);
+
+    expect(result.deductible).not.toBeNull();
+    expect(result.deductible!.chunk).toBe("$1,000");
+    // Should match the standalone $1,000, not the one inside $1,000,000
+    expect(result.deductible!.offset).toBe(markdown.indexOf("$1,000 each") );
+  });
+
+  it("$1,000 as string does not match inside $1,000,000", () => {
+    const markdown = "Limit: $1,000,000\nRetention: $1,000 each claim";
+    const result = resolveProvenance({ deductible: "$1,000" }, markdown);
+
+    expect(result.deductible).not.toBeNull();
+    expect(result.deductible!.chunk).toBe("$1,000");
+    expect(result.deductible!.offset).toBe(markdown.indexOf("$1,000 each"));
+  });
+
+  it("$1,500 does not match inside $1,500.00", () => {
+    const markdown = "Total: $1,500.00\nDeposit: $1,500 paid";
+    // When extracted as number 1500, should find $1,500.00 first (with .00)
+    const result = resolveProvenance({ total: 1500 }, markdown);
+    expect(result.total).not.toBeNull();
+    expect(result.total!.chunk).toBe("$1,500.00");
+  });
+
+  it("per-property provenance uses bounded matching within source text", () => {
+    const markdown = "Coverage:\nLimit: $1,000,000\nRetention: $1,000 each claim";
+    const sourceTexts = {
+      coverages: ["Limit: $1,000,000\nRetention: $1,000 each claim"],
+    };
+
+    const result = resolveProvenance(
+      { coverages: [{ limit: 1000000, deductible: 1000 }] },
+      markdown,
+      undefined,
+      sourceTexts,
+    );
+
+    expect(result.coverages).not.toBeNull();
+    const item = result.coverages!.items![0]!;
+    expect(item.properties).toBeDefined();
+    expect(item.properties!.limit).not.toBeNull();
+    expect(item.properties!.limit!.chunk).toBe("$1,000,000");
+    expect(item.properties!.deductible).not.toBeNull();
+    expect(item.properties!.deductible!.chunk).toBe("$1,000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTML entity matching — & vs &amp;
+// ---------------------------------------------------------------------------
+
+describe("HTML entity matching", () => {
+  it("finds value with & when markdown has &amp;", () => {
+    const markdown = "Coverage: Condominium &amp; Homeowners D&amp;O Liability Insurance";
+    const result = resolveProvenance(
+      { coverage: "Condominium & Homeowners D&O Liability Insurance" },
+      markdown,
+    );
+
+    expect(result.coverage).not.toBeNull();
+    expect(result.coverage!.chunk).toContain("Condominium");
+    expect(result.coverage!.chunk).toContain("Liability Insurance");
+  });
+
+  it("finds value with &amp; when markdown has &", () => {
+    const markdown = "Coverage: Condominium & Homeowners D&O Liability Insurance";
+    const result = resolveProvenance(
+      { coverage: "Condominium &amp; Homeowners D&amp;O Liability Insurance" },
+      markdown,
+    );
+
+    expect(result.coverage).not.toBeNull();
+    expect(result.coverage!.chunk).toContain("Condominium");
+  });
+});

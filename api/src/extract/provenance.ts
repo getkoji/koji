@@ -108,7 +108,7 @@ function findWordBoundary(haystack: string, needle: string): { offset: number; l
  */
 function findNumericBounded(haystack: string, needle: string): { offset: number; length: number } | null {
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(escaped + "(?![\\d,])", "i");
+  const pattern = new RegExp(escaped + "(?![\\d,.])", "i");
   const m = haystack.match(pattern);
   if (m && m.index !== undefined) {
     return { offset: m.index, length: m[0].length };
@@ -435,7 +435,11 @@ function locateWords(
       for (let j = 0; j < needleWords.length; j++) {
         const segText = textMap[i + j]!.text.toLowerCase().replace(/[,.$()]/g, "");
         const needleWord = needleWords[j]!.replace(/[,.$()]/g, "");
-        if (segText !== needleWord && !segText.includes(needleWord) && !needleWord.includes(segText)) {
+        // For digit-only words, require exact match to avoid "1000" matching "1000000"
+        const isDigitWord = /^\d+$/.test(needleWord);
+        if (isDigitWord) {
+          if (segText !== needleWord) { matched = false; break; }
+        } else if (segText !== needleWord && !segText.includes(needleWord) && !needleWord.includes(segText)) {
           matched = false;
           break;
         }
@@ -586,27 +590,44 @@ function resolveScalar(
   let result: { offset: number; length: number } | null = null;
 
   if (typeof value === "string") {
-    if (value.length <= 4) {
-      result = findWordBoundary(markdown, value);
-    }
-    if (!result) {
-      result =
-        findExact(markdown, value) ??
-        findWithEntities(markdown, value) ??
-        findCaseInsensitive(markdown, value) ??
-        findNormalized(markdown, value);
-    }
-    if (!result && /^[A-Z]{2}$/.test(value)) {
-      result = findStateName(markdown, value);
-    }
-    if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
-      result = findDate(markdown, value);
-    }
-    if (!result && /^\$?[\d,.]+$/.test(value)) {
-      result = findDollarAmount(markdown, value);
+    const isNumericStr = /^\$?[\d,.]+$/.test(value);
+    if (isNumericStr) {
+      // Numeric strings: use bounded matching to avoid "$1,000" inside "$1,000,000"
+      result = findNumericBounded(markdown, value);
+      if (!result) result = findDollarAmount(markdown, value);
+    } else {
+      if (value.length <= 4) {
+        result = findWordBoundary(markdown, value);
+      }
+      if (!result) {
+        result =
+          findExact(markdown, value) ??
+          findWithEntities(markdown, value) ??
+          findCaseInsensitive(markdown, value) ??
+          findNormalized(markdown, value);
+      }
+      if (!result && /^[A-Z]{2}$/.test(value)) {
+        result = findStateName(markdown, value);
+      }
+      if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
+        result = findDate(markdown, value);
+      }
     }
   } else if (typeof value === "number") {
-    result = findNumber(markdown, value);
+    // Use bounded matching for numbers — prefer most specific forms first
+    const formatted = value.toLocaleString("en-US");
+    const twoDecimal = value.toFixed(2);
+    const twoDecimalFmt = parseFloat(twoDecimal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const plain = Number.isInteger(value) ? String(value) : twoDecimal;
+    const candidates = [
+      `$${twoDecimalFmt}`, `$${twoDecimal}`, `$${formatted}`, `$${plain}`,
+      twoDecimalFmt, twoDecimal, formatted, plain,
+    ];
+    for (const c of candidates) {
+      result = findNumericBounded(markdown, c);
+      if (result) break;
+    }
+    if (!result) result = findNumber(markdown, value);
   }
 
   if (!result) return null;
