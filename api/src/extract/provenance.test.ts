@@ -298,7 +298,7 @@ describe("word-level bbox matching", () => {
     expect(result.invoice_number).not.toBeNull();
     expect(result.invoice_number!.chunk).toBe("INV-2024-001");
     expect(result.invoice_number!.words).toBeUndefined();
-    expect(result.invoice_number!.page).toBeUndefined();
+    expect(result.invoice_number!.page).toBe(1);
   });
 });
 
