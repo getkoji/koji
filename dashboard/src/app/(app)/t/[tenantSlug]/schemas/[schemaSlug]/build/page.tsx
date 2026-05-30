@@ -1349,7 +1349,7 @@ function BuildNestedValue({
 
   // Object
   if (value != null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v != null);
+    const entries = Object.entries(value as Record<string, unknown>);
     return (
       <>
         {entries.map(([propName, propValue]) => {
