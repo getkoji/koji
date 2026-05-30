@@ -102,6 +102,40 @@ function findWordBoundary(haystack: string, needle: string): { offset: number; l
   return null;
 }
 
+/**
+ * Find a numeric/dollar value ensuring it's not a prefix of a larger number.
+ * E.g. "$1,000" must not match inside "$1,000,000".
+ */
+function findNumericBounded(haystack: string, needle: string): { offset: number; length: number } | null {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(escaped + "(?![\\d,])", "i");
+  const m = haystack.match(pattern);
+  if (m && m.index !== undefined) {
+    return { offset: m.index, length: m[0].length };
+  }
+  return null;
+}
+
+/**
+ * Try matching with HTML entity variants: `&` ↔ `&amp;`.
+ * PDF parsers often produce `&amp;` in markdown while the LLM extracts `&`.
+ */
+function findWithEntities(haystack: string, needle: string): { offset: number; length: number } | null {
+  // Try replacing & with &amp; in the needle
+  if (needle.includes("&") && !needle.includes("&amp;")) {
+    const entityNeedle = needle.replace(/&/g, "&amp;");
+    const hit = findExact(haystack, entityNeedle) ?? findCaseInsensitive(haystack, entityNeedle);
+    if (hit) return hit;
+  }
+  // Try replacing &amp; with & in the needle
+  if (needle.includes("&amp;")) {
+    const decodedNeedle = needle.replace(/&amp;/g, "&");
+    const hit = findExact(haystack, decodedNeedle) ?? findCaseInsensitive(haystack, decodedNeedle);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function findCaseInsensitive(haystack: string, needle: string): { offset: number; length: number } | null {
   const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
   if (idx !== -1) return { offset: idx, length: needle.length };
@@ -558,6 +592,7 @@ function resolveScalar(
     if (!result) {
       result =
         findExact(markdown, value) ??
+        findWithEntities(markdown, value) ??
         findCaseInsensitive(markdown, value) ??
         findNormalized(markdown, value);
     }
@@ -740,15 +775,33 @@ function resolveArray(
           // First: search within the source text region for precise matching
           if (region) {
             const strVal = typeof propValue === "number" ? String(propValue) : propValue;
-            let localHit =
-              findExact(region, strVal) ??
-              findCaseInsensitive(region, strVal) ??
-              findNormalized(region, strVal);
-            // Try format-aware matching within region
-            if (!localHit && typeof propValue === "number") {
-              localHit = findDollarAmount(region, propValue) ?? findNumber(region, propValue);
-            } else if (!localHit && typeof propValue === "string" && /^\$?[\d,.]+$/.test(propValue)) {
-              localHit = findDollarAmount(region, propValue);
+            const isNumeric = typeof propValue === "number" || /^\$?[\d,.]+$/.test(strVal);
+
+            let localHit: { offset: number; length: number } | null = null;
+
+            if (isNumeric) {
+              // Use bounded matching to avoid "$1,000" matching inside "$1,000,000"
+              localHit = findNumericBounded(region, strVal);
+              if (!localHit) {
+                // Try formatted dollar/number variants with boundary check
+                const candidates: string[] = [];
+                const num = typeof propValue === "number" ? propValue : parseFloat(strVal.replace(/[$,]/g, ""));
+                if (!isNaN(num)) {
+                  const formatted = num.toLocaleString("en-US");
+                  candidates.push(`$${formatted}`, formatted, `$${num}`, String(num));
+                }
+                for (const c of candidates) {
+                  localHit = findNumericBounded(region, c);
+                  if (localHit) break;
+                }
+              }
+            } else {
+              // String value: try exact, entity-aware, case-insensitive, normalized
+              localHit =
+                findExact(region, strVal) ??
+                findWithEntities(region, strVal) ??
+                findCaseInsensitive(region, strVal) ??
+                findNormalized(region, strVal);
             }
             if (localHit) {
               // Translate local offset to absolute markdown offset
