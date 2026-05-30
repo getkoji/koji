@@ -879,15 +879,17 @@ export default function BuildPage() {
                             const prov = extractionResult.provenance?.[key];
                             const hasProvenance = prov != null;
                             const isHighlighted = highlightedField === key;
-                            const isArrayOfObjects = Array.isArray(value) && value.length > 0 && value.every((v: unknown) => v != null && typeof v === "object" && !Array.isArray(v));
-                            const isExpanded = expandedBuildArrays.has(key);
+                            const expandable = (Array.isArray(value) && value.length > 0) || (value != null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0);
 
-                            if (isArrayOfObjects) {
-                              const items = value as Record<string, unknown>[];
+                            if (expandable) {
+                              const isExpanded = expandedBuildArrays.has(key);
+                              const typeLabel = Array.isArray(value)
+                                ? `${value.length} item${value.length !== 1 ? "s" : ""}`
+                                : `${Object.keys(value as object).length} field${Object.keys(value as object).length !== 1 ? "s" : ""}`;
                               return (
                                 <div key={key}>
                                   <div
-                                    className={`flex items-start justify-between px-3 py-2 gap-3 cursor-pointer hover:bg-cream-2/80 transition-colors`}
+                                    className="flex items-start justify-between px-3 py-2 gap-3 cursor-pointer hover:bg-cream-2/80 transition-colors"
                                     onClick={() => {
                                       setExpandedBuildArrays((prev) => {
                                         const next = new Set(prev);
@@ -899,68 +901,28 @@ export default function BuildPage() {
                                   >
                                     <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
                                       <ChevronRight className={`w-3 h-3 text-ink-4 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
-                                      {hasProvenance && (
-                                        <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
-                                      )}
+                                      {hasProvenance && <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />}
                                       {key}
                                     </span>
-                                    <span className="text-[12px] text-ink-3 shrink-0">
-                                      {items.length} item{items.length !== 1 ? "s" : ""}
-                                    </span>
+                                    <span className="text-[12px] text-ink-3 shrink-0">{typeLabel}</span>
                                     {extractionResult.confidence_scores?.[key] !== undefined && (
                                       <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
                                         {(extractionResult.confidence_scores[key]! * 100).toFixed(0)}%
                                       </span>
                                     )}
                                   </div>
-                                  {isExpanded && items.map((item, idx) => {
-                                    const itemKey = `${key}[${idx}]`;
-                                    const itemActive = highlightedField === itemKey;
-                                    const itemProv = prov?.items?.[idx];
-                                    const hasItemProv = itemProv != null;
-                                    const itemExpanded = expandedBuildArrays.has(itemKey);
-                                    const summary = Object.entries(item).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(", ");
-                                    const display = summary.length > 80 ? `${summary.slice(0, 77)}...` : summary || "\u2014";
-                                    const entries = Object.entries(item).filter(([, v]) => v != null);
-                                    return (
-                                      <div key={itemKey}>
-                                        <div
-                                          className={`flex items-start gap-2 px-3 pl-8 py-1.5 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border ${itemActive ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
-                                          onClick={() => {
-                                            setExpandedBuildArrays((prev) => {
-                                              const next = new Set(prev);
-                                              if (next.has(itemKey)) next.delete(itemKey);
-                                              else next.add(itemKey);
-                                              return next;
-                                            });
-                                            setHighlightedField(itemKey);
-                                          }}
-                                        >
-                                          <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform mt-0.5 ${itemExpanded ? "rotate-90" : ""}`} />
-                                          <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums flex items-center gap-1">
-                                            {hasItemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
-                                            [{idx}]
-                                          </span>
-                                          <span className="text-[11px] text-ink-2 truncate min-w-0">{display}</span>
-                                        </div>
-                                        {itemExpanded && entries.map(([propName, propValue]) => {
-                                          const propKey = `${itemKey}.${propName}`;
-                                          const propActive = highlightedField === propKey;
-                                          return (
-                                          <div
-                                            key={propKey}
-                                            className={`flex items-baseline gap-2 px-3 pl-14 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${propActive ? "bg-vermillion-3/10 border-l-2 border-l-vermillion-2" : itemActive ? "bg-vermillion-3/5" : ""}`}
-                                            onClick={() => setHighlightedField(propKey)}
-                                          >
-                                            <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
-                                            <span className="text-[11px] text-ink-2 truncate min-w-0">
-                                              {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
-                                            </span>
-                                          </div>
-                                        );})}
-                                      </div>
-                                    );
-                                  })}
+                                  {isExpanded && (
+                                    <BuildNestedValue
+                                      value={value}
+                                      keyPath={key}
+                                      depth={1}
+                                      prov={prov}
+                                      highlightedField={highlightedField}
+                                      setHighlightedField={setHighlightedField}
+                                      expandedSet={expandedBuildArrays}
+                                      setExpandedSet={setExpandedBuildArrays}
+                                    />
+                                  )}
                                 </div>
                               );
                             }
@@ -972,21 +934,14 @@ export default function BuildPage() {
                                   onClick={() => {
                                     if (!hasProvenance) return;
                                     setHighlightedField(isHighlighted ? null : key);
-                                    const previewEl = document.querySelector("[data-provenance-preview]");
-                                    if (previewEl) {
-                                      const mark = previewEl.querySelector(`[data-provenance-field="${key}"]`);
-                                      mark?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                    }
                                   }}
                                 >
                                   <span className="font-mono text-[11px] text-ink-4 shrink-0 flex items-center gap-1">
-                                    {hasProvenance && (
-                                      <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />
-                                    )}
+                                    {hasProvenance && <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />}
                                     {key}
                                   </span>
                                   <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                    {typeof value === "object" ? JSON.stringify(value) : String(value ?? "\u2014")}
+                                    {String(value ?? "\u2014")}
                                   </span>
                                   {extractionResult.confidence_scores?.[key] !== undefined && (
                                     <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
@@ -1299,4 +1254,142 @@ export default function BuildPage() {
       )}
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Recursive nested value renderer for build page results
+// ---------------------------------------------------------------------------
+
+const BUILD_INDENT = 24;
+
+function BuildNestedValue({
+  value,
+  keyPath,
+  depth,
+  prov,
+  highlightedField,
+  setHighlightedField,
+  expandedSet,
+  setExpandedSet,
+}: {
+  value: unknown;
+  keyPath: string;
+  depth: number;
+  prov: any;
+  highlightedField: string | null;
+  setHighlightedField: (f: string | null) => void;
+  expandedSet: Set<string>;
+  setExpandedSet: React.Dispatch<React.SetStateAction<Set<string>>>;
+}) {
+  const pl = 12 + depth * BUILD_INDENT;
+  const toggle = (key: string) => setExpandedSet((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+
+  const isExpandable = (v: unknown) =>
+    (Array.isArray(v) && v.length > 0) ||
+    (v != null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 0);
+
+  const summarize = (v: unknown): string => {
+    if (Array.isArray(v)) return `${v.length} item${v.length !== 1 ? "s" : ""}`;
+    if (v != null && typeof v === "object") {
+      const entries = Object.entries(v).filter(([, val]) => val != null);
+      const parts = entries.map(([k, val]) => `${k}: ${typeof val === "object" ? JSON.stringify(val) : String(val)}`).join(", ");
+      return parts.length > 80 ? `${parts.slice(0, 77)}...` : parts || "\u2014";
+    }
+    return String(v ?? "\u2014");
+  };
+
+  // Array
+  if (Array.isArray(value)) {
+    return (
+      <>
+        {value.map((item, idx) => {
+          const itemKey = `${keyPath}[${idx}]`;
+          const itemActive = highlightedField === itemKey;
+          const itemProv = prov?.items?.[idx];
+          const expandable = isExpandable(item);
+          const isOpen = expandedSet.has(itemKey);
+
+          return (
+            <div key={itemKey}>
+              <div
+                className={`flex items-start gap-2 py-1.5 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border ${itemActive ? "bg-vermillion-3/20 border-l-2 border-l-vermillion-2" : ""}`}
+                style={{ paddingLeft: itemActive ? pl - 2 : pl }}
+                onClick={() => { if (expandable) toggle(itemKey); setHighlightedField(itemKey); }}
+              >
+                {expandable && <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform mt-0.5 ${isOpen ? "rotate-90" : ""}`} />}
+                <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums flex items-center gap-1">
+                  {itemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
+                  [{idx}]
+                </span>
+                <span className="text-[11px] text-ink-2 truncate min-w-0">{summarize(item)}</span>
+              </div>
+              {isOpen && expandable && (
+                <BuildNestedValue
+                  value={item}
+                  keyPath={itemKey}
+                  depth={depth + 1}
+                  prov={itemProv}
+                  highlightedField={highlightedField}
+                  setHighlightedField={setHighlightedField}
+                  expandedSet={expandedSet}
+                  setExpandedSet={setExpandedSet}
+                />
+              )}
+            </div>
+          );
+        })}
+      </>
+    );
+  }
+
+  // Object
+  if (value != null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v != null);
+    return (
+      <>
+        {entries.map(([propName, propValue]) => {
+          const propKey = `${keyPath}.${propName}`;
+          const propActive = highlightedField === propKey;
+          const propProv = prov?.properties?.[propName];
+          const expandable = isExpandable(propValue);
+          const isOpen = expandedSet.has(propKey);
+
+          return (
+            <div key={propKey}>
+              <div
+                className={`flex items-baseline gap-2 py-1 cursor-pointer hover:bg-cream-2/80 transition-colors border-t border-dotted border-border/50 ${propActive ? "bg-vermillion-3/10 border-l-2 border-l-vermillion-2" : ""}`}
+                style={{ paddingLeft: propActive ? pl - 2 : pl }}
+                onClick={() => { if (expandable) toggle(propKey); setHighlightedField(propKey); }}
+              >
+                {expandable && <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform ${isOpen ? "rotate-90" : ""}`} />}
+                <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
+                <span className="text-[11px] text-ink-2 truncate min-w-0">
+                  {expandable ? (Array.isArray(propValue) ? `${(propValue as unknown[]).length} items` : `${Object.keys(propValue as object).length} fields`) : String(propValue ?? "\u2014")}
+                </span>
+              </div>
+              {isOpen && expandable && (
+                <BuildNestedValue
+                  value={propValue}
+                  keyPath={propKey}
+                  depth={depth + 1}
+                  prov={propProv}
+                  highlightedField={highlightedField}
+                  setHighlightedField={setHighlightedField}
+                  expandedSet={expandedSet}
+                  setExpandedSet={setExpandedSet}
+                />
+              )}
+            </div>
+          );
+        })}
+      </>
+    );
+  }
+
+  return null;
 }
