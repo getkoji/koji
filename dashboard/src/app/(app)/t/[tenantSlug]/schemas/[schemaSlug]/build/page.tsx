@@ -1183,10 +1183,51 @@ export default function BuildPage() {
                         {extractionResult?.markdown ? (() => {
                           const md = extractionResult.markdown!;
                           const prov = extractionResult.provenance ?? {};
-                          const spans = Object.entries(prov)
-                            .filter(([, v]) => v != null)
-                            .map(([field, v]) => ({ field, ...v! }))
-                            .sort((a, b) => a.offset - b.offset);
+
+                          // Flatten all provenance spans including per-item and per-property
+                          const allSpans: Array<{ field: string; offset: number; length: number }> = [];
+                          for (const [field, v] of Object.entries(prov)) {
+                            if (!v) continue;
+                            // Per-item + per-property spans (most specific)
+                            if (v.items && Array.isArray(v.items)) {
+                              for (let i = 0; i < v.items.length; i++) {
+                                const item = v.items[i] as any;
+                                if (!item) continue;
+                                if (item.properties && typeof item.properties === "object") {
+                                  for (const [prop, pSpan] of Object.entries(item.properties as Record<string, any>)) {
+                                    if (pSpan && pSpan.offset >= 0 && pSpan.length > 0) {
+                                      allSpans.push({ field: `${field}[${i}].${prop}`, offset: pSpan.offset, length: pSpan.length });
+                                    }
+                                  }
+                                }
+                                // Item-level span (for items without per-property provenance)
+                                if (item.offset >= 0 && item.length > 0) {
+                                  allSpans.push({ field: `${field}[${i}]`, offset: item.offset, length: item.length });
+                                }
+                              }
+                            }
+                            // Top-level field span
+                            if (v.offset >= 0 && v.length > 0) {
+                              allSpans.push({ field, offset: v.offset, length: v.length });
+                            }
+                          }
+
+                          // Sort by offset, then prefer more specific (longer field key) spans
+                          allSpans.sort((a, b) => a.offset - b.offset || b.field.length - a.field.length);
+
+                          // Deduplicate overlapping spans: keep the most specific one
+                          const spans: typeof allSpans = [];
+                          for (const span of allSpans) {
+                            const last = spans[spans.length - 1];
+                            if (last && span.offset < last.offset + last.length) {
+                              // Overlapping — keep whichever has the longer (more specific) field key
+                              if (span.field.length > last.field.length) {
+                                spans[spans.length - 1] = span;
+                              }
+                              continue;
+                            }
+                            spans.push(span);
+                          }
 
                           const fragments: Array<{ text: string; field?: string }> = [];
                           let cursor = 0;
@@ -1194,8 +1235,10 @@ export default function BuildPage() {
                             if (span.offset > cursor) {
                               fragments.push({ text: md.slice(cursor, span.offset) });
                             }
-                            fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field });
-                            cursor = span.offset + span.length;
+                            if (span.offset >= cursor) {
+                              fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field });
+                              cursor = span.offset + span.length;
+                            }
                           }
                           if (cursor < md.length) {
                             fragments.push({ text: md.slice(cursor) });
