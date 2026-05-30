@@ -150,28 +150,34 @@ export function TraceResults({
 
                         {/* Expanded property rows */}
                         {itemExpanded &&
-                          entries.map(([propName, propValue]) => (
-                            <button
-                              key={`${itemKey}.${propName}`}
-                              type="button"
-                              onClick={() => onFieldClick(itemKey)}
-                              className={`w-full text-left pl-14 pr-4 py-1 border-b border-dotted border-border/50 text-[10.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
-                                itemActive
-                                  ? "bg-vermillion-3/5"
-                                  : ""
-                              }`}
-                              style={{ gridTemplateColumns: "auto 1fr" }}
-                            >
-                              <div className="flex items-baseline gap-2 min-w-0">
-                                <span className="font-mono text-[10px] text-ink-4 shrink-0">
-                                  {propName}
-                                </span>
-                                <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0">
-                                  {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
-                                </span>
-                              </div>
-                            </button>
-                          ))}
+                          entries.map(([propName, propValue]) => {
+                            const propKey = `${itemKey}.${propName}`;
+                            const propActive = activeField === propKey;
+                            return (
+                              <button
+                                key={propKey}
+                                type="button"
+                                onClick={() => onFieldClick(propKey)}
+                                className={`w-full text-left pl-14 pr-4 py-1 border-b border-dotted border-border/50 text-[10.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
+                                  propActive
+                                    ? "bg-vermillion-3/10 border-l-[3px] border-l-vermillion-2 pl-[calc(3.5rem-3px)]"
+                                    : itemActive
+                                      ? "bg-vermillion-3/5"
+                                      : ""
+                                }`}
+                                style={{ gridTemplateColumns: "auto 1fr" }}
+                              >
+                                <div className="flex items-baseline gap-2 min-w-0">
+                                  <span className="font-mono text-[10px] text-ink-4 shrink-0">
+                                    {propName}
+                                  </span>
+                                  <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0">
+                                    {typeof propValue === "object" ? JSON.stringify(propValue) : String(propValue)}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
                       </div>
                     );
                   })}

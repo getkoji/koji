@@ -53,6 +53,8 @@ export interface ProvenanceSpan {
   reasoning?: string;
   /** Per-item provenance for array fields */
   items?: ProvenanceSpan[];
+  /** Per-property provenance for object items in arrays */
+  properties?: Record<string, ProvenanceSpan | null>;
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -704,6 +706,7 @@ function resolveArray(
       const span = resolveScalar(item, markdown, textMap);
       if (span) resolved.push(span);
     } else if (typeof item === "object" && !Array.isArray(item)) {
+      const obj = item as Record<string, unknown>;
       // Prefer LLM-provided source text for precise matching
       const srcText = itemSourceTexts?.[i];
       let span: ProvenanceSpan | null = null;
@@ -711,9 +714,23 @@ function resolveArray(
         span = resolveObjectItemFromSourceText(srcText, markdown, textMap);
       }
       if (!span) {
-        span = resolveObjectItem(item as Record<string, unknown>, markdown);
+        span = resolveObjectItem(obj, markdown);
       }
-      if (span) resolved.push(span);
+      // Resolve per-property provenance for each scalar value
+      if (span) {
+        const properties: Record<string, ProvenanceSpan | null> = {};
+        for (const [propName, propValue] of Object.entries(obj)) {
+          if (propValue == null) {
+            properties[propName] = null;
+          } else if (typeof propValue === "string" || typeof propValue === "number") {
+            properties[propName] = resolveScalar(propValue, markdown, textMap) ?? null;
+          } else {
+            properties[propName] = null;
+          }
+        }
+        span.properties = properties;
+        resolved.push(span);
+      }
     }
   }
 
