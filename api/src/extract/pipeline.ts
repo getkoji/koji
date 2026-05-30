@@ -553,7 +553,7 @@ export async function extractFields(
   // the original format, which is fragile and lossy.
   // Pass source texts so array-of-objects items get precise bbox matching
   // from the LLM-provided verbatim text instead of heuristic page-scoring.
-  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts);
+  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts, fields);
 
   // Post-extraction normalization
   const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);

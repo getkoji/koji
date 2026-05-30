@@ -872,11 +872,40 @@ function resolveArray(
   };
 }
 
+/**
+ * For enum/mapping fields, search for the mapping's aliases in the markdown
+ * when the canonical value can't be found directly.
+ * E.g. extracted "directors_and_officers" → search for "D&O", "Directors and Officers", etc.
+ */
+function resolveViaAliases(
+  canonicalValue: string,
+  fieldSpec: Record<string, unknown>,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  const mappings = (fieldSpec.mappings ?? {}) as Record<string, unknown[]>;
+  const aliases = mappings[canonicalValue];
+  if (!aliases || !Array.isArray(aliases)) return null;
+
+  // Also try the canonical value itself as a search term (with spaces for underscored values)
+  const candidates = [
+    ...aliases.map(String),
+    canonicalValue.replace(/_/g, " "),
+  ];
+
+  for (const alias of candidates) {
+    const span = resolveScalar(alias, markdown, textMap);
+    if (span) return span;
+  }
+  return null;
+}
+
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
   textMap?: TextMap,
   sourceTexts?: Record<string, string[]>,
+  fieldSpecs?: Record<string, Record<string, unknown>>,
 ): ProvenanceMap {
   const provenance: ProvenanceMap = {};
 
@@ -891,7 +920,12 @@ export function resolveProvenance(
       continue;
     }
 
-    provenance[field] = resolveScalar(value, markdown, textMap) ?? null;
+    let span = resolveScalar(value, markdown, textMap);
+    // For enum/mapping fields, try aliases when canonical value isn't found
+    if (!span && typeof value === "string" && fieldSpecs?.[field]) {
+      span = resolveViaAliases(value, fieldSpecs[field]!, markdown, textMap);
+    }
+    provenance[field] = span ?? null;
   }
 
   return provenance;
