@@ -761,3 +761,102 @@ describe("HTML entity matching", () => {
     expect(result.coverage!.chunk).toContain("Condominium");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Enum/mapping alias provenance
+// ---------------------------------------------------------------------------
+
+describe("enum/mapping alias provenance", () => {
+  it("finds provenance via mapping aliases when canonical value not in document", () => {
+    const markdown = "Coverage: D&O Liability Insurance\nLimit: $1,000,000";
+    const fieldSpecs = {
+      policy_type: {
+        type: "mapping",
+        mappings: {
+          directors_and_officers: ["D&O", "Directors and Officers", "Directors & Officers"],
+          general_liability: ["GL", "General Liability", "CGL"],
+        },
+      },
+    };
+
+    const result = resolveProvenance(
+      { policy_type: "directors_and_officers" },
+      markdown,
+      undefined,
+      undefined,
+      fieldSpecs,
+    );
+
+    expect(result.policy_type).not.toBeNull();
+    expect(result.policy_type!.chunk).toBe("D&O");
+  });
+
+  it("uses canonical value with spaces when no aliases match", () => {
+    const markdown = "Type: directors and officers\nLimit: $1,000,000";
+    const fieldSpecs = {
+      policy_type: {
+        type: "mapping",
+        mappings: {
+          directors_and_officers: [],
+        },
+      },
+    };
+
+    const result = resolveProvenance(
+      { policy_type: "directors_and_officers" },
+      markdown,
+      undefined,
+      undefined,
+      fieldSpecs,
+    );
+
+    expect(result.policy_type).not.toBeNull();
+    expect(result.policy_type!.chunk).toBe("directors and officers");
+  });
+
+  it("returns null when neither canonical nor aliases found", () => {
+    const markdown = "Some unrelated content about widgets";
+    const fieldSpecs = {
+      policy_type: {
+        type: "mapping",
+        mappings: {
+          directors_and_officers: ["D&O"],
+        },
+      },
+    };
+
+    const result = resolveProvenance(
+      { policy_type: "directors_and_officers" },
+      markdown,
+      undefined,
+      undefined,
+      fieldSpecs,
+    );
+
+    expect(result.policy_type).toBeNull();
+  });
+
+  it("prefers direct match over alias when canonical value exists in document", () => {
+    const markdown = "Policy Type: directors_and_officers\nCoverage: D&O";
+    const fieldSpecs = {
+      policy_type: {
+        type: "mapping",
+        mappings: {
+          directors_and_officers: ["D&O"],
+        },
+      },
+    };
+
+    const result = resolveProvenance(
+      { policy_type: "directors_and_officers" },
+      markdown,
+      undefined,
+      undefined,
+      fieldSpecs,
+    );
+
+    expect(result.policy_type).not.toBeNull();
+    // Direct match should win
+    expect(result.policy_type!.chunk).toBe("directors_and_officers");
+  });
+});
