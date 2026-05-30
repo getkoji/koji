@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Highlighter } from "lucide-react";
 import dynamic from "next/dynamic";
 
 // react-pdf uses pdfjs which requires DOM APIs (DOMMatrix, canvas) that don't
@@ -67,6 +67,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
   }, []);
   const [totalPages, setTotalPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined);
+  const [showHighlights, setShowHighlights] = useState(true);
 
   // Measure container width for responsive page sizing
   useEffect(() => {
@@ -112,26 +113,43 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Page navigation */}
-      {totalPages > 1 && (
+      {/* Toolbar: page navigation + highlight toggle */}
+      {(totalPages > 1 || highlights.length > 0) && (
         <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
-          <button
-            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-            disabled={currentPage <= 1}
-            className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
-          >
-            <ChevronLeft className="w-3.5 h-3.5 text-ink-3" />
-          </button>
-          <span className="font-mono text-[10px] text-ink-4">
-            {currentPage} / {totalPages}
-          </span>
-          <button
-            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-            disabled={currentPage >= totalPages}
-            className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
-          >
-            <ChevronRight className="w-3.5 h-3.5 text-ink-3" />
-          </button>
+          {totalPages > 1 ? (
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+              className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
+            >
+              <ChevronLeft className="w-3.5 h-3.5 text-ink-3" />
+            </button>
+          ) : <span />}
+          <div className="flex items-center gap-2">
+            {totalPages > 1 && (
+              <span className="font-mono text-[10px] text-ink-4">
+                {currentPage} / {totalPages}
+              </span>
+            )}
+            {highlights.length > 0 && (
+              <button
+                onClick={() => setShowHighlights((v) => !v)}
+                className={`p-0.5 rounded transition-colors ${showHighlights ? "bg-vermillion-3/30 text-vermillion-2" : "text-ink-4 hover:bg-cream-2"}`}
+                title={showHighlights ? "Hide highlights" : "Show highlights"}
+              >
+                <Highlighter className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          {totalPages > 1 ? (
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+              className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
+            >
+              <ChevronRight className="w-3.5 h-3.5 text-ink-3" />
+            </button>
+          ) : <span />}
         </div>
       )}
 
@@ -158,7 +176,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
             renderAnnotationLayer={false}
           >
             {/* Bounding box highlights — children of Page share its coordinate space */}
-            {pageHighlights.length > 0 && (
+            {showHighlights && pageHighlights.length > 0 && (
               <HighlightOverlay
                 highlights={pageHighlights}
                 activeField={activeField ?? null}
