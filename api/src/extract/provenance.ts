@@ -581,6 +581,7 @@ function resolveScalar(
     offset: result.offset,
     length: result.length,
     chunk,
+    page: estimatePageFromOffset(markdown, result.offset),
   };
 
   if (textMap && textMap.length > 0) {
@@ -716,17 +717,66 @@ function resolveArray(
       if (!span) {
         span = resolveObjectItem(obj, markdown);
       }
-      // Resolve per-property provenance for each scalar value
+      // Resolve per-property provenance for each scalar value.
+      // When we have source text, search within that region first —
+      // avoids false matches like "$1,000" inside "$1,000,000".
       if (span) {
         const properties: Record<string, ProvenanceSpan | null> = {};
+        const regionOffset = span.offset;
+        const region = srcText && span.chunk ? span.chunk : null;
+
         for (const [propName, propValue] of Object.entries(obj)) {
           if (propValue == null) {
             properties[propName] = null;
-          } else if (typeof propValue === "string" || typeof propValue === "number") {
-            properties[propName] = resolveScalar(propValue, markdown, textMap) ?? null;
-          } else {
-            properties[propName] = null;
+            continue;
           }
+          if (typeof propValue !== "string" && typeof propValue !== "number") {
+            properties[propName] = null;
+            continue;
+          }
+
+          let propSpan: ProvenanceSpan | null = null;
+
+          // First: search within the source text region for precise matching
+          if (region) {
+            const strVal = typeof propValue === "number" ? String(propValue) : propValue;
+            let localHit =
+              findExact(region, strVal) ??
+              findCaseInsensitive(region, strVal) ??
+              findNormalized(region, strVal);
+            // Try format-aware matching within region
+            if (!localHit && typeof propValue === "number") {
+              localHit = findDollarAmount(region, propValue) ?? findNumber(region, propValue);
+            } else if (!localHit && typeof propValue === "string" && /^\$?[\d,.]+$/.test(propValue)) {
+              localHit = findDollarAmount(region, propValue);
+            }
+            if (localHit) {
+              // Translate local offset to absolute markdown offset
+              const absOffset = regionOffset + localHit.offset;
+              const chunk = markdown.slice(absOffset, absOffset + localHit.length);
+              propSpan = {
+                offset: absOffset,
+                length: localHit.length,
+                chunk,
+                page: estimatePageFromOffset(markdown, absOffset),
+              };
+              if (textMap && textMap.length > 0) {
+                const bboxHit = resolveBbox(propValue, chunk, textMap, markdown, absOffset);
+                if (bboxHit) {
+                  propSpan.page = bboxHit.page;
+                  propSpan.bbox = bboxHit.bbox;
+                  if (bboxHit.words) propSpan.words = bboxHit.words;
+                }
+              }
+            }
+          }
+
+          // Fallback: search the full markdown
+          if (!propSpan) {
+            propSpan = resolveScalar(propValue, markdown, textMap) ?? null;
+          }
+
+          properties[propName] = propSpan;
         }
         span.properties = properties;
         resolved.push(span);
