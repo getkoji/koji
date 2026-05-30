@@ -157,12 +157,13 @@ describe("null for unfound values", () => {
     expect(result.empty).toBeNull();
   });
 
-  it("returns null for boolean values (not searchable)", () => {
+  it("resolves boolean values via common representations", () => {
     const markdown = "Status: true\nEnabled: yes";
     const result = resolveProvenance({ status: true as unknown }, markdown);
 
-    // Booleans are not strings or numbers, so provenance returns null
-    expect(result.status).toBeNull();
+    // Booleans now resolve via common representations (Yes, true, ✓, etc.)
+    expect(result.status).not.toBeNull();
+    expect(result.status!.chunk).toBe("yes");
   });
 });
 
@@ -858,5 +859,58 @@ describe("enum/mapping alias provenance", () => {
     expect(result.policy_type).not.toBeNull();
     // Direct match should win
     expect(result.policy_type!.chunk).toBe("directors_and_officers");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boolean provenance
+// ---------------------------------------------------------------------------
+
+describe("boolean provenance", () => {
+  it("finds 'Yes' for true value", () => {
+    const markdown = "Name: John\nActive: Yes\nTotal: $500";
+    const result = resolveProvenance({ active: true }, markdown);
+
+    expect(result.active).not.toBeNull();
+    expect(result.active!.chunk).toBe("Yes");
+  });
+
+  it("finds 'No' for false value", () => {
+    const markdown = "Name: John\nInsured: No\nTotal: $500";
+    const result = resolveProvenance({ insured: false }, markdown);
+
+    expect(result.insured).not.toBeNull();
+    expect(result.insured!.chunk).toBe("No");
+  });
+
+  it("finds checkmark for true value", () => {
+    const markdown = "Coverage A: ✓\nCoverage B: ☐";
+    const result = resolveProvenance({ coverage_a: true }, markdown);
+
+    expect(result.coverage_a).not.toBeNull();
+    expect(result.coverage_a!.chunk).toBe("✓");
+  });
+
+  it("finds unchecked box for false value", () => {
+    const markdown = "Coverage A: ✓\nCoverage B: ☐";
+    const result = resolveProvenance({ coverage_b: false }, markdown);
+
+    expect(result.coverage_b).not.toBeNull();
+    expect(result.coverage_b!.chunk).toBe("☐");
+  });
+
+  it("finds X for true value using word boundary", () => {
+    const markdown = "Extra coverage: X\nExcluded items: None";
+    const result = resolveProvenance({ extra_coverage: true }, markdown);
+
+    expect(result.extra_coverage).not.toBeNull();
+    expect(result.extra_coverage!.chunk).toBe("X");
+  });
+
+  it("returns null when no boolean representation found", () => {
+    const markdown = "Some content with no boolean indicators";
+    const result = resolveProvenance({ flag: true }, markdown);
+
+    expect(result.flag).toBeNull();
   });
 });
