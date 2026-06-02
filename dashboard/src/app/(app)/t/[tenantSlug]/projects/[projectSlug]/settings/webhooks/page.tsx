@@ -12,6 +12,8 @@ interface WebhookTarget {
   displayName: string;
   url: string;
   subscribedEvents: string[];
+  headerCount: number;
+  headerNames: string[];
   status: string;
   lastDeliveredAt: string | null;
   lastError: string | null;
@@ -170,6 +172,11 @@ export default function WebhooksPage() {
                       <span key={e} className="font-mono text-[9px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm">{e}</span>
                     ))}
                   </div>
+                  {t.headerCount > 0 && (
+                    <span className="font-mono text-[9px] text-ink-4 bg-cream-3 px-1.5 py-0.5 rounded-sm" title={t.headerNames.join(", ")}>
+                      {t.headerCount} custom header{t.headerCount > 1 ? "s" : ""}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   <Meta>last: {timeAgo(t.lastDeliveredAt)}</Meta>
@@ -237,6 +244,7 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState<Set<string>>(new Set(DEFAULT_EVENTS));
+  const [headers, setHeaders] = useState<Array<{ key: string; value: string }>>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -257,9 +265,14 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     setError(null);
     setCreating(true);
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const headersObj: Record<string, string> = {};
+    for (const h of headers) {
+      if (h.key.trim()) headersObj[h.key.trim()] = h.value;
+    }
     try {
       const result = await api.post<{ secret: string }>("/api/webhook-targets", {
         name, slug, url, event_filters: [...events],
+        ...(Object.keys(headersObj).length > 0 ? { headers: headersObj } : {}),
       });
       onCreated(result.secret);
     } catch (err: unknown) {
@@ -313,6 +326,27 @@ function AddWebhookDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                 All events
               </label>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[12.5px] font-medium text-ink">Custom headers <span className="font-normal text-ink-4">(optional)</span></label>
+              <button type="button" onClick={() => setHeaders([...headers, { key: "", value: "" }])} className="font-mono text-[10px] text-vermillion-2 hover:underline">+ Add header</button>
+            </div>
+            {headers.length > 0 && (
+              <div className="space-y-1.5">
+                {headers.map((h, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <input value={h.key} onChange={(e) => { const next = [...headers]; next[i] = { ...h, key: e.target.value }; setHeaders(next); }} placeholder="Header-Name"
+                      className="flex-1 h-[28px] rounded-sm border border-input bg-transparent px-2 text-[12px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+                    <input value={h.value} onChange={(e) => { const next = [...headers]; next[i] = { ...h, value: e.target.value }; setHeaders(next); }} placeholder="value" type="password"
+                      className="flex-1 h-[28px] rounded-sm border border-input bg-transparent px-2 text-[12px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+                    <button type="button" onClick={() => setHeaders(headers.filter((_, j) => j !== i))} className="text-ink-4 hover:text-vermillion-2 text-[11px]">&times;</button>
+                  </div>
+                ))}
+                <p className="font-mono text-[9px] text-ink-4">Values are encrypted at rest. Headers starting with Koji- are reserved.</p>
+              </div>
+            )}
           </div>
 
           {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
