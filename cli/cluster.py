@@ -131,18 +131,52 @@ def check_port_conflicts(config: KojiConfig) -> None:
     raise SystemExit(1)
 
 
-def start_cluster(config: KojiConfig, dev: bool = False) -> None:
+def _is_cluster_running(config: KojiConfig) -> bool:
+    """Check if the cluster is already running by probing the server health endpoint."""
+    server_url = f"http://127.0.0.1:{config.cluster.server_port}"
+    return check_health(server_url)
+
+
+def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) -> None:
     """Start the Koji cluster.
 
     By default, pre-built images are pulled from ghcr.io/getkoji. Pass
     ``dev=True`` (or set ``cluster.dev: true`` in koji.yaml) to build images
     from local source — the contributor workflow.
+
+    Pass ``clean=True`` to destroy existing data before starting fresh.
     """
     project_dir = get_project_dir()
     koji_dir = get_koji_dir()
 
     # CLI flag wins; otherwise fall back to the cluster config flag.
     dev_mode = dev or config.cluster.dev
+
+    # Clean start: destroy existing cluster data first
+    if clean:
+        if (koji_dir / "docker-compose.yaml").exists():
+            console.print(f"\n[bold yellow]Resetting cluster [cyan]{config.project}[/cyan]...[/bold yellow]")
+            result = run_compose(["down", "-v", "--remove-orphans"], koji_dir)
+            if result.returncode != 0:
+                console.print(f"[red]Reset failed:[/red]\n{result.stderr}")
+                raise SystemExit(1)
+            (koji_dir / "cluster.json").unlink(missing_ok=True)
+            console.print("  Removed containers, volumes, and state.\n")
+
+    # If cluster is already running, show status instead of re-starting
+    state = load_cluster_state()
+    if state is not None and _is_cluster_running(config):
+        console.print(f"\n[bold green]Koji cluster [cyan]{config.project}[/cyan] is already running:[/bold green]\n")
+        console.print(f"  [bold]Dashboard:[/bold]   http://127.0.0.1:{config.cluster.ui_port}")
+        console.print(f"  [bold]API Server:[/bold]  http://127.0.0.1:{config.cluster.server_port}")
+        console.print(f"  [bold]Parse:[/bold]       http://127.0.0.1:{config.cluster.parse_port}")
+        console.print(f"  [bold]Extract:[/bold]     http://127.0.0.1:{config.cluster.extract_port}")
+        console.print(f"  [bold]Ollama:[/bold]      http://127.0.0.1:{config.cluster.ollama_port}")
+        console.print()
+        console.print("[dim]To restart, run [bold]koji stop[/bold] then [bold]koji start[/bold].[/dim]")
+        console.print("[dim]To wipe all data, run [bold]koji start --clean[/bold].[/dim]")
+        console.print()
+        return
 
     # Check for port conflicts before doing anything with Docker
     check_port_conflicts(config)
