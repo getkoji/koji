@@ -215,16 +215,48 @@ def _resolve_conditional_hints(field_spec: dict, extracted_so_far: dict) -> dict
     return field_spec
 
 
+def _should_skip_field(field_spec: dict, extracted_so_far: dict) -> bool:
+    """Check whether a field should be skipped based on its skip_unless condition.
+
+    Schema fields can declare `skip_unless` to gate extraction on a parent
+    field's value.  When the parent's extracted value is not in the allowed
+    list the field is omitted from the extraction prompt entirely — more
+    reliable than asking the LLM to "return null" since the field never
+    reaches the model.
+
+        skip_unless:
+          form_type: ["8-K", "8-K/A", "6-K", "6-K/A"]
+
+    Returns True when the field should be *skipped* (i.e. condition not met).
+    """
+    skip_unless = field_spec.get("skip_unless")
+    if not isinstance(skip_unless, dict) or not skip_unless:
+        return False
+    for parent_name, allowed_values in skip_unless.items():
+        if not isinstance(allowed_values, list):
+            continue
+        parent_value = extracted_so_far.get(parent_name)
+        if parent_value is None or str(parent_value) not in [str(v) for v in allowed_values]:
+            return True
+    return False
+
+
 def _resolve_wave_fields(schema_def: dict, wave: list[str], extracted_so_far: dict) -> dict:
     """Build a shallow schema copy whose `fields` block contains only the
     given wave's fields with their conditional hints resolved against the
     accumulated state. Used by the wave-based extraction loop.
+
+    Fields with a `skip_unless` condition that isn't met are omitted
+    entirely — they never reach the LLM prompt.
     """
-    resolved_fields = {
-        name: _resolve_conditional_hints(schema_def["fields"][name], extracted_so_far)
-        for name in wave
-        if name in schema_def.get("fields", {})
-    }
+    resolved_fields = {}
+    for name in wave:
+        spec = schema_def.get("fields", {}).get(name)
+        if spec is None:
+            continue
+        if _should_skip_field(spec, extracted_so_far):
+            continue
+        resolved_fields[name] = _resolve_conditional_hints(spec, extracted_so_far)
     return {**schema_def, "fields": resolved_fields}
 
 
@@ -1067,6 +1099,15 @@ async def intelligent_extract(
 
         for wave_index, wave in enumerate(waves):
             wave_schema = _resolve_wave_fields(schema_def, wave, accumulated["extracted"])
+
+            # Record skipped fields as null immediately
+            skipped = [f for f in wave if f not in wave_schema.get("fields", {})]
+            for f in skipped:
+                accumulated["extracted"][f] = None
+                accumulated["confidence"][f] = "skipped"
+                accumulated["confidence_scores"][f] = 0.0
+            if skipped:
+                print(f"[koji-extract] Wave {wave_index}: skipped fields (skip_unless): {skipped}")
 
             wave_routes = route_fields(wave_schema, section_chunks)
             all_routes.extend(wave_routes)
