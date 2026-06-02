@@ -245,20 +245,20 @@ def _check_field_sum(params: Any, data: dict, report: ValidationReport) -> None:
 
 
 def _check_min_words(params: Any, data: dict, report: ValidationReport) -> None:
-    """Null out string fields shorter than a minimum word count.
+    """Enforce a minimum word count on string fields.
 
     Schema config:
-        - min_words: { field: description_of_loss, min: 5 }
+        - min_words: { field: description, min: 5, on_fail: null }
+        - min_words: { field: description, min: 5, on_fail: error }
 
-    When the extracted value has fewer words than `min`, it's likely a
-    classification code ("Fall/Slip", "Caught in/between") rather than
-    the narrative the schema author wanted. Nulls the field so the
-    code doesn't masquerade as a real description.
+    on_fail=null (default): null the field when the word count is too low.
+    on_fail=error: keep the field value but report a hard validation error.
     """
     if not isinstance(params, dict):
         return
     fname = params.get("field")
     min_count = int(params.get("min", 5))
+    on_fail = params.get("on_fail", None)  # None/"null" = soft (null field); "error" = hard
     if not fname:
         return
     value = data.get(fname)
@@ -266,12 +266,40 @@ def _check_min_words(params: Any, data: dict, report: ValidationReport) -> None:
         return
     word_count = len(value.split())
     if word_count < min_count:
-        report.fail(
-            "min_words",
-            fname,
-            f"nulled: {word_count} words (min {min_count}) — likely a classification code, not a narrative",
-        )
-        data[fname] = None
+        if on_fail == "error":
+            report.fail("min_words", fname, f"{word_count} words is below minimum of {min_count}")
+        else:
+            report.fail("min_words", fname, f"nulled: {word_count} words (min {min_count})")
+            data[fname] = None
+
+
+def _check_max_words(params: Any, data: dict, report: ValidationReport) -> None:
+    """Enforce a maximum word count on string fields.
+
+    Schema config:
+        - max_words: { field: summary, max: 100, on_fail: null }
+        - max_words: { field: summary, max: 100, on_fail: error }
+
+    on_fail=null (default): null the field when the word count is too high.
+    on_fail=error: keep the field value but report a hard validation error.
+    """
+    if not isinstance(params, dict):
+        return
+    fname = params.get("field")
+    max_count = int(params.get("max", 500))
+    on_fail = params.get("on_fail", None)  # None/"null" = soft (null field); "error" = hard
+    if not fname:
+        return
+    value = data.get(fname)
+    if not isinstance(value, str):
+        return
+    word_count = len(value.split())
+    if word_count > max_count:
+        if on_fail == "error":
+            report.fail("max_words", fname, f"{word_count} words exceeds maximum of {max_count}")
+        else:
+            report.fail("max_words", fname, f"nulled: {word_count} words (max {max_count})")
+            data[fname] = None
 
 
 RULES = {
@@ -282,6 +310,7 @@ RULES = {
     "sum_equals": _check_sum_equals,
     "field_sum": _check_field_sum,
     "min_words": _check_min_words,
+    "max_words": _check_max_words,
     "regex": _check_regex,
 }
 
