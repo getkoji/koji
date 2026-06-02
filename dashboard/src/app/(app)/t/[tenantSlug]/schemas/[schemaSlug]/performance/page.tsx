@@ -353,13 +353,13 @@ export default function PerformancePage() {
 
         {/* ── 3. Two-column grid ── */}
         {chartData.length >= 2 && (
-          <div className="grid gap-6" style={{ gridTemplateColumns: "1.2fr 1fr" }}>
+          <div className="grid gap-6 grid-cols-1 lg:grid-cols-[1.2fr_1fr]">
             {/* Per-field heatmap */}
             <div>
               <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-4" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
                 Per-field accuracy
               </h2>
-              <div className="border border-border rounded-sm overflow-hidden">
+              <div className="border border-border rounded-sm overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="bg-cream-2/50">
@@ -399,7 +399,7 @@ export default function PerformancePage() {
               <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-4" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
                 Run details
               </h2>
-              <div className="border border-border rounded-sm overflow-hidden">
+              <div className="border border-border rounded-sm overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="bg-cream-2/50">

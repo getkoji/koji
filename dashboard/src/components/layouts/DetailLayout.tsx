@@ -20,10 +20,10 @@ export function DetailLayout({
     <div className="flex flex-col h-[calc(100vh-60px)]">
       <StickyHeader>{header}</StickyHeader>
       <div className="flex-1 min-h-0 flex flex-col">
-        {metricsStrip && <div className="px-10 pt-5 shrink-0">{metricsStrip}</div>}
+        {metricsStrip && <div className="px-4 sm:px-10 pt-5 shrink-0">{metricsStrip}</div>}
         <div
-          className="flex-1 min-h-0 grid gap-4 px-10 pt-5 pb-8"
-          style={{ gridTemplateColumns: `${cols} 1fr` }}
+          className="flex-1 min-h-0 grid gap-4 px-4 sm:px-10 pt-5 pb-8 grid-cols-1 md:grid-cols-[var(--sidebar-cols)_1fr]"
+          style={{ "--sidebar-cols": cols } as React.CSSProperties}
         >
           <div className="overflow-y-auto min-h-0">{sidebar}</div>
           <div className="overflow-y-auto min-h-0">{children}</div>

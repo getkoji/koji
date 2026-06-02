@@ -253,7 +253,7 @@ export default function ReviewDetailPage() {
         />
       </StickyHeader>
 
-      <div className="flex-1 min-h-0 grid grid-cols-2 gap-4 px-10 pt-4 pb-4 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 gap-4 px-4 sm:px-10 pt-4 pb-4 overflow-hidden">
         <DocumentPreview url={item.documentPreviewUrl} mimeType={item.documentMimeType} />
         <div className="flex flex-col min-h-0 gap-4 overflow-y-auto">
           <FieldPanel item={item} confidence={confidence} />
@@ -318,7 +318,7 @@ function ReviewShell({
           ]}
         />
       </StickyHeader>
-      <div className="flex-1 overflow-y-auto px-10 pt-4 pb-8">{children}</div>
+      <div className="flex-1 overflow-y-auto px-4 sm:px-10 pt-4 pb-8">{children}</div>
     </div>
   );
 }
@@ -756,7 +756,7 @@ function RejectDialog({
     textareaRef.current?.focus();
   }, []);
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[460px] p-6">
         <div className="flex items-start justify-between mb-1">
