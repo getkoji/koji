@@ -241,9 +241,7 @@ def _dict_key_overlap(a: dict, b: dict) -> float:
     na = _normalize_value_for_compare(a)
     nb = _normalize_value_for_compare(b)
     if not isinstance(na, dict) or not isinstance(nb, dict):
-        return (
-            1.0 if json.dumps(na, sort_keys=True, default=str) == json.dumps(nb, sort_keys=True, default=str) else 0.0
-        )
+        return 1.0 if json.dumps(na, sort_keys=True, default=str) == json.dumps(nb, sort_keys=True, default=str) else 0.0
     all_keys = set(list(na.keys()) + list(nb.keys()))
     if not all_keys:
         return 1.0
