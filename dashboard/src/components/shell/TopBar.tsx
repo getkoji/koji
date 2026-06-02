@@ -8,7 +8,7 @@ import { Bell, User, Settings, LogOut, HelpCircle, ExternalLink, ChevronsUpDown,
 import { SidebarTrigger } from "@koji/ui";
 import { KojiLogo } from "./KojiLogo";
 import { CommandPalette } from "./CommandPalette";
-import { me as meApi, projectsApi, getSignOutHandler, type ProjectRow } from "@/lib/api";
+import { me as meApi, projectsApi, notificationsApi, getSignOutHandler, type ProjectRow, type NotificationRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { on } from "@/lib/events";
 
@@ -18,9 +18,11 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const router = useRouter();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
   const { data: user, loading: userLoading } = useApi(useCallback(() => meApi.get(), []));
   const { data: projectList, loading: projectsLoading, refetch: refetchProjects } = useApi(useCallback(() => projectsApi.list(), []));
 
@@ -43,9 +45,25 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
   const userEmail = user?.email ?? "";
   const userInitials = userName.split(" ").map(n => n[0]).join("").toUpperCase() || "?";
 
+  // Notification count polling (every 30s)
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifItems, setNotifItems] = useState<NotificationRow[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => notificationsApi.count().then((n) => alive && setUnreadCount(n)).catch(() => {});
+    poll();
+    const h = setInterval(poll, 30_000);
+    return () => { alive = false; clearInterval(h); };
+  }, []);
+  // Fetch items when dropdown opens
+  useEffect(() => {
+    if (!notifOpen) return;
+    notificationsApi.list({ limit: 10 }).then(setNotifItems).catch(() => {});
+  }, [notifOpen]);
+
   // Close dropdowns on click outside or escape
   useEffect(() => {
-    if (!userMenuOpen && !projectMenuOpen) return;
+    if (!userMenuOpen && !projectMenuOpen && !notifOpen) return;
     function handleClick(e: MouseEvent) {
       if (userMenuOpen && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setUserMenuOpen(false);
@@ -53,11 +71,15 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
       if (projectMenuOpen && projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
         setProjectMenuOpen(false);
       }
+      if (notifOpen && notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         setUserMenuOpen(false);
         setProjectMenuOpen(false);
+        setNotifOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -168,12 +190,86 @@ export function TopBar({ tenantSlug: tenantSlugProp }: { tenantSlug?: string }) 
 
       {/* Right side */}
       <div className="flex items-center gap-1.5 shrink-0">
-        <button
-          className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors"
-          aria-label="Notifications"
-        >
-          <Bell className="w-4 h-4" />
-        </button>
+        <div className="relative" ref={notifRef}>
+          <button
+            onClick={() => setNotifOpen(!notifOpen)}
+            className="w-8 h-8 inline-flex items-center justify-center rounded-sm text-ink-3 hover:bg-cream-2 hover:text-ink transition-colors relative"
+            aria-label="Notifications"
+            aria-expanded={notifOpen}
+          >
+            <Bell className="w-4 h-4" />
+            {unreadCount > 0 && (
+              <span className="absolute top-0.5 right-0.5 w-[14px] h-[14px] rounded-full bg-vermillion-2 text-cream text-[8px] font-mono font-bold flex items-center justify-center leading-none">
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            )}
+          </button>
+          {notifOpen && (
+            <div className="absolute right-0 top-[38px] w-[320px] bg-white border border-border-strong rounded-sm shadow-lg overflow-hidden z-50">
+              <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border">
+                <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">
+                  Notifications
+                </span>
+                {unreadCount > 0 && (
+                  <button
+                    onClick={() => {
+                      notificationsApi.markAllRead().then(() => {
+                        setUnreadCount(0);
+                        setNotifItems((prev) => prev.map((n) => ({ ...n, readAt: new Date().toISOString() })));
+                      });
+                    }}
+                    className="font-mono text-[10px] text-vermillion-2 hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                )}
+              </div>
+              <div className="max-h-[360px] overflow-y-auto">
+                {notifItems.length === 0 ? (
+                  <div className="px-3.5 py-6 text-center text-[12px] text-ink-4">
+                    No notifications yet
+                  </div>
+                ) : (
+                  notifItems.map((n) => (
+                    <button
+                      key={n.id}
+                      onClick={() => {
+                        if (!n.readAt) {
+                          notificationsApi.markRead(n.id).then(() => {
+                            setUnreadCount((c) => Math.max(0, c - 1));
+                            setNotifItems((prev) =>
+                              prev.map((item) =>
+                                item.id === n.id ? { ...item, readAt: new Date().toISOString() } : item,
+                              ),
+                            );
+                          });
+                        }
+                      }}
+                      className={`w-full text-left px-3.5 py-2.5 border-b border-dotted border-border last:border-b-0 hover:bg-cream-2/60 transition-colors ${
+                        n.readAt ? "opacity-60" : ""
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {!n.readAt && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-vermillion-2 mt-1.5 shrink-0" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-medium text-ink truncate">{n.title}</div>
+                          {n.body && (
+                            <div className="text-[11px] text-ink-3 mt-0.5 line-clamp-2">{n.body}</div>
+                          )}
+                          <div className="font-mono text-[9px] text-ink-4 mt-1">
+                            {formatNotifTime(n.createdAt)}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* User menu */}
         <div className="relative" ref={menuRef}>
@@ -299,4 +395,15 @@ function UserMenuItem({
       <span>{label}</span>
     </button>
   );
+}
+
+function formatNotifTime(iso: string): string {
+  const d = new Date(iso);
+  const now = Date.now();
+  const diff = now - d.getTime();
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  return d.toLocaleDateString();
 }
