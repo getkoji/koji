@@ -1,5 +1,5 @@
 /**
- * Post-extract validation — TypeScript port of services/extract/validate.py.
+ * Post-extract validation.
  *
  * Schema-declared validation rules run after normalization.
  * Each rule type is a handler that checks extracted data and appends

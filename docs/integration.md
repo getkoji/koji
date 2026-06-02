@@ -47,25 +47,16 @@ services:
     image: ghcr.io/getkoji/parse:latest
     ports: ["9411:9411"]
 
-  koji-extract:
-    image: ghcr.io/getkoji/extract:latest
-    ports: ["9412:9420"]
-    environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      KOJI_EXTRACT_MODEL: openai/gpt-4o-mini
-
   koji-api:
     image: ghcr.io/getkoji/api:latest
     ports: ["9401:9401"]
     environment:
       DATABASE_URL: postgres://koji:koji@koji-db:5432/koji
       KOJI_PARSE_URL: http://koji-parse:9411
-      KOJI_EXTRACT_URL: http://koji-extract:9420
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     depends_on:
       - koji-db
       - koji-parse
-      - koji-extract
 
 volumes:
   koji-db:

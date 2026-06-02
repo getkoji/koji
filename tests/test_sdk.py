@@ -70,7 +70,6 @@ class TestStatus:
             "services": {
                 "server": {"status": "healthy", "url": "http://127.0.0.1:9401", "response_ms": 0},
                 "parse": {"status": "healthy", "url": "http://koji-parse:9410", "response_ms": 15},
-                "extract": {"status": "unreachable", "url": "http://koji-extract:9420", "response_ms": None},
             },
             "cluster": {"project": "koji", "name": "default", "uptime_seconds": 120},
             "pipeline": [{"step": "parse", "engine": "docling"}],
@@ -81,7 +80,7 @@ class TestStatus:
 
         assert isinstance(result, StatusResponse)
         assert result.services["server"].status == "healthy"
-        assert result.services["extract"].status == "unreachable"
+        assert result.services["parse"].status == "healthy"
         assert result.cluster.project == "koji"
         assert result.cluster.uptime_seconds == 120
         assert len(result.pipeline) == 1
