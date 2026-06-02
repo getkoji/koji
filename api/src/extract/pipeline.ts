@@ -15,6 +15,7 @@ import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
+import { adaptiveTableFormat } from "./table-format";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -165,15 +166,23 @@ function buildPrompt(
   if (dateLocale) dateInstruction = `Dates as YYYY-MM-DD (input uses ${dateLocale}).`;
   const extraBlock = extraInstructions.length > 0 ? "\n\n" + extraInstructions.join("\n") : "";
 
+  // Adaptive table formatting: convert markdown pipe tables to HTML <table>
+  // when the content is table-heavy, improving column/row recognition for LLMs.
+  const { text: formattedContent, converted: tablesConverted } = adaptiveTableFormat(markdown);
+
+  const tableNote = tablesConverted
+    ? "\nNote: Tables in this document are formatted as HTML <table> elements for clarity. Extract values from the table cells.\n"
+    : "";
+
   return `Extract the following fields from the document sections below. Return ONLY valid JSON with the fields you find. If a field is not present, use null.
 
 ## Fields to extract
 
 ${fieldsBlock}
-${notesSection}
+${notesSection}${tableNote}
 ## Document sections
 
-${markdown}
+${formattedContent}
 
 ## Instructions
 
