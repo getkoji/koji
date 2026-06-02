@@ -12,6 +12,7 @@ from .document_map import Chunk, build_document_map, summarize_map
 from .packet_splitter import Section, classify_chunks_to_sections
 from .providers import ModelProvider, build_provider, create_provider
 from .router import group_routes, route_fields, summarize_routing
+from .section_map import apply_section_labels, build_section_map
 
 
 def _snap_to_source(value: str, chunks: list[Chunk], min_ratio: float = 0.5) -> str:
@@ -1040,6 +1041,16 @@ async def intelligent_extract(
     chunks = build_document_map(markdown, schema_def)
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
+
+    # Phase 1.5: Section map (two-pass) — for large documents, run a
+    # lightweight LLM call to build a structural outline before routing.
+    # This annotates chunks with section labels that the router uses
+    # as additional scoring signals, improving field→chunk matching.
+    section_map = await build_section_map(chunks, schema_def, provider)
+    if section_map is not None:
+        apply_section_labels(chunks, section_map)
+        section_labels = [s.label for s in section_map.sections]
+        print(f"[koji-extract] Section map: {len(section_map.sections)} sections: {section_labels}")
 
     async def _extract_one_section(section_chunks: list[Chunk]) -> dict:
         """Run the wave + gap-fill extraction pipeline against a chunk slice.

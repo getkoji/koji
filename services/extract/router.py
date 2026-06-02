@@ -81,6 +81,22 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict, total_chunks: 
             if signal in chunk.signals:
                 score += 4.0
 
+    # Section map label: if the two-pass section map annotated this chunk
+    # with a section label, use it as an additional scoring signal. The
+    # label matches against look_in categories (highest value) or field
+    # name words (moderate value).
+    section_label = chunk.signals.get("section_label", "")
+    if section_label:
+        if look_in and section_label in [cat.lower() for cat in look_in]:
+            score += 12.0
+        else:
+            # Check if any field name words appear in the section label
+            field_words_list = field_name.lower().split("_")
+            label_words = section_label.lower().replace("_", " ")
+            label_hits = sum(1 for w in field_words_list if w in label_words and len(w) > 2)
+            if label_hits > 0:
+                score += 5.0 * min(label_hits, 3)
+
     # If we had hints and scored, return early — hints are authoritative
     if hints and score > 0:
         return score
@@ -93,6 +109,14 @@ def _score_chunk(chunk: Chunk, field_name: str, field_spec: dict, total_chunks: 
     for signal in inferred_signals:
         if signal in chunk.signals:
             score += 2.0
+
+    # Section label word matching (for fields without hints)
+    if section_label:
+        field_words_list = field_name.lower().split("_")
+        label_words = section_label.lower().replace("_", " ")
+        label_hits = sum(1 for w in field_words_list if w in label_words and len(w) > 2)
+        if label_hits > 0:
+            score += 5.0 * min(label_hits, 3)
 
     # Field name appears in chunk title or content (fuzzy)
     field_words = field_name.replace("_", " ").lower()
