@@ -123,7 +123,7 @@ function MetricsStrip({
   metrics: { total: number; active: number; docsProcessed: number };
 }) {
   return (
-    <div className="grid grid-cols-3 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
       <Metric label="Pipelines" value={metrics.total.toString()} />
       <Metric
         label="Active"
@@ -413,7 +413,7 @@ function CreatePipelineDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <h2

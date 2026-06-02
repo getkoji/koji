@@ -48,7 +48,7 @@ export default function AccountPage() {
         <Breadcrumbs items={[{ label: "Account" }]} />
         <PageHeader title="Account" />
       </StickyHeader>
-      <div className="flex-1 overflow-y-auto px-10 pt-6 pb-8 max-w-2xl">
+      <div className="flex-1 overflow-y-auto px-4 sm:px-10 pt-6 pb-8 max-w-2xl">
         {loading ? (
           <TableSkeleton columns={2} rows={4} />
         ) : error ? (

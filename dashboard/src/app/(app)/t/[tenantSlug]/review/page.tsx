@@ -134,7 +134,7 @@ function MetricsStrip({
   metrics: { pending: number; urgent: number; reviewedToday: number };
 }) {
   return (
-    <div className="grid grid-cols-3 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
       <Metric label="In queue" value={metrics.pending.toString()} />
       <Metric
         label="Urgent"
@@ -183,18 +183,20 @@ function Metric({
 
 function QueueGrid({ items, tenantSlug }: { items: ReviewRow[]; tenantSlug: string }) {
   return (
-    <div className="border border-border rounded-sm overflow-hidden bg-cream">
-      <div className="grid grid-cols-[minmax(240px,1.8fr)_160px_160px_1fr_80px_88px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
-        <ColHead>Document</ColHead>
-        <ColHead>Field</ColHead>
-        <ColHead>Reason</ColHead>
-        <ColHead>Confidence</ColHead>
-        <ColHead className="text-right">Age</ColHead>
-        <ColHead className="text-right">Status</ColHead>
+    <div className="border border-border rounded-sm bg-cream overflow-x-auto">
+      <div className="min-w-[800px]">
+        <div className="grid grid-cols-[minmax(240px,1.8fr)_160px_160px_1fr_80px_88px] gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
+          <ColHead>Document</ColHead>
+          <ColHead>Field</ColHead>
+          <ColHead>Reason</ColHead>
+          <ColHead>Confidence</ColHead>
+          <ColHead className="text-right">Age</ColHead>
+          <ColHead className="text-right">Status</ColHead>
+        </div>
+        {items.map((item) => (
+          <QueueRow key={item.id} item={item} tenantSlug={tenantSlug} />
+        ))}
       </div>
-      {items.map((item) => (
-        <QueueRow key={item.id} item={item} tenantSlug={tenantSlug} />
-      ))}
     </div>
   );
 }
@@ -229,7 +231,7 @@ function QueueRow({ item, tenantSlug }: { item: ReviewRow; tenantSlug: string })
   return (
     <Link
       href={`/t/${tenantSlug}/review/${item.id}`}
-      className={`grid grid-cols-[minmax(240px,1.8fr)_160px_160px_1fr_80px_88px] gap-3 px-4 py-2.5 border-b border-dotted border-border last:border-b-0 transition-colors items-center ${rowTone}`}
+      className={`grid grid-cols-[minmax(240px,1.8fr)_160px_160px_1fr_80px_88px] gap-3 px-4 py-2.5 border-b border-dotted border-border last:border-b-0 transition-colors items-center min-w-[800px] ${rowTone}`}
     >
       <div className="flex flex-col min-w-0 gap-0.5">
         <span className="text-[12.5px] text-ink truncate">

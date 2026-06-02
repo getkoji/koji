@@ -22,7 +22,7 @@ export default function ProjectSettingsLayout({ children }: { children: React.Re
         <Breadcrumbs items={[{ label: projectSlug }, { label: "Settings" }, { label: title }]} />
         <PageHeader title={title} />
       </StickyHeader>
-      <div className="flex-1 overflow-y-auto px-10 pt-6 pb-8">
+      <div className="flex-1 overflow-y-auto px-4 sm:px-10 pt-6 pb-8">
         {children}
       </div>
     </div>
