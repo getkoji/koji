@@ -406,6 +406,7 @@ def bench(
     limit: int | None = typer.Option(None, "--limit", help="Max documents per category"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
     output: str | None = typer.Option(None, "--output", "-o", help="Write JSON results to file"),
+    emit_latest: bool = typer.Option(False, "--emit-latest", help="Write results to {corpus}/.benchmarks/latest.json"),
 ):
     """Benchmark extraction accuracy against a validation corpus.
 
@@ -487,6 +488,15 @@ def bench(
         Path(output).write_text(json_mod.dumps(result.to_dict(), indent=2) + "\n")
         if not json_output:
             console.print(f"[dim]Results written to {output}[/dim]")
+
+    # Emit latest: write results to {corpus}/.benchmarks/latest.json
+    if emit_latest:
+        benchmarks_dir = corpus_path / ".benchmarks"
+        benchmarks_dir.mkdir(exist_ok=True)
+        latest_path = benchmarks_dir / "latest.json"
+        latest_path.write_text(json_mod.dumps(result.to_dict(), indent=2) + "\n")
+        if not json_output:
+            console.print(f"[dim]Latest results written to {latest_path}[/dim]")
 
     # Exit code reflects pass/fail
     if not result.all_passed:
