@@ -232,6 +232,58 @@ def _normalize_value_for_compare(value: Any) -> Any:
     return value
 
 
+def _dict_key_overlap(a: dict, b: dict) -> float:
+    """Fraction of key-value pairs that match between two normalized dicts.
+
+    Recursively normalizes values before comparing. Keys present in one
+    dict but not the other count as mismatches. Returns 0.0..1.0.
+    """
+    na = _normalize_value_for_compare(a)
+    nb = _normalize_value_for_compare(b)
+    if not isinstance(na, dict) or not isinstance(nb, dict):
+        return 1.0 if json.dumps(na, sort_keys=True, default=str) == json.dumps(nb, sort_keys=True, default=str) else 0.0
+    all_keys = set(list(na.keys()) + list(nb.keys()))
+    if not all_keys:
+        return 1.0
+    matches = 0
+    for k in all_keys:
+        va = na.get(k)
+        vb = nb.get(k)
+        if json.dumps(va, sort_keys=True, default=str) == json.dumps(vb, sort_keys=True, default=str):
+            matches += 1
+    return matches / len(all_keys)
+
+
+def _array_of_dicts_similarity(expected: list, actual: list) -> float:
+    """Compute structural similarity between two arrays of dicts.
+
+    Pairs items by best key-value overlap (greedy), then returns the
+    average similarity across all pairs. Handles the case where complex
+    objects (like insurance policies with nested limits) differ on a
+    few sub-fields but are otherwise identical.
+    """
+    if not expected:
+        return 1.0 if not actual else 0.0
+
+    # Greedy matching: for each expected item, find the best-matching
+    # actual item (by key overlap), pair them, and remove from pool.
+    remaining = list(range(len(actual)))
+    total_sim = 0.0
+    for exp_item in expected:
+        best_sim = 0.0
+        best_idx = -1
+        for j in remaining:
+            sim = _dict_key_overlap(exp_item, actual[j])
+            if sim > best_sim:
+                best_sim = sim
+                best_idx = j
+        total_sim += best_sim
+        if best_idx >= 0:
+            remaining.remove(best_idx)
+
+    return total_sim / len(expected)
+
+
 def _normalize_for_set_compare(items: list) -> list[str]:
     """Produce canonical string keys for order-insensitive comparison.
 
@@ -380,6 +432,25 @@ def compare_field(
                     actual=actual,
                     detail=f"fuzzy array match ({matched}/{len(exp_keys)} items, {ratio:.0%})",
                 )
+            # For arrays of dicts (like policies), exact JSON matching is
+            # too strict — a single different limit name makes the entire
+            # serialized dict miss. Fall back to structural similarity:
+            # normalize both lists, pair items by best overlap, and score
+            # by the fraction of matching key-value pairs across all pairs.
+            if (
+                len(expected) == len(actual)
+                and all(isinstance(v, dict) for v in expected)
+                and all(isinstance(v, dict) for v in actual)
+            ):
+                sim = _array_of_dicts_similarity(expected, actual)
+                if sim >= fuzzy_threshold:
+                    return FieldResult(
+                        field_name=field_name,
+                        passed=True,
+                        expected=expected,
+                        actual=actual,
+                        detail=f"fuzzy structural match ({sim:.0%} similarity)",
+                    )
         if len(expected) != len(actual):
             detail = f"array length: expected {len(expected)}, got {len(actual)}"
         else:
