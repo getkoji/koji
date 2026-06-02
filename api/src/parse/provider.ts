@@ -14,6 +14,10 @@ export interface TextMapSegment {
   y: number;
   w: number;
   h: number;
+  /** Character offset of this word in the exported markdown (L3 provenance). */
+  md_offset?: number;
+  /** Character length of this word in the exported markdown (L3 provenance). */
+  md_length?: number;
 }
 
 export interface ParseResponse {
