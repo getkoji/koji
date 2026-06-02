@@ -62,6 +62,7 @@ import { overview } from "./routes/overview";
 import { billing as billingRoutes } from "./routes/billing";
 import { forms as formsRouter } from "./routes/forms";
 import { upload } from "./routes/upload";
+import { logs } from "./routes/logs";
 
 // Background-job wiring
 import { initEmitter } from "./webhooks/emit";
@@ -223,6 +224,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/forms", formsRouter);
   app.route("/api/billing", billingRoutes);
   app.route("/api/upload", upload);
+  app.route("/api/projects", logs);
 
   const handlers: HandlerMap = {
     "webhook.deliver": handleWebhookDeliver,
