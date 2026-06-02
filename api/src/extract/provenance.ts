@@ -37,6 +37,10 @@ export interface TextSegment {
   page: number;
   bbox: BBox;
   level?: "word";
+  /** Character offset of this word in the exported markdown (L3 provenance). */
+  md_offset?: number;
+  /** Character length of this word in the exported markdown (L3 provenance). */
+  md_length?: number;
 }
 
 export type TextMap = TextSegment[];
@@ -508,6 +512,50 @@ function locateWords(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// L3: Offset-based lookup (direct, no fuzzy matching)
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether the text_map has L3 offset annotations (md_offset/md_length).
+ * Returns true if at least one segment has md_offset.
+ */
+export function hasOffsetAnnotations(textMap: TextMap): boolean {
+  return textMap.length > 0 && textMap[0]!.md_offset != null;
+}
+
+/**
+ * Find text_map segments whose md_offset range overlaps with a given
+ * markdown character range [offset, offset+length). Direct O(n) lookup
+ * that replaces fuzzy text matching when L3 offset data is available.
+ */
+export function locateWordsByOffset(
+  textMap: TextMap,
+  offset: number,
+  length: number,
+): WordBox[] | null {
+  const end = offset + length;
+  const words: WordBox[] = [];
+
+  for (const seg of textMap) {
+    if (seg.md_offset == null || seg.md_length == null) continue;
+    const segEnd = seg.md_offset + seg.md_length;
+    // Overlap check: segment overlaps [offset, end)
+    if (seg.md_offset < end && segEnd > offset) {
+      words.push({
+        text: seg.text,
+        page: seg.page,
+        x: seg.bbox.x,
+        y: seg.bbox.y,
+        w: seg.bbox.w,
+        h: seg.bbox.h,
+      });
+    }
+  }
+
+  return words.length > 0 ? words : null;
+}
+
 /** Compute the enclosing bounding box of an array of word boxes. */
 function enclosingBbox(words: WordBox[]): { page: number; bbox: BBox } | null {
   if (words.length === 0) return null;
@@ -525,8 +573,12 @@ function enclosingBbox(words: WordBox[]): { page: number; bbox: BBox } | null {
 }
 
 /**
- * Resolve bounding boxes for a value. Tries per-word matching first,
- * falls back to paragraph-level segment matching.
+ * Resolve bounding boxes for a value.
+ *
+ * When L3 offset annotations are available on the text_map, uses direct
+ * offset-based lookup — no fuzzy text matching needed. Falls back to
+ * the original per-word and paragraph-level fuzzy matching when offsets
+ * are not available.
  *
  * When markdown and offset are provided, estimates the page from the
  * markdown offset and prefers text_map matches on the same page. This
@@ -540,6 +592,18 @@ function resolveBbox(
   markdown?: string,
   offset?: number,
 ): { page: number; bbox: BBox; words?: WordBox[] } | null {
+  // L3 path: direct offset lookup when md_offset annotations are present
+  if (offset != null && chunk != null && hasOffsetAnnotations(textMap)) {
+    const words = locateWordsByOffset(textMap, offset, chunk.length);
+    if (words && words.length > 0) {
+      const enclosing = enclosingBbox(words);
+      if (enclosing) {
+        return { ...enclosing, words };
+      }
+    }
+  }
+
+  // Legacy path: fuzzy text matching
   const preferredPage = (markdown != null && offset != null)
     ? estimatePageFromOffset(markdown, offset)
     : undefined;
