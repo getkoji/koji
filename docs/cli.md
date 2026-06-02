@@ -109,9 +109,9 @@ Stream container logs for one or all services.
 
 ```bash
 koji logs                       # tail all services (last 100 lines)
-koji logs extract               # tail just the extract service
-koji logs extract --follow      # follow extract logs in real time
-koji logs parse --tail 500      # show last 500 lines of parse logs
+koji logs parse                 # tail just the parse service
+koji logs parse --follow        # follow parse logs in real time
+koji logs server --tail 500     # show last 500 lines of server logs
 ```
 
 | Flag | Description |

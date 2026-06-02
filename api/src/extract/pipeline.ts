@@ -1,5 +1,5 @@
 /**
- * Extraction pipeline — TypeScript port of services/extract/pipeline.py.
+ * Extraction pipeline — runs in-process in the API server.
  *
  * Builds a prompt from schema fields + document markdown, calls the LLM
  * with JSON mode, parses the response into field values with confidence

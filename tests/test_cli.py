@@ -16,7 +16,6 @@ FAKE_STATE = {
     "server_port": 9401,
     "ui_port": 9400,
     "parse_port": 9410,
-    "extract_port": 9420,
     "ollama_port": 11434,
 }
 
@@ -148,31 +147,30 @@ def test_logs_custom_tail(mock_state, mock_cwd, mock_run, tmp_path):
 @patch("cli.logs.Path.cwd")
 @patch("cli.main.load_cluster_state", return_value=FAKE_STATE)
 def test_logs_service_with_follow_and_tail(mock_state, mock_cwd, mock_run, tmp_path):
-    """koji logs extract -f --tail 20 — combines service, follow, and tail."""
+    """koji logs parse -f --tail 20 — combines service, follow, and tail."""
     koji_dir = tmp_path / ".koji"
     koji_dir.mkdir()
     (koji_dir / "docker-compose.yaml").write_text("version: '3'")
     mock_cwd.return_value = tmp_path
 
-    result = runner.invoke(app, ["logs", "extract", "-f", "--tail", "20"])
+    result = runner.invoke(app, ["logs", "parse", "-f", "--tail", "20"])
     assert result.exit_code == 0
 
     cmd = mock_run.call_args[0][0]
     assert "--follow" in cmd
     assert "--tail=20" in cmd
-    assert "koji-extract" in cmd
+    assert "koji-parse" in cmd
 
 
 # ── Unit tests for constants ──────────────────────────────────────────
 
 
 def test_valid_services():
-    assert VALID_SERVICES == {"server", "parse", "extract", "dashboard", "ollama"}
+    assert VALID_SERVICES == {"server", "parse", "dashboard", "ollama"}
 
 
 def test_service_to_compose_mapping():
     assert SERVICE_TO_COMPOSE["server"] == "koji-api"
     assert SERVICE_TO_COMPOSE["parse"] == "koji-parse"
-    assert SERVICE_TO_COMPOSE["extract"] == "koji-extract"
     assert SERVICE_TO_COMPOSE["dashboard"] == "koji-dashboard"
     assert SERVICE_TO_COMPOSE["ollama"] == "ollama"

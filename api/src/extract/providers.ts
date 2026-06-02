@@ -1,5 +1,5 @@
 /**
- * LLM provider adapters — TypeScript port of services/extract/providers.py.
+ * LLM provider adapters — creates provider instances for extraction.
  *
  * Each provider exposes `generate(prompt, jsonMode)` which sends a prompt
  * to the model and returns the raw text response. Uses native fetch().

@@ -32,7 +32,6 @@ const PORT = parseInt(process.env.PORT ?? "9401", 10);
 const AUTH_ADAPTER = process.env.KOJI_AUTH_ADAPTER ?? "local";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
 const PARSE_URL = process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410";
-const EXTRACT_URL = process.env.KOJI_EXTRACT_URL ?? "http://koji-extract:9420";
 const MASTER_KEY = process.env.KOJI_MASTER_KEY ?? null;
 
 const db = createDb(DATABASE_URL);
@@ -71,7 +70,6 @@ const { app, handlers } = createApp({
   emailSender,
   masterKey: MASTER_KEY,
   appUrl: APP_URL,
-  extractUrl: EXTRACT_URL,
   parseUrl: PARSE_URL,
   authAdapterKind: AUTH_ADAPTER,
 });

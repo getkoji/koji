@@ -428,13 +428,13 @@ def bench(
         console.print(f"[red]Corpus path not found: {corpus}[/red]")
         raise SystemExit(1)
 
-    # Bench calls the extract service directly (stateless, no auth needed).
-    # Locally it runs on the extract port; prod uses the CLI profile URL.
+    # Bench calls the API server (extraction runs in the TS API now).
+    # Locally it runs on the server port; prod uses the CLI profile URL.
     from .credentials import get_active_profile
 
     state = load_cluster_state()
     if state is not None:
-        server_url = f"http://127.0.0.1:{state.get('extract_port', 9412)}"
+        server_url = f"http://127.0.0.1:{state.get('server_port', 9501)}"
     else:
         profile = get_active_profile()
         if profile:

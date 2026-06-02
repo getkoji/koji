@@ -128,7 +128,6 @@ def check_ports_available(config: KojiConfig | None = None) -> CheckResult:
         "server": cluster.server_port,
         "ollama": cluster.ollama_port,
         "parse": cluster.parse_port,
-        "extract": cluster.extract_port,
     }
 
     in_use = [f"{name}:{port}" for name, port in ports.items() if not _port_available(port)]

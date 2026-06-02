@@ -50,7 +50,6 @@ def save_cluster_state(config: KojiConfig) -> None:
         "ui_port": config.cluster.ui_port,
         "server_port": config.cluster.server_port,
         "parse_port": config.cluster.parse_port,
-        "extract_port": config.cluster.extract_port,
         "ollama_port": config.cluster.ollama_port,
         "started_at": time.time(),
     }
@@ -82,7 +81,6 @@ def _get_port_map(config: KojiConfig) -> dict[str, int]:
         "Server": cluster.server_port,
         "Ollama": cluster.ollama_port,
         "Parse": cluster.parse_port,
-        "Extract": cluster.extract_port,
     }
 
 
@@ -191,7 +189,6 @@ def start_cluster(config: KojiConfig, dev: bool = False) -> None:
     console.print(f"  [bold]Dashboard:[/bold]   http://127.0.0.1:{config.cluster.ui_port}")
     console.print(f"  [bold]API Server:[/bold]  http://127.0.0.1:{config.cluster.server_port}")
     console.print(f"  [bold]Parse:[/bold]       http://127.0.0.1:{config.cluster.parse_port}")
-    console.print(f"  [bold]Extract:[/bold]     http://127.0.0.1:{config.cluster.extract_port}")
     console.print(f"  [bold]Ollama:[/bold]      http://127.0.0.1:{config.cluster.ollama_port}")
     console.print()
 
@@ -254,11 +251,6 @@ def cluster_status() -> None:
         ("Dashboard", state["ui_port"], f"http://127.0.0.1:{state['ui_port']}"),
         ("API Server", state["server_port"], f"http://127.0.0.1:{state['server_port']}"),
         ("Parse", state.get("parse_port", "?"), f"http://127.0.0.1:{state.get('parse_port', '?')}"),
-        (
-            "Extract",
-            state.get("extract_port", "?"),
-            f"http://127.0.0.1:{state.get('extract_port', '?')}",
-        ),
         ("Ollama", state["ollama_port"], f"http://127.0.0.1:{state['ollama_port']}"),
     ]
 

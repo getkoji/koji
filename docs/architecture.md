@@ -16,28 +16,21 @@ Koji is a set of independent services orchestrated by a central API server. Each
   +-----------+        +------------+        +---------------+
   |           |  HTTP   |            |  HTTP   |               |
   |  koji CLI +------->+  API Server +------->+  Parse Service |
-  |           |        |  (FastAPI)  |        |  (Docling)     |
+  |           |        |  (Hono/TS)  |        |  (Docling)     |
   +-----------+        +------+-----+        +---------------+
                               |
        +------------+         |        +------------------+
-       |            |  HTTP   |  HTTP   |                  |
-       |  Dashboard +-------->+------->+  Extract Service  |
-       |  (Web UI)  |        |        |  (Pipeline)       |
-       +------------+        |        +--------+---------+
-                              |                 |
-                              |                 v
-                              |        +------------------+
-                              |        |                  |
-                              +------->+  Ollama (local)  |
-                                       |  or OpenAI API   |
-                                       +------------------+
-                                                |
-                        Webhooks <---------------+
+       |            |  HTTP   |  LLM    |                  |
+       |  Dashboard +-------->+------->+  Ollama (local)  |
+       |  (Web UI)  |        |        |  or OpenAI API   |
+       +------------+        |        +------------------+
+                              |
+                        Webhooks
                      (job.completed,
                       job.failed)
 ```
 
-All services live on an isolated Docker network (`koji-<project>`). The CLI and Dashboard talk to the API Server. The API Server orchestrates Parse and Extract. Extract talks to model providers (Ollama for local, OpenAI API for cloud).
+All services live on an isolated Docker network (`koji-<project>`). The CLI and Dashboard talk to the API Server. The API Server orchestrates Parse (document → markdown) and runs extraction in-process (markdown + schema → structured data via LLM calls).
 
 ## Service architecture
 
@@ -49,7 +42,7 @@ The API Server is the single entry point for all operations. It:
 
 - Receives document uploads and schema definitions
 - Forwards documents to the Parse Service for conversion
-- Forwards parsed markdown and schemas to the Extract Service
+- Runs extraction in-process (markdown + schema → structured data via LLM)
 - Manages async jobs with an in-memory store backed by SQLite for history
 - Fires webhooks on job completion or failure
 - Exposes health, status, config, and log-streaming endpoints
@@ -107,17 +100,11 @@ The parse service image is split into two layers to keep rebuilds fast:
 
 This means editing the parse service's Python code triggers a tiny rebuild instead of reinstalling docling, torch, and the OCR toolchain every time. Dependency bumps still require a base image rebuild; bump the pinned versions in `parse.base.Dockerfile` and run the `Publish Images` workflow with `build_parse_base=true` (or push a tag). All pinned versions are explicit — no `latest` — so both images are reproducible.
 
-### Extract Service
-
-**Port:** 9420 (internal) | **Technology:** Custom pipeline + FastAPI
-
-The Extract Service runs the intelligent extraction pipeline (detailed in the next section). It takes markdown and a schema definition, then returns structured JSON with per-field confidence scores. It communicates with model providers (Ollama or OpenAI-compatible APIs) to perform the actual LLM-based extraction.
-
 ### Ollama
 
 **Port:** 11434 (internal) | **Technology:** Ollama
 
-Optional local model hosting. When enabled, the Extract Service routes requests to Ollama for fully local, air-gapped processing. Model weights are persisted in a Docker volume so they survive container restarts.
+Optional local model hosting. When enabled, the API Server routes LLM requests to Ollama for fully local, air-gapped processing. Model weights are persisted in a Docker volume so they survive container restarts.
 
 Disable it in `koji.yaml` if you only use cloud providers:
 
@@ -310,16 +297,12 @@ Here is what happens when you run `koji process ./invoice.pdf --schema schemas/i
    - Runs Docling converter (OCR, layout analysis, table detection)
    - Returns markdown text + page count
    |
-5. API Server forwards markdown + schema to the Extract Service (POST /extract)
+5. API Server runs the extraction pipeline in-process:
+   a. EXTRACT   — send prompts to the model provider (LLM) concurrently
+   b. VALIDATE  — normalize types, fuzzy-match enums, check required fields
+   c. RECONCILE — merge results, gap-fill missing required fields
    |
-6. Extract Service runs the 5-phase pipeline:
-   a. MAP       — split markdown into classified, annotated chunks
-   b. ROUTE     — score and match schema fields to relevant chunks
-   c. EXTRACT   — send grouped prompts to the model provider concurrently
-   d. VALIDATE  — normalize types, fuzzy-match enums, check required fields
-   e. RECONCILE — merge group results, gap-fill missing required fields
-   |
-7. Extract Service returns structured JSON + confidence scores + metadata
+6. API Server returns structured JSON + confidence scores + metadata
    |
 8. API Server:
    - Persists the job to SQLite history

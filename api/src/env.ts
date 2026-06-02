@@ -37,8 +37,6 @@ export type Env = {
     masterKey: string | null;
     /** Public URL of the dashboard — used in password-reset and invite emails. */
     appUrl: string;
-    /** Base URL for the extract service (self-hosted sidecar or hosted proxy). */
-    extractUrl: string;
     /** Base URL for the parse service (self-hosted sidecar; Workers path uses a
      *  parse provider directly, not this URL). */
     parseUrl: string;
