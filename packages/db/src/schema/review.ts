@@ -36,6 +36,8 @@ export const reviewItems = pgTable(
     resolvedBy: uuid("resolved_by").references(() => users.id),
     resolution: varchar("resolution", { length: 16 }),
     finalValue: jsonb("final_value"),
+    /** JSON map of { fieldName: correctedValue } for non-flagged field edits */
+    fieldOverrides: jsonb("field_overrides"),
     note: text("note"),
     createdAt: createdAt(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
