@@ -444,16 +444,34 @@ def _apply_transforms(
     return value
 
 
+def _is_empty(value) -> bool:
+    """True if value is null, empty string, or whitespace-only."""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
 def normalize_extracted(
     extracted: dict,
     schema_def: dict,
 ) -> tuple[dict, NormalizationReport]:
-    """Apply schema-declared `normalize:` transforms to extracted output.
+    """Apply schema-declared post-processing directives to extracted output.
 
     Returns a new dict with transformed values plus a report of what was
-    applied. The input dict is not mutated. Fields without a `normalize:`
-    directive are passed through untouched. Array-of-objects fields apply
-    per-item normalization using the declared item schema (when provided).
+    applied. The input dict is not mutated. Fields without directives are
+    passed through untouched. Array-of-objects fields apply per-item
+    normalization using the declared item schema (when provided).
+
+    Directives are applied in this order per field:
+      1. normalize: [trim, lowercase, ...]  — value transforms
+      2. map: {from: to, ...}               — value lookup/replacement
+      3. default: <value>                   — fallback for null/empty
+      4. concat: {fields: [...], sep: " "}  — combine multiple fields
+      5. computed: "template {field} text"  — template-based computation
+      6. derived_from: {field, method}      — programmatic derivation
+      7. rename: new_key                    — rename the output key (last)
     """
     report = NormalizationReport()
     if not isinstance(extracted, dict):
@@ -525,7 +543,88 @@ def normalize_extracted(
                     report.note(field_name, f"enum snap {value!r} → {best_opt!r}")
                     value = best_opt
 
+        # map: replace value via a lookup table. Schema declares:
+        #   field_name:
+        #     map: { "Invoice": "INV", "Credit Note": "CN" }
+        map_table = spec.get("map")
+        if isinstance(map_table, dict) and isinstance(value, str):
+            mapped = map_table.get(value)
+            if mapped is None:
+                # Try case-insensitive match
+                for k, v in map_table.items():
+                    if isinstance(k, str) and k.strip().lower() == value.strip().lower():
+                        mapped = v
+                        break
+            if mapped is not None:
+                report.note(field_name, f"map {value!r} → {mapped!r}")
+                value = mapped
+
+        # default: fill in a fallback value if extracted value is null/empty.
+        #   field_name:
+        #     default: "N/A"
+        default_val = spec.get("default")
+        if default_val is not None and _is_empty(value):
+            report.note(field_name, f"default → {default_val!r}")
+            value = default_val
+
         result[field_name] = value
+
+    # concat: combine multiple fields into one string. Schema declares:
+    #   full_address:
+    #     concat:
+    #       fields: [street, city, state, zip]
+    #       separator: ", "       # optional, default " "
+    #
+    # Only populates if the target is empty/missing. Skips null source fields.
+    for field_name, spec in fields_spec.items():
+        if not isinstance(spec, dict):
+            continue
+        concat_config = spec.get("concat")
+        if not isinstance(concat_config, dict):
+            continue
+        current = result.get(field_name)
+        if not _is_empty(current):
+            continue
+        source_fields = concat_config.get("fields", [])
+        separator = str(concat_config.get("separator", " "))
+        parts = []
+        for src in source_fields:
+            v = result.get(src)
+            if v is not None and str(v).strip():
+                parts.append(str(v).strip())
+        if parts:
+            value = separator.join(parts)
+            result[field_name] = value
+            report.note(field_name, f"concat from {source_fields}")
+
+    # computed: populate a field from a template referencing other fields.
+    # Schema declares:
+    #   display_name:
+    #     computed: "{first_name} {last_name}"
+    #
+    # Only populates if the target is empty/missing. Unreferenced placeholders
+    # are replaced with empty string.
+    for field_name, spec in fields_spec.items():
+        if not isinstance(spec, dict):
+            continue
+        template = spec.get("computed")
+        if not isinstance(template, str):
+            continue
+        current = result.get(field_name)
+        if not _is_empty(current):
+            continue
+        # Substitute {field_name} placeholders with actual values
+        computed_value = template
+        for key, val in result.items():
+            placeholder = "{" + key + "}"
+            if placeholder in computed_value:
+                replacement = str(val).strip() if val is not None else ""
+                computed_value = computed_value.replace(placeholder, replacement)
+        # Clean up any remaining unreferenced placeholders
+        computed_value = re.sub(r"\{[^}]+\}", "", computed_value).strip()
+        if computed_value:
+            result[field_name] = computed_value
+            report.note(field_name, "computed from template")
 
     # Derived fields: populate fields whose values can be computed from
     # other extracted fields. Schema declares:
@@ -570,6 +669,23 @@ def normalize_extracted(
                 result[field_name] = derived_val
                 report.note(field_name, f"derived via {method_name} from {src_name}")
                 break
+
+    # rename: rename output keys. Schema declares:
+    #   vendor_name:
+    #     rename: supplier_name
+    #
+    # Applied last so all other directives reference the original field name.
+    renames: list[tuple[str, str]] = []
+    for field_name, spec in fields_spec.items():
+        if not isinstance(spec, dict):
+            continue
+        new_name = spec.get("rename")
+        if isinstance(new_name, str) and new_name != field_name and field_name in result:
+            renames.append((field_name, new_name))
+    for old_name, new_name in renames:
+        if new_name not in result:
+            result[new_name] = result.pop(old_name)
+            report.note(old_name, f"rename → {new_name}")
 
     return result, report
 

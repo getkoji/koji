@@ -141,3 +141,189 @@ class TestNormalizeExtracted:
     def test_non_dict_input_passthrough(self):
         result, _ = normalize_extracted(None, {"fields": {}})  # type: ignore[arg-type]
         assert result is None
+
+
+# ── Post-processing directives ────────────────────────────────────────
+
+
+class TestMapDirective:
+    def test_exact_match(self):
+        data = {"doc_type": "Invoice"}
+        schema = {"fields": {"doc_type": {"type": "string", "map": {"Invoice": "INV", "Credit Note": "CN"}}}}
+        result, report = normalize_extracted(data, schema)
+        assert result["doc_type"] == "INV"
+        assert any("map" in t for _, t in report.applied)
+
+    def test_case_insensitive_fallback(self):
+        data = {"doc_type": "invoice"}
+        schema = {"fields": {"doc_type": {"type": "string", "map": {"Invoice": "INV"}}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["doc_type"] == "INV"
+
+    def test_no_match_passes_through(self):
+        data = {"doc_type": "Receipt"}
+        schema = {"fields": {"doc_type": {"type": "string", "map": {"Invoice": "INV"}}}}
+        result, report = normalize_extracted(data, schema)
+        assert result["doc_type"] == "Receipt"
+        assert not any("map" in t for _, t in report.applied)
+
+    def test_non_string_value_skipped(self):
+        data = {"count": 42}
+        schema = {"fields": {"count": {"type": "number", "map": {"42": "forty-two"}}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["count"] == 42
+
+
+class TestDefaultDirective:
+    def test_fills_none(self):
+        data = {"currency": None}
+        schema = {"fields": {"currency": {"type": "string", "default": "USD"}}}
+        result, report = normalize_extracted(data, schema)
+        assert result["currency"] == "USD"
+        assert any("default" in t for _, t in report.applied)
+
+    def test_fills_empty_string(self):
+        data = {"currency": ""}
+        schema = {"fields": {"currency": {"type": "string", "default": "USD"}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["currency"] == "USD"
+
+    def test_fills_whitespace_only(self):
+        data = {"currency": "   "}
+        schema = {"fields": {"currency": {"type": "string", "default": "USD"}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["currency"] == "USD"
+
+    def test_does_not_overwrite_value(self):
+        data = {"currency": "EUR"}
+        schema = {"fields": {"currency": {"type": "string", "default": "USD"}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["currency"] == "EUR"
+
+    def test_numeric_default(self):
+        data = {"quantity": None}
+        schema = {"fields": {"quantity": {"type": "number", "default": 1}}}
+        result, _ = normalize_extracted(data, schema)
+        assert result["quantity"] == 1
+
+
+class TestConcatDirective:
+    def test_basic_concat(self):
+        data = {"street": "123 Main St", "city": "Austin", "state": "TX", "full_address": None}
+        schema = {
+            "fields": {
+                "street": {"type": "string"},
+                "city": {"type": "string"},
+                "state": {"type": "string"},
+                "full_address": {
+                    "type": "string",
+                    "concat": {"fields": ["street", "city", "state"], "separator": ", "},
+                },
+            }
+        }
+        result, report = normalize_extracted(data, schema)
+        assert result["full_address"] == "123 Main St, Austin, TX"
+        assert any("concat" in t for _, t in report.applied)
+
+    def test_skips_null_sources(self):
+        data = {"first": "John", "middle": None, "last": "Doe", "full_name": None}
+        schema = {
+            "fields": {
+                "first": {"type": "string"},
+                "middle": {"type": "string"},
+                "last": {"type": "string"},
+                "full_name": {"type": "string", "concat": {"fields": ["first", "middle", "last"]}},
+            }
+        }
+        result, _ = normalize_extracted(data, schema)
+        assert result["full_name"] == "John Doe"
+
+    def test_does_not_overwrite_existing(self):
+        data = {"first": "John", "last": "Doe", "full_name": "Already Set"}
+        schema = {
+            "fields": {
+                "first": {"type": "string"},
+                "last": {"type": "string"},
+                "full_name": {"type": "string", "concat": {"fields": ["first", "last"]}},
+            }
+        }
+        result, _ = normalize_extracted(data, schema)
+        assert result["full_name"] == "Already Set"
+
+    def test_default_separator_is_space(self):
+        data = {"a": "hello", "b": "world", "c": None}
+        schema = {
+            "fields": {
+                "a": {"type": "string"},
+                "b": {"type": "string"},
+                "c": {"type": "string", "concat": {"fields": ["a", "b"]}},
+            }
+        }
+        result, _ = normalize_extracted(data, schema)
+        assert result["c"] == "hello world"
+
+
+class TestComputedDirective:
+    def test_basic_template(self):
+        data = {"first_name": "John", "last_name": "Doe", "display_name": None}
+        schema = {
+            "fields": {
+                "first_name": {"type": "string"},
+                "last_name": {"type": "string"},
+                "display_name": {"type": "string", "computed": "{first_name} {last_name}"},
+            }
+        }
+        result, report = normalize_extracted(data, schema)
+        assert result["display_name"] == "John Doe"
+        assert any("computed" in t for _, t in report.applied)
+
+    def test_missing_placeholder_removed(self):
+        data = {"first_name": "John", "middle": None, "display": None}
+        schema = {
+            "fields": {
+                "first_name": {"type": "string"},
+                "middle": {"type": "string"},
+                "display": {"type": "string", "computed": "{first_name} {middle} {unknown}"},
+            }
+        }
+        result, _ = normalize_extracted(data, schema)
+        assert result["display"] == "John"
+
+    def test_does_not_overwrite_existing(self):
+        data = {"a": "x", "b": "y", "c": "already"}
+        schema = {
+            "fields": {
+                "a": {"type": "string"},
+                "b": {"type": "string"},
+                "c": {"type": "string", "computed": "{a}-{b}"},
+            }
+        }
+        result, _ = normalize_extracted(data, schema)
+        assert result["c"] == "already"
+
+
+class TestRenameDirective:
+    def test_basic_rename(self):
+        data = {"vendor_name": "Acme Corp"}
+        schema = {"fields": {"vendor_name": {"type": "string", "rename": "supplier_name"}}}
+        result, report = normalize_extracted(data, schema)
+        assert "supplier_name" in result
+        assert "vendor_name" not in result
+        assert result["supplier_name"] == "Acme Corp"
+        assert any("rename" in t for _, t in report.applied)
+
+    def test_does_not_overwrite_existing_key(self):
+        data = {"old_key": "value1", "new_key": "value2"}
+        schema = {"fields": {"old_key": {"type": "string", "rename": "new_key"}, "new_key": {"type": "string"}}}
+        result, _ = normalize_extracted(data, schema)
+        # Should NOT overwrite new_key since it already exists
+        assert result["old_key"] == "value1"
+        assert result["new_key"] == "value2"
+
+    def test_rename_with_other_transforms(self):
+        data = {"vendor": "  acme  "}
+        schema = {"fields": {"vendor": {"type": "string", "normalize": ["trim", "uppercase"], "rename": "supplier"}}}
+        result, _ = normalize_extracted(data, schema)
+        assert "supplier" in result
+        assert "vendor" not in result
+        assert result["supplier"] == "ACME"
