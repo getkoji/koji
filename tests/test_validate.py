@@ -260,9 +260,7 @@ class TestMaxWords:
 
     def test_soft_nulls_field_by_default(self):
         data = {"summary": "one two three four five six"}
-        report = validate_extracted(
-            data, {"validation": [{"max_words": {"field": "summary", "max": 3}}]}
-        ).to_dict()
+        report = validate_extracted(data, {"validation": [{"max_words": {"field": "summary", "max": 3}}]}).to_dict()
         assert report["ok"] is False
         assert data["summary"] is None
         assert "6 words" in report["issues"][0]["message"]
