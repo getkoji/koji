@@ -648,3 +648,28 @@ export const me = {
   canDelete: () => api.get<{ canDelete: boolean; reason?: string }>("/api/me/can-delete"),
   delete: () => api.delete("/api/me"),
 };
+
+// ── Notifications ────────────────────────────────────────────
+
+export interface NotificationRow {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  dataJson: Record<string, unknown> | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export const notificationsApi = {
+  list: (opts?: { limit?: number; unreadOnly?: boolean }) =>
+    api.get<{ data: NotificationRow[] }>(
+      `/api/notifications?limit=${opts?.limit ?? 20}${opts?.unreadOnly ? "&unread_only=true" : ""}`,
+    ).then((r) => r.data),
+  count: () =>
+    api.get<{ unread: number }>("/api/notifications/count").then((r) => r.unread),
+  markRead: (id: string) =>
+    api.patch<{ ok: boolean }>(`/api/notifications/${id}/read`, {}),
+  markAllRead: () =>
+    api.post<{ ok: boolean }>("/api/notifications/read-all"),
+};

@@ -61,9 +61,11 @@ import { review } from "./routes/review";
 import { overview } from "./routes/overview";
 import { billing as billingRoutes } from "./routes/billing";
 import { forms as formsRouter } from "./routes/forms";
+import { notifications as notificationsRouter } from "./routes/notifications";
 
 // Background-job wiring
 import { initEmitter } from "./webhooks/emit";
+import { initNotifications } from "./notifications/emit";
 import { initDeliveryHandler, handleWebhookDeliver } from "./webhooks/deliver";
 import {
   initIngestionHandler,
@@ -145,6 +147,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   // on every `fetch` would be wasteful; initialising once at app creation
   // is what we want).
   initEmitter(deps.queue, deps.db);
+  initNotifications(deps.db);
   initDeliveryHandler(deps.db, deps.masterKey);
   initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider);
@@ -224,6 +227,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/overview", overview);
   app.route("/api/forms", formsRouter);
   app.route("/api/billing", billingRoutes);
+  app.route("/api/notifications", notificationsRouter);
 
   const handlers: HandlerMap = {
     "webhook.deliver": handleWebhookDeliver,
