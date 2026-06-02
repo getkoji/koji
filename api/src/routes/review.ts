@@ -94,6 +94,7 @@ review.get("/:id", requires("review:read"), async (c) => {
         documentStorageKey: schema.documents.storageKey,
         documentMimeType: schema.documents.mimeType,
         documentExtractionJson: schema.documents.extractionJson,
+        documentConfidenceScoresJson: schema.documents.confidenceScoresJson,
         documentPageCount: schema.documents.pageCount,
         jobSlug: schema.jobs.slug,
         pipelineSlug: schema.pipelines.slug,
@@ -141,16 +142,22 @@ async function resolveItem(
   c: Context<Env>,
   id: string,
   patch: Record<string, unknown>,
+  fieldOverrides?: Record<string, unknown>,
 ) {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);
+
+  const overridesPayload = fieldOverrides && Object.keys(fieldOverrides).length > 0
+    ? fieldOverrides
+    : undefined;
 
   const [updated] = await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.reviewItems)
       .set({
         ...patch,
+        ...(overridesPayload ? { fieldOverrides: overridesPayload } : {}),
         resolvedBy: principal.userId,
         resolvedAt: new Date(),
         status: "completed",
@@ -162,13 +169,50 @@ async function resolveItem(
   if (!updated) {
     return c.json({ error: "Review item not found or already resolved" }, 404);
   }
+
+  // Apply field overrides to the document's extraction JSON so downstream
+  // consumers see the corrected values. Also apply the primary field's
+  // final value if it differs from the proposed value.
+  const documentId = (updated as Record<string, unknown>).documentId as string | undefined;
+  if (documentId) {
+    const allEdits: Record<string, unknown> = {};
+    const fieldName = (updated as Record<string, unknown>).fieldName as string;
+    const finalValue = patch.finalValue;
+    if (finalValue !== undefined) {
+      allEdits[fieldName] = finalValue;
+    }
+    if (overridesPayload) {
+      Object.assign(allEdits, overridesPayload);
+    }
+    if (Object.keys(allEdits).length > 0) {
+      // Read the current extraction, merge edits, write back
+      const [doc] = await withRLS(db, tenantId, (tx) =>
+        tx
+          .select({ extractionJson: schema.documents.extractionJson })
+          .from(schema.documents)
+          .where(eq(schema.documents.id, documentId))
+          .limit(1),
+      );
+      if (doc?.extractionJson) {
+        const merged = { ...(doc.extractionJson as Record<string, unknown>), ...allEdits };
+        await withRLS(db, tenantId, (tx) =>
+          tx
+            .update(schema.documents)
+            .set({ extractionJson: merged })
+            .where(eq(schema.documents.id, documentId)),
+        );
+      }
+    }
+  }
+
   return c.json(updated);
 }
 
 /** POST /api/review/:id/accept — approve the model's proposal as-is. */
 review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
-  const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
+  const body = await c.req.json<{ note?: string; fieldOverrides?: Record<string, unknown> }>()
+    .catch(() => ({} as { note?: string; fieldOverrides?: Record<string, unknown> }));
   const [item] = await withRLS(c.get("db"), getTenantId(c), (tx) =>
     tx
       .select({ proposedValue: schema.reviewItems.proposedValue })
@@ -182,13 +226,13 @@ review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review")
     resolution: "approved",
     finalValue: item.proposedValue,
     note: body.note ?? null,
-  });
+  }, body.fieldOverrides);
 });
 
 /** POST /api/review/:id/override — approve with edits. */
 review.post("/:id/override", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
-  const body = await c.req.json<{ value: unknown; note?: string }>();
+  const body = await c.req.json<{ value: unknown; note?: string; fieldOverrides?: Record<string, unknown> }>();
   if (body.value === undefined) {
     return c.json({ error: "value is required" }, 400);
   }
@@ -196,7 +240,7 @@ review.post("/:id/override", requires("review:act"), requireFeature("hitl_review
     resolution: "approved",
     finalValue: body.value,
     note: body.note ?? null,
-  });
+  }, body.fieldOverrides);
 });
 
 /** POST /api/review/:id/reject — mark the item failed. */
