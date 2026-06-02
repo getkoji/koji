@@ -953,3 +953,162 @@ describe("boolean provenance", () => {
     expect(result.flag).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Two-digit year date matching
+// ---------------------------------------------------------------------------
+
+describe("two-digit year date matching", () => {
+  it("finds MM/DD/YY format", () => {
+    const markdown = "Date: 03/15/24\nRef: ABC";
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("03/15/24");
+  });
+
+  it("finds M/D/YY format (no zero-padding)", () => {
+    const markdown = "Date: 3/5/24\nRef: ABC";
+    const result = resolveProvenance({ date: "2024-03-05" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("3/5/24");
+  });
+
+  it("finds MM-DD-YY format (dash-separated)", () => {
+    const markdown = "Effective: 03-15-24\nExpires: 03-15-25";
+    const result = resolveProvenance({ effective_date: "2024-03-15" }, markdown);
+
+    expect(result.effective_date).not.toBeNull();
+    expect(result.effective_date!.chunk).toBe("03-15-24");
+  });
+
+  it("finds M-D-YY format (dash-separated, no padding)", () => {
+    const markdown = "Date signed: 3-5-24";
+    const result = resolveProvenance({ signed_date: "2024-03-05" }, markdown);
+
+    expect(result.signed_date).not.toBeNull();
+    expect(result.signed_date!.chunk).toBe("3-5-24");
+  });
+
+  it("finds Month DD, YY format (named month, two-digit year)", () => {
+    const markdown = "Effective: March 15, 24";
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("March 15, 24");
+  });
+
+  it("finds Mon DD, YY format (abbreviated month, two-digit year)", () => {
+    const markdown = "Due: Mar 15, 24";
+    const result = resolveProvenance({ due_date: "2024-03-15" }, markdown);
+
+    expect(result.due_date).not.toBeNull();
+    expect(result.due_date!.chunk).toBe("Mar 15, 24");
+  });
+
+  it("finds DD/MM/YY format", () => {
+    const markdown = "Date: 15/03/24";
+    // Only matches when MM/DD/YY candidates don't match first
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("15/03/24");
+  });
+
+  it("finds date with OCR whitespace around separators", () => {
+    const markdown = "Effective: 03 / 15 / 2024";
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("03 / 15 / 2024");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-line address matching
+// ---------------------------------------------------------------------------
+
+describe("multi-line address matching", () => {
+  it("matches comma-separated address against newline-separated source", () => {
+    const markdown = "Address:\n123 Main Street\nSuite 200\nNew York, NY 10001";
+    const result = resolveProvenance(
+      { address: "123 Main Street, Suite 200, New York, NY 10001" },
+      markdown,
+    );
+
+    expect(result.address).not.toBeNull();
+    expect(result.address!.chunk).toContain("123 Main Street");
+    expect(result.address!.chunk).toContain("Suite 200");
+    expect(result.address!.chunk).toContain("New York");
+  });
+
+  it("matches address with mixed comma and newline separators", () => {
+    const markdown = "Mailing:\n456 Oak Ave, Apt 3B\nChicago, IL 60601";
+    const result = resolveProvenance(
+      { mailing_address: "456 Oak Ave, Apt 3B, Chicago, IL 60601" },
+      markdown,
+    );
+
+    expect(result.mailing_address).not.toBeNull();
+    expect(result.mailing_address!.chunk).toContain("456 Oak Ave");
+  });
+
+  it("does not use multi-line matching for short non-address strings", () => {
+    const markdown = "Value: hello world";
+    const result = resolveProvenance({ val: "hello world" }, markdown);
+
+    // Should find via exact match, not multi-line
+    expect(result.val).not.toBeNull();
+    expect(result.val!.chunk).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fuzzy OCR text matching
+// ---------------------------------------------------------------------------
+
+describe("fuzzy OCR text matching", () => {
+  it("matches l/1 confusion (common OCR error)", () => {
+    // Source has "P0l1cy" (OCR confused O→0, i→1) but extracted "Policy"
+    const markdown = "Document: P0licy Number ABC-123";
+    const result = resolveProvenance({ doc_type: "Policy Number ABC-123" }, markdown);
+
+    expect(result.doc_type).not.toBeNull();
+    expect(result.doc_type!.chunk).toBe("P0licy Number ABC-123");
+  });
+
+  it("matches O/0 confusion", () => {
+    const markdown = "Reference: C0NTRACT-2024-001";
+    const result = resolveProvenance({ reference: "CONTRACT-2024-001" }, markdown);
+
+    expect(result.reference).not.toBeNull();
+    expect(result.reference!.chunk).toBe("C0NTRACT-2024-001");
+  });
+
+  it("does not apply fuzzy matching to short strings", () => {
+    // Fuzzy matching requires >= 6 chars to avoid false positives
+    const markdown = "Code: AB1";
+    const result = resolveProvenance({ code: "ABl" }, markdown);
+
+    // Should not match — too short for fuzzy OCR
+    expect(result.code).toBeNull();
+  });
+
+  it("prefers exact match over fuzzy match", () => {
+    const markdown = "Name: POLICY HOLDER\nRef: P0LICY HOLDER";
+    const result = resolveProvenance({ name: "POLICY HOLDER" }, markdown);
+
+    expect(result.name).not.toBeNull();
+    // Should match the exact "POLICY HOLDER", not the OCR-corrupted version
+    expect(result.name!.chunk).toBe("POLICY HOLDER");
+  });
+
+  it("matches rn/m confusion", () => {
+    const markdown = "cornpany: Acme International";
+    const result = resolveProvenance({ entity: "company: Acme International" }, markdown);
+
+    expect(result.entity).not.toBeNull();
+    expect(result.entity!.chunk).toContain("cornpany");
+  });
+});

@@ -245,9 +245,17 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     `${monthAbbr[month - 1]} ${String(day).padStart(2, "0")}, ${year}`,
     // MM-DD-YYYY
     `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${year}`,
-    // Two-digit year variants
+    // Two-digit year variants (slash)
     `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${yy}`,
     `${month}/${day}/${yy}`,
+    // Two-digit year variants (dash)
+    `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${yy}`,
+    `${month}-${day}-${yy}`,
+    // Month DD, YY and Mon DD, YY (two-digit year with named month)
+    `${monthNames[month - 1]} ${day}, ${yy}`,
+    `${monthAbbr[month - 1]} ${day}, ${yy}`,
+    // DD/MM/YY
+    `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${yy}`,
     // Ordinal formats: "29th of April, 2003", "29th day of April, 2003"
     `${ordinal} of ${monthNames[month - 1]}, ${year}`,
     `${ordinal} of ${monthNames[month - 1]} ${year}`,
@@ -261,7 +269,7 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
   // Regex fallback: match ordinal + optional "day" + "of" + month + year
   // Handles OCR variations like "29th day\n\nof April, 2003"
   const ordinalPattern = new RegExp(
-    `${ordinal}\\s+(?:day\\s+)?(?:of\\s+)?${monthNames[month - 1]}[,\\s]+${year}`,
+    `${ordinal}\\s+(?:day\\s+)?(?:of\\s+)?${monthNames[month - 1]}[,\\s]+(?:${year}|${yy})`,
     "i",
   );
   const ordMatch = haystack.match(ordinalPattern);
@@ -269,6 +277,111 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     return { offset: ordMatch.index, length: ordMatch[0].length };
   }
 
+  // Regex fallback for flexible date matching: MM/DD/YYYY or MM-DD-YYYY with
+  // optional whitespace/line breaks around separators (common in OCR output)
+  const flexDatePattern = new RegExp(
+    `0?${month}\\s*[/\\-]\\s*0?${day}\\s*[/\\-]\\s*(?:${year}|${yy})(?![\\d])`,
+    "i",
+  );
+  const flexMatch = haystack.match(flexDatePattern);
+  if (flexMatch && flexMatch.index !== undefined) {
+    return { offset: flexMatch.index, length: flexMatch[0].length };
+  }
+
+  return null;
+}
+
+/**
+ * Multi-line address matching. Addresses are often extracted as a single
+ * comma-separated string ("123 Main St, Suite 200, New York, NY 10001")
+ * but appear in the source as multiple lines:
+ *   123 Main St
+ *   Suite 200
+ *   New York, NY 10001
+ *
+ * Builds a regex where commas/newlines in the needle match either commas
+ * or newlines (with optional surrounding whitespace) in the haystack.
+ */
+function findMultiLine(haystack: string, needle: string): { offset: number; length: number } | null {
+  // Only try if needle contains commas or newlines — avoid overhead for simple strings
+  if (!needle.includes(",") && !needle.includes("\n")) return null;
+
+  // Split on comma-or-newline boundaries, keeping non-empty segments
+  const segments = needle.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 2) return null;
+
+  // Build a regex: each segment (escaped) joined by flexible separators
+  // that match comma, newline, or combinations thereof
+  const escaped = segments.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(escaped.join("[,\\n\\r]\\s*"), "i");
+  const m = haystack.match(pattern);
+  if (m && m.index !== undefined) {
+    return { offset: m.index, length: m[0].length };
+  }
+  return null;
+}
+
+/**
+ * Fuzzy OCR text matching. OCR engines commonly confuse visually similar
+ * characters. This function builds a regex with character classes for
+ * commonly confused pairs and attempts a match.
+ *
+ * Only used as a last-resort fallback — requires the needle to be at
+ * least 6 characters to avoid false positives on short strings.
+ */
+function findFuzzyOcr(haystack: string, needle: string): { offset: number; length: number } | null {
+  if (needle.length < 6) return null;
+
+  // Common OCR confusion pairs (bidirectional)
+  const ocrMap: Record<string, string> = {
+    "l": "[l1I|]",
+    "1": "[1lI|]",
+    "I": "[Il1|]",
+    "0": "[0Oo]",
+    "O": "[O0o]",
+    "o": "[o0O]",
+    "5": "[5S]",
+    "S": "[S5]",
+    "s": "[s5]",
+    "8": "[8B]",
+    "B": "[B8]",
+    "g": "[g9q]",
+    "9": "[9gq]",
+    "q": "[qg9]",
+    "Z": "[Z2]",
+    "2": "[2Z]",
+  };
+
+  // Build pattern: replace confusable characters with character classes
+  let patternStr = "";
+  for (let i = 0; i < needle.length; i++) {
+    const ch = needle[i]!;
+    if (ocrMap[ch]) {
+      patternStr += ocrMap[ch];
+    } else if (/[.*+?^${}()|[\]\\]/.test(ch)) {
+      patternStr += "\\" + ch;
+    } else {
+      patternStr += ch;
+    }
+  }
+
+  // Also handle "rn" ↔ "m" substitution (common OCR confusion)
+  patternStr = patternStr.replace(/rn/g, "(?:rn|m)");
+  patternStr = patternStr.replace(/(?<!(?:\(\?:rn\|))m(?!\))/g, "(?:m|rn)");
+
+  try {
+    const pattern = new RegExp(patternStr, "i");
+    const m = haystack.match(pattern);
+    if (m && m.index !== undefined) {
+      // Verify the match isn't identical to the needle (that would have been
+      // caught by earlier exact/case-insensitive passes)
+      if (m[0].toLowerCase() !== needle.toLowerCase()) {
+        return { offset: m.index, length: m[0].length };
+      }
+    }
+  } catch {
+    // Invalid regex from unusual character combinations — skip
+  }
   return null;
 }
 
@@ -614,6 +727,14 @@ function resolveScalar(
       }
       if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
         result = findDate(markdown, value);
+      }
+      // Multi-line address matching (comma-separated → newline-separated)
+      if (!result) {
+        result = findMultiLine(markdown, value);
+      }
+      // Fuzzy OCR matching as last resort
+      if (!result) {
+        result = findFuzzyOcr(markdown, value);
       }
     }
   } else if (typeof value === "number") {
