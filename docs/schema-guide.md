@@ -345,9 +345,26 @@ Each list entry is a single-key dict. The key is the rule type; the value is eit
 | `enum_in` | `{field, allowed}` | Fail if the field's value is not in the allowed list |
 | `date_order` | list of date fields | Fail if the dates are not in ascending order (ties allowed) |
 | `sum_equals` | `{field, sum_of, tolerance?}` | Fail if `field` != sum of the dotted `sum_of` path (default tolerance 0.01) |
+| `field_sum` | `{field, addends, tolerance?, auto_correct?}` | Fail if `field` != sum of the listed top-level fields; `auto_correct: true` replaces `field` with the computed sum |
+| `min_words` | `{field, min?, on_fail?}` | Enforce a minimum word count on a string field (default `min: 5`). `on_fail: null` (default) nulls the field; `on_fail: error` keeps the field and reports a hard error |
+| `max_words` | `{field, max?, on_fail?}` | Enforce a maximum word count on a string field (default `max: 500`). Same `on_fail` semantics as `min_words` |
 | `regex` | `{field, pattern}` | Fail if the field's value does not match the regex |
 
 `sum_of` accepts a dotted path that crosses arrays: `line_items.total` sums `row.total` across every row.
+
+`min_words` / `max_words` example — catch a classification code where a narrative is expected, without hard-failing the extraction:
+
+```yaml
+validation:
+  - min_words:
+      field: description
+      min: 20
+      on_fail: null   # soft: null the field so downstream sees "no value" rather than a short code
+  - max_words:
+      field: summary
+      max: 100
+      on_fail: error  # hard: report a failure if the summary is too long
+```
 
 ### Response shape
 
