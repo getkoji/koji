@@ -384,8 +384,7 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
     }
   }
   if (exactMatches.length > 0) {
-    const best = pickClosest(exactMatches, preferredPage);
-    if (best) return best;
+    return pickClosest(exactMatches, preferredPage);
   }
 
   // Second pass: normalized whitespace match
@@ -398,20 +397,16 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
       }
     }
     if (normMatches.length > 0) {
-      const best = pickClosest(normMatches, preferredPage);
-      if (best) return best;
+      return pickClosest(normMatches, preferredPage);
     }
   }
 
   return null;
 }
 
-/** From a list of matches, pick the one on or closest to the preferred page.
- *  Returns null if the closest match is still too far from the preferred page. */
-function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: number, maxPageDistance = 3): T | null {
-  if (matches.length === 0) return null;
-  if (matches.length === 1 && preferredPage == null) return matches[0]!;
-  if (preferredPage == null) return matches[0]!;
+/** From a list of matches, pick the one on or closest to the preferred page. */
+function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: number): T {
+  if (matches.length === 1 || preferredPage == null) return matches[0]!;
   let best = matches[0]!;
   let bestDist = Math.abs(best.page - preferredPage);
   for (let i = 1; i < matches.length; i++) {
@@ -421,9 +416,6 @@ function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: n
       bestDist = dist;
     }
   }
-  // Reject matches that are too far from the expected page — a wrong highlight
-  // is worse than no highlight.
-  if (bestDist > maxPageDistance) return null;
   return best;
 }
 
@@ -494,10 +486,16 @@ function locateWords(
         return allMatches[0]!.words;
       }
       // Pick the match whose first word is on/closest to the preferred page
-      const asPageItems = allMatches.map((m) => ({ ...m, page: m.words[0]!.page }));
-      const best = pickClosest(asPageItems, preferredPage);
-      if (best) return best.words;
-      return null;
+      let best = allMatches[0]!;
+      let bestDist = Math.abs(best.words[0]!.page - preferredPage);
+      for (let i = 1; i < allMatches.length; i++) {
+        const dist = Math.abs(allMatches[i]!.words[0]!.page - preferredPage);
+        if (dist < bestDist) {
+          best = allMatches[i]!;
+          bestDist = dist;
+        }
+      }
+      return best.words;
     }
   }
 
