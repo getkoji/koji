@@ -245,9 +245,25 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     `${monthAbbr[month - 1]} ${String(day).padStart(2, "0")}, ${year}`,
     // MM-DD-YYYY
     `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${year}`,
-    // Two-digit year variants
+    // Two-digit year variants (slash)
     `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${yy}`,
     `${month}/${day}/${yy}`,
+    // Hyphen 2-digit year: 12-04-17
+    `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}-${yy}`,
+    `${month}-${day}-${yy}`,
+    // Dot-separated: 12.04.2017, 04.12.2017
+    `${String(month).padStart(2, "0")}.${String(day).padStart(2, "0")}.${year}`,
+    `${String(day).padStart(2, "0")}.${String(month).padStart(2, "0")}.${year}`,
+    // Month DD YYYY (no comma)
+    `${monthNames[month - 1]} ${day} ${year}`,
+    `${monthAbbr[month - 1]} ${day} ${year}`,
+    // DD Mon YYYY
+    `${day} ${monthAbbr[month - 1]} ${year}`,
+    `${String(day).padStart(2, "0")} ${monthAbbr[month - 1]} ${year}`,
+    // DD/MM/YY
+    `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${yy}`,
+    // YYYY/MM/DD
+    `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`,
     // Ordinal formats: "29th of April, 2003", "29th day of April, 2003"
     `${ordinal} of ${monthNames[month - 1]}, ${year}`,
     `${ordinal} of ${monthNames[month - 1]} ${year}`,
@@ -943,12 +959,75 @@ function resolveBoolean(
   return null;
 }
 
+/**
+ * Resolve provenance for a scalar field using LLM-provided source text and context.
+ * Tries context-narrowed search first, then direct source text search.
+ */
+function resolveScalarViaSourceText(
+  sourceText: string,
+  sourceContext: string | undefined,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  if (!sourceText) return null;
+
+  let result: { offset: number; length: number } | null = null;
+
+  // Strategy 1: find context in haystack, then source text within context region
+  if (sourceContext) {
+    const ctxHit = findExact(markdown, sourceContext)
+      ?? findCaseInsensitive(markdown, sourceContext)
+      ?? findNormalized(markdown, sourceContext);
+    if (ctxHit) {
+      const region = markdown.slice(ctxHit.offset, ctxHit.offset + ctxHit.length);
+      const localHit = findExact(region, sourceText)
+        ?? findCaseInsensitive(region, sourceText);
+      if (localHit) {
+        result = {
+          offset: ctxHit.offset + localHit.offset,
+          length: localHit.length,
+        };
+      }
+    }
+  }
+
+  // Strategy 2: find source text directly in the full haystack
+  if (!result) {
+    result = findExact(markdown, sourceText)
+      ?? findCaseInsensitive(markdown, sourceText)
+      ?? findNormalized(markdown, sourceText);
+  }
+
+  if (!result) return null;
+
+  const chunk = markdown.slice(result.offset, result.offset + result.length);
+  const span: ProvenanceSpan = {
+    offset: result.offset,
+    length: result.length,
+    chunk,
+    page: estimatePageFromOffset(markdown, result.offset),
+  };
+
+  if (textMap && textMap.length > 0) {
+    const bboxHit = resolveBbox(sourceText, chunk, textMap, markdown, result.offset);
+    if (bboxHit) {
+      span.page = bboxHit.page;
+      span.bbox = bboxHit.bbox;
+      if (bboxHit.words) span.words = bboxHit.words;
+    }
+  }
+
+  return span;
+}
+
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
   textMap?: TextMap,
   sourceTexts?: Record<string, string[]>,
   fieldSpecs?: Record<string, Record<string, unknown>>,
+  scalarSourceTexts?: Record<string, string>,
+  sourceContexts?: Record<string, string>,
 ): ProvenanceMap {
   const provenance: ProvenanceMap = {};
 
@@ -963,7 +1042,18 @@ export function resolveProvenance(
       continue;
     }
 
-    let span = resolveScalar(value, markdown, textMap);
+    // Primary strategy: use LLM-provided scalar source text
+    let span: ProvenanceSpan | null = null;
+    const srcText = scalarSourceTexts?.[field];
+    const srcContext = sourceContexts?.[field];
+    if (srcText) {
+      span = resolveScalarViaSourceText(srcText, srcContext, markdown, textMap);
+    }
+
+    // Fallback: standard format-variant matching
+    if (!span) {
+      span = resolveScalar(value, markdown, textMap);
+    }
     // For enum/mapping fields, try aliases when canonical value isn't found
     if (!span && typeof value === "string" && fieldSpecs?.[field]) {
       span = resolveViaAliases(value, fieldSpecs[field]!, markdown, textMap);
