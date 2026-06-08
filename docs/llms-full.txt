@@ -2320,13 +2320,13 @@ The hosted version runs the same services with managed infrastructure. The archi
 
 ## Hosted architecture (Koji Cloud)
 
-All-Cloudflare stack. One vendor, one bill, zero egress fees, containers auto-sleep when idle.
+Best-of-breed services, each chosen for a specific strength. The hosted platform runs at console.getkoji.dev.
 
 ```
                     ┌──────────────────┐
-                    │  Cloudflare Pages │
-                    │     (Next.js)     │
-                    │    Dashboard      │
+                    │     Vercel       │
+                    │    (Next.js)     │
+                    │    Dashboard     │
                     └────────┬─────────┘
                              │
                     ┌────────┴─────────┐
@@ -2335,49 +2335,42 @@ All-Cloudflare stack. One vendor, one bill, zero egress fees, containers auto-sl
                     └────────┬─────────┘
                              │ JWT
                     ┌────────┴─────────┐
-                    │  CF Workers      │
-                    │  API (light)     │──── D1 (SQLite)
-                    │  auth, routing   │──── R2 (documents)
+                    │  Vercel Funcs    │
+                    │  API (Hono)      │──── Neon (Postgres)
+                    │  api.getkoji.dev │──── R2 (documents)
                     └────────┬─────────┘
                              │
               ┌──────────────┼──────────────┐
               │              │              │
         ┌─────┴──────┐ ┌────┴────┐ ┌──────┴──────┐
-        │    Parse   │ │ Extract │ │ CF Queues   │
-        │ CF Container│ │CF Cont. │ │ (job queue) │
-        │ 4cpu/12GB  │ │1cpu/4GB │ │             │
-        │ auto-sleep │ │auto-sleep│ │             │
+        │    Parse   │ │ Extract │ │   Inngest   │
+        │   Modal    │ │  Vercel │ │ (job queue) │
+        │  GPU/OCR   │ │  Funcs  │ │             │
+        │ auto-scale │ │         │ │             │
         └────────────┘ └─────────┘ └─────────────┘
 ```
 
 ### Stack choices
 
-| Layer | Cloudflare Product | Spec | Cost |
-|-------|-------------------|------|------|
-| **Frontend** | Pages | Next.js, unlimited bandwidth | Free |
-| **API (light)** | Workers | Auth validation, schema CRUD, job status, routing | $5/mo (Workers Paid) |
-| **Parse** | Containers (standard-4) | 4 vCPU, 12GB RAM, 20GB disk. Auto-sleeps after idle. | Per-second billing |
-| **Extract** | Containers (standard-1) | 1 vCPU, 4GB RAM. Auto-sleeps after idle. | Per-second billing |
-| **Database** | D1 | SQLite at the edge. Same engine as self-hosted. | Free tier generous |
-| **Documents** | R2 | S3-compatible. Zero egress fees. | $0.015/GB stored |
-| **Job queue** | Queues | Job orchestration, async processing | $0.40/M messages |
-| **Auth** | Clerk (external) | SSO, MFA, team management. Only non-CF piece. | Free to 10k MAU |
+| Layer | Product | Details | Cost |
+|-------|---------|---------|------|
+| **Frontend** | Vercel (Next.js) | Dashboard at console.getkoji.dev, auto-deploys on push to main | Free tier (Hobby) |
+| **API** | Vercel Serverless Functions (Hono) | api.getkoji.dev, Node.js + Hono, esbuild-bundled, 300s max duration | Included in Vercel plan |
+| **Database** | Neon (Postgres) | Drizzle ORM, connection pooling, migrations via @koji/db | Generous free tier |
+| **Auth** | Clerk | Org/user management, JWT validation, webhook sync to Postgres | Free to 10k MAU |
+| **Parse/OCR** | Modal | GPU compute for Docling PDF parsing, auto-scales, per-second billing | Pay-per-second GPU |
+| **Documents** | Cloudflare R2 | S3-compatible. Zero egress fees. | $0.015/GB stored |
+| **Job queue** | Inngest | Background job orchestration, durable execution, retry logic | Free tier available |
+| **Billing** | Stripe | Subscription management, webhook validation via Svix | Per-transaction |
 
-**Container limits (no runtime duration limit):**
-- Max instance: 4 vCPU, 12 GiB RAM, 20 GB disk
-- Containers run as long as needed, billed per 10ms active
-- Auto-sleep after configurable `sleepAfter` period (e.g., 10 minutes)
-- Account limits (beta): 6 TiB memory, 1500 vCPU across all containers
+**Estimated cost at launch:** ~$0-20/mo before first paying customer. Vercel, Neon, and Inngest all have generous free tiers. Modal charges only for active GPU seconds. R2 storage is the only ongoing baseline cost.
 
-**Estimated cost at launch:** ~$10-20/mo before first paying customer (mostly idle containers + $5 Workers Paid plan).
-
-**Why all-Cloudflare:**
-- One vendor, one bill, one dashboard
-- D1 is literally SQLite — same local-to-prod parity as self-hosted
-- R2 has zero egress fees (critical for document processing where users download results)
-- Pages is free with no pricing cliffs
-- Containers auto-sleep when idle — you don't pay for downtime
-- No multi-vendor networking complexity
+**Why best-of-breed:**
+- **Vercel** for frontend/API: native Next.js support, preview deployments, zero-config serverless
+- **Neon** for database: serverless Postgres, branching for preview environments, scales to zero
+- **Modal** for GPU compute: parse/OCR needs GPU, Modal auto-scales and auto-sleeps, per-second billing
+- **R2** for storage: zero egress fees (critical for document processing where users download results)
+- **Inngest** for jobs: durable execution, automatic retries, built-in observability
 
 ### Auth architecture
 
@@ -2410,18 +2403,18 @@ The core extraction endpoints work identically in both modes. The auth layer is 
 The dashboard is a single Next.js app that runs in both environments:
 
 - **Self-hosted:** built into a Docker container, served alongside the API. `NEXT_PUBLIC_KOJI_MODE=selfhosted` hides login/billing UI.
-- **Hosted:** deployed on Cloudflare Pages. `NEXT_PUBLIC_KOJI_MODE=cloud` enables the Clerk provider, team switcher, and billing page.
+- **Hosted:** deployed on Vercel. `NEXT_PUBLIC_KOJI_MODE=cloud` enables the Clerk provider, team switcher, and billing page.
 
 The pages are identical: jobs, schemas, pipeline viz, logs, settings. Only the auth wrapper and billing page differ.
 
-### SQLite everywhere
+### Postgres everywhere
 
-The database story is the key to the Supabase-like local/prod parity:
+The database story is the key to local/prod parity:
 
-- **Self-hosted:** plain SQLite file at `.koji/jobs.db`
-- **Hosted:** Cloudflare D1 (SQLite at the edge)
+- **Self-hosted:** Postgres in a Docker container (via docker-compose)
+- **Hosted:** Neon (serverless Postgres)
 
-Same engine, same schema, same queries. D1 is SQLite — not a Postgres-compatible layer, not an emulation, actual SQLite. A schema developed locally works identically in production. Users `koji test` locally, then deploy to cloud with confidence.
+Same engine, same Drizzle schema, same migrations. A schema developed locally works identically in production. The `@koji/db` package owns all migrations and runs them through CI — never manually applied.
 
 ## Next steps
 
