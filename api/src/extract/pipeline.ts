@@ -177,7 +177,7 @@ ${markdown}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear — do not paraphrase or reformat.
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). Booleans as true/false (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear — do not paraphrase or reformat. Also include a top-level "__source_text" object mapping each field name to the EXACT verbatim text from the document for that field's value — the characters as they appear, before any formatting or normalization. And include a "__source_context" object mapping each field name to the full line or sentence where the value appears, for disambiguation. Example: if extracting effective_date from "Policy Period: From 12-04-17 To 12-04-18", return {"effective_date": "2017-12-04", "__source_text": {"effective_date": "12-04-17"}, "__source_context": {"effective_date": "Policy Period: From 12-04-17 To 12-04-18"}}.
 
 ${extraBlock}
 
@@ -310,6 +310,28 @@ export function extractSourceTexts(
     if (texts.some((t) => t.length > 0)) {
       result[field] = texts;
     }
+  }
+  return result;
+}
+
+function extractScalarSourceTexts(parsed: Record<string, unknown>): Record<string, string> {
+  const raw = parsed.__source_text;
+  delete parsed.__source_text;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") result[k] = v;
+  }
+  return result;
+}
+
+function extractSourceContexts(parsed: Record<string, unknown>): Record<string, string> {
+  const raw = parsed.__source_context;
+  delete parsed.__source_context;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") result[k] = v;
   }
   return result;
 }
@@ -538,6 +560,8 @@ export async function extractFields(
   // Extract and strip __source_text from array-of-objects items before
   // field validation — these are LLM-injected provenance hints, not user data.
   const sourceTexts = extractSourceTexts(parsed);
+  const scalarSourceTexts = extractScalarSourceTexts(parsed);
+  const sourceContexts = extractSourceContexts(parsed);
 
   // Field validation + type normalization
   const extracted: Record<string, unknown> = {};
@@ -553,7 +577,7 @@ export async function extractFields(
   // the original format, which is fragile and lossy.
   // Pass source texts so array-of-objects items get precise bbox matching
   // from the LLM-provided verbatim text instead of heuristic page-scoring.
-  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts, fields);
+  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts, fields, scalarSourceTexts, sourceContexts);
 
   // Post-extraction normalization
   const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);

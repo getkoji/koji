@@ -953,3 +953,114 @@ describe("boolean provenance", () => {
     expect(result.flag).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Additional date format variants
+// ---------------------------------------------------------------------------
+
+describe("date format variants", () => {
+  it("finds hyphen 2-digit year: 12-04-17", () => {
+    const markdown = "Date: 12-04-17\nOther content";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("12-04-17");
+  });
+
+  it("finds dot-separated date: 12.04.2017", () => {
+    const markdown = "Datum: 12.04.2017\nSomething else";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("12.04.2017");
+  });
+
+  it("finds month-no-comma: December 4 2017", () => {
+    const markdown = "Signed December 4 2017 by the parties";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("December 4 2017");
+  });
+
+  it("finds DD Mon YYYY: 4 Dec 2017", () => {
+    const markdown = "Date: 4 Dec 2017\nRef: ABC";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("4 Dec 2017");
+  });
+
+  it("finds DD/MM/YY: 04/12/17", () => {
+    const markdown = "Date: 04/12/17\nSomething";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("04/12/17");
+  });
+
+  it("finds YYYY/MM/DD: 2017/12/04", () => {
+    const markdown = "Date: 2017/12/04\nContent";
+    const result = resolveProvenance({ date: "2017-12-04" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("2017/12/04");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scalar __source_text provenance
+// ---------------------------------------------------------------------------
+
+describe("scalar __source_text provenance", () => {
+  it("uses scalar source text for provenance matching", () => {
+    const markdown = "Effective: 12-04-17\nExpires: 12-04-18";
+    // The LLM returns normalized ISO date, but also provides source text
+    const result = resolveProvenance(
+      { effective_date: "2017-12-04" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      { effective_date: "12-04-17" },
+    );
+
+    expect(result.effective_date).not.toBeNull();
+    expect(result.effective_date!.chunk).toBe("12-04-17");
+    expect(result.effective_date!.offset).toBe(markdown.indexOf("12-04-17"));
+  });
+
+  it("__source_context constrains search region", () => {
+    // "500" appears twice; context narrows to the right occurrence
+    const markdown = "Limit: 500\nDeductible: 500 per claim";
+    const result = resolveProvenance(
+      { deductible: "500" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      { deductible: "500" },
+      { deductible: "Deductible: 500 per claim" },
+    );
+
+    expect(result.deductible).not.toBeNull();
+    // Should match the second "500" (inside the context region)
+    expect(result.deductible!.offset).toBe(markdown.indexOf("Deductible: 500 per claim") + "Deductible: ".length);
+  });
+
+  it("falls back to format-variant matching when source text not found", () => {
+    const markdown = "Effective Date: 03/15/2024";
+    const result = resolveProvenance(
+      { effective_date: "2024-03-15" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      { effective_date: "March 15, 2024" }, // source text not in markdown
+    );
+
+    expect(result.effective_date).not.toBeNull();
+    // Falls back to date format matching
+    expect(result.effective_date!.chunk).toBe("03/15/2024");
+  });
+});
