@@ -124,13 +124,13 @@ function findWithEntities(haystack: string, needle: string): { offset: number; l
   // Try replacing & with &amp; in the needle
   if (needle.includes("&") && !needle.includes("&amp;")) {
     const entityNeedle = needle.replace(/&/g, "&amp;");
-    const hit = findExact(haystack, entityNeedle) ?? findCaseInsensitive(haystack, entityNeedle);
+    const hit = findExact(haystack, entityNeedle) ?? findCaseInsensitive(haystack, entityNeedle) ?? findNormalized(haystack, entityNeedle);
     if (hit) return hit;
   }
   // Try replacing &amp; with & in the needle
   if (needle.includes("&amp;")) {
     const decodedNeedle = needle.replace(/&amp;/g, "&");
-    const hit = findExact(haystack, decodedNeedle) ?? findCaseInsensitive(haystack, decodedNeedle);
+    const hit = findExact(haystack, decodedNeedle) ?? findCaseInsensitive(haystack, decodedNeedle) ?? findNormalized(haystack, decodedNeedle);
     if (hit) return hit;
   }
   return null;
