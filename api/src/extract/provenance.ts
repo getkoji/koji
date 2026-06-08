@@ -384,7 +384,8 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
     }
   }
   if (exactMatches.length > 0) {
-    return pickClosest(exactMatches, preferredPage);
+    const best = pickClosest(exactMatches, preferredPage);
+    if (best) return best;
   }
 
   // Second pass: normalized whitespace match
@@ -397,16 +398,20 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
       }
     }
     if (normMatches.length > 0) {
-      return pickClosest(normMatches, preferredPage);
+      const best = pickClosest(normMatches, preferredPage);
+      if (best) return best;
     }
   }
 
   return null;
 }
 
-/** From a list of matches, pick the one on or closest to the preferred page. */
-function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: number): T {
-  if (matches.length === 1 || preferredPage == null) return matches[0]!;
+/** From a list of matches, pick the one on or closest to the preferred page.
+ *  Returns null if the closest match is still too far from the preferred page. */
+function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: number, maxPageDistance = 3): T | null {
+  if (matches.length === 0) return null;
+  if (matches.length === 1 && preferredPage == null) return matches[0]!;
+  if (preferredPage == null) return matches[0]!;
   let best = matches[0]!;
   let bestDist = Math.abs(best.page - preferredPage);
   for (let i = 1; i < matches.length; i++) {
@@ -416,6 +421,9 @@ function pickClosest<T extends { page: number }>(matches: T[], preferredPage?: n
       bestDist = dist;
     }
   }
+  // Reject matches that are too far from the expected page — a wrong highlight
+  // is worse than no highlight.
+  if (bestDist > maxPageDistance) return null;
   return best;
 }
 
@@ -486,38 +494,10 @@ function locateWords(
         return allMatches[0]!.words;
       }
       // Pick the match whose first word is on/closest to the preferred page
-      let best = allMatches[0]!;
-      let bestDist = Math.abs(best.words[0]!.page - preferredPage);
-      for (let i = 1; i < allMatches.length; i++) {
-        const dist = Math.abs(allMatches[i]!.words[0]!.page - preferredPage);
-        if (dist < bestDist) {
-          best = allMatches[i]!;
-          bestDist = dist;
-        }
-      }
-      return best.words;
-    }
-
-    // Single-word containment: value is contained within one text_map word
-    if (needleWords.length === 1) {
-      const lowerNeedle = needleWords[0]!;
-      const singleMatches: WordBox[] = [];
-      for (const seg of textMap) {
-        if (seg.text.toLowerCase().replace(/[,.$()]/g, "").includes(lowerNeedle.replace(/[,.$()]/g, ""))) {
-          singleMatches.push({
-            text: seg.text,
-            page: seg.page,
-            x: seg.bbox.x,
-            y: seg.bbox.y,
-            w: seg.bbox.w,
-            h: seg.bbox.h,
-          });
-        }
-      }
-      if (singleMatches.length > 0) {
-        const picked = pickClosest(singleMatches, preferredPage);
-        return [picked];
-      }
+      const asPageItems = allMatches.map((m) => ({ ...m, page: m.words[0]!.page }));
+      const best = pickClosest(asPageItems, preferredPage);
+      if (best) return best.words;
+      return null;
     }
   }
 
@@ -549,6 +529,27 @@ function enclosingBbox(words: WordBox[]): { page: number; bbox: BBox } | null {
  * resolves the bug where duplicate text across pages (e.g. the same
  * date on declarations and endorsements) would match the wrong occurrence.
  */
+/**
+ * Expand a chunk by grabbing surrounding words from the markdown.
+ * This helps disambiguate short/common words in the textMap by providing
+ * a longer, more unique search string.
+ */
+function expandChunkFromMarkdown(
+  chunk: string,
+  markdown: string,
+  offset: number,
+  wordsEachSide = 2,
+): string {
+  // Find where the chunk starts in the markdown (it should be at `offset`)
+  const before = markdown.slice(Math.max(0, offset - 200), offset);
+  const after = markdown.slice(offset + chunk.length, offset + chunk.length + 200);
+
+  const wordsBefore = before.trim().split(/\s+/).filter(Boolean).slice(-wordsEachSide);
+  const wordsAfter = after.trim().split(/\s+/).filter(Boolean).slice(0, wordsEachSide);
+
+  return [...wordsBefore, chunk, ...wordsAfter].join(" ");
+}
+
 function resolveBbox(
   value: unknown,
   chunk: string | undefined,
@@ -569,18 +570,41 @@ function resolveBbox(
     }
   }
 
-  // Fall back to paragraph-level segment matching
+  // Try paragraph-level segment matching with the chunk
   if (chunk) {
     const hit = findBbox(chunk, textMap, preferredPage);
     if (hit) return hit;
   }
 
+  // Context expansion: when chunk alone fails, expand with surrounding words
+  // from the markdown to create a more unique search string, then locate
+  // within that expanded match.
+  if (chunk && markdown != null && offset != null) {
+    const expanded = expandChunkFromMarkdown(chunk, markdown, offset);
+    if (expanded !== chunk) {
+      // Try locateWords with the expanded string
+      const expandedWords = locateWords(expanded, undefined, textMap, preferredPage);
+      if (expandedWords && expandedWords.length > 0) {
+        const enclosing = enclosingBbox(expandedWords);
+        if (enclosing) {
+          return { ...enclosing, words: expandedWords };
+        }
+      }
+      // Try findBbox with expanded string
+      const expandedHit = findBbox(expanded, textMap, preferredPage);
+      if (expandedHit) return expandedHit;
+    }
+  }
+
+  // Last resort: try the raw extracted value (no fallback guessing — findBbox
+  // will reject matches too far from the preferred page)
   const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
-  if (strValue) {
+  if (strValue && strValue !== chunk) {
     const hit = findBbox(strValue, textMap, preferredPage);
     if (hit) return hit;
   }
 
+  // No reliable match found — return null rather than guess wrong.
   return null;
 }
 
