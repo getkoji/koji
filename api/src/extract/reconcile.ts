@@ -66,7 +66,11 @@ export function computeProvenanceStrength(
   const needle = String(value).trim();
   if (!needle) return 0.0;
 
-  const source = chunks.map((c) => c.content).join("\n");
+  // Include chunk titles in the source text — headings are stripped from
+  // content during chunking but the LLM sees them in the prompt (as ### Title).
+  // Without titles, values extracted from headings (carrier names, section
+  // headers, form types) get provenance 0.0 despite being clearly present.
+  const source = chunks.map((c) => `${c.title}\n${c.content}`).join("\n");
   if (!source) return 0.0;
 
   // 1. Exact substring
