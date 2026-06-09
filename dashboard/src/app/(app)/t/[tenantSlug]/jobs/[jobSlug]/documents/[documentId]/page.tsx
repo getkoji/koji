@@ -447,6 +447,8 @@ export default function TraceViewPage() {
                 url={pdfUrl}
                 highlights={highlights}
                 activeField={activeField}
+                overflow="scroll"
+                mode="scroll"
               />
             </div>
           ) : (
