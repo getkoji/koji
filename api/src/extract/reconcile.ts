@@ -91,32 +91,47 @@ export function computeProvenanceStrength(
   const needle = String(value).trim();
   if (!needle) return 0.0;
 
-  // 1. Exact substring
-  if (source.includes(needle)) return 1.0;
+  // Normalize markdown escapes in source (\_  → _, &amp; → &, etc.)
+  // so values extracted by the LLM (which decodes these) can match.
+  const cleanSource = source
+    .replace(/\\([_*~`])/g, "$1")     // markdown backslash escapes
+    .replace(/&amp;/g, "&")            // HTML entity
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
+  // 1. Exact substring (try both raw and cleaned source)
+  if (source.includes(needle) || cleanSource.includes(needle)) return 1.0;
 
   // 2. Case-insensitive
-  if (source.toLowerCase().includes(needle.toLowerCase())) return 0.9;
+  const needleLower = needle.toLowerCase();
+  if (source.toLowerCase().includes(needleLower) || cleanSource.toLowerCase().includes(needleLower)) return 0.9;
 
   // 3. Normalized whitespace
   const normalizedNeedle = needle.split(/\s+/).join(" ").toLowerCase();
-  const normalizedSource = source.split(/\s+/).join(" ").toLowerCase();
+  const normalizedSource = cleanSource.split(/\s+/).join(" ").toLowerCase();
   if (normalizedSource.includes(normalizedNeedle)) return 0.85;
 
   // 4. Date format alternatives (YYYY-MM-DD → common input formats)
   // A format-alternative match is still a confirmed match — the value is
   // present in the document, just formatted differently. Score 1.0.
+  // Try with AND without leading zeros (10/08/2017 and 10/8/2017).
   if (typeof value === "string" && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
     const parts = value.split("-");
     if (parts.length === 3) {
       const [y, m, d] = parts;
+      const mz = m!.replace(/^0/, ""); // strip leading zero
+      const dz = d!.replace(/^0/, "");
       const alternatives = [
         `${m}/${d}/${y}`,
         `${d}/${m}/${y}`,
         `${m}-${d}-${y}`,
         `${m}.${d}.${y}`,
+        // Without leading zeros
+        `${mz}/${dz}/${y}`,
+        `${dz}/${mz}/${y}`,
       ];
       for (const alt of alternatives) {
-        if (source.includes(alt)) return 1.0;
+        if (source.includes(alt) || cleanSource.includes(alt)) return 1.0;
       }
     }
   }

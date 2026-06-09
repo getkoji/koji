@@ -157,24 +157,37 @@ describe("computeProvenanceStrength — arrays", () => {
   });
 
   it("uses __source_text for matching when provided", () => {
-    // The extracted value has & decoded, but source has &amp;
-    const chunks = [chunk("Reconstruction &amp; Recovery Advisors Inc")];
-    // Without source text, the extracted value won't match
-    expect(computeProvenanceStrength("Reconstruction & Recovery Advisors Inc", chunks)).toBe(0.0);
-    // With source text (verbatim from LLM), it matches
+    const chunks = [chunk("Some random content without the value")];
+    // Without source text, value not found
+    expect(computeProvenanceStrength("Special Value", chunks)).toBe(0.0);
+    // With source text that IS in the source
+    const chunks2 = [chunk("Found: Special Value Here")];
     expect(computeProvenanceStrength(
-      "Reconstruction & Recovery Advisors Inc", chunks, "string",
-      "Reconstruction &amp; Recovery Advisors Inc",
+      "Different Extracted Form", chunks2, "string",
+      "Special Value",
     )).toBe(1.0);
   });
 
-  it("uses __source_text for escaped underscores", () => {
+  it("decodes &amp; in source for matching", () => {
+    const chunks = [chunk("Reconstruction &amp; Recovery Advisors Inc")];
+    // Source normalization decodes &amp; → &, so this should match
+    expect(computeProvenanceStrength("Reconstruction & Recovery Advisors Inc", chunks)).toBe(1.0);
+  });
+
+  it("strips markdown backslash escapes for matching", () => {
     const chunks = [chunk("Price List: CASO8X\\_SEP18")];
-    expect(computeProvenanceStrength("CASO8X_SEP18", chunks)).toBe(0.0);
-    expect(computeProvenanceStrength(
-      "CASO8X_SEP18", chunks, "string",
-      "CASO8X\\_SEP18",
-    )).toBe(1.0);
+    // Source normalization strips \_ → _, so this should match
+    expect(computeProvenanceStrength("CASO8X_SEP18", chunks)).toBe(1.0);
+  });
+
+  it("matches dates without leading zeros", () => {
+    const chunks = [chunk("Date of Loss: 10/8/2017")];
+    expect(computeProvenanceStrength("2017-10-08", chunks)).toBe(1.0);
+  });
+
+  it("matches dates with single-digit month", () => {
+    const chunks = [chunk("Filed: 3/15/2024")];
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
   it("finds numbers with different formatting at 1.0", () => {
