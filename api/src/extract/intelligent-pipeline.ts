@@ -106,14 +106,16 @@ async function extractOneSection(
 
     const waveResult = reconcile(groupResults, waveSchema);
 
-    // Re-score confidence with actual route chunks
+    // Re-score confidence against all section chunks (not just routed chunks).
+    // The LLM sees the group's full chunk set (union of all fields' routes +
+    // context chunks), so a value found anywhere in the section is legitimate.
+    // Scoring against only the routed chunks penalizes fields that were
+    // extracted from context or from a co-grouped field's chunks.
     const waveFields = (waveSchema.fields ?? {}) as Record<string, Record<string, unknown>>;
     for (const [fieldName, value] of Object.entries(waveResult.extracted)) {
-      const route = waveRoutes.find((r) => r.fieldName === fieldName);
-      const routeChunks = route?.chunks ?? [];
       const fieldType = (waveFields[fieldName]?.type as string) ?? "string";
       if (value != null) {
-        const prov = computeProvenanceStrength(value, routeChunks, fieldType);
+        const prov = computeProvenanceStrength(value, sectionChunks, fieldType);
         const isValid = waveResult.confidence[fieldName] !== "not_found";
         const score = computeFieldConfidence({ provenanceStrength: prov, validationPassed: isValid });
         waveResult.confidence_scores[fieldName] = score;
