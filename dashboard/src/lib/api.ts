@@ -416,6 +416,7 @@ export interface ReviewDetail extends ReviewRow {
   documentStorageKey: string | null;
   documentMimeType: string | null;
   documentExtractionJson: unknown;
+  documentConfidenceScoresJson: Record<string, number> | null;
   documentPageCount: number | null;
   documentPreviewUrl: string | null;
   schemaVersion: number | null;
@@ -431,9 +432,9 @@ export const review = {
   get: (id: string) => api.get<ReviewDetail>(`/api/review/${id}`),
   queueIds: (status = "pending") =>
     api.get<{ data: string[] }>(`/api/review/__queue/ids?status=${status}`).then((r) => r.data),
-  accept: (id: string, body?: { note?: string }) =>
+  accept: (id: string, body?: { note?: string; fieldOverrides?: Record<string, unknown> }) =>
     api.post<ReviewRow>(`/api/review/${id}/accept`, body ?? {}),
-  override: (id: string, body: { value: unknown; note?: string }) =>
+  override: (id: string, body: { value: unknown; note?: string; fieldOverrides?: Record<string, unknown> }) =>
     api.post<ReviewRow>(`/api/review/${id}/override`, body),
   reject: (id: string, body: { reason: string }) =>
     api.post<ReviewRow>(`/api/review/${id}/reject`, body),

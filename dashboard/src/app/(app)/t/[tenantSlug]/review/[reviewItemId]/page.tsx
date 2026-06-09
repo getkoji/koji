@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Check, X, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Check, X, FileText, ChevronLeft, ChevronRight, ChevronDown, Pencil } from "lucide-react";
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { review as reviewApi, type ReviewDetail } from "@/lib/api";
@@ -26,6 +26,8 @@ export default function ReviewDetailPage() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [submitting, setSubmitting] = useState<DecisionKind | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Per-field overrides for non-flagged fields. Key = field name, value = edited string.
+  const [fieldOverrides, setFieldOverrides] = useState<Record<string, string>>({});
   // Items the user chose to skip in this session — hidden from the next-item cursor
   // so "skip" actually advances instead of looping. State (not ref) so useMemo
   // recomputes the queue position when we skip.
@@ -109,18 +111,35 @@ export default function ReviewDetailPage() {
     }
   }, [prevPendingId, router, tenantSlug]);
 
+  // Build parsed field overrides for the API payload
+  const buildFieldOverrides = useCallback((): Record<string, unknown> | undefined => {
+    if (!item) return undefined;
+    const extraction = (item.documentExtractionJson ?? {}) as Record<string, unknown>;
+    const overrides: Record<string, unknown> = {};
+    for (const [fieldName, editedValue] of Object.entries(fieldOverrides)) {
+      const original = extraction[fieldName];
+      const parsed = parseOverride(editedValue, original);
+      overrides[fieldName] = parsed;
+    }
+    return Object.keys(overrides).length > 0 ? overrides : undefined;
+  }, [item, fieldOverrides]);
+
   const submitAccept = useCallback(async () => {
     if (!item || submitting) return;
     setSubmitting("accept");
     setErrorMsg(null);
     try {
-      await reviewApi.accept(item.id, note.trim() ? { note: note.trim() } : undefined);
+      const overrides = buildFieldOverrides();
+      await reviewApi.accept(item.id, {
+        ...(note.trim() ? { note: note.trim() } : {}),
+        ...(overrides ? { fieldOverrides: overrides } : {}),
+      });
       goToNext();
     } catch (err) {
       setSubmitting(null);
       setErrorMsg(err instanceof Error ? err.message : "Accept failed");
     }
-  }, [item, note, submitting, goToNext]);
+  }, [item, note, submitting, goToNext, buildFieldOverrides]);
 
   const submitOverride = useCallback(async () => {
     if (!item || submitting || userOverride === null) return;
@@ -128,16 +147,18 @@ export default function ReviewDetailPage() {
     setSubmitting("override");
     setErrorMsg(null);
     try {
+      const overrides = buildFieldOverrides();
       await reviewApi.override(item.id, {
         value: parsed,
         note: note.trim() || undefined,
+        ...(overrides ? { fieldOverrides: overrides } : {}),
       });
       goToNext();
     } catch (err) {
       setSubmitting(null);
       setErrorMsg(err instanceof Error ? err.message : "Override failed");
     }
-  }, [item, userOverride, note, submitting, goToNext]);
+  }, [item, userOverride, note, submitting, goToNext, buildFieldOverrides]);
 
   const submitReject = useCallback(async () => {
     if (!item || submitting || !rejectReason.trim()) return;
@@ -256,7 +277,22 @@ export default function ReviewDetailPage() {
       <div className="flex-1 min-h-0 grid grid-cols-2 gap-4 px-10 pt-4 pb-4 overflow-hidden">
         <DocumentPreview url={item.documentPreviewUrl} mimeType={item.documentMimeType} />
         <div className="flex flex-col min-h-0 gap-4 overflow-y-auto">
-          <FieldPanel item={item} confidence={confidence} />
+          <FieldPanel
+            item={item}
+            confidence={confidence}
+            fieldOverrides={fieldOverrides}
+            onFieldOverride={(name, value) => {
+              setFieldOverrides((prev) => {
+                if (value === null) {
+                  const next = { ...prev };
+                  delete next[name];
+                  return next;
+                }
+                return { ...prev, [name]: value };
+              });
+            }}
+            isResolved={isResolved}
+          />
 
           {!isResolved ? (
             <DecisionPanel
@@ -273,6 +309,7 @@ export default function ReviewDetailPage() {
               onSkip={submitSkip}
               onRejectOpen={() => setRejectOpen(true)}
               error={errorMsg}
+              fieldOverrideCount={Object.keys(fieldOverrides).length}
             />
           ) : (
             <ResolvedPanel item={item} />
@@ -489,17 +526,26 @@ function DocumentPreview({
 function FieldPanel({
   item,
   confidence,
+  fieldOverrides,
+  onFieldOverride,
+  isResolved,
 }: {
   item: ReviewDetail;
   confidence: number | null;
+  fieldOverrides: Record<string, string>;
+  onFieldOverride: (name: string, value: string | null) => void;
+  isResolved: boolean;
 }) {
   const extraction = (item.documentExtractionJson ?? null) as Record<string, unknown> | null;
+  const confidenceScores = (item.documentConfidenceScoresJson ?? null) as Record<string, number> | null;
   const allFields = extraction ? Object.entries(extraction) : [];
   // The flagged field always at the top.
   const orderedFields: [string, unknown][] = [
     [item.fieldName, item.proposedValue],
     ...allFields.filter(([k]) => k !== item.fieldName),
   ];
+
+  const editedCount = Object.keys(fieldOverrides).length;
 
   return (
     <div className="border border-border rounded-sm bg-cream">
@@ -509,39 +555,122 @@ function FieldPanel({
         </span>
         <span className="font-mono text-[10px] text-ink-4">
           {orderedFields.length} {orderedFields.length === 1 ? "field" : "fields"}
+          {editedCount > 0 && (
+            <span className="ml-2 text-[#B6861A]">· {editedCount} edited</span>
+          )}
         </span>
       </div>
       <div className="divide-y divide-dotted divide-border">
         {orderedFields.map(([name, value]) => {
           const isFlagged = name === item.fieldName;
+          const fieldConfidence = isFlagged
+            ? confidence
+            : (confidenceScores?.[name] ?? null);
           return (
-            <div
+            <EditableFieldRow
               key={name}
-              className={`grid grid-cols-[140px_1fr_100px] gap-3 items-center px-4 py-2 ${
-                isFlagged ? "bg-[#B6861A]/[0.08]" : ""
-              }`}
-            >
-              <code
-                className={`font-mono text-[11.5px] truncate ${
-                  isFlagged ? "text-vermillion-2 font-medium" : "text-ink-2"
-                }`}
-              >
-                {name}
-              </code>
-              <span className="font-mono text-[11.5px] text-ink truncate">
-                {stringifyValue(value)}
-              </span>
-              <div className="flex justify-end">
-                {isFlagged && confidence !== null ? (
-                  <ConfidenceIndicator confidence={confidence} />
-                ) : (
-                  <span className="font-mono text-[10px] text-ink-4">—</span>
-                )}
-              </div>
-            </div>
+              name={name}
+              value={value}
+              isFlagged={isFlagged}
+              confidence={fieldConfidence}
+              editedValue={fieldOverrides[name] ?? null}
+              onEdit={isResolved ? undefined : (v) => onFieldOverride(name, v)}
+            />
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A single field row in the extraction panel. Flagged fields are always
+ * expanded. Non-flagged fields are collapsed by default with a click-to-edit
+ * action that expands an inline editor.
+ */
+function EditableFieldRow({
+  name,
+  value,
+  isFlagged,
+  confidence,
+  editedValue,
+  onEdit,
+}: {
+  name: string;
+  value: unknown;
+  isFlagged: boolean;
+  confidence: number | null;
+  editedValue: string | null;
+  onEdit?: (value: string | null) => void;
+}) {
+  const [expanded, setExpanded] = useState(isFlagged || editedValue !== null);
+  const displayValue = editedValue ?? stringifyValue(value);
+  const isEdited = editedValue !== null;
+
+  return (
+    <div className={isFlagged ? "bg-[#B6861A]/[0.08]" : ""}>
+      <div
+        className={`grid grid-cols-[140px_1fr_100px] gap-3 items-center px-4 py-2 ${
+          !isFlagged && onEdit ? "cursor-pointer hover:bg-cream-2/40 transition-colors" : ""
+        }`}
+        onClick={!isFlagged && onEdit ? () => setExpanded((e) => !e) : undefined}
+      >
+        <code
+          className={`font-mono text-[11.5px] truncate flex items-center gap-1 ${
+            isFlagged ? "text-vermillion-2 font-medium" : isEdited ? "text-[#B6861A] font-medium" : "text-ink-2"
+          }`}
+        >
+          {!isFlagged && onEdit && (
+            <ChevronDown
+              className={`w-3 h-3 shrink-0 transition-transform ${expanded ? "" : "-rotate-90"}`}
+            />
+          )}
+          {name}
+        </code>
+        <span className={`font-mono text-[11.5px] truncate ${isEdited ? "text-[#B6861A]" : "text-ink"}`}>
+          {displayValue}
+          {isEdited && (
+            <span className="ml-1 text-[9px] text-[#B6861A]/70 uppercase tracking-wider">edited</span>
+          )}
+        </span>
+        <div className="flex justify-end">
+          {confidence !== null ? (
+            <ConfidenceIndicator confidence={confidence} />
+          ) : onEdit && !expanded ? (
+            <Pencil className="w-3 h-3 text-ink-4" />
+          ) : (
+            <span className="font-mono text-[10px] text-ink-4">—</span>
+          )}
+        </div>
+      </div>
+      {expanded && !isFlagged && onEdit && (
+        <div className="px-4 pb-3 pt-0">
+          <div className="flex items-start gap-2">
+            <input
+              type="text"
+              value={displayValue}
+              onChange={(e) => onEdit(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1.5 outline-none focus:border-ink transition-colors"
+            />
+            {isEdited && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(null);
+                }}
+                className="shrink-0 font-mono text-[10px] text-ink-4 border border-border rounded-sm px-2 py-1.5 hover:border-ink hover:text-ink transition-colors"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          <div className="font-mono text-[9.5px] text-ink-4 mt-1">
+            Original: {stringifyValue(value)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -575,6 +704,7 @@ function DecisionPanel({
   onSkip,
   onRejectOpen,
   error,
+  fieldOverrideCount,
 }: {
   item: ReviewDetail;
   overrideValue: string;
@@ -589,7 +719,9 @@ function DecisionPanel({
   onSkip: () => void;
   onRejectOpen: () => void;
   error: string | null;
+  fieldOverrideCount: number;
 }) {
+  const hasEdits = overrideChanged || fieldOverrideCount > 0;
   return (
     <div className="border border-border rounded-sm bg-cream">
       <div className="px-4 py-2 border-b border-border bg-cream-2/50">
@@ -664,12 +796,14 @@ function DecisionPanel({
             onClick={onAccept}
           />
           <DecisionButton
-            label={overrideChanged ? "Approve with edits" : "Override"}
+            label={hasEdits
+              ? `Approve with edits${fieldOverrideCount > 0 ? ` (${fieldOverrideCount + (overrideChanged ? 1 : 0)})` : ""}`
+              : "Override"}
             shortcut="E"
             variant="outline"
-            loading={submitting === "override"}
-            disabled={submitting !== null || !overrideChanged}
-            onClick={onOverride}
+            loading={submitting === "override" || (submitting === "accept" && hasEdits && !overrideChanged)}
+            disabled={submitting !== null || !hasEdits}
+            onClick={hasEdits && !overrideChanged ? onAccept : onOverride}
           />
           <DecisionButton
             label="Reject"
