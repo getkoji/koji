@@ -26,10 +26,12 @@ import type { ParseProvider } from "../parse/provider";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 import {
+  emitWebhookEvent,
   enqueueWebhookDeliveries,
   prepareWebhookEvent,
   type PreparedWebhookEvent,
 } from "../webhooks/emit";
+import { createNotification } from "../notifications/emit";
 import {
   resolveExtractEndpoint,
   type ExtractEndpointPayload,
@@ -1192,4 +1194,15 @@ export async function markDocFailed(
         err instanceof Error ? err.message : err,
       );
     });
+
+  // In-app notification for document failure
+  createNotification(tenantId, {
+    type: "document.failed",
+    title: "Document extraction failed",
+    body: reason,
+    data: { documentId, jobId },
+  });
+
+  // Webhook event for document failure
+  emitWebhookEvent(tenantId, "document.failed", { documentId, jobId, reason });
 }
