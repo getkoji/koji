@@ -115,6 +115,15 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
   const signedPayload = `${timestamp}.${JSON.stringify(payload)}`;
   const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
 
+  // Decrypt custom headers if present
+  let customHeaders: Record<string, string> = {};
+  if (target.headersEncrypted) {
+    try {
+      const blob = target.headersEncrypted.toString("utf8");
+      customHeaders = JSON.parse(decrypt(blob, _masterKey, job.tenantId)) as Record<string, string>;
+    } catch { /* best-effort — deliver without custom headers */ }
+  }
+
   // Deliver
   let httpStatus = 0;
   let responseBody = "";
@@ -124,6 +133,7 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     const resp = await fetch(target.url, {
       method: "POST",
       headers: {
+        ...customHeaders,
         "Content-Type": "application/json",
         "Koji-Signature": `t=${timestamp},v1=${v1}`,
         "Koji-Event-Id": eventId,

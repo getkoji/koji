@@ -23,6 +23,7 @@ export const webhookTargets = pgTable(
     displayName: varchar("display_name", { length: 255 }).notNull(),
     url: varchar("url", { length: 2048 }).notNull(),
     secretEncrypted: bytea("secret_encrypted").notNull(),
+    headersEncrypted: bytea("headers_encrypted"),
     subscribedEvents: text("subscribed_events").array().notNull(),
     status: varchar("status", { length: 16 }).notNull().default("active"),
     lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true, mode: "date" }),

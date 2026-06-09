@@ -24,6 +24,7 @@ webhookTargets.get("/", requires("webhook:read"), async (c) => {
         displayName: schema.webhookTargets.displayName,
         url: schema.webhookTargets.url,
         subscribedEvents: schema.webhookTargets.subscribedEvents,
+        headersEncrypted: schema.webhookTargets.headersEncrypted,
         status: schema.webhookTargets.status,
         lastDeliveredAt: schema.webhookTargets.lastDeliveredAt,
         lastError: schema.webhookTargets.lastError,
@@ -32,7 +33,22 @@ webhookTargets.get("/", requires("webhook:read"), async (c) => {
       .from(schema.webhookTargets)
   );
 
-  return c.json({ data: rows });
+  // Mask encrypted headers: only return header names, never values
+  const masterKey = c.get("masterKey");
+  const data = rows.map((r) => {
+    const { headersEncrypted, ...rest } = r;
+    let headerNames: string[] = [];
+    if (headersEncrypted && masterKey) {
+      try {
+        const blob = headersEncrypted.toString("utf8");
+        const parsed = JSON.parse(decrypt(blob, masterKey, tenantId)) as Record<string, string>;
+        headerNames = Object.keys(parsed);
+      } catch { /* corrupt or missing key — skip */ }
+    }
+    return { ...rest, headerCount: headerNames.length, headerNames };
+  });
+
+  return c.json({ data });
 });
 
 /**
@@ -65,10 +81,21 @@ webhookTargets.post(
     slug: string;
     url: string;
     event_filters: string[];
+    headers?: Record<string, string>;
   }>();
 
   if (!body.name || !body.slug || !body.url) {
     return c.json({ error: "name, slug, and url are required" }, 400);
+  }
+
+  // Validate custom headers — block reserved prefixes
+  if (body.headers && typeof body.headers === "object") {
+    const reserved = Object.keys(body.headers).filter(
+      (k) => k.toLowerCase().startsWith("koji-") || k.toLowerCase() === "content-type",
+    );
+    if (reserved.length > 0) {
+      return c.json({ error: `Reserved header names: ${reserved.join(", ")}` }, 400);
+    }
   }
   if (!body.event_filters?.length) {
     return c.json({ error: "At least one event filter is required" }, 400);
@@ -106,6 +133,11 @@ webhookTargets.post(
   const secretEncryptedBlob = encrypt(secret, masterKey, tenantId);
   const secretHintStr = keyHint(secret);
 
+  // Encrypt custom headers if provided
+  const headersBlob = body.headers && Object.keys(body.headers).length > 0
+    ? Buffer.from(encrypt(JSON.stringify(body.headers), masterKey, tenantId), "utf8")
+    : null;
+
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .insert(schema.webhookTargets)
@@ -115,6 +147,7 @@ webhookTargets.post(
         displayName: body.name,
         url: body.url,
         secretEncrypted: Buffer.from(secretEncryptedBlob, "utf8"),
+        headersEncrypted: headersBlob,
         subscribedEvents: body.event_filters,
         createdBy: principal.userId,
       })
@@ -149,6 +182,7 @@ webhookTargets.patch("/:id", requires("webhook:write"), async (c) => {
     url?: string;
     event_filters?: string[];
     status?: string;
+    headers?: Record<string, string> | null;
   }>();
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -156,6 +190,25 @@ webhookTargets.patch("/:id", requires("webhook:write"), async (c) => {
   if (body.url) updates.url = body.url;
   if (body.event_filters) updates.subscribedEvents = body.event_filters;
   if (body.status) updates.status = body.status;
+
+  // Update encrypted headers (null to clear, object to set)
+  if (body.headers !== undefined) {
+    const masterKey = c.get("masterKey");
+    if (body.headers === null || Object.keys(body.headers).length === 0) {
+      updates.headersEncrypted = null;
+    } else if (masterKey) {
+      const reserved = Object.keys(body.headers).filter(
+        (k) => k.toLowerCase().startsWith("koji-") || k.toLowerCase() === "content-type",
+      );
+      if (reserved.length > 0) {
+        return c.json({ error: `Reserved header names: ${reserved.join(", ")}` }, 400);
+      }
+      updates.headersEncrypted = Buffer.from(
+        encrypt(JSON.stringify(body.headers), masterKey, tenantId),
+        "utf8",
+      );
+    }
+  }
 
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
@@ -228,11 +281,21 @@ webhookTargets.post("/:id/test", requires("webhook:write"), async (c) => {
   const signedPayload = `${timestamp}.${JSON.stringify(payload)}`;
   const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
 
+  // Decrypt custom headers if present
+  let customHeaders: Record<string, string> = {};
+  if (target.headersEncrypted) {
+    try {
+      const blob = target.headersEncrypted.toString("utf8");
+      customHeaders = JSON.parse(decrypt(blob, masterKey, tenantId)) as Record<string, string>;
+    } catch { /* best-effort */ }
+  }
+
   const start = Date.now();
   try {
     const resp = await fetch(target.url, {
       method: "POST",
       headers: {
+        ...customHeaders,
         "Content-Type": "application/json",
         "Koji-Signature": `t=${timestamp},v1=${v1}`,
         "Koji-Event-Id": payload.id,
