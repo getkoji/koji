@@ -20,15 +20,15 @@ export function WorkbenchLayout({
     <div className="flex flex-col h-[calc(100vh-60px)]">
       <StickyHeader>{header}</StickyHeader>
       <div className="flex-1 min-h-0 flex flex-col">
-        {metricsStrip && <div className="px-10 pt-5 shrink-0">{metricsStrip}</div>}
+        {metricsStrip && <div className="px-4 sm:px-10 pt-5 shrink-0">{metricsStrip}</div>}
         {toolbar && (
-          <div className="px-10 py-3 shrink-0 border-b border-border flex items-center justify-between gap-4">
+          <div className="px-4 sm:px-10 py-3 shrink-0 border-b border-border flex items-center justify-between gap-4 overflow-x-auto">
             {toolbar}
           </div>
         )}
         <div
-          className="flex-1 min-h-0 grid gap-px bg-border"
-          style={{ gridTemplateColumns: cols }}
+          className="flex-1 min-h-0 grid gap-px bg-border grid-cols-1 md:grid-cols-[var(--wb-cols)]"
+          style={{ "--wb-cols": cols } as React.CSSProperties}
         >
           {panes.map((pane, i) => (
             <div key={i} className="overflow-y-auto min-h-0 bg-cream">

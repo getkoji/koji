@@ -202,7 +202,7 @@ function MetricsStrip({
   metrics: { total: number; running: number; succeeded: number; failed: number };
 }) {
   return (
-    <div className="grid grid-cols-4 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
       <Metric label="Total jobs" value={metrics.total.toString()} />
       <Metric
         label="Running"
@@ -334,7 +334,7 @@ function FilterBar({
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="search by job ID"
-          className="font-mono text-[11px] bg-transparent outline-none placeholder:text-ink-4 w-[200px]"
+          className="font-mono text-[11px] bg-transparent outline-none placeholder:text-ink-4 w-full sm:w-[200px]"
         />
       </div>
 

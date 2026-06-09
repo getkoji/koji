@@ -279,7 +279,7 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const isOllama = providerType === "ollama";
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add model endpoint</h2>
@@ -509,7 +509,7 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Rotate credentials</h2>
@@ -590,7 +590,7 @@ function DeleteProviderDialog({ provider, onClose, onDeleted }: { provider: Mode
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Delete model endpoint</h2>

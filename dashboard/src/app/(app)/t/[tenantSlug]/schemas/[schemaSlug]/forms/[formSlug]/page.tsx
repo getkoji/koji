@@ -541,7 +541,7 @@ export default function FormAnnotationPage() {
       </div>
 
       {/* Two-panel layout */}
-      <div className="flex-1 min-h-0 grid grid-cols-[1fr_300px]">
+      <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[1fr_300px]">
         {/* Left: PDF with drawing overlay */}
         <div ref={containerRef} className="relative overflow-auto border-r border-border">
           {!sampleUrl ? (

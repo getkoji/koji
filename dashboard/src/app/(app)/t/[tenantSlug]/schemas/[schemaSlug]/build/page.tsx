@@ -564,7 +564,7 @@ export default function BuildPage() {
     const notFound = schemaError?.message.toLowerCase().includes("not found") ?? !schemaDetail;
     return (
       <div className="flex flex-col h-[calc(100vh-60px)]">
-        <div className="px-10 pt-5 pb-0 shrink-0">
+        <div className="px-4 sm:px-10 pt-5 pb-0 shrink-0">
           <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
             <span className="text-ink-3">{projectName}</span>
             <span className="text-cream-4">/</span>
@@ -598,7 +598,7 @@ export default function BuildPage() {
     <>
       <div className="flex flex-col h-[calc(100vh-60px)]">
         {/* ── 1. Breadcrumb ── */}
-        <div className="px-10 pt-5 pb-0 shrink-0">
+        <div className="px-4 sm:px-10 pt-5 pb-0 shrink-0">
           <nav className="flex items-center gap-1.5 font-mono text-[11px] text-ink-4 mb-3">
             <span className="text-ink-3">{projectName}</span>
             <span className="text-cream-4">/</span>
@@ -609,7 +609,7 @@ export default function BuildPage() {
         </div>
 
         {/* ── 2. Heading area ── */}
-        <div className="px-10 pb-4 shrink-0 flex items-start justify-between gap-8">
+        <div className="px-4 sm:px-10 pb-4 shrink-0 flex items-start justify-between gap-8">
           <div>
             {/* Schema name + badges */}
             <div className="flex items-center gap-3 mb-1">
@@ -1283,7 +1283,7 @@ export default function BuildPage() {
 
       {/* ── Commit dialog ── */}
       {showCommit && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
           <div className="absolute inset-0 bg-ink/20" onClick={() => setShowCommit(false)} />
           <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
             <h2 className="text-[15px] font-medium text-ink mb-1">Save version v{nextVersion}</h2>

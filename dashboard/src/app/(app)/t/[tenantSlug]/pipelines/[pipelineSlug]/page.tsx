@@ -841,7 +841,7 @@ function ConnectSourceDialog({
   const empty = !loading && sources.length === 0;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <div className="flex items-start justify-between mb-1">
@@ -1066,7 +1066,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div className="border border-border rounded-sm bg-cream overflow-hidden">
+    <div className="border border-border rounded-sm bg-cream overflow-x-auto">
       <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-border bg-cream-2/50">
         <span className="font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase text-ink-4">
           {title}
@@ -1101,7 +1101,7 @@ function DeployDialog({
   );
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[520px] p-6">
         <div className="flex items-start justify-between mb-1">
@@ -1279,7 +1279,7 @@ function RunDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
         <div className="flex items-start justify-between mb-1">
@@ -1436,7 +1436,7 @@ function DeleteDialog({
   const canDelete = confirm === pipeline.slug;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[460px] p-6">
         <div className="flex items-start justify-between mb-1">
