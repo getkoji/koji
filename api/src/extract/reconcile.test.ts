@@ -43,9 +43,9 @@ describe("computeProvenanceStrength", () => {
     expect(computeProvenanceStrength("acme corporation", chunks)).toBe(0.9);
   });
 
-  it("returns 0.85 for normalized whitespace match", () => {
+  it("returns 1.0 for normalized whitespace match", () => {
     const chunks = [chunk("Name:  John   Smith")];
-    expect(computeProvenanceStrength("Name: John Smith", chunks)).toBe(0.85);
+    expect(computeProvenanceStrength("Name: John Smith", chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for date format alternative (YYYY-MM-DD found as MM/DD/YYYY)", () => {
@@ -188,6 +188,16 @@ describe("computeProvenanceStrength — arrays", () => {
   it("matches dates with single-digit month", () => {
     const chunks = [chunk("Filed: 3/15/2024")];
     expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
+  });
+
+  it("matches multi-line address joined with LLM-inserted comma", () => {
+    const chunks = [chunk("Property:\n\n3960 Millbrook Drve\n\nSanta Rosa, CA 95404")];
+    expect(computeProvenanceStrength("3960 Millbrook Drve, Santa Rosa, CA 95404", chunks)).toBe(1.0);
+  });
+
+  it("matches multi-line value joined with semicolon", () => {
+    const chunks = [chunk("Line 1\nLine 2\nLine 3")];
+    expect(computeProvenanceStrength("Line 1; Line 2; Line 3", chunks)).toBe(1.0);
   });
 
   it("finds numbers with different formatting at 1.0", () => {

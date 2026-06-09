@@ -109,7 +109,15 @@ export function computeProvenanceStrength(
   // 3. Normalized whitespace
   const normalizedNeedle = needle.split(/\s+/).join(" ").toLowerCase();
   const normalizedSource = cleanSource.split(/\s+/).join(" ").toLowerCase();
-  if (normalizedSource.includes(normalizedNeedle)) return 0.85;
+  if (normalizedSource.includes(normalizedNeedle)) return 1.0;
+
+  // 3b. Whitespace + join-boundary punctuation stripped.
+  // LLMs insert commas/semicolons when joining multi-line values
+  // (e.g., "3960 Millbrook Drve, Santa Rosa" from "3960 Millbrook Drve\nSanta Rosa").
+  const stripJoinPunct = (s: string) => s.replace(/[,;]\s*/g, " ").replace(/\s+/g, " ").trim();
+  const strippedNeedle = stripJoinPunct(normalizedNeedle);
+  const strippedSource = stripJoinPunct(normalizedSource);
+  if (strippedSource.includes(strippedNeedle)) return 1.0;
 
   // 4. Date format alternatives (YYYY-MM-DD → common input formats)
   // A format-alternative match is still a confirmed match — the value is
