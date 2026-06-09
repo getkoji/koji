@@ -23,6 +23,9 @@ export interface StorageProvider {
 
   getSignedUrl(key: string, expiresIn?: number): Promise<string>;
 
+  /** Generate a presigned PUT URL for direct browser-to-S3 uploads. */
+  getSignedUploadUrl(key: string, contentType: string, expiresIn?: number): Promise<string>;
+
   /** Fetch the entire object as a Buffer. Simpler than streaming for small-to-medium files. */
   getBuffer(key: string): Promise<{ data: Buffer; contentType: string } | null>;
 }

@@ -131,6 +131,18 @@ export class S3Storage implements StorageProvider {
     }
   }
 
+  async getSignedUploadUrl(key: string, contentType: string, expiresIn = 600): Promise<string> {
+    return s3GetSignedUrl(
+      this.publicClient ?? this.client,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      }),
+      { expiresIn },
+    );
+  }
+
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
     // Infer content type from extension so the browser renders inline
     // instead of forcing a download (MinIO defaults to application/octet-stream).

@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
 import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles, ChevronRight } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
 
@@ -519,11 +520,11 @@ export default function BuildPage() {
   async function handleUploadDoc(file: File) {
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const entry = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, formData);
-      refetchCorpus();
-      setSelectedDocId(entry.id);
+      const result = await uploadFile<CorpusEntry>({ file, context: "corpus", schemaSlug });
+      if (result.entry) {
+        refetchCorpus();
+        setSelectedDocId(result.entry.id);
+      }
     } catch (err) {
       console.error(err);
     } finally {
