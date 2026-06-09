@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles, ChevronRight } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles, ChevronRight, Loader2 } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
@@ -160,6 +160,7 @@ export default function BuildPage() {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     if (typeof window !== "undefined") return localStorage.getItem("koji:build:model") ?? "";
     return "";
@@ -519,8 +520,14 @@ export default function BuildPage() {
 
   async function handleUploadDoc(file: File) {
     setUploading(true);
+    setUploadProgress(0);
     try {
-      const result = await uploadFile<CorpusEntry>({ file, context: "corpus", schemaSlug });
+      const result = await uploadFile<CorpusEntry>({
+        file,
+        context: "corpus",
+        schemaSlug,
+        onProgress: setUploadProgress,
+      });
       if (result.entry) {
         refetchCorpus();
         setSelectedDocId(result.entry.id);
@@ -529,6 +536,7 @@ export default function BuildPage() {
       console.error(err);
     } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   }
 
@@ -1056,8 +1064,8 @@ export default function BuildPage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
-                  <Upload className="w-3 h-3" />
-                  {uploading ? "Uploading..." : "Upload"}
+                  {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                  {uploading ? `Uploading${uploadProgress > 0 ? ` ${uploadProgress}%` : "..."}` : "Upload"}
                   <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
                     onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                 </label>
@@ -1086,13 +1094,15 @@ export default function BuildPage() {
               {!selectedDoc ? (
                 /* No document selected */
                 <div className="h-full flex flex-col items-center justify-center text-center p-5">
-                  <label className="border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px] cursor-pointer hover:border-ink-4 transition-colors">
-                    <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />
+                  <label className={`border-2 border-dashed border-border rounded-sm p-8 w-full max-w-[360px] transition-colors ${uploading ? "opacity-60 pointer-events-none" : "cursor-pointer hover:border-ink-4"}`}>
+                    {uploading ? <Loader2 className="w-8 h-8 text-ink-4 mx-auto mb-3 animate-spin" /> : <Upload className="w-8 h-8 text-ink-4 mx-auto mb-3" />}
                     <div className="text-[13px] text-ink-3 mb-1">
-                      {(corpusEntries ?? []).length === 0 ? "Upload a test document" : "Upload another document"}
+                      {uploading
+                        ? `Uploading${uploadProgress > 0 ? ` ${uploadProgress}%` : "..."}`
+                        : (corpusEntries ?? []).length === 0 ? "Upload a test document" : "Upload another document"}
                     </div>
                     <div className="text-[11px] text-ink-4">
-                      PDF, PNG, JPG, or TIFF — click or drag a file here
+                      {uploading ? "Please wait" : "PDF, PNG, JPG, or TIFF — click or drag a file here"}
                     </div>
                     <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
                       onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
