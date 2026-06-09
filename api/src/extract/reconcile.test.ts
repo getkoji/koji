@@ -156,6 +156,27 @@ describe("computeProvenanceStrength — arrays", () => {
     expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
+  it("uses __source_text for matching when provided", () => {
+    // The extracted value has & decoded, but source has &amp;
+    const chunks = [chunk("Reconstruction &amp; Recovery Advisors Inc")];
+    // Without source text, the extracted value won't match
+    expect(computeProvenanceStrength("Reconstruction & Recovery Advisors Inc", chunks)).toBe(0.0);
+    // With source text (verbatim from LLM), it matches
+    expect(computeProvenanceStrength(
+      "Reconstruction & Recovery Advisors Inc", chunks, "string",
+      "Reconstruction &amp; Recovery Advisors Inc",
+    )).toBe(1.0);
+  });
+
+  it("uses __source_text for escaped underscores", () => {
+    const chunks = [chunk("Price List: CASO8X\\_SEP18")];
+    expect(computeProvenanceStrength("CASO8X_SEP18", chunks)).toBe(0.0);
+    expect(computeProvenanceStrength(
+      "CASO8X_SEP18", chunks, "string",
+      "CASO8X\\_SEP18",
+    )).toBe(1.0);
+  });
+
   it("finds numbers with different formatting at 1.0", () => {
     const chunks = [chunk("Total: $1,234,567.00")];
     expect(computeProvenanceStrength(1234567, chunks)).toBe(1.0);

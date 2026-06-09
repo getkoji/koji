@@ -51,6 +51,8 @@ export function computeProvenanceStrength(
   value: unknown,
   chunks: Chunk[],
   fieldType: string = "string",
+  /** LLM-provided verbatim source text for this field (from __source_text). */
+  sourceText?: string,
 ): number {
   if (value === null || value === undefined) return 0.0;
 
@@ -73,15 +75,21 @@ export function computeProvenanceStrength(
     return itemScores.reduce((a, b) => a + b, 0) / itemScores.length;
   }
 
-  const needle = String(value).trim();
-  if (!needle) return 0.0;
-
-  // Include chunk titles in the source text — headings are stripped from
-  // content during chunking but the LLM sees them in the prompt (as ### Title).
-  // Without titles, values extracted from headings (carrier names, section
-  // headers, form types) get provenance 0.0 despite being clearly present.
+  // If the LLM provided a __source_text for this field, try matching that
+  // first. The source text is a verbatim copy from the document — it matches
+  // character-for-character including encoding artifacts (&amp;, \_, etc)
+  // that the normalized extracted value won't match.
   const source = chunks.map((c) => `${c.title}\n${c.content}`).join("\n");
   if (!source) return 0.0;
+
+  if (sourceText) {
+    const st = sourceText.trim();
+    if (st && source.includes(st)) return 1.0;
+    if (st && source.toLowerCase().includes(st.toLowerCase())) return 1.0;
+  }
+
+  const needle = String(value).trim();
+  if (!needle) return 0.0;
 
   // 1. Exact substring
   if (source.includes(needle)) return 1.0;

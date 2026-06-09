@@ -42,6 +42,8 @@ interface SectionResult {
   gap_filled: string[];
   groups: Array<{ fields: string[]; chunkCount: number }>;
   source_texts: Record<string, string[]>;
+  scalar_source_texts: Record<string, string>;
+  source_contexts: Record<string, string>;
 }
 
 /**
@@ -68,6 +70,8 @@ async function extractOneSection(
   const allRoutes: Array<{ fieldName: string; chunks: Chunk[] }> = [];
   const allGroups: Array<{ fields: string[]; chunkCount: number }> = [];
   const allSourceTexts: Record<string, string[]> = {};
+  const allScalarSourceTexts: Record<string, string> = {};
+  const allSourceContexts: Record<string, string> = {};
 
   // ── Wave loop ─────────────────────────────────────────────────
 
@@ -93,14 +97,22 @@ async function extractOneSection(
       ),
     );
 
-    // Collect source texts
+    // Collect all LLM-provided source annotations from group results
     for (const result of groupResults) {
       const st = result.__source_texts as Record<string, string[]> | undefined;
       if (st) {
-        for (const [field, texts] of Object.entries(st)) {
-          allSourceTexts[field] = texts;
-        }
+        Object.assign(allSourceTexts, st);
         delete result.__source_texts;
+      }
+      const sst = result.__scalar_source_texts as Record<string, string> | undefined;
+      if (sst) {
+        Object.assign(allScalarSourceTexts, sst);
+        delete result.__scalar_source_texts;
+      }
+      const sc = result.__source_contexts as Record<string, string> | undefined;
+      if (sc) {
+        Object.assign(allSourceContexts, sc);
+        delete result.__source_contexts;
       }
     }
 
@@ -115,7 +127,7 @@ async function extractOneSection(
     for (const [fieldName, value] of Object.entries(waveResult.extracted)) {
       const fieldType = (waveFields[fieldName]?.type as string) ?? "string";
       if (value != null) {
-        const prov = computeProvenanceStrength(value, sectionChunks, fieldType);
+        const prov = computeProvenanceStrength(value, sectionChunks, fieldType, allScalarSourceTexts[fieldName]);
         const isValid = waveResult.confidence[fieldName] !== "not_found";
         const score = computeFieldConfidence({ provenanceStrength: prov, validationPassed: isValid });
         waveResult.confidence_scores[fieldName] = score;
@@ -239,6 +251,8 @@ async function extractOneSection(
     gap_filled: gapFilled,
     groups: allGroups,
     source_texts: allSourceTexts,
+    scalar_source_texts: allScalarSourceTexts,
+    source_contexts: allSourceContexts,
   };
 }
 
@@ -284,7 +298,13 @@ export async function intelligentExtract(
   const sectionResult = await extractOneSection(chunks, chunks, schemaDef, schemaName, provider, fields);
 
   const provenance = textMap
-    ? resolveProvenance(sectionResult.extracted, markdown, textMap, {}, fields, {}, {})
+    ? resolveProvenance(
+        sectionResult.extracted, markdown, textMap,
+        sectionResult.source_texts,
+        fields,
+        sectionResult.scalar_source_texts,
+        sectionResult.source_contexts,
+      )
     : undefined;
 
   const elapsedMs = Date.now() - start;
