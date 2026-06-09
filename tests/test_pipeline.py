@@ -8,7 +8,9 @@ import pytest
 
 from services.extract.pipeline import (
     _resolve_conditional_hints,
+    _resolve_wave_fields,
     _score_label,
+    _should_skip_field,
     _toposort_fields,
     _unwrap_nested_result,
     build_gap_fill_prompt,
@@ -1846,6 +1848,65 @@ class TestResolveConditionalHints:
 
     def test_non_dict_field_spec_returns_as_is(self):
         assert _resolve_conditional_hints("not a dict", {}) == "not a dict"
+
+
+# ── skip_unless — conditional field gating ────────────────────────────
+
+
+class TestShouldSkipField:
+    """Fields with skip_unless are omitted from extraction when the parent
+    field value doesn't match the allowed list."""
+
+    def test_no_skip_unless_never_skips(self):
+        assert _should_skip_field({"type": "date"}, {}) is False
+
+    def test_matching_value_does_not_skip(self):
+        spec = {"type": "date", "skip_unless": {"form_type": ["8-K", "8-K/A"]}}
+        assert _should_skip_field(spec, {"form_type": "8-K"}) is False
+
+    def test_non_matching_value_skips(self):
+        spec = {"type": "date", "skip_unless": {"form_type": ["8-K", "8-K/A"]}}
+        assert _should_skip_field(spec, {"form_type": "10-K"}) is True
+
+    def test_null_parent_skips(self):
+        spec = {"type": "date", "skip_unless": {"form_type": ["8-K"]}}
+        assert _should_skip_field(spec, {"form_type": None}) is True
+
+    def test_missing_parent_skips(self):
+        spec = {"type": "date", "skip_unless": {"form_type": ["8-K"]}}
+        assert _should_skip_field(spec, {}) is True
+
+    def test_empty_skip_unless_never_skips(self):
+        spec = {"type": "date", "skip_unless": {}}
+        assert _should_skip_field(spec, {"form_type": "10-K"}) is False
+
+    def test_resolve_wave_fields_omits_skipped(self):
+        schema = {
+            "name": "test",
+            "fields": {
+                "form_type": {"type": "string"},
+                "period_date_of_report": {
+                    "type": "date",
+                    "depends_on": ["form_type"],
+                    "skip_unless": {"form_type": ["8-K", "8-K/A", "6-K"]},
+                },
+                "period_fiscal_year_end": {
+                    "type": "date",
+                    "depends_on": ["form_type"],
+                    "skip_unless": {"form_type": ["10-K", "10-K/A"]},
+                },
+            },
+        }
+        # When form_type is 10-K, period_date_of_report should be skipped
+        wave = ["period_date_of_report", "period_fiscal_year_end"]
+        result = _resolve_wave_fields(schema, wave, {"form_type": "10-K"})
+        assert "period_fiscal_year_end" in result["fields"]
+        assert "period_date_of_report" not in result["fields"]
+
+        # When form_type is 8-K, period_fiscal_year_end should be skipped
+        result = _resolve_wave_fields(schema, wave, {"form_type": "8-K"})
+        assert "period_date_of_report" in result["fields"]
+        assert "period_fiscal_year_end" not in result["fields"]
 
 
 # ── Wave-based extraction integration ────────────────────────────────
