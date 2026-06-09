@@ -50,13 +50,15 @@ interface PdfViewerProps {
   highlights?: BBoxHighlight[];
   activeField?: string | null;
   onPageChange?: (page: number) => void;
+  /** Control scrollbar behavior: "auto" (default, may flash), "scroll" (always visible), "hidden" (no scrollbars) */
+  overflow?: "auto" | "scroll" | "hidden";
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, overflow = "auto" }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -154,7 +156,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange }: P
       )}
 
       {/* PDF document */}
-      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto">
+      <div ref={containerRef} className={`flex-1 min-h-0 overflow-${overflow}`}>
         <ReactPdfDocument
           file={file}
           onLoadSuccess={(pdf) => setTotalPages(pdf.numPages)}
