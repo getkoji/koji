@@ -11,11 +11,11 @@ import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } 
 import type { PlanId } from "../billing/adapter";
 
 /**
- * Extraction routes — proxies to the parse + extract services.
+ * Extraction routes — parse documents and extract structured data.
  *
- * Service URLs are injected per-request via the Hono context (`c.get("parseUrl")`,
- * `c.get("extractUrl")`) so the same handlers run under both the Node self-hosted
- * server (URLs from env) and the hosted platform (URLs from Workers bindings).
+ * Parse service URL is injected per-request via the Hono context (`c.get("parseUrl")`)
+ * so the same handlers run under both the Node self-hosted server (URLs from env) and
+ * the hosted platform (URLs from Workers bindings). Extraction runs in-process (TS).
  */
 
 export const extract = new Hono<Env>();

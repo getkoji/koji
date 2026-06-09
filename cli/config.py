@@ -46,10 +46,6 @@ class ClusterConfig(BaseModel):
         return self.base_port + 14
 
     @property
-    def extract_port(self) -> int:
-        return self.base_port + 12
-
-    @property
     def minio_port(self) -> int:
         return self.base_port + 15
 
