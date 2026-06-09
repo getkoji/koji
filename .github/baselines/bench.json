@@ -1,0 +1,13 @@
+{
+  "model": "gpt-4o-mini",
+  "corpus_path": "corpus",
+  "started_at": "2026-06-02T00:00:00Z",
+  "elapsed_ms": 0,
+  "total_documents": 0,
+  "total_fields": 0,
+  "passed_fields": 0,
+  "accuracy": 0.0,
+  "error_count": 0,
+  "categories": [],
+  "_comment": "Seed baseline — replace with real bench output after first CI run. Run: koji bench --corpus <corpus-path> --json > .github/baselines/bench.json"
+}

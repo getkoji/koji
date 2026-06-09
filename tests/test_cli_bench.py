@@ -10,8 +10,10 @@ from cli.bench import (
     DocumentEntry,
     _unwrap_extracted,
     benchmark_document,
+    compare_to_baseline,
     discover_categories,
     discover_documents,
+    format_comparison,
     format_report,
     run_bench,
 )
@@ -688,3 +690,136 @@ class TestToDict:
         assert len(docs[0]["failures"]) == 1
         assert len(docs[1]["failures"]) == 0
         assert docs[0]["failures"][0]["field"] == "merchant_name"
+
+
+# ── Baseline comparison tests ────────────────────────────────────────
+
+
+def _make_bench_dict(categories: list[tuple[str, float]]) -> dict:
+    """Helper to build a minimal BenchResult-shaped dict."""
+    cats = []
+    for name, accuracy in categories:
+        cats.append(
+            {
+                "category": name,
+                "documents": 10,
+                "fields_checked": 100,
+                "passed": int(accuracy * 100),
+                "accuracy": accuracy,
+                "errors": 0,
+                "mean_elapsed_ms": 500.0,
+                "documents_detail": [],
+            }
+        )
+    total_fields = sum(c["fields_checked"] for c in cats)
+    passed_fields = sum(c["passed"] for c in cats)
+    return {
+        "model": "test",
+        "corpus_path": "corpus",
+        "started_at": "2026-01-01T00:00:00Z",
+        "elapsed_ms": 1000,
+        "total_documents": sum(c["documents"] for c in cats),
+        "total_fields": total_fields,
+        "passed_fields": passed_fields,
+        "accuracy": passed_fields / total_fields if total_fields else 0.0,
+        "error_count": 0,
+        "categories": cats,
+    }
+
+
+class TestCompareToBaseline:
+    def test_no_regression(self):
+        baseline = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90)])
+        current = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90)])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert len(result.unchanged) == 2
+        assert len(result.regressions) == 0
+
+    def test_small_change_within_threshold(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([("invoices", 0.945)])
+        result = compare_to_baseline(current, baseline, threshold_pp=1.0)
+        assert not result.has_regressions
+        assert len(result.unchanged) == 1
+
+    def test_regression_exceeds_threshold(self):
+        baseline = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90)])
+        current = _make_bench_dict([("invoices", 0.93), ("receipts", 0.90)])
+        result = compare_to_baseline(current, baseline, threshold_pp=1.0)
+        assert result.has_regressions
+        assert len(result.regressions) == 1
+        assert result.regressions[0].category == "invoices"
+        assert result.regressions[0].delta_pp < -1.0
+
+    def test_improvement_detected(self):
+        baseline = _make_bench_dict([("invoices", 0.90)])
+        current = _make_bench_dict([("invoices", 0.95)])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert len(result.improvements) == 1
+        assert result.improvements[0].delta_pp > 0
+
+    def test_new_category(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90)])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert result.new_categories == ["receipts"]
+
+    def test_removed_category(self):
+        baseline = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90)])
+        current = _make_bench_dict([("invoices", 0.95)])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert result.removed_categories == ["receipts"]
+
+    def test_multiple_regressions(self):
+        baseline = _make_bench_dict([("invoices", 0.95), ("receipts", 0.90), ("contracts", 0.85)])
+        current = _make_bench_dict([("invoices", 0.90), ("receipts", 0.85), ("contracts", 0.85)])
+        result = compare_to_baseline(current, baseline, threshold_pp=1.0)
+        assert result.has_regressions
+        assert len(result.regressions) == 2
+
+    def test_custom_threshold(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([("invoices", 0.93)])
+        # 2pp drop, threshold 3pp — should pass
+        result = compare_to_baseline(current, baseline, threshold_pp=3.0)
+        assert not result.has_regressions
+        # Same drop, threshold 1pp — should fail
+        result = compare_to_baseline(current, baseline, threshold_pp=1.0)
+        assert result.has_regressions
+
+    def test_empty_baseline(self):
+        baseline = _make_bench_dict([])
+        current = _make_bench_dict([("invoices", 0.95)])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert result.new_categories == ["invoices"]
+
+    def test_empty_current(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([])
+        result = compare_to_baseline(current, baseline)
+        assert not result.has_regressions
+        assert result.removed_categories == ["invoices"]
+
+
+class TestFormatComparison:
+    def test_format_with_regression(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([("invoices", 0.90)])
+        comparison = compare_to_baseline(current, baseline)
+        output = format_comparison(comparison)
+        assert "FAIL" in output
+        assert "invoices" in output
+        assert "regression" in output.lower()
+
+    def test_format_all_passing(self):
+        baseline = _make_bench_dict([("invoices", 0.95)])
+        current = _make_bench_dict([("invoices", 0.95)])
+        comparison = compare_to_baseline(current, baseline)
+        output = format_comparison(comparison)
+        assert "PASS" in output
+        assert "no regressions" in output.lower()

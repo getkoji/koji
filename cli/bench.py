@@ -516,3 +516,138 @@ def format_report(result: BenchResult) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+# ── Baseline comparison (CI regression gate) ─────────────────────────
+
+
+@dataclass
+class CategoryRegression:
+    """A per-category accuracy change relative to a baseline."""
+
+    category: str
+    baseline_accuracy: float
+    current_accuracy: float
+
+    @property
+    def delta_pp(self) -> float:
+        """Change in percentage points (positive = improvement)."""
+        return (self.current_accuracy - self.baseline_accuracy) * 100
+
+
+@dataclass
+class BaselineComparison:
+    """Result of comparing a bench run against a stored baseline."""
+
+    regressions: list[CategoryRegression] = field(default_factory=list)
+    improvements: list[CategoryRegression] = field(default_factory=list)
+    unchanged: list[CategoryRegression] = field(default_factory=list)
+    new_categories: list[str] = field(default_factory=list)
+    removed_categories: list[str] = field(default_factory=list)
+
+    @property
+    def has_regressions(self) -> bool:
+        return len(self.regressions) > 0
+
+
+def compare_to_baseline(
+    current: dict,
+    baseline: dict,
+    threshold_pp: float = 1.0,
+) -> BaselineComparison:
+    """Compare a bench result dict against a baseline, flagging regressions.
+
+    A regression is any category where accuracy dropped by more than
+    `threshold_pp` percentage points (default: 1.0pp).
+
+    Both `current` and `baseline` should be dicts in `BenchResult.to_dict()`
+    format.
+    """
+    comparison = BaselineComparison()
+
+    baseline_by_cat: dict[str, float] = {}
+    for cat in baseline.get("categories", []):
+        name = cat.get("category", "")
+        if name:
+            baseline_by_cat[name] = float(cat.get("accuracy", 0.0))
+
+    current_by_cat: dict[str, float] = {}
+    for cat in current.get("categories", []):
+        name = cat.get("category", "")
+        if name:
+            current_by_cat[name] = float(cat.get("accuracy", 0.0))
+
+    # Categories present in both
+    for name in sorted(set(baseline_by_cat) & set(current_by_cat)):
+        reg = CategoryRegression(
+            category=name,
+            baseline_accuracy=baseline_by_cat[name],
+            current_accuracy=current_by_cat[name],
+        )
+        if reg.delta_pp < -threshold_pp:
+            comparison.regressions.append(reg)
+        elif reg.delta_pp > threshold_pp:
+            comparison.improvements.append(reg)
+        else:
+            comparison.unchanged.append(reg)
+
+    # New categories (in current but not baseline)
+    comparison.new_categories = sorted(set(current_by_cat) - set(baseline_by_cat))
+
+    # Removed categories (in baseline but not current)
+    comparison.removed_categories = sorted(set(baseline_by_cat) - set(current_by_cat))
+
+    return comparison
+
+
+def format_comparison(comparison: BaselineComparison, threshold_pp: float = 1.0) -> str:
+    """Format a baseline comparison as human-readable text."""
+    lines: list[str] = []
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("BASELINE COMPARISON")
+    lines.append(f"Regression threshold: {threshold_pp:.1f}pp")
+    lines.append("")
+
+    if comparison.regressions:
+        lines.append("REGRESSIONS (accuracy dropped):")
+        for r in comparison.regressions:
+            lines.append(
+                f"  FAIL  {r.category}: "
+                f"{r.baseline_accuracy * 100:.1f}% -> {r.current_accuracy * 100:.1f}% "
+                f"({r.delta_pp:+.1f}pp)"
+            )
+        lines.append("")
+
+    if comparison.improvements:
+        lines.append("IMPROVEMENTS:")
+        for r in comparison.improvements:
+            lines.append(
+                f"  UP    {r.category}: "
+                f"{r.baseline_accuracy * 100:.1f}% -> {r.current_accuracy * 100:.1f}% "
+                f"({r.delta_pp:+.1f}pp)"
+            )
+        lines.append("")
+
+    if comparison.unchanged:
+        lines.append("UNCHANGED:")
+        for r in comparison.unchanged:
+            lines.append(f"  OK    {r.category}: {r.current_accuracy * 100:.1f}% ({r.delta_pp:+.1f}pp)")
+        lines.append("")
+
+    if comparison.new_categories:
+        lines.append(f"NEW CATEGORIES: {', '.join(comparison.new_categories)}")
+    if comparison.removed_categories:
+        lines.append(f"REMOVED CATEGORIES: {', '.join(comparison.removed_categories)}")
+
+    if comparison.has_regressions:
+        lines.append("")
+        lines.append(
+            f"RESULT: FAIL — {len(comparison.regressions)} category regression(s) exceed {threshold_pp:.1f}pp threshold"
+        )
+    else:
+        lines.append("")
+        lines.append("RESULT: PASS — no regressions detected")
+
+    lines.append("")
+    return "\n".join(lines)

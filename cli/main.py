@@ -406,6 +406,8 @@ def bench(
     limit: int | None = typer.Option(None, "--limit", help="Max documents per category"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
     output: str | None = typer.Option(None, "--output", "-o", help="Write JSON results to file"),
+    baseline: str | None = typer.Option(None, "--baseline", "-b", help="Path to baseline JSON for regression check"),
+    threshold: float = typer.Option(1.0, "--threshold", help="Regression threshold in percentage points"),
 ):
     """Benchmark extraction accuracy against a validation corpus.
 
@@ -421,7 +423,7 @@ def bench(
 
     import httpx
 
-    from .bench import format_report, run_bench
+    from .bench import compare_to_baseline, format_comparison, format_report, run_bench
 
     corpus_path = Path(corpus).resolve()
     if not corpus_path.is_dir():
@@ -488,7 +490,27 @@ def bench(
         if not json_output:
             console.print(f"[dim]Results written to {output}[/dim]")
 
-    # Exit code reflects pass/fail
+    # Baseline regression check
+    has_regression = False
+    if baseline:
+        baseline_path = Path(baseline).resolve()
+        if not baseline_path.exists():
+            console.print(f"[red]Baseline file not found: {baseline}[/red]")
+            raise SystemExit(1)
+        try:
+            baseline_data = json_mod.loads(baseline_path.read_text())
+        except json_mod.JSONDecodeError as e:
+            console.print(f"[red]Invalid baseline JSON: {e}[/red]")
+            raise SystemExit(1)
+
+        comparison = compare_to_baseline(result.to_dict(), baseline_data, threshold_pp=threshold)
+        if not json_output:
+            console.print(format_comparison(comparison, threshold_pp=threshold))
+        has_regression = comparison.has_regressions
+
+    # Exit code: fail on regressions (if baseline provided) or any failures
+    if has_regression:
+        raise SystemExit(1)
     if not result.all_passed:
         raise SystemExit(1)
 
