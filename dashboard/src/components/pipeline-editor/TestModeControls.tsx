@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 
 interface TestModeControlsProps {
   pipelineSlug: string;
@@ -41,11 +42,18 @@ export function TestModeControls({
     setFileName(file.name);
     onTestStart(file.name);
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     abortRef.current = new AbortController();
     try {
+      // Upload file to storage via presigned URL, then pass storageKey to the test endpoint
+      const { storageKey } = await uploadFile({
+        file,
+        context: "test",
+        signal: abortRef.current.signal,
+      });
+
+      const formData = new FormData();
+      formData.append("storageKey", storageKey);
+
       const response = await api.streamForm(
         `/api/pipelines/${pipelineSlug}/test?stream=true`,
         formData,

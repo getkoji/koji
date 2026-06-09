@@ -1416,12 +1416,34 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   );
   if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
 
+  // Accept either a direct file upload or a storageKey from a presigned upload
   const body = await c.req.parseBody();
-  const file = body.file;
-  if (!(file instanceof File)) return c.json({ error: "Missing file in 'file' field" }, 400);
+  let fileBytes: ArrayBuffer;
+  let mimeType: string;
+  let filename: string;
 
-  const fileBytes = await file.arrayBuffer();
-  const mimeType = file.type || "application/octet-stream";
+  const storageKeyField = typeof body.storageKey === "string" ? body.storageKey : null;
+  if (storageKeyField) {
+    // Presigned upload path — fetch file from storage
+    if (!storageKeyField.includes(`/${tenantId}/`)) {
+      return c.json({ error: "Invalid storage key" }, 403);
+    }
+    const stored = await c.get("storage").getBuffer(storageKeyField);
+    if (!stored) return c.json({ error: "File not found in storage" }, 404);
+    fileBytes = new Uint8Array(stored.data).buffer as ArrayBuffer;
+    mimeType = stored.contentType;
+    // Derive filename from the storage key (last segment after timestamp prefix)
+    const keyParts = storageKeyField.split("/");
+    const lastPart = keyParts[keyParts.length - 1] ?? "document";
+    filename = lastPart.replace(/^\d+-/, "");
+  } else {
+    // Direct file upload path (backward compat)
+    const file = body.file;
+    if (!(file instanceof File)) return c.json({ error: "Missing file or storageKey" }, 400);
+    fileBytes = await file.arrayBuffer();
+    mimeType = file.type || "application/octet-stream";
+    filename = file.name;
+  }
 
   // ── Implicit parse step: extract text from document ──
   // Every pipeline starts with parsing. This runs before any user-defined steps.
@@ -1431,7 +1453,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   try {
     if (parseProvider?.parse) {
       const parseResult = await parseProvider.parse({
-        filename: file.name,
+        filename,
         mimeType,
         fileBuffer: Buffer.from(fileBytes),
       });
@@ -1456,7 +1478,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   // Copy fileBytes into a new Buffer — Buffer.from(ArrayBuffer) creates a view
   // that shares memory, which can be detached after the first fetch call consumes it.
   const fileBufferCopy: Buffer = Buffer.from(new Uint8Array(fileBytes));
-  const docInfo = { filename: file.name, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
+  const docInfo = { filename, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges

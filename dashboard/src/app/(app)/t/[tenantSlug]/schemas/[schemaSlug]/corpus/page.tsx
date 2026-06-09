@@ -6,6 +6,7 @@ import Link from "next/link";
 import { parse as parseYaml } from "yaml";
 import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -147,9 +148,10 @@ export default function CorpusPage() {
   async function handleUpload(file: File) {
     setUploading(true);
     try {
-      const fd = new FormData(); fd.append("file", file);
-      const e = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, fd);
-      refetch(); setSelectedId(e.id);
+      const result = await uploadFile<CorpusEntry>({ file, context: "corpus", schemaSlug });
+      if (result.entry) {
+        refetch(); setSelectedId(result.entry.id);
+      }
     } finally { setUploading(false); }
   }
 

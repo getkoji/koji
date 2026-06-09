@@ -5,6 +5,7 @@ import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus, Upload, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 
 interface CorpusEntry {
@@ -145,12 +146,12 @@ export default function ComparePage() {
     setResult(null);
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const entry = await api.postForm<CorpusEntry>(`/api/schemas/${schemaSlug}/corpus`, fd);
-      setEntry(entry.id);
-      setUploadedName(file.name);
-      refetchEntries();
+      const result = await uploadFile<CorpusEntry>({ file, context: "corpus", schemaSlug });
+      if (result.entry) {
+        setEntry(result.entry.id);
+        setUploadedName(file.name);
+        refetchEntries();
+      }
     } catch (err: any) {
       setError(`Upload failed: ${err?.message ?? "Unknown error"}`);
     } finally {
