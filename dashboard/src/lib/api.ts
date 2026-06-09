@@ -572,19 +572,23 @@ export const pipelines = {
       `/api/pipelines/${idOrSlug}/retry-policy`,
       policy,
     ),
-  /** Manual run: upload one file, get back the new job slug. */
-  run: (idOrSlug: string, file: File) => {
+  /** Manual run: upload one file via presigned URL, get back the new job slug. */
+  run: async (idOrSlug: string, file: File) => {
+    const upload = await import("./upload");
+    const { storageKey } = await upload.uploadFile({ file, context: "test" });
     const form = new FormData();
-    form.append("file", file);
+    form.append("storageKey", storageKey);
     return api.postForm<{ jobId: string; jobSlug: string; documentId: string }>(
       `/api/pipelines/${idOrSlug}/run`,
       form,
     );
   },
-  /** Add a document to an existing job (batch upload). */
-  addDoc: (idOrSlug: string, jobId: string, file: File) => {
+  /** Add a document to an existing job via presigned URL (batch upload). */
+  addDoc: async (idOrSlug: string, jobId: string, file: File) => {
+    const upload = await import("./upload");
+    const { storageKey } = await upload.uploadFile({ file, context: "test" });
     const form = new FormData();
-    form.append("file", file);
+    form.append("storageKey", storageKey);
     return api.postForm<{ documentId: string }>(
       `/api/pipelines/${idOrSlug}/jobs/${jobId}/docs`,
       form,

@@ -865,21 +865,49 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     }
   }
 
+  // Accept either a direct file upload or a storageKey from a presigned upload
   const body = await c.req.parseBody();
-  const file = body.file;
-  if (!(file instanceof File)) {
-    return c.json({ error: "Missing file in 'file' field" }, 400);
-  }
   const groupKey = (body.group as string) || c.req.header("X-Koji-Group") || null;
 
-  const fileBytes = await file.arrayBuffer();
-  const buffer = Buffer.from(fileBytes);
-  const contentHash = createHash("sha256").update(buffer).digest("hex");
-  const storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
+  let buffer: Buffer;
+  let storageKey: string;
+  let filename: string;
+  let mimeType: string;
+  let fileSize: number;
 
-  await storage.put(storageKey, buffer, {
-    contentType: file.type || mimeTypeFor(file.name),
-  });
+  const storageKeyField = typeof body.storageKey === "string" ? body.storageKey : null;
+  if (storageKeyField) {
+    // Presigned upload path — file is already in storage
+    if (!storageKeyField.includes(`/${tenantId}/`)) {
+      return c.json({ error: "Invalid storage key" }, 403);
+    }
+    const stored = await storage.getBuffer(storageKeyField);
+    if (!stored) return c.json({ error: "File not found in storage" }, 404);
+    buffer = stored.data;
+    mimeType = stored.contentType;
+    // Derive filename from the storage key (last segment after timestamp prefix)
+    const keyParts = storageKeyField.split("/");
+    const lastPart = keyParts[keyParts.length - 1] ?? "document";
+    filename = lastPart.replace(/^\d+-/, "");
+    fileSize = buffer.length;
+    storageKey = storageKeyField;
+  } else {
+    // Direct file upload path (backward compat)
+    const file = body.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: "Missing file or storageKey" }, 400);
+    }
+    const fileBytes = await file.arrayBuffer();
+    buffer = Buffer.from(fileBytes);
+    filename = file.name;
+    mimeType = file.type || mimeTypeFor(file.name);
+    fileSize = file.size;
+    storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
+
+    await storage.put(storageKey, buffer, { contentType: mimeType });
+  }
+
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
 
   const created = await createExtractionJob({
     db,
@@ -890,9 +918,9 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     triggerType: "manual",
     storageKey,
     groupKey,
-    filename: file.name,
-    fileSize: file.size,
-    mimeType: file.type || mimeTypeFor(file.name),
+    filename,
+    fileSize,
+    mimeType,
     contentHash,
   });
 
@@ -957,20 +985,44 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     return c.json({ error: "Pipeline has no deployed schema version" }, 422);
   }
 
+  // Accept either a direct file upload or a storageKey from a presigned upload
   const body = await c.req.parseBody();
-  const file = body.file;
-  if (!(file instanceof File)) {
-    return c.json({ error: "Missing file in 'file' field" }, 400);
+
+  let buffer: Buffer;
+  let storageKey: string;
+  let filename: string;
+  let mimeType: string;
+  let fileSize: number;
+
+  const storageKeyField = typeof body.storageKey === "string" ? body.storageKey : null;
+  if (storageKeyField) {
+    if (!storageKeyField.includes(`/${tenantId}/`)) {
+      return c.json({ error: "Invalid storage key" }, 403);
+    }
+    const stored = await storage.getBuffer(storageKeyField);
+    if (!stored) return c.json({ error: "File not found in storage" }, 404);
+    buffer = stored.data;
+    mimeType = stored.contentType;
+    const keyParts = storageKeyField.split("/");
+    const lastPart = keyParts[keyParts.length - 1] ?? "document";
+    filename = lastPart.replace(/^\d+-/, "");
+    fileSize = buffer.length;
+    storageKey = storageKeyField;
+  } else {
+    const file = body.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: "Missing file or storageKey" }, 400);
+    }
+    const fileBytes = await file.arrayBuffer();
+    buffer = Buffer.from(fileBytes);
+    filename = file.name;
+    mimeType = file.type || mimeTypeFor(file.name);
+    fileSize = file.size;
+    storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
+    await storage.put(storageKey, buffer, { contentType: mimeType });
   }
 
-  const fileBytes = await file.arrayBuffer();
-  const buffer = Buffer.from(fileBytes);
   const contentHash = createHash("sha256").update(buffer).digest("hex");
-  const storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
-
-  await storage.put(storageKey, buffer, {
-    contentType: file.type || mimeTypeFor(file.name),
-  });
 
   const created = await addDocumentToJob({
     db,
@@ -980,9 +1032,9 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     schemaId: pipeline.schemaId,
     schemaVersionId: pipeline.activeSchemaVersionId,
     storageKey,
-    filename: file.name,
-    fileSize: file.size,
-    mimeType: file.type || mimeTypeFor(file.name),
+    filename,
+    fileSize,
+    mimeType,
     contentHash,
   });
 
