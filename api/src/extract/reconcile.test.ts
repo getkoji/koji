@@ -50,32 +50,32 @@ describe("computeProvenanceStrength", () => {
 
   it("returns 0.8 for date format alternative (YYYY-MM-DD found as MM/DD/YYYY)", () => {
     const chunks = [chunk("Date: 03/15/2024")];
-    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(0.8);
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for date format alternative (DD/MM/YYYY)", () => {
     const chunks = [chunk("Date: 15/03/2024")];
-    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(0.8);
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for date format alternative (MM-DD-YYYY)", () => {
     const chunks = [chunk("Date: 03-15-2024")];
-    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(0.8);
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for date format alternative (MM.DD.YYYY)", () => {
     const chunks = [chunk("Date: 03.15.2024")];
-    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(0.8);
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for number format alternative (commas stripped)", () => {
     const chunks = [chunk("Total: 1,000,000")];
-    expect(computeProvenanceStrength(1000000, chunks)).toBe(0.8);
+    expect(computeProvenanceStrength(1000000, chunks)).toBe(1.0);
   });
 
   it("returns 0.8 for number format alternative (string with commas)", () => {
     const chunks = [chunk("Total: 1,234")];
-    expect(computeProvenanceStrength("1234", chunks)).toBe(0.8);
+    expect(computeProvenanceStrength("1234", chunks)).toBe(1.0);
   });
 
   it("returns 0.0 when value not found in source", () => {
@@ -123,6 +123,42 @@ describe("computeProvenanceStrength — arrays", () => {
   it("returns 0.0 when no items match", () => {
     const chunks = [chunk("Unrelated content")];
     expect(computeProvenanceStrength(["X", "Y", "Z"], chunks)).toBe(0.0);
+  });
+
+  it("scores array of objects by averaging property scores", () => {
+    const chunks = [chunk("HF-2025-50768 | 02/19/2025 | James Rodriguez | Closed | $197,268.00")];
+    const items = [
+      { claim_number: "HF-2025-50768", claimant_name: "James Rodriguez", reserve: 197268 },
+    ];
+    const score = computeProvenanceStrength(items, chunks);
+    // claim_number: exact 1.0, claimant_name: exact 1.0, reserve: number alt 1.0
+    expect(score).toBe(1.0);
+  });
+
+  it("scores array of objects with partial property matches", () => {
+    const chunks = [chunk("HF-2025-50768 | James Rodriguez")];
+    const items = [
+      { claim_number: "HF-2025-50768", claimant_name: "James Rodriguez", status: "Unknown" },
+    ];
+    const score = computeProvenanceStrength(items, chunks);
+    // claim_number: 1.0, claimant_name: 1.0, status: 0.0 → avg 0.667
+    expect(score).toBeCloseTo(2.0 / 3, 2);
+  });
+
+  it("finds values in chunk titles, not just content", () => {
+    // Simulate a chunk whose title contains the value (heading was split from content)
+    const c = { index: 0, title: "Hartford Financial Services", content: "Some other content", category: "other", signals: {}, get lineCount() { return 1; }, get charCount() { return this.content.length; } };
+    expect(computeProvenanceStrength("Hartford Financial Services", [c])).toBe(1.0);
+  });
+
+  it("finds dates in alternative formats at 1.0", () => {
+    const chunks = [chunk("Filed on 03/15/2024 by the court")];
+    expect(computeProvenanceStrength("2024-03-15", chunks)).toBe(1.0);
+  });
+
+  it("finds numbers with different formatting at 1.0", () => {
+    const chunks = [chunk("Total: $1,234,567.00")];
+    expect(computeProvenanceStrength(1234567, chunks)).toBe(1.0);
   });
 });
 

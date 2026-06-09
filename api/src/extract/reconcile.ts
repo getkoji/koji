@@ -54,12 +54,22 @@ export function computeProvenanceStrength(
 ): number {
   if (value === null || value === undefined) return 0.0;
 
-  // Arrays: average of item scores
+  // Arrays: for objects, score each property individually and average.
+  // Stringifying the whole object never matches source text.
   if (Array.isArray(value)) {
     if (value.length === 0) return 0.0;
-    const itemScores = value.map((item) =>
-      computeProvenanceStrength(item, chunks, "string"),
-    );
+    const itemScores = value.map((item) => {
+      if (typeof item === "object" && item !== null) {
+        // Score each property and average
+        const props = Object.values(item as Record<string, unknown>);
+        if (props.length === 0) return 0.0;
+        const propScores = props.map((v) =>
+          computeProvenanceStrength(v, chunks, "string"),
+        );
+        return propScores.reduce((a, b) => a + b, 0) / propScores.length;
+      }
+      return computeProvenanceStrength(item, chunks, "string");
+    });
     return itemScores.reduce((a, b) => a + b, 0) / itemScores.length;
   }
 
@@ -85,6 +95,8 @@ export function computeProvenanceStrength(
   if (normalizedSource.includes(normalizedNeedle)) return 0.85;
 
   // 4. Date format alternatives (YYYY-MM-DD → common input formats)
+  // A format-alternative match is still a confirmed match — the value is
+  // present in the document, just formatted differently. Score 1.0.
   if (typeof value === "string" && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
     const parts = value.split("-");
     if (parts.length === 3) {
@@ -96,7 +108,7 @@ export function computeProvenanceStrength(
         `${m}.${d}.${y}`,
       ];
       for (const alt of alternatives) {
-        if (source.includes(alt)) return 0.8;
+        if (source.includes(alt)) return 1.0;
       }
     }
   }
@@ -104,11 +116,11 @@ export function computeProvenanceStrength(
   // 5. Number format alternatives (strip commas, try with $)
   if (
     typeof value === "number" ||
-    typeof value === "string" && /^[\d,.]+$/.test(value)
+    (typeof value === "string" && /^[\d,.]+$/.test(value))
   ) {
     const numericStr = String(value).replace(/,/g, "");
     const sourceStripped = source.replace(/,/g, "");
-    if (sourceStripped.includes(numericStr)) return 0.8;
+    if (sourceStripped.includes(numericStr)) return 1.0;
   }
 
   return 0.0;
