@@ -7,7 +7,7 @@ repo_url: https://github.com/getkoji/koji
 repo_name: getkoji/koji
 edit_uri: edit/main/docs/
 
-copyright: Copyright &copy; 2026 Koji contributors · Apache 2.0
+copyright: Copyright &copy; 2026 Koji Technologies Inc. · Apache 2.0
 
 theme:
   name: material
