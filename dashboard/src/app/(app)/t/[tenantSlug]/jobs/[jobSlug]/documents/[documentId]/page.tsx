@@ -442,7 +442,7 @@ export default function TraceViewPage() {
               className="w-full h-full border border-border rounded-sm object-contain"
             />
           ) : pdfUrl ? (
-            <div className="border border-border rounded-sm h-full overflow-hidden" data-testid="trace-pdf-viewer">
+            <div className="border border-border rounded-sm h-full" data-testid="trace-pdf-viewer">
               <PdfViewer
                 url={pdfUrl}
                 highlights={highlights}
