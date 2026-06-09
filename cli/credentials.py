@@ -114,7 +114,7 @@ def verify_profile_connectivity(profile: Profile) -> tuple[bool, str]:
     import httpx
 
     try:
-        resp = httpx.get(f"{profile.url}/health", timeout=3)
+        resp = httpx.get(f"{profile.url}/api/health", timeout=3)
         if resp.status_code == 200:
             return True, "server reachable"
         return False, f"server returned HTTP {resp.status_code}"

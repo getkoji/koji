@@ -80,7 +80,7 @@ export class OpenAIProvider implements ModelProvider {
       model: this.model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 4096,
+      max_tokens: 16384,
     };
     if (jsonMode) payload.response_format = { type: "json_object" };
 
@@ -111,7 +111,7 @@ export class OpenAIProvider implements ModelProvider {
         ],
       }],
       temperature: 0,
-      max_tokens: 4096,
+      max_tokens: 16384,
     };
     if (jsonMode) payload.response_format = { type: "json_object" };
 
@@ -156,7 +156,7 @@ export class AzureOpenAIProvider implements ModelProvider {
       model: this.model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
-      max_tokens: 4096,
+      max_tokens: 16384,
     };
     if (jsonMode) payload.response_format = { type: "json_object" };
 
@@ -204,7 +204,7 @@ export class AnthropicProvider implements ModelProvider {
     const effectivePrompt = jsonMode ? prompt + AnthropicProvider.JSON_SUFFIX : prompt;
     const payload = {
       model: this.model,
-      max_tokens: 4096,
+      max_tokens: 16384,
       temperature: 0,
       messages: [{ role: "user", content: effectivePrompt }],
     };
@@ -227,7 +227,7 @@ export class AnthropicProvider implements ModelProvider {
     const effectivePrompt = jsonMode ? prompt + AnthropicProvider.JSON_SUFFIX : prompt;
     const payload = {
       model: this.model,
-      max_tokens: 4096,
+      max_tokens: 16384,
       temperature: 0,
       messages: [{
         role: "user",
