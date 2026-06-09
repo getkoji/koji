@@ -42,6 +42,14 @@ export interface ExtractionResult {
   source_texts?: Record<string, string[]>;
   /** All key-value pairs found in the document via pattern matching (no LLM). */
   kv_pairs?: Array<{ label: string; value: string }>;
+  /** Fields that were filled by gap-fill retries (intelligent pipeline). */
+  gap_filled?: string[];
+  /** Document map summary (intelligent pipeline). */
+  document_map_summary?: Record<string, unknown>;
+  /** Routing plan (intelligent pipeline). */
+  routing_plan?: Record<string, unknown>;
+  /** Extraction group summary (intelligent pipeline). */
+  groups?: Array<{ fields: string[]; chunkCount: number }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,103 +520,40 @@ export async function extractFields(
   model: string,
   textMap?: TextMap,
 ): Promise<ExtractionResult> {
-  const start = Date.now();
-  const schemaName = (schemaDef.name as string) ?? "unknown";
+  // Delegate to the intelligent pipeline (chunk → route → parallel extract → gap-fill → reconcile).
+  // This replaces the old single-shot approach that stuffed the entire document into one LLM call.
+  const { intelligentExtract } = await import("./intelligent-pipeline");
+  const result = await intelligentExtract(markdown, schemaDef, provider, model, textMap);
 
-  // Extract KV pairs only if schema opts in
+  // KV pairs: extract if schema opts in (orthogonal to the pipeline)
   const includeKVPairs = Boolean(schemaDef.include_kv_pairs);
-  let kvPairs: Array<{ label: string; value: string }> = [];
   if (includeKVPairs) {
     const { extractKVPairs } = await import("./kv-pairs");
-    kvPairs = extractKVPairs(markdown).map(({ label, value }) => ({ label, value }));
+    result.kv_pairs = extractKVPairs(markdown).map(({ label, value }) => ({ label, value }));
   }
+
+  // Field validation + type normalization (mapping resolution, enum snapping, etc.)
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
-  const fieldNames = new Set(Object.keys(fields));
-
-  console.log(
-    `[koji-extract] Request: model=${JSON.stringify(model)}, strategy=intelligent, ` +
-    `markdown=${markdown.length} chars, fields=${JSON.stringify([...fieldNames])}`,
-  );
-
-  // Build prompt and call LLM
-  const prompt = buildPrompt(markdown, schemaDef);
-  const raw = await provider.generate(prompt, true);
-
-  // Parse response
-  let parsed = parseJsonResponse(raw);
-  if (!parsed) {
-    console.log("[koji-extract] LLM returned invalid JSON");
-    return {
-      model,
-      strategy: "intelligent",
-      schema: schemaName,
-      elapsed_ms: Date.now() - start,
-      extracted: Object.fromEntries([...fieldNames].map((f) => [f, null])),
-      confidence: Object.fromEntries([...fieldNames].map((f) => [f, "not_found"])),
-      confidence_scores: Object.fromEntries([...fieldNames].map((f) => [f, 0])),
-      ...(includeKVPairs ? { kv_pairs: kvPairs } : {}),
-    };
-  }
-
-  // Unwrap nested results
-  parsed = unwrapNestedResult(parsed, fieldNames);
-
-  // Extract LLM self-reported confidence and reasoning before field processing
-  const llmConfidence = extractLlmConfidence(parsed);
-  const llmReasoning = extractLlmReasoning(parsed);
-
-  // Extract and strip __source_text from array-of-objects items before
-  // field validation — these are LLM-injected provenance hints, not user data.
-  const sourceTexts = extractSourceTexts(parsed);
-  const scalarSourceTexts = extractScalarSourceTexts(parsed);
-  const sourceContexts = extractSourceContexts(parsed);
-
-  // Field validation + type normalization
-  const extracted: Record<string, unknown> = {};
   for (const [fieldName, spec] of Object.entries(fields)) {
-    const rawValue = parsed[fieldName] ?? null;
+    const rawValue = result.extracted[fieldName] ?? null;
     const [validated] = validateField(fieldName, rawValue, spec);
-    extracted[fieldName] = validated;
+    result.extracted[fieldName] = validated;
   }
 
-  // Resolve field-level text provenance BEFORE normalization — the raw
-  // extracted values match the source text directly. Normalized values
-  // (e.g. dates transformed to ISO) would require reverse-engineering
-  // the original format, which is fragile and lossy.
-  // Pass source texts so array-of-objects items get precise bbox matching
-  // from the LLM-provided verbatim text instead of heuristic page-scoring.
-  const provenance = resolveProvenance(extracted, markdown, textMap, sourceTexts, fields, scalarSourceTexts, sourceContexts);
-
-  // Post-extraction normalization
-  const [normalized, normReport] = normalizeExtracted(extracted, schemaDef);
-
-  // Post-extraction validation (runs against normalized values)
-  const validationReport = validateExtracted(normalized, schemaDef);
-
-  // Confidence scoring — provenance + validation only
-  const { confidence, confidence_scores } = buildConfidence(normalized, fields, provenance, validationReport, llmConfidence);
-
-  const elapsedMs = Date.now() - start;
-  console.log(`[koji-extract] Extracted ${Object.keys(normalized).length} fields in ${elapsedMs}ms`);
-
-  return {
-    model,
-    strategy: "intelligent",
-    schema: schemaName,
-    elapsed_ms: elapsedMs,
-    extracted: normalized,
-    confidence,
-    confidence_scores,
-    normalization: {
-      applied: normReport.applied,
-      warnings: normReport.warnings,
-    },
-    validation: {
-      ok: validationReport.ok,
-      issues: validationReport.issues,
-    },
-    provenance,
-    ...(Object.keys(sourceTexts).length > 0 ? { source_texts: sourceTexts } : {}),
-    kv_pairs: kvPairs.map(({ label, value }) => ({ label, value })),
+  // Post-extraction normalization (derived fields, etc.)
+  const [normalized, normReport] = normalizeExtracted(result.extracted, schemaDef);
+  result.extracted = normalized;
+  result.normalization = {
+    applied: normReport.applied,
+    warnings: normReport.warnings,
   };
+
+  // Post-extraction validation
+  const validationReport = validateExtracted(normalized, schemaDef);
+  result.validation = {
+    ok: validationReport.ok,
+    issues: validationReport.issues,
+  };
+
+  return result;
 }

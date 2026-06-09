@@ -703,7 +703,7 @@ describe("extractFields __source_text integration", () => {
     expect(items[0]).not.toHaveProperty("__source_text");
     expect(items[1]).not.toHaveProperty("__source_text");
 
-    // source_texts included in result
+    // source_texts collected from array items
     expect(result.source_texts).toEqual({
       line_items: ["Widget  2 pcs  $10", "Gadget  5 pcs  $25"],
     });
