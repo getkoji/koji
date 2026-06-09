@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { ChevronLeft, ChevronRight, Highlighter } from "lucide-react";
 import dynamic from "next/dynamic";
 
@@ -52,13 +52,15 @@ interface PdfViewerProps {
   onPageChange?: (page: number) => void;
   /** Control scrollbar behavior: "auto" (default, may flash), "scroll" (always visible), "hidden" (no scrollbars) */
   overflow?: "auto" | "scroll" | "hidden";
+  /** Display mode: "paginated" shows one page at a time with arrows, "scroll" renders all pages in a scrollable container */
+  mode?: "paginated" | "scroll";
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, overflow = "auto" }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, overflow = "auto", mode = "paginated" }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -87,15 +89,55 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
     return () => observer.disconnect();
   }, []);
 
+  // Track visible page in scroll mode via IntersectionObserver
+  const pageObserverRef = useRef<IntersectionObserver | null>(null);
+  const visiblePageRef = useRef<number>(1);
+
+  const setupPageObserver = useCallback(() => {
+    if (mode !== "scroll" || !containerRef.current) return;
+    pageObserverRef.current?.disconnect();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Find the most visible page
+        let maxRatio = 0;
+        let maxPage = visiblePageRef.current;
+        for (const entry of entries) {
+          const page = Number((entry.target as HTMLElement).dataset.pageNumber);
+          if (entry.intersectionRatio > maxRatio) {
+            maxRatio = entry.intersectionRatio;
+            maxPage = page;
+          }
+        }
+        if (maxPage !== visiblePageRef.current) {
+          visiblePageRef.current = maxPage;
+          setCurrentPage(maxPage);
+          onPageChange?.(maxPage);
+        }
+      },
+      { root: containerRef.current, threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+
+    const pages = containerRef.current.querySelectorAll("[data-page-number]");
+    pages.forEach((el) => observer.observe(el));
+    pageObserverRef.current = observer;
+
+    return () => observer.disconnect();
+  }, [mode, onPageChange]);
+
   // Auto-navigate to highlighted field's page + scroll to highlight
   useEffect(() => {
     if (!activeField || !highlights.length) return;
     const hit = highlights.find((h) => h.field === activeField);
     if (!hit) return;
-    if (hit.page !== currentPage) {
-      setCurrentPage(hit.page);
-      onPageChange?.(hit.page);
+
+    if (mode === "paginated") {
+      if (hit.page !== currentPage) {
+        setCurrentPage(hit.page);
+        onPageChange?.(hit.page);
+      }
     }
+
     setTimeout(() => {
       const el = containerRef.current?.querySelector(`[data-highlight-field="${activeField}"]`);
       if (el) {
@@ -113,12 +155,17 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
     [highlights, currentPage],
   );
 
+  const allPageNumbers = useMemo(
+    () => Array.from({ length: totalPages }, (_, i) => i + 1),
+    [totalPages],
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Toolbar: page navigation + highlight toggle */}
       {(totalPages > 1 || highlights.length > 0) && (
         <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
-          {totalPages > 1 ? (
+          {totalPages > 1 && mode === "paginated" ? (
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage <= 1}
@@ -143,7 +190,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
               </button>
             )}
           </div>
-          {totalPages > 1 ? (
+          {totalPages > 1 && mode === "paginated" ? (
             <button
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage >= totalPages}
@@ -159,7 +206,13 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
       <div ref={containerRef} className={`flex-1 min-h-0 overflow-${overflow}`}>
         <ReactPdfDocument
           file={file}
-          onLoadSuccess={(pdf) => setTotalPages(pdf.numPages)}
+          onLoadSuccess={(pdf) => {
+            setTotalPages(pdf.numPages);
+            // Setup page observer after pages render in scroll mode
+            if (mode === "scroll") {
+              setTimeout(setupPageObserver, 300);
+            }
+          }}
           onLoadError={(err) => console.error("[PdfViewer] Load error:", err)}
           loading={
             <div className="flex items-center justify-center h-full">
@@ -172,20 +225,39 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
             </div>
           }
         >
-          <ReactPdfPage
-            pageNumber={currentPage}
-            width={containerWidth}
-            renderAnnotationLayer={false}
-          >
-            {/* Bounding box highlights — children of Page share its coordinate space */}
-            {showHighlights && pageHighlights.length > 0 && (
-              <HighlightOverlay
-                highlights={pageHighlights}
-                activeField={activeField ?? null}
-                currentPage={currentPage}
-              />
-            )}
-          </ReactPdfPage>
+          {mode === "paginated" ? (
+            <ReactPdfPage
+              pageNumber={currentPage}
+              width={containerWidth}
+              renderAnnotationLayer={false}
+            >
+              {showHighlights && pageHighlights.length > 0 && (
+                <HighlightOverlay
+                  highlights={pageHighlights}
+                  activeField={activeField ?? null}
+                  currentPage={currentPage}
+                />
+              )}
+            </ReactPdfPage>
+          ) : (
+            allPageNumbers.map((pageNum) => (
+              <div key={pageNum} data-page-number={pageNum}>
+                <ReactPdfPage
+                  pageNumber={pageNum}
+                  width={containerWidth}
+                  renderAnnotationLayer={false}
+                >
+                  {showHighlights && (
+                    <HighlightOverlay
+                      highlights={highlights.filter((h) => h.page === pageNum)}
+                      activeField={activeField ?? null}
+                      currentPage={pageNum}
+                    />
+                  )}
+                </ReactPdfPage>
+              </div>
+            ))
+          )}
         </ReactPdfDocument>
       </div>
     </div>

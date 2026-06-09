@@ -448,6 +448,7 @@ export default function TraceViewPage() {
                 highlights={highlights}
                 activeField={activeField}
                 overflow="scroll"
+                mode="scroll"
               />
             </div>
           ) : (
