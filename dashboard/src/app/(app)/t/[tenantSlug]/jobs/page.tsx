@@ -69,9 +69,10 @@ export default function JobsPage() {
           // Skip the query param when "all" is selected — the API treats the
           // absence of `since` as "no date filter," which is what we want.
           since: dateFilter === "all" ? undefined : dateFilter,
+          search: search || undefined,
           limit: 100,
         }),
-      [apiStatus, pipelineFilter, dateFilter],
+      [apiStatus, pipelineFilter, dateFilter, search],
     ),
   );
 
@@ -97,13 +98,8 @@ export default function JobsPage() {
     return () => clearInterval(h);
   }, [hasRunning, refetch]);
 
-  // Status + pipeline + date filtering happens server-side via the list()
-  // query params. Only the free-text search still needs to run in the browser.
-  const filtered = useMemo(() => {
-    if (!search) return jobs ?? [];
-    const needle = search.toLowerCase();
-    return (jobs ?? []).filter((j) => j.slug.toLowerCase().includes(needle));
-  }, [jobs, search]);
+  // All filtering (status, pipeline, date, search) is now server-side.
+  const filtered = jobs ?? [];
 
   const metrics = useMemo(() => {
     const all = jobs ?? [];
@@ -333,7 +329,7 @@ function FilterBar({
           type="text"
           value={search}
           onChange={(e) => onSearch(e.target.value)}
-          placeholder="search by job ID"
+          placeholder="search by document name or job ID"
           className="font-mono text-[11px] bg-transparent outline-none placeholder:text-ink-4 w-[200px]"
         />
       </div>
