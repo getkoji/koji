@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { and, eq, desc, asc, gte, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, desc, asc, gte, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, generatePreviewToken } from "../auth/middleware";
@@ -58,6 +58,8 @@ jobs.get("/", requires("job:read"), async (c) => {
   const status = c.req.query("status");
   const pipelineSlug = c.req.query("pipeline");
 
+  const search = c.req.query("search")?.trim();
+
   const since = resolveSince(c.req.query("since"));
   if ("error" in since) {
     return c.json({ error: since.error }, 400);
@@ -71,7 +73,7 @@ jobs.get("/", requires("job:read"), async (c) => {
   if (since.cutoff) conditions.push(gte(schema.jobs.createdAt, since.cutoff));
 
   const rows = await withRLS(db, tenantId, (tx) => {
-    const base = tx
+    let base = tx
       .select({
         slug: schema.jobs.slug,
         status: schema.jobs.status,
@@ -97,11 +99,73 @@ jobs.get("/", requires("job:read"), async (c) => {
       .leftJoin(
         schema.schemaVersions,
         eq(schema.schemaVersions.id, schema.pipelines.activeSchemaVersionId),
+      ) as any;
+
+    // When searching, join documents and match on filename or job slug.
+    // Use selectDistinct-style dedup via groupBy to avoid duplicate rows
+    // when a job has multiple matching documents.
+    if (search) {
+      base = base.leftJoin(
+        schema.documents,
+        and(
+          eq(schema.documents.jobId, schema.jobs.id),
+          isNull(schema.documents.parentDocumentId),
+        ),
       );
+      const pattern = `%${search}%`;
+      conditions.push(
+        sql`(${schema.jobs.slug} ILIKE ${pattern} OR ${schema.documents.filename} ILIKE ${pattern})`,
+      );
+    }
 
     const filtered = conditions.length > 0 ? base.where(and(...conditions)) : base;
-    return filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
+    let query = filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
+    if (search) {
+      query = query.groupBy(
+        schema.jobs.id, schema.pipelines.slug, schema.pipelines.displayName,
+        schema.schemas.displayName, schema.schemaVersions.versionNumber,
+      );
+    }
+    return query;
   });
+
+  return c.json({ data: rows });
+});
+
+/**
+ * GET /api/jobs/documents/search?q=filename — search documents by filename.
+ * Powers the command palette document search. Returns up to 10 matches.
+ * Must be registered before /:slug to avoid being caught by the wildcard.
+ */
+jobs.get("/documents/search", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const q = c.req.query("q")?.trim();
+
+  if (!q || q.length < 2) {
+    return c.json({ data: [] });
+  }
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        documentId: schema.documents.id,
+        filename: schema.documents.filename,
+        status: schema.documents.status,
+        jobSlug: schema.jobs.slug,
+        createdAt: schema.documents.createdAt,
+      })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(
+        and(
+          ilike(schema.documents.filename, `%${q}%`),
+          isNull(schema.documents.parentDocumentId),
+        ),
+      )
+      .orderBy(desc(schema.documents.createdAt))
+      .limit(10),
+  );
 
   return c.json({ data: rows });
 });

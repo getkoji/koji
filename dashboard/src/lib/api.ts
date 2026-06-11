@@ -341,16 +341,24 @@ export const jobs = {
     pipeline?: string;
     /** Shorthand (`today` | `7d` | `30d` | `all`) or ISO timestamp. Absent = no date filter. */
     since?: string;
+    /** Free-text search — matches document filenames and job IDs. */
+    search?: string;
     limit?: number;
   }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.pipeline) qs.set("pipeline", params.pipeline);
     if (params?.since) qs.set("since", params.since);
+    if (params?.search) qs.set("search", params.search);
     if (params?.limit) qs.set("limit", String(params.limit));
     const q = qs.toString();
     return api.get<{ data: JobRow[] }>(`/api/jobs${q ? `?${q}` : ""}`).then((r) => r.data);
   },
+  /** Search documents by filename across all jobs. */
+  searchDocuments: (q: string) =>
+    api.get<{ data: Array<{ documentId: string; filename: string; status: string; jobSlug: string; createdAt: string }> }>(
+      `/api/jobs/documents/search?q=${encodeURIComponent(q)}`,
+    ).then((r) => r.data),
   get: (slug: string) => api.get<JobDetail>(`/api/jobs/${slug}`),
   documents: (slug: string) =>
     api.get<{ data: JobDocument[] }>(`/api/jobs/${slug}/documents`).then((r) => r.data),

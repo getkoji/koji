@@ -57,6 +57,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     status: string;
   } | null>(null);
   const [searchValue, setSearchValue] = useState("");
+  const [docResults, setDocResults] = useState<Array<{ documentId: string; filename: string; status: string; jobSlug: string }>>([]);
 
   // Clear state when palette closes
   useEffect(() => {
@@ -99,6 +100,19 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     return () => clearTimeout(timer);
   }, [searchValue]);
 
+  // Document filename search — debounced, fires for any search >= 2 chars
+  // that doesn't look like a trace ID
+  useEffect(() => {
+    if (searchValue.startsWith("trc_") || searchValue.length < 2) {
+      setDocResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      jobsApi.searchDocuments(searchValue).then(setDocResults).catch(() => setDocResults([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchValue]);
+
   const navigate = useCallback(
     (path: string) => {
       router.push(path);
@@ -127,7 +141,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       title="Command Palette"
       description="Search schemas, pipelines, jobs, and more"
     >
-      <CommandInput placeholder="Search or jump to... (paste trc_ to find a trace)" onValueChange={setSearchValue} />
+      <CommandInput placeholder="Search documents, schemas, jobs... (paste trc_ for traces)" onValueChange={setSearchValue} />
       <CommandList>
         <CommandEmpty>
           {loading ? "Loading..." : "No results found."}
@@ -144,6 +158,22 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               <span className="text-xs text-ink-3 truncate max-w-[200px]">{traceResult.filename}</span>
               <span className="ml-auto font-mono text-[11px] text-ink-4">{traceResult.status}</span>
             </CommandItem>
+          </CommandGroup>
+        )}
+
+        {docResults.length > 0 && (
+          <CommandGroup heading="Documents">
+            {docResults.map((doc) => (
+              <CommandItem
+                key={doc.documentId}
+                value={`doc ${doc.filename} ${doc.jobSlug}`}
+                onSelect={() => navigate(`${base}/jobs/${doc.jobSlug}/documents/${doc.documentId}`)}
+              >
+                <FileCode className="w-4 h-4 text-ink-3" />
+                <span className="text-xs truncate max-w-[250px]">{doc.filename}</span>
+                <span className="ml-auto font-mono text-[11px] text-ink-4">{doc.jobSlug}</span>
+              </CommandItem>
+            ))}
           </CommandGroup>
         )}
 
