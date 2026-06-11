@@ -53,6 +53,13 @@ export default function JobsPage() {
   const [dateFilter, setDateFilter] = useState<DateRange>("7d");
   const [search, setSearch] = useState("");
 
+  // Debounce search to avoid hammering the API on every keystroke
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const apiStatus = statusFilter === "all" ? undefined : uiStatusToApi(statusFilter);
 
   const {
@@ -69,10 +76,10 @@ export default function JobsPage() {
           // Skip the query param when "all" is selected — the API treats the
           // absence of `since` as "no date filter," which is what we want.
           since: dateFilter === "all" ? undefined : dateFilter,
-          search: search || undefined,
+          search: debouncedSearch || undefined,
           limit: 100,
         }),
-      [apiStatus, pipelineFilter, dateFilter, search],
+      [apiStatus, pipelineFilter, dateFilter, debouncedSearch],
     ),
   );
 

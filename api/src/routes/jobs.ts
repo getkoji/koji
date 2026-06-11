@@ -72,8 +72,21 @@ jobs.get("/", requires("job:read"), async (c) => {
   if (pipelineSlug) conditions.push(eq(schema.pipelines.slug, pipelineSlug));
   if (since.cutoff) conditions.push(gte(schema.jobs.createdAt, since.cutoff));
 
+  // When searching by document name, find matching job IDs via a subquery
+  // first, then filter the main query. This avoids join + groupBy complexity.
+  if (search) {
+    const pattern = `%${search}%`;
+    conditions.push(
+      sql`(${schema.jobs.slug} ILIKE ${pattern} OR ${schema.jobs.id} IN (
+        SELECT ${schema.documents.jobId} FROM ${schema.documents}
+        WHERE ${schema.documents.filename} ILIKE ${pattern}
+        AND ${schema.documents.parentDocumentId} IS NULL
+      ))`,
+    );
+  }
+
   const rows = await withRLS(db, tenantId, (tx) => {
-    let base = tx
+    const base = tx
       .select({
         slug: schema.jobs.slug,
         status: schema.jobs.status,
@@ -99,34 +112,10 @@ jobs.get("/", requires("job:read"), async (c) => {
       .leftJoin(
         schema.schemaVersions,
         eq(schema.schemaVersions.id, schema.pipelines.activeSchemaVersionId),
-      ) as any;
-
-    // When searching, join documents and match on filename or job slug.
-    // Use selectDistinct-style dedup via groupBy to avoid duplicate rows
-    // when a job has multiple matching documents.
-    if (search) {
-      base = base.leftJoin(
-        schema.documents,
-        and(
-          eq(schema.documents.jobId, schema.jobs.id),
-          isNull(schema.documents.parentDocumentId),
-        ),
       );
-      const pattern = `%${search}%`;
-      conditions.push(
-        sql`(${schema.jobs.slug} ILIKE ${pattern} OR ${schema.documents.filename} ILIKE ${pattern})`,
-      );
-    }
 
     const filtered = conditions.length > 0 ? base.where(and(...conditions)) : base;
-    let query = filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
-    if (search) {
-      query = query.groupBy(
-        schema.jobs.id, schema.pipelines.slug, schema.pipelines.displayName,
-        schema.schemas.displayName, schema.schemaVersions.versionNumber,
-      );
-    }
-    return query;
+    return filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
   });
 
   return c.json({ data: rows });
