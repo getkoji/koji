@@ -166,6 +166,107 @@ curl -X POST http://localhost:9401/api/parse \
 
 Returns parsed markdown, page count, and text map for provenance.
 
+### Uploading large files (presigned URL)
+
+On Koji Cloud, direct file uploads are limited to 4.5 MB by the hosting
+platform. For larger documents, use the presigned URL flow — the client
+uploads directly to storage, bypassing the API server entirely.
+
+**Step 1: Get a presigned URL**
+
+```bash
+curl -X POST https://console.getkoji.dev/api/upload/presign \
+  -H "Authorization: Bearer koji_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "large-document.pdf",
+    "contentType": "application/pdf",
+    "context": "corpus",
+    "schemaSlug": "claim_form"
+  }'
+```
+
+Response:
+
+```json
+{
+  "uploadUrl": "https://storage.example.com/presigned-put-url...",
+  "storageKey": "corpus/tenant-id/schema-id/1718000000-large-document.pdf"
+}
+```
+
+**Step 2: Upload the file directly to storage**
+
+```bash
+curl -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @large-document.pdf
+```
+
+**Step 3: Finalize the upload**
+
+```bash
+curl -X POST https://console.getkoji.dev/api/upload/complete \
+  -H "Authorization: Bearer koji_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "storageKey": "corpus/tenant-id/schema-id/1718000000-large-document.pdf",
+    "filename": "large-document.pdf",
+    "context": "corpus",
+    "schemaSlug": "claim_form"
+  }'
+```
+
+The complete endpoint verifies the file exists, deduplicates by content
+hash, and creates the corpus entry. If the file was already uploaded
+(same hash), the duplicate is cleaned up and the existing entry is
+returned.
+
+**Programmatic example (Node.js):**
+
+```typescript
+async function uploadLargeFile(file: File, schemaSlug: string) {
+  // Step 1: Get presigned URL
+  const { uploadUrl, storageKey } = await fetch(`${KOJI_URL}/api/upload/presign`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${KOJI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type,
+      context: "corpus",
+      schemaSlug,
+    }),
+  }).then(r => r.json());
+
+  // Step 2: Upload directly to storage
+  await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type },
+    body: file,
+  });
+
+  // Step 3: Finalize
+  const entry = await fetch(`${KOJI_URL}/api/upload/complete`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${KOJI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ storageKey, filename: file.name, context: "corpus", schemaSlug }),
+  }).then(r => r.json());
+
+  return entry;
+}
+```
+
+> **When to use presigned uploads:** Always use this flow on Koji Cloud
+> for files that may exceed 4.5 MB. For self-hosted deployments without
+> a body size limit, the direct `POST /api/process` flow works for any
+> file size. The dashboard uses presigned uploads automatically.
+
 ### Programmatic usage (Node.js / Python)
 
 ```typescript
@@ -233,13 +334,16 @@ Each file declares its type with a `kind` field.
 
 ### 3. Call the API
 
+For small files (< 4.5 MB):
+
 ```bash
-curl -X POST https://api.getkoji.dev/extract/upload \
+curl -X POST https://console.getkoji.dev/api/process \
   -H "Authorization: Bearer koji_your_api_key" \
-  -H "x-koji-tenant: your-tenant-slug" \
   -F "file=@document.pdf" \
-  -F "schema_slug=claim_form"
+  -F "schema=$(cat schema.json)"
 ```
+
+For large files, use the [presigned URL flow](#uploading-large-files-presigned-url) — see the HTTP API section above.
 
 ### Environment switching
 

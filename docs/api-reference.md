@@ -217,6 +217,68 @@ The `trace` object describes the pipeline run — its shape is locked and docume
 
 ---
 
+## Upload (Presigned)
+
+For files larger than 4.5 MB on Koji Cloud, use the presigned upload flow.
+
+### `POST /api/upload/presign`
+
+Generate a presigned PUT URL for direct-to-storage upload.
+
+**Auth:** Bearer token. Requires `corpus:write` permission.
+
+**Request body:**
+
+```json
+{
+  "filename": "document.pdf",
+  "contentType": "application/pdf",
+  "context": "corpus",
+  "schemaSlug": "claim_form"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `filename` | string | yes | Original filename |
+| `contentType` | string | yes | MIME type (e.g., `application/pdf`) |
+| `context` | string | yes | `"corpus"` for schema corpus, `"test"` for ephemeral test uploads |
+| `schemaSlug` | string | for corpus | Schema slug to associate the upload with |
+
+**Response** `200 OK`
+
+```json
+{
+  "uploadUrl": "https://storage.example.com/presigned-put-url...",
+  "storageKey": "corpus/tenant-id/schema-id/1718000000-document.pdf"
+}
+```
+
+The client PUTs the file directly to `uploadUrl`, then calls `/api/upload/complete`.
+
+### `POST /api/upload/complete`
+
+Finalize a presigned upload and create the corpus entry.
+
+**Auth:** Bearer token. Requires `corpus:write` permission.
+
+**Request body:**
+
+```json
+{
+  "storageKey": "corpus/tenant-id/schema-id/1718000000-document.pdf",
+  "filename": "document.pdf",
+  "context": "corpus",
+  "schemaSlug": "claim_form"
+}
+```
+
+**Response** `201 Created` — the new corpus entry.
+
+If a file with the same content hash already exists, returns `200 OK` with the existing entry (duplicate is cleaned up from storage).
+
+---
+
 ## Extract
 
 ### `POST /api/extract`
