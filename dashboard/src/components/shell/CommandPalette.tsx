@@ -79,7 +79,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       sourcesApi.list().catch(() => null),
     ]).then(([s, j, p, src]) => {
       if (s) setSchemasData(s);
-      if (j) setJobsData(j);
+      if (j) setJobsData(j.data);
       if (p) setPipelinesData(p);
       if (src) setSourcesData(src);
       setLoading(false);

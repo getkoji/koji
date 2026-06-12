@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { and, eq, desc, asc, gte, isNull, ilike, sql, type SQL } from "drizzle-orm";
+import { and, eq, desc, asc, gte, lt, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, generatePreviewToken } from "../auth/middleware";
@@ -59,6 +59,7 @@ jobs.get("/", requires("job:read"), async (c) => {
   const pipelineSlug = c.req.query("pipeline");
 
   const search = c.req.query("search")?.trim();
+  const cursor = c.req.query("cursor"); // ISO timestamp — fetch items older than this
 
   const since = resolveSince(c.req.query("since"));
   if ("error" in since) {
@@ -71,6 +72,12 @@ jobs.get("/", requires("job:read"), async (c) => {
   if (status) conditions.push(eq(schema.jobs.status, status));
   if (pipelineSlug) conditions.push(eq(schema.pipelines.slug, pipelineSlug));
   if (since.cutoff) conditions.push(gte(schema.jobs.createdAt, since.cutoff));
+  if (cursor) {
+    const cursorDate = new Date(cursor);
+    if (!isNaN(cursorDate.getTime())) {
+      conditions.push(lt(schema.jobs.createdAt, cursorDate));
+    }
+  }
 
   // When searching by document name, find matching job IDs via a subquery
   // first, then filter the main query. This avoids join + groupBy complexity.
@@ -118,7 +125,12 @@ jobs.get("/", requires("job:read"), async (c) => {
     return filtered.orderBy(desc(schema.jobs.createdAt)).limit(limit);
   });
 
-  return c.json({ data: rows });
+  // If we got a full page, there may be more — provide a cursor for the next page.
+  const nextCursor = rows.length >= limit && rows.length > 0
+    ? (rows[rows.length - 1]!.createdAt as Date).toISOString()
+    : null;
+
+  return c.json({ data: rows, nextCursor });
 });
 
 /**

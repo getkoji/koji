@@ -343,6 +343,8 @@ export const jobs = {
     since?: string;
     /** Free-text search — matches document filenames and job IDs. */
     search?: string;
+    /** Cursor for keyset pagination — ISO timestamp of last item's createdAt. */
+    cursor?: string;
     limit?: number;
   }) => {
     const qs = new URLSearchParams();
@@ -350,9 +352,10 @@ export const jobs = {
     if (params?.pipeline) qs.set("pipeline", params.pipeline);
     if (params?.since) qs.set("since", params.since);
     if (params?.search) qs.set("search", params.search);
+    if (params?.cursor) qs.set("cursor", params.cursor);
     if (params?.limit) qs.set("limit", String(params.limit));
     const q = qs.toString();
-    return api.get<{ data: JobRow[] }>(`/api/jobs${q ? `?${q}` : ""}`).then((r) => r.data);
+    return api.get<{ data: JobRow[]; nextCursor: string | null }>(`/api/jobs${q ? `?${q}` : ""}`);
   },
   /** Search documents by filename across all jobs. */
   searchDocuments: (q: string) =>

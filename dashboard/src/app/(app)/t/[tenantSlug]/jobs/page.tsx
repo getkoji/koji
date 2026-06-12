@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Play, Copy, Check } from "lucide-react";
@@ -62,26 +62,92 @@ export default function JobsPage() {
 
   const apiStatus = statusFilter === "all" ? undefined : uiStatusToApi(statusFilter);
 
-  const {
-    data: jobs,
-    loading,
-    error,
-    refetch,
-  } = useApi(
-    useCallback(
-      () =>
-        jobsApi.list({
-          status: apiStatus,
-          pipeline: pipelineFilter === "all" ? undefined : pipelineFilter,
-          // Skip the query param when "all" is selected — the API treats the
-          // absence of `since` as "no date filter," which is what we want.
-          since: dateFilter === "all" ? undefined : dateFilter,
-          search: debouncedSearch || undefined,
-          limit: 100,
-        }),
-      [apiStatus, pipelineFilter, dateFilter, debouncedSearch],
-    ),
-  );
+  // ── Infinite scroll state ─────────────────────────────────────
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<{ message: string } | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  const PAGE_SIZE = 50;
+
+  // Params that reset the list when changed
+  const filterKey = `${apiStatus}|${pipelineFilter}|${dateFilter}|${debouncedSearch}`;
+
+  // Initial fetch + reset on filter change
+  const fetchPage = useCallback(async (cursor?: string) => {
+    try {
+      const resp = await jobsApi.list({
+        status: apiStatus,
+        pipeline: pipelineFilter === "all" ? undefined : pipelineFilter,
+        since: dateFilter === "all" ? undefined : dateFilter,
+        search: debouncedSearch || undefined,
+        cursor,
+        limit: PAGE_SIZE,
+      });
+      return resp;
+    } catch (err: unknown) {
+      throw err;
+    }
+  }, [apiStatus, pipelineFilter, dateFilter, debouncedSearch]);
+
+  // Reset and fetch first page when filters change
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setNextCursor(null);
+
+    fetchPage().then((resp) => {
+      if (!cancelled) {
+        setJobs(resp.data);
+        setNextCursor(resp.nextCursor);
+        setLoading(false);
+      }
+    }).catch((err) => {
+      if (!cancelled) {
+        setError({ message: err.message ?? "API unreachable" });
+        setLoading(false);
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [fetchPage]);
+
+  // Load more when sentinel enters viewport
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const resp = await fetchPage(nextCursor);
+      setJobs((prev) => [...prev, ...resp.data]);
+      setNextCursor(resp.nextCursor);
+    } catch {
+      // Silently fail — user can scroll back up and try again
+    }
+    setLoadingMore(false);
+  }, [nextCursor, loadingMore, fetchPage]);
+
+  // Intersection observer on the sentinel element
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) loadMore(); },
+      { rootMargin: "200px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore]);
+
+  // Refetch for polling (running jobs)
+  const refetch = useCallback(() => {
+    fetchPage().then((resp) => {
+      setJobs(resp.data);
+      setNextCursor(resp.nextCursor);
+    }).catch(() => {});
+  }, [fetchPage]);
 
   const { data: pipelines } = useApi(
     useCallback(
@@ -106,7 +172,6 @@ export default function JobsPage() {
   }, [hasRunning, refetch]);
 
   // All filtering (status, pipeline, date, search) is now server-side.
-  const filtered = jobs ?? [];
 
   const metrics = useMemo(() => {
     const all = jobs ?? [];
@@ -145,7 +210,7 @@ export default function JobsPage() {
           onDate={setDateFilter}
           search={search}
           onSearch={setSearch}
-          total={filtered.length}
+          total={jobs.length}
         />
       }
     >
@@ -164,7 +229,7 @@ export default function JobsPage() {
         />
       ) : loading && !jobs ? (
         <TableSkeleton columns={8} rows={6} />
-      ) : filtered.length === 0 ? (
+      ) : jobs.length === 0 ? (
         <EmptyState
           icon={<Play className="w-8 h-8" />}
           title={statusFilter === "all" && search === "" ? "No jobs yet" : "No matching jobs"}
@@ -190,7 +255,7 @@ export default function JobsPage() {
           }
         />
       ) : (
-        <JobsDataGrid jobs={filtered} tenantSlug={tenantSlug} />
+        <JobsDataGrid jobs={jobs} tenantSlug={tenantSlug} sentinelRef={sentinelRef} nextCursor={nextCursor} loadingMore={loadingMore} />
       )}
     </ListLayout>
   );
@@ -351,7 +416,13 @@ function FilterBar({
 // ──────────────────────────────────────────────────────────────────────
 // DataGrid
 
-function JobsDataGrid({ jobs, tenantSlug }: { jobs: JobRow[]; tenantSlug: string }) {
+function JobsDataGrid({ jobs, tenantSlug, sentinelRef, nextCursor, loadingMore }: {
+  jobs: JobRow[];
+  tenantSlug: string;
+  sentinelRef: React.RefObject<HTMLDivElement | null>;
+  nextCursor: string | null;
+  loadingMore: boolean;
+}) {
   return (
     <div className="border border-border rounded-sm bg-cream overflow-x-auto">
       <div className="min-w-[960px]">
@@ -368,6 +439,15 @@ function JobsDataGrid({ jobs, tenantSlug }: { jobs: JobRow[]; tenantSlug: string
         {jobs.map((job) => (
           <JobRowItem key={job.slug} job={job} tenantSlug={tenantSlug} />
         ))}
+
+        {/* Infinite scroll sentinel */}
+        {nextCursor && (
+          <div ref={sentinelRef} className="flex items-center justify-center py-4">
+            {loadingMore && (
+              <span className="font-mono text-[11px] text-ink-4 animate-pulse">Loading more...</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
