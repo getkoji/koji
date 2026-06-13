@@ -107,10 +107,9 @@ export class ModalParseProvider implements ParseProvider {
           msg.includes("connection") ||
           msg.includes("timeout") ||
           msg.includes("econnr") ||
-          msg.includes("502") ||
-          msg.includes("503") ||
-          msg.includes("429") ||
-          /parse\s+(?:4[0-9]{2}|5[0-9]{2})\s+\(modal\)/.test(msg)
+          msg.includes("fetch failed") ||
+          // Retry 5xx and 422 (Modal cold-start errors), but NOT other 4xx
+          /parse\s+(?:5\d{2}|422|429)\s+\(modal\)/.test(msg)
         );
         if (retryable) {
           const backoff = attempt * 2000; // 2s, 4s, ...
