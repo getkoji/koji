@@ -355,7 +355,11 @@ export const jobs = {
     if (params?.cursor) qs.set("cursor", params.cursor);
     if (params?.limit) qs.set("limit", String(params.limit));
     const q = qs.toString();
-    return api.get<{ data: JobRow[]; nextCursor: string | null }>(`/api/jobs${q ? `?${q}` : ""}`);
+    return api.get<{
+      data: JobRow[];
+      nextCursor: string | null;
+      counts: { total: number; byStatus: Record<string, number> };
+    }>(`/api/jobs${q ? `?${q}` : ""}`);
   },
   /** Search documents by filename across all jobs. */
   searchDocuments: (q: string) =>

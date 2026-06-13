@@ -68,6 +68,7 @@ export default function JobsPage() {
   const [error, setError] = useState<{ message: string } | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [serverCounts, setServerCounts] = useState<{ total: number; byStatus: Record<string, number> } | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const PAGE_SIZE = 50;
@@ -103,6 +104,7 @@ export default function JobsPage() {
       if (!cancelled) {
         setJobs(resp.data);
         setNextCursor(resp.nextCursor);
+        setServerCounts(resp.counts);
         setLoading(false);
       }
     }).catch((err) => {
@@ -146,6 +148,7 @@ export default function JobsPage() {
     fetchPage().then((resp) => {
       setJobs(resp.data);
       setNextCursor(resp.nextCursor);
+      setServerCounts(resp.counts);
     }).catch(() => {});
   }, [fetchPage]);
 
@@ -174,16 +177,17 @@ export default function JobsPage() {
   // All filtering (status, pipeline, date, search) is now server-side.
 
   const metrics = useMemo(() => {
-    const all = jobs ?? [];
-    const count = (s: UiJobStatus) =>
-      all.filter((j) => normalizeJobStatus(j.status) === s).length;
+    if (!serverCounts) {
+      return { total: 0, running: 0, succeeded: 0, failed: 0 };
+    }
+    const bs = serverCounts.byStatus;
     return {
-      total: all.length,
-      running: count("running"),
-      succeeded: count("succeeded"),
-      failed: count("failed"),
+      total: serverCounts.total,
+      running: (bs.running ?? 0) + (bs.pending ?? 0),
+      succeeded: (bs.complete ?? 0) + (bs.succeeded ?? 0),
+      failed: bs.failed ?? 0,
     };
-  }, [jobs]);
+  }, [serverCounts]);
 
   return (
     <ListLayout
@@ -210,7 +214,7 @@ export default function JobsPage() {
           onDate={setDateFilter}
           search={search}
           onSearch={setSearch}
-          total={jobs.length}
+          total={metrics.total}
         />
       }
     >

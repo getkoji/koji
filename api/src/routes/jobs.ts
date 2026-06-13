@@ -66,30 +66,30 @@ jobs.get("/", requires("job:read"), async (c) => {
     return c.json({ error: since.error }, 400);
   }
 
-  // Build filter predicates up-front and combine with `and()` rather than
-  // chaining .where() (drizzle replaces on repeat chain calls, it does not AND).
-  const conditions: SQL[] = [];
-  if (status) conditions.push(eq(schema.jobs.status, status));
-  if (pipelineSlug) conditions.push(eq(schema.pipelines.slug, pipelineSlug));
-  if (since.cutoff) conditions.push(gte(schema.jobs.createdAt, since.cutoff));
-  if (cursor) {
-    const cursorDate = new Date(cursor);
-    if (!isNaN(cursorDate.getTime())) {
-      conditions.push(lt(schema.jobs.createdAt, cursorDate));
-    }
-  }
+  // Build filter predicates. "baseConditions" apply to both the count query
+  // and the paginated query. The cursor is pagination-only (doesn't affect counts).
+  const baseConditions: SQL[] = [];
+  if (status) baseConditions.push(eq(schema.jobs.status, status));
+  if (pipelineSlug) baseConditions.push(eq(schema.pipelines.slug, pipelineSlug));
+  if (since.cutoff) baseConditions.push(gte(schema.jobs.createdAt, since.cutoff));
 
-  // When searching by document name, find matching job IDs via a subquery
-  // first, then filter the main query. This avoids join + groupBy complexity.
   if (search) {
     const pattern = `%${search}%`;
-    conditions.push(
+    baseConditions.push(
       sql`(${schema.jobs.slug} ILIKE ${pattern} OR ${schema.jobs.id} IN (
         SELECT ${schema.documents.jobId} FROM ${schema.documents}
         WHERE ${schema.documents.filename} ILIKE ${pattern}
         AND ${schema.documents.parentDocumentId} IS NULL
       ))`,
     );
+  }
+
+  const conditions = [...baseConditions];
+  if (cursor) {
+    const cursorDate = new Date(cursor);
+    if (!isNaN(cursorDate.getTime())) {
+      conditions.push(lt(schema.jobs.createdAt, cursorDate));
+    }
   }
 
   const rows = await withRLS(db, tenantId, (tx) => {
@@ -130,7 +130,29 @@ jobs.get("/", requires("job:read"), async (c) => {
     ? (rows[rows.length - 1]!.createdAt as Date).toISOString()
     : null;
 
-  return c.json({ data: rows, nextCursor });
+  // Per-status counts — uses base filters (no cursor) so counts reflect
+  // the full dataset, not just the current page.
+  const counts = await withRLS(db, tenantId, (tx) => {
+    const base = tx
+      .select({
+        status: schema.jobs.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.jobs)
+      .leftJoin(schema.pipelines, eq(schema.pipelines.id, schema.jobs.pipelineId));
+
+    const filtered = baseConditions.length > 0 ? base.where(and(...baseConditions)) : base;
+    return filtered.groupBy(schema.jobs.status);
+  });
+
+  const statusCounts: Record<string, number> = {};
+  let total = 0;
+  for (const row of counts) {
+    statusCounts[row.status] = row.count;
+    total += row.count;
+  }
+
+  return c.json({ data: rows, nextCursor, counts: { total, byStatus: statusCounts } });
 });
 
 /**
