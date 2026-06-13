@@ -88,6 +88,49 @@ export class ModalParseProvider implements ParseProvider {
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
+    return this.parseWithRetry(input, 2); // 1 initial + 1 retry
+  }
+
+  private async parseWithRetry(
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    maxAttempts: number,
+  ): Promise<ParseResponse> {
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.parseOnce(input);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message.toLowerCase();
+        const retryable = attempt < maxAttempts && (
+          msg.includes("urlopen error") ||
+          msg.includes("connection") ||
+          msg.includes("timeout") ||
+          msg.includes("econnr") ||
+          msg.includes("502") ||
+          msg.includes("503") ||
+          msg.includes("429") ||
+          /parse\s+(?:4[0-9]{2}|5[0-9]{2})\s+\(modal\)/.test(msg)
+        );
+        if (retryable) {
+          const backoff = attempt * 2000; // 2s, 4s, ...
+          console.log(
+            `[koji-parse] Attempt ${attempt}/${maxAttempts} failed (${lastError.message.slice(0, 100)}), retrying in ${backoff}ms`,
+          );
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        throw lastError;
+      }
+    }
+    throw lastError!;
+  }
+
+  private async parseOnce(input: {
+    filename: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  }): Promise<ParseResponse> {
     const { filename, mimeType, fileBuffer } = input;
     const deadline = Date.now() + this.timeoutMs;
 
