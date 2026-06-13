@@ -328,12 +328,29 @@ describe("min_words rule", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("fails and nulls field when below minimum", () => {
+  it("soft: fails and nulls field when below minimum (default on_fail)", () => {
     const data: Record<string, unknown> = { description: "short" };
     const report = runRule("min_words", { field: "description", min: 3 }, data);
     expect(report.ok).toBe(false);
     expect(data.description).toBeNull();
     expect(report.issues[0]!.message).toContain("1 words");
+    expect(report.issues[0]!.message).toContain("min 3");
+  });
+
+  it("soft: nulls field with on_fail: null explicit", () => {
+    const data: Record<string, unknown> = { description: "too short" };
+    const report = runRule("min_words", { field: "description", min: 5, on_fail: null }, data);
+    expect(report.ok).toBe(false);
+    expect(data.description).toBeNull();
+  });
+
+  it("hard: fails without nulling field when on_fail: error", () => {
+    const data: Record<string, unknown> = { description: "only two" };
+    const report = runRule("min_words", { field: "description", min: 5, on_fail: "error" }, data);
+    expect(report.ok).toBe(false);
+    expect(data.description).toBe("only two"); // not nulled
+    expect(report.issues[0]!.message).toContain("2 words");
+    expect(report.issues[0]!.message).toContain("minimum of 5");
   });
 
   it("skips non-string values", () => {
@@ -350,6 +367,72 @@ describe("min_words rule", () => {
     const report = runRule("min_words", { field: "description" }, data);
     expect(report.ok).toBe(false);
     expect(data.description).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// max_words
+// ---------------------------------------------------------------------------
+
+describe("max_words rule", () => {
+  it("passes when field is within word limit", () => {
+    const report = runRule(
+      "max_words",
+      { field: "summary", max: 10 },
+      { summary: "this is a short summary" },
+    );
+    expect(report.ok).toBe(true);
+  });
+
+  it("soft: fails and nulls field when above maximum (default on_fail)", () => {
+    const data: Record<string, unknown> = { summary: "one two three four five six" };
+    const report = runRule("max_words", { field: "summary", max: 3 }, data);
+    expect(report.ok).toBe(false);
+    expect(data.summary).toBeNull();
+    expect(report.issues[0]!.message).toContain("6 words");
+    expect(report.issues[0]!.message).toContain("max 3");
+  });
+
+  it("soft: nulls field with on_fail: null explicit", () => {
+    const data: Record<string, unknown> = { summary: "way too many words here for the limit" };
+    const report = runRule("max_words", { field: "summary", max: 3, on_fail: null }, data);
+    expect(report.ok).toBe(false);
+    expect(data.summary).toBeNull();
+  });
+
+  it("hard: fails without nulling field when on_fail: error", () => {
+    const data: Record<string, unknown> = { summary: "one two three four five" };
+    const report = runRule("max_words", { field: "summary", max: 3, on_fail: "error" }, data);
+    expect(report.ok).toBe(false);
+    expect(data.summary).toBe("one two three four five"); // not nulled
+    expect(report.issues[0]!.message).toContain("5 words");
+    expect(report.issues[0]!.message).toContain("maximum of 3");
+  });
+
+  it("passes at exact maximum boundary", () => {
+    const report = runRule(
+      "max_words",
+      { field: "summary", max: 3 },
+      { summary: "one two three" },
+    );
+    expect(report.ok).toBe(true);
+  });
+
+  it("skips non-string values", () => {
+    const report = runRule(
+      "max_words",
+      { field: "summary", max: 3 },
+      { summary: 42 },
+    );
+    expect(report.ok).toBe(true);
+  });
+
+  it("uses default max of 500 when not specified", () => {
+    const words = Array(501).fill("word").join(" ");
+    const data: Record<string, unknown> = { summary: words };
+    const report = runRule("max_words", { field: "summary" }, data);
+    expect(report.ok).toBe(false);
+    expect(data.summary).toBeNull();
   });
 });
 

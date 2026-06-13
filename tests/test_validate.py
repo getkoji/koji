@@ -196,6 +196,103 @@ class TestFieldSum:
         assert report["ok"] is True  # can't validate without all addends
 
 
+# ── min_words ──────────────────────────────────────────────────────
+
+
+class TestMinWords:
+    def test_enough_words_passes(self):
+        report = _run(
+            {"description": "this is enough words"},
+            [{"min_words": {"field": "description", "min": 3}}],
+        )
+        assert report["ok"] is True
+
+    def test_soft_nulls_field_by_default(self):
+        data = {"description": "short"}
+        report = validate_extracted(data, {"validation": [{"min_words": {"field": "description", "min": 3}}]}).to_dict()
+        assert report["ok"] is False
+        assert data["description"] is None
+        assert "1 words" in report["issues"][0]["message"]
+        assert "min 3" in report["issues"][0]["message"]
+
+    def test_soft_nulls_field_on_fail_null_explicit(self):
+        data = {"description": "only two words"}
+        validate_extracted(data, {"validation": [{"min_words": {"field": "description", "min": 5, "on_fail": None}}]})
+        assert data["description"] is None
+
+    def test_hard_keeps_field_on_fail_error(self):
+        data = {"description": "only two"}
+        report = validate_extracted(
+            data,
+            {"validation": [{"min_words": {"field": "description", "min": 5, "on_fail": "error"}}]},
+        ).to_dict()
+        assert report["ok"] is False
+        assert data["description"] == "only two"  # not nulled
+        assert "below minimum of 5" in report["issues"][0]["message"]
+
+    def test_skips_non_string(self):
+        report = _run({"description": 42}, [{"min_words": {"field": "description", "min": 3}}])
+        assert report["ok"] is True
+
+    def test_default_min_is_5(self):
+        data = {"description": "one two three four"}
+        validate_extracted(data, {"validation": [{"min_words": {"field": "description"}}]})
+        assert data["description"] is None
+
+
+# ── max_words ──────────────────────────────────────────────────────
+
+
+class TestMaxWords:
+    def test_within_limit_passes(self):
+        report = _run(
+            {"summary": "this is a short summary"},
+            [{"max_words": {"field": "summary", "max": 10}}],
+        )
+        assert report["ok"] is True
+
+    def test_at_exact_limit_passes(self):
+        report = _run(
+            {"summary": "one two three"},
+            [{"max_words": {"field": "summary", "max": 3}}],
+        )
+        assert report["ok"] is True
+
+    def test_soft_nulls_field_by_default(self):
+        data = {"summary": "one two three four five six"}
+        report = validate_extracted(
+            data, {"validation": [{"max_words": {"field": "summary", "max": 3}}]}
+        ).to_dict()
+        assert report["ok"] is False
+        assert data["summary"] is None
+        assert "6 words" in report["issues"][0]["message"]
+        assert "max 3" in report["issues"][0]["message"]
+
+    def test_soft_nulls_field_on_fail_null_explicit(self):
+        data = {"summary": "way too many words here for the limit"}
+        validate_extracted(data, {"validation": [{"max_words": {"field": "summary", "max": 3, "on_fail": None}}]})
+        assert data["summary"] is None
+
+    def test_hard_keeps_field_on_fail_error(self):
+        data = {"summary": "one two three four five"}
+        report = validate_extracted(
+            data,
+            {"validation": [{"max_words": {"field": "summary", "max": 3, "on_fail": "error"}}]},
+        ).to_dict()
+        assert report["ok"] is False
+        assert data["summary"] == "one two three four five"  # not nulled
+        assert "exceeds maximum of 3" in report["issues"][0]["message"]
+
+    def test_skips_non_string(self):
+        report = _run({"summary": 99}, [{"max_words": {"field": "summary", "max": 3}}])
+        assert report["ok"] is True
+
+    def test_default_max_is_500(self):
+        data = {"summary": " ".join(["word"] * 501)}
+        validate_extracted(data, {"validation": [{"max_words": {"field": "summary"}}]})
+        assert data["summary"] is None
+
+
 # ── regex ───────────────────────────────────────────────────────────
 
 

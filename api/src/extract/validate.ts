@@ -184,13 +184,38 @@ function checkMinWords(params: unknown, data: Record<string, unknown>, report: V
   const p = params as Record<string, unknown>;
   const fname = p.field as string;
   const minCount = Number(p.min ?? 5);
+  const onFail = p.on_fail ?? null; // null/"null" = soft (null the field); "error" = hard (keep field, report error)
   if (!fname) return;
   const value = data[fname];
   if (typeof value !== "string") return;
   const wordCount = value.split(/\s+/).filter(Boolean).length;
   if (wordCount < minCount) {
-    fail(report, "min_words", fname, `nulled: ${wordCount} words (min ${minCount}) -- likely a classification code, not a narrative`);
-    data[fname] = null;
+    if (onFail === "error") {
+      fail(report, "min_words", fname, `${wordCount} words is below minimum of ${minCount}`);
+    } else {
+      data[fname] = null;
+      fail(report, "min_words", fname, `nulled: ${wordCount} words (min ${minCount})`);
+    }
+  }
+}
+
+function checkMaxWords(params: unknown, data: Record<string, unknown>, report: ValidationReport): void {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return;
+  const p = params as Record<string, unknown>;
+  const fname = p.field as string;
+  const maxCount = Number(p.max ?? 500);
+  const onFail = p.on_fail ?? null; // null/"null" = soft (null the field); "error" = hard (keep field, report error)
+  if (!fname) return;
+  const value = data[fname];
+  if (typeof value !== "string") return;
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  if (wordCount > maxCount) {
+    if (onFail === "error") {
+      fail(report, "max_words", fname, `${wordCount} words exceeds maximum of ${maxCount}`);
+    } else {
+      data[fname] = null;
+      fail(report, "max_words", fname, `nulled: ${wordCount} words (max ${maxCount})`);
+    }
   }
 }
 
@@ -222,6 +247,7 @@ const RULES: Record<string, RuleHandler> = {
   sum_equals: checkSumEquals,
   field_sum: checkFieldSum,
   min_words: checkMinWords,
+  max_words: checkMaxWords,
   regex: checkRegex,
 };
 
