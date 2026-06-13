@@ -59,7 +59,11 @@ export function Timeline({
                   style={{ left: `${s.startPct}%`, width: `${s.widthPct}%` }}
                 />
               </div>
-              <div className="font-mono text-[10px] text-ink-4 truncate">{s.meta}</div>
+              {s.status === "fail" && s.meta ? (
+                <div className="font-mono text-[10px] text-vermillion-2 whitespace-pre-wrap break-all leading-[1.5] mt-0.5">{s.meta}</div>
+              ) : (
+                <div className="font-mono text-[10px] text-ink-4 truncate">{s.meta}</div>
+              )}
             </div>
           </button>
         ))}
