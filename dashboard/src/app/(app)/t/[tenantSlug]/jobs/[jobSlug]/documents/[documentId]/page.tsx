@@ -203,6 +203,7 @@ export default function TraceViewPage() {
   const [selectedStage, setSelectedStage] = useState(0);
   const [copiedTrace, setCopiedTrace] = useState(false);
   const [rerunning, setRerunning] = useState(false);
+  const [failing, setFailing] = useState(false);
 
   const handleRerun = useCallback(async () => {
     if (!data) return;
@@ -214,6 +215,19 @@ export default function TraceViewPage() {
       // Swallow — the refetch below will surface the real state.
     } finally {
       setRerunning(false);
+    }
+  }, [data, jobSlug, documentId, refetch]);
+
+  const handleForceFail = useCallback(async () => {
+    if (!data) return;
+    setFailing(true);
+    try {
+      await jobsApi.failDocument(jobSlug, documentId, "Manually failed by operator");
+      await refetch();
+    } catch {
+      // Swallow
+    } finally {
+      setFailing(false);
     }
   }, [data, jobSlug, documentId, refetch]);
 
@@ -341,6 +355,17 @@ export default function TraceViewPage() {
                 <span className="inline-block w-3.5 h-3.5 border-2 border-ink/30 border-t-ink rounded-full animate-spin" />
               ) : "Rerun"}
             </GhostButton>
+            {(data.status === "extracting" || data.status === "parsing") && (
+              <GhostButton
+                onClick={handleForceFail}
+                disabled={failing}
+                title="Force-fail this stuck document"
+              >
+                {failing ? (
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-vermillion-2/30 border-t-vermillion-2 rounded-full animate-spin" />
+                ) : <span className="text-vermillion-2">Force Fail</span>}
+              </GhostButton>
+            )}
             <GhostButton
               onClick={handleCopyTrace}
               disabled={!data.trace?.traceExternalId}

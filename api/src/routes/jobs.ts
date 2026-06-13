@@ -725,6 +725,58 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
 });
 
 /**
+ * POST /api/jobs/:slug/documents/:docId/fail — force-fail a stuck document.
+ *
+ * Manually transitions a document to "failed" status. Used for zombie jobs
+ * that got stuck in "extracting" or "parsing" due to worker crashes,
+ * timeouts, or other infrastructure failures.
+ */
+jobs.post("/:slug/documents/:docId/fail", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
+  const reason = body.reason ?? "Manually failed by operator";
+
+  const [doc] = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.documents.id,
+      jobId: schema.documents.jobId,
+      status: schema.documents.status,
+    })
+      .from(schema.documents)
+      .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+      .where(and(
+        eq(schema.documents.id, docId),
+        eq(schema.jobs.slug, slug),
+      ))
+      .limit(1),
+  );
+
+  if (!doc) return c.json({ error: "Document not found" }, 404);
+  if (doc.status === "failed") return c.json({ error: "Document is already failed" }, 409);
+
+  const now = new Date();
+  await withRLS(db, tenantId, async (tx) => {
+    await tx.update(schema.documents).set({
+      status: "failed",
+      validationJson: { error_cause: "force_failed", message: reason },
+      completedAt: now,
+    }).where(eq(schema.documents.id, docId));
+
+    // Update parent job counters
+    await tx.update(schema.jobs).set({
+      docsFailed: sql`${schema.jobs.docsFailed} + 1`,
+      docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
+    }).where(eq(schema.jobs.id, doc.jobId));
+  });
+
+  return c.json({ ok: true });
+});
+
+/**
  * GET /api/jobs/:slug/documents/:docId/preview — stream document file.
  *
  * Auth is handled by the middleware via HMAC-signed time-limited tokens.

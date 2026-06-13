@@ -386,6 +386,8 @@ export const jobs = {
       .then((r) => r.data),
   rerunDocument: (jobSlug: string, docId: string) =>
     api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/rerun`, {}),
+  failDocument: (jobSlug: string, docId: string, reason?: string) =>
+    api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/fail`, { reason }),
 };
 
 export interface DocumentDelivery {
