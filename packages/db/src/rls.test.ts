@@ -282,6 +282,15 @@ describe("per-table isolation", () => {
              ('${jobBId}', '${tenantB}', 'job-b', '${pipelineBId}', 'completed', 'api')
     `));
 
+    // Legal acceptances — tracks customer acceptance of ToS/Privacy/AUP.
+    // RLS must isolate per tenant so one tenant cannot see another's
+    // acceptance audit trail.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO legal_acceptances (id, tenant_id, document, version, acceptance_method)
+      VALUES ('${randomUUID()}', '${tenantA}', 'terms_of_service', '2026-06-13', 'admin_backfill'),
+             ('${randomUUID()}', '${tenantB}', 'terms_of_service', '2026-06-13', 'admin_backfill')
+    `));
+
     // NOTE: Additional tables (webhook_targets, api_keys, extraction_runs, etc.)
     // are not seeded here due to complex NOT NULL constraints. Their RLS policies
     // are verified by the "every table with tenant_id has a policy" meta-test below.
@@ -299,6 +308,7 @@ describe("per-table isolation", () => {
     "pipelines",
     "jobs",
     "model_endpoints",
+    "legal_acceptances",
   ];
 
   for (const table of tablesToTest) {

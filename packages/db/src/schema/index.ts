@@ -15,3 +15,4 @@ export * from "./queue";
 export * from "./cache";
 export * from "./extraction-runs";
 export * from "./forms";
+export * from "./legal-acceptances";
