@@ -36,7 +36,6 @@ if "fastapi" not in sys.modules:
     sys.modules["fastapi"] = _fastapi_mock
 
 import fitz  # noqa: E402
-
 from app import _merge_chunk_results, _split_pdf  # noqa: E402
 
 
