@@ -144,17 +144,14 @@ export interface paths {
         patch: operations["updateProject"];
         trace?: never;
     };
-    "/projects/{projectSlug}/metrics": {
+    "/metrics": {
         parameters: {
             query?: {
                 /** @description Aggregation window. Defaults to `24h`. */
                 period?: "1h" | "24h" | "7d" | "30d";
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -171,7 +168,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/activity": {
+    "/activity": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -180,10 +177,7 @@ export interface paths {
                 since?: components["parameters"]["Since"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -200,14 +194,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/alerts": {
+    "/alerts": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -224,14 +215,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/users": {
+    "/users": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /** List project members */
@@ -248,13 +236,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/users/{userId}": {
+    "/users/{userId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description User ID (`usr_<ulid>`). */
                 userId: components["parameters"]["UserId"];
             };
@@ -277,14 +263,11 @@ export interface paths {
         patch: operations["updateProjectUser"];
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas": {
+    "/schemas": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -308,13 +291,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}": {
+    "/schemas/{schemaSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -345,13 +326,11 @@ export interface paths {
         patch: operations["updateSchemaDraft"];
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/fields": {
+    "/schemas/{schemaSlug}/fields": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -376,13 +355,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/versions": {
+    "/schemas/{schemaSlug}/versions": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -404,13 +381,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}": {
+    "/schemas/{schemaSlug}/versions/{versionNumber}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Schema version number (integer, 1-indexed). */
@@ -428,13 +403,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}/rollback": {
+    "/schemas/{schemaSlug}/versions/{versionNumber}/rollback": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Schema version number (integer, 1-indexed). */
@@ -457,13 +430,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/deploy": {
+    "/schemas/{schemaSlug}/deploy": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -484,13 +455,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/samples": {
+    "/schemas/{schemaSlug}/samples": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -511,13 +480,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}": {
+    "/schemas/{schemaSlug}/samples/{sampleId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Sample document ID (ULID-prefixed). */
@@ -535,13 +502,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}/test": {
+    "/schemas/{schemaSlug}/samples/{sampleId}/test": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Sample document ID (ULID-prefixed). */
@@ -565,7 +530,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/corpus": {
+    "/schemas/{schemaSlug}/corpus": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -577,8 +542,6 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -601,13 +564,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/corpus/promote-from-review": {
+    "/schemas/{schemaSlug}/corpus/promote-from-review": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -627,13 +588,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}": {
+    "/schemas/{schemaSlug}/corpus/{corpusEntryId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -657,13 +616,11 @@ export interface paths {
         patch: operations["updateCorpusEntry"];
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/retag": {
+    "/schemas/{schemaSlug}/corpus/{corpusEntryId}/retag": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -686,13 +643,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/history": {
+    "/schemas/{schemaSlug}/corpus/{corpusEntryId}/history": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -713,13 +668,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/validate": {
+    "/schemas/{schemaSlug}/validate": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -740,7 +693,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/validate/runs": {
+    "/schemas/{schemaSlug}/validate/runs": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -750,8 +703,6 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -767,13 +718,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}": {
+    "/schemas/{schemaSlug}/validate/runs/{runId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -794,13 +743,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/regressions": {
+    "/schemas/{schemaSlug}/validate/runs/{runId}/regressions": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -821,13 +768,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/dismiss": {
+    "/schemas/{schemaSlug}/validate/runs/{runId}/dismiss": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -848,13 +793,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks": {
+    "/schemas/{schemaSlug}/benchmarks": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -873,7 +816,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/trend": {
+    "/schemas/{schemaSlug}/benchmarks/trend": {
         parameters: {
             query?: {
                 /** @description Maximum number of versions to include in the trend (most recent first). */
@@ -881,8 +824,6 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -898,13 +839,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/fields": {
+    "/schemas/{schemaSlug}/benchmarks/fields": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -923,13 +862,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/models": {
+    "/schemas/{schemaSlug}/benchmarks/models": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -948,13 +885,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/categories": {
+    "/schemas/{schemaSlug}/benchmarks/categories": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -970,13 +905,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/run": {
+    "/schemas/{schemaSlug}/benchmarks/run": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -996,14 +929,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines": {
+    "/pipelines": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -1023,13 +953,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines/{pipelineSlug}": {
+    "/pipelines/{pipelineSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -1054,13 +982,11 @@ export interface paths {
         patch: operations["updatePipeline"];
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines/{pipelineSlug}/run": {
+    "/pipelines/{pipelineSlug}/run": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -1079,13 +1005,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines/{pipelineSlug}/pause": {
+    "/pipelines/{pipelineSlug}/pause": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -1105,13 +1029,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines/{pipelineSlug}/resume": {
+    "/pipelines/{pipelineSlug}/resume": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -1127,13 +1049,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/pipelines/{pipelineSlug}/stages/{stageName}": {
+    "/pipelines/{pipelineSlug}/stages/{stageName}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
                 /** @description Pipeline stage name (e.g. `classify`, `extract`). */
@@ -1155,14 +1075,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources": {
+    "/sources": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /** List sources */
@@ -1179,13 +1096,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}": {
+    "/sources/{sourceSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1203,13 +1118,11 @@ export interface paths {
         patch: operations["updateSource"];
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}/test": {
+    "/sources/{sourceSlug}/test": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1230,13 +1143,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}/pause": {
+    "/sources/{sourceSlug}/pause": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1252,13 +1163,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}/resume": {
+    "/sources/{sourceSlug}/resume": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1274,7 +1183,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}/ingestions": {
+    "/sources/{sourceSlug}/ingestions": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -1286,8 +1195,6 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1306,13 +1213,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/sources/{sourceSlug}/webhook": {
+    "/sources/{sourceSlug}/webhook": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -1337,7 +1242,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs": {
+    "/jobs": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -1351,10 +1256,7 @@ export interface paths {
                 status?: components["schemas"]["JobStatus"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -1370,13 +1272,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}": {
+    "/jobs/{jobSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1395,7 +1295,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs": {
+    "/jobs/{jobSlug}/docs": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -1405,8 +1305,6 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1422,13 +1320,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/retry": {
+    "/jobs/{jobSlug}/retry": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1448,13 +1344,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/cancel": {
+    "/jobs/{jobSlug}/cancel": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1474,15 +1368,13 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/download": {
+    "/jobs/{jobSlug}/download": {
         parameters: {
             query: {
                 format: "json" | "csv";
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1503,13 +1395,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/stream": {
+    "/jobs/{jobSlug}/stream": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -1531,13 +1421,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}": {
+    "/jobs/{jobSlug}/docs/{documentId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -1555,13 +1443,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace": {
+    "/jobs/{jobSlug}/docs/{documentId}/trace": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -1582,13 +1468,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}": {
+    "/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -1608,13 +1492,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}/raw": {
+    "/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}/raw": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -1640,13 +1522,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/original": {
+    "/jobs/{jobSlug}/docs/{documentId}/original": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -1689,7 +1569,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review": {
+    "/review": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -1706,10 +1586,7 @@ export interface paths {
                 sort?: "oldest" | "newest" | "confidence_asc" | "confidence_desc";
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -1725,13 +1602,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}": {
+    "/review/{reviewId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1750,13 +1625,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}/accept": {
+    "/review/{reviewId}/accept": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1772,13 +1645,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}/override": {
+    "/review/{reviewId}/override": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1794,13 +1665,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}/skip": {
+    "/review/{reviewId}/skip": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1816,13 +1685,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}/escalate": {
+    "/review/{reviewId}/escalate": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1838,13 +1705,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/{reviewId}/assign": {
+    "/review/{reviewId}/assign": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -1860,14 +1725,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/review/bulk-approve": {
+    "/review/bulk-approve": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         get?: never;
@@ -1883,14 +1745,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/endpoints": {
+    "/endpoints": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /** List configured model endpoints */
@@ -1907,13 +1766,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/endpoints/{endpointSlug}": {
+    "/endpoints/{endpointSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -1940,13 +1797,11 @@ export interface paths {
         patch: operations["updateModelEndpoint"];
         trace?: never;
     };
-    "/projects/{projectSlug}/endpoints/{endpointSlug}/test": {
+    "/endpoints/{endpointSlug}/test": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -1962,15 +1817,13 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/endpoints/{endpointSlug}/usage": {
+    "/endpoints/{endpointSlug}/usage": {
         parameters: {
             query?: {
                 range?: "24h" | "7d" | "30d" | "90d";
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -1990,14 +1843,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/session": {
+    "/agent/session": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         get?: never;
@@ -2015,13 +1865,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/sessions/{agentSessionId}": {
+    "/agent/sessions/{agentSessionId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -2037,13 +1885,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/sessions/{agentSessionId}/history": {
+    "/agent/sessions/{agentSessionId}/history": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -2059,13 +1905,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/sessions/{agentSessionId}/message": {
+    "/agent/sessions/{agentSessionId}/message": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -2086,13 +1930,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/sessions/{agentSessionId}/accept-edit": {
+    "/agent/sessions/{agentSessionId}/accept-edit": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -2111,13 +1953,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/agent/sessions/{agentSessionId}/reject-edit": {
+    "/agent/sessions/{agentSessionId}/reject-edit": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -2200,7 +2040,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/audit": {
+    "/audit": {
         parameters: {
             query?: {
                 /** @description Page size. Default 50, max 200. */
@@ -2217,10 +2057,7 @@ export interface paths {
                 resource_id?: string;
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -2236,7 +2073,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/audit/export": {
+    "/audit/export": {
         parameters: {
             query: {
                 /** @description Export format. `cef` is Splunk-flavoured CEF; `jsonl` is newline-delimited JSON. */
@@ -2245,10 +2082,7 @@ export interface paths {
                 since?: components["parameters"]["Since"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -2265,14 +2099,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/api-keys": {
+    "/api-keys": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -2294,13 +2125,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/api-keys/{apiKeyId}": {
+    "/api-keys/{apiKeyId}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description API key ID (not the token). */
                 apiKeyId: components["parameters"]["ApiKeyId"];
             };
@@ -2317,14 +2146,11 @@ export interface paths {
         patch: operations["updateApiKey"];
         trace?: never;
     };
-    "/projects/{projectSlug}/webhooks": {
+    "/webhooks": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         /**
@@ -2344,13 +2170,11 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{projectSlug}/webhooks/{webhookSlug}": {
+    "/webhooks/{webhookSlug}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Webhook target slug. */
                 webhookSlug: components["parameters"]["WebhookSlug"];
             };
@@ -3971,10 +3795,7 @@ export interface operations {
                 period?: "1h" | "24h" | "7d" | "30d";
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4001,10 +3822,7 @@ export interface operations {
                 since?: components["parameters"]["Since"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4028,10 +3846,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4055,10 +3870,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4088,10 +3900,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -4120,8 +3929,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description User ID (`usr_<ulid>`). */
                 userId: components["parameters"]["UserId"];
             };
@@ -4145,8 +3952,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description User ID (`usr_<ulid>`). */
                 userId: components["parameters"]["UserId"];
             };
@@ -4176,10 +3981,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4209,10 +4011,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -4240,8 +4039,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4267,8 +4064,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4293,8 +4088,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4326,8 +4119,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4353,8 +4144,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4387,8 +4176,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4420,8 +4207,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Schema version number (integer, 1-indexed). */
@@ -4454,8 +4239,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Schema version number (integer, 1-indexed). */
@@ -4493,8 +4276,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4526,8 +4307,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4560,8 +4339,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4608,8 +4385,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Sample document ID (ULID-prefixed). */
@@ -4635,8 +4410,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Sample document ID (ULID-prefixed). */
@@ -4678,8 +4451,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4719,8 +4490,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4773,8 +4542,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4805,8 +4572,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -4833,8 +4598,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -4860,8 +4623,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -4894,8 +4655,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -4928,8 +4687,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Corpus entry ID. */
@@ -4964,8 +4721,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -4993,8 +4748,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5021,8 +4774,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -5049,8 +4800,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -5079,8 +4828,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
                 /** @description Validate or benchmark run ID (ULID-prefixed). */
@@ -5111,8 +4858,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5140,8 +4885,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5168,8 +4911,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5194,8 +4935,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5222,8 +4961,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5256,8 +4993,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Schema slug, unique within the project. */
                 schemaSlug: components["parameters"]["SchemaSlug"];
             };
@@ -5278,10 +5013,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5310,10 +5042,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -5342,8 +5071,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5368,8 +5095,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5394,8 +5119,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5433,8 +5156,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5457,8 +5178,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5484,8 +5203,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
             };
@@ -5511,8 +5228,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Pipeline slug, unique within the project. */
                 pipelineSlug: components["parameters"]["PipelineSlug"];
                 /** @description Pipeline stage name (e.g. `classify`, `extract`). */
@@ -5538,10 +5253,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5570,10 +5282,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -5601,8 +5310,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5627,8 +5334,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5652,8 +5357,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5684,8 +5387,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5711,8 +5412,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5738,8 +5437,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5772,8 +5469,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5800,8 +5495,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Source slug, unique within the project. */
                 sourceSlug: components["parameters"]["SourceSlug"];
             };
@@ -5854,10 +5547,7 @@ export interface operations {
                 status?: components["schemas"]["JobStatus"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5881,8 +5571,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -5912,8 +5600,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -5946,8 +5632,6 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -5970,8 +5654,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -5992,8 +5674,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -6027,8 +5707,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
             };
@@ -6054,8 +5732,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -6082,8 +5758,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -6110,8 +5784,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -6140,8 +5812,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -6179,8 +5849,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Job slug (`job-YYYYMMDD-HHMM-shortid`). */
                 jobSlug: components["parameters"]["JobSlug"];
                 /** @description Document ID (`doc_<hex>`). */
@@ -6261,10 +5929,7 @@ export interface operations {
                 sort?: "oldest" | "newest" | "confidence_asc" | "confidence_desc";
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -6288,8 +5953,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6314,8 +5977,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6346,8 +6007,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6379,8 +6038,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6406,8 +6063,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6438,8 +6093,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Review item ID (`rev_<ulid>`). */
                 reviewId: components["parameters"]["ReviewId"];
             };
@@ -6475,10 +6128,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6505,10 +6155,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -6537,10 +6184,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6568,8 +6212,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -6594,8 +6236,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -6620,8 +6260,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -6652,8 +6290,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -6681,8 +6317,6 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Model endpoint slug, unique within the project. */
                 endpointSlug: components["parameters"]["EndpointSlug"];
             };
@@ -6706,10 +6340,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6736,8 +6367,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -6760,8 +6389,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -6788,8 +6415,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -6820,8 +6445,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -6853,8 +6476,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Agent session ID (`asn_<ulid>`). */
                 agentSessionId: components["parameters"]["AgentSessionId"];
             };
@@ -7000,10 +6621,7 @@ export interface operations {
                 resource_id?: string;
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -7032,10 +6650,7 @@ export interface operations {
                 since?: components["parameters"]["Since"];
             };
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -7058,10 +6673,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -7091,10 +6703,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -7122,8 +6731,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description API key ID (not the token). */
                 apiKeyId: components["parameters"]["ApiKeyId"];
             };
@@ -7147,8 +6754,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description API key ID (not the token). */
                 apiKeyId: components["parameters"]["ApiKeyId"];
             };
@@ -7178,10 +6783,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -7210,10 +6812,7 @@ export interface operations {
                  */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -7241,8 +6840,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Webhook target slug. */
                 webhookSlug: components["parameters"]["WebhookSlug"];
             };
@@ -7267,8 +6864,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Webhook target slug. */
                 webhookSlug: components["parameters"]["WebhookSlug"];
             };
@@ -7292,8 +6887,6 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
-                projectSlug: components["parameters"]["ProjectSlug"];
                 /** @description Webhook target slug. */
                 webhookSlug: components["parameters"]["WebhookSlug"];
             };
