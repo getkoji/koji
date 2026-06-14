@@ -325,9 +325,27 @@ export const overviewApi = {
   get: () => api.get<OverviewPayload>("/api/overview"),
 };
 
+/**
+ * Server-normalized field metadata. Mirrors `SchemaFieldMeta` in the OpenAPI
+ * spec (see `packages/api-spec/openapi.yaml`). The API parses the schema YAML
+ * once and returns this shape; clients never parse YAML themselves.
+ */
+export interface SchemaFieldMeta {
+  name: string;
+  type: string;
+  description?: string;
+  required?: boolean;
+  enum?: string[];
+  options?: string[];
+  mappings?: Record<string, string[]>;
+  pattern?: string;
+}
+
 export const schemas = {
   list: () => api.get<{ data: SchemaRow[] }>("/api/schemas").then((r) => r.data),
   get: (slug: string) => api.get<SchemaRow>(`/api/schemas/${slug}`),
+  fields: (slug: string) =>
+    api.get<{ fields: SchemaFieldMeta[] }>(`/api/schemas/${slug}/fields`).then((r) => r.fields),
   create: (body: { slug: string; display_name: string; description?: string; initial_yaml?: string }) =>
     api.post<SchemaRow>("/api/schemas", body),
   update: (slug: string, body: { display_name?: string; description?: string; draft_yaml?: string }) =>

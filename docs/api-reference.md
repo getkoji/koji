@@ -504,6 +504,66 @@ Get the full definition of a schema.
 |--------|-------------|
 | `404` | Schema not found. |
 
+### `GET /api/schemas/{name}/fields`
+
+Structured field metadata for a schema. The server parses the schema YAML once and returns a stable JSON shape — clients (notably the review UI's override dropdown) consume this instead of parsing YAML in the browser. Unknown YAML keys are silently dropped server-side, so adding new schema features doesn't break clients.
+
+Reads from the latest committed version's YAML. Falls back to the in-progress draft when no version has been committed yet; if neither exists, returns `{ "fields": [] }`.
+
+**Path parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Schema slug. |
+
+**Response** `200 OK`
+
+```json
+{
+  "fields": [
+    {
+      "name": "governance",
+      "type": "string",
+      "description": "Community governance model",
+      "required": true,
+      "enum": ["hoa", "condo", "coop"]
+    },
+    {
+      "name": "state",
+      "type": "string",
+      "mappings": {
+        "CA": ["California", "Calif"],
+        "NY": ["New York", "NYS"]
+      }
+    },
+    {
+      "name": "zip",
+      "type": "string",
+      "pattern": "^[0-9]{5}$"
+    }
+  ]
+}
+```
+
+**Field shape**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | string | Field name as declared in the schema. |
+| `type` | string | `string`, `number`, `integer`, `boolean`, `date`, `object`, `array`, `enum`, `mapping`, or any future type. Consume permissively. |
+| `description` | string? | Schema-author description. |
+| `required` | boolean? | Whether the field is required. |
+| `enum` | string[]? | Enum values, coerced to strings + deduped. Omitted when empty/absent. |
+| `options` | string[]? | Legacy `options` alias. Surfaced only when present and not equivalent to `enum`. Treat the same as `enum`. |
+| `mappings` | object? | Bucket key → aliases. Bucket keys are the canonical/normalized values (use as dropdown options); aliases are surface forms the extractor folds in. |
+| `pattern` | string? | Regex pattern (from `validate.regex` or top-level `pattern`). |
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `404` | Schema not found. |
+
 ### `POST /api/schemas`
 
 Create a new schema.
