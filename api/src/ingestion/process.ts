@@ -38,6 +38,11 @@ import { createProvider, extractFields } from "../extract";
 import { formExtractToResult } from "../extract/form-extract";
 import { matchFormMapping } from "../extract/form-match";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
+import {
+  computeFieldConfidences,
+  aggregateDocConfidence,
+  findLowestField,
+} from "../extract/field-confidence";
 import { isTransientError } from "./errors";
 import type { BillingAdapter } from "../billing/adapter";
 import { NoOpBillingAdapter } from "../billing/noop";
@@ -393,24 +398,43 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const extractDurationMs = Date.now() - extractStart;
 
   // ── Confidence gate (recorded as the 'validate' stage) ──────────────────
+  //
+  // Per-field confidence is computed deterministically from the schema +
+  // extracted value (and provenance, for free-text strings). We do NOT use
+  // the LLM's self-emitted __confidence — it's conservatively calibrated
+  // noise that flagged unambiguous correct extractions against the default
+  // 0.85 review threshold. See extract/field-confidence.ts for the per-
+  // type scoring matrix.
+  //
+  // Doc-level confidence = min(per-field scores). Strict aggregation: the
+  // document is only as confident as its weakest field. Routing logic
+  // collapses to "any field below threshold => review".
   const validateStart = Date.now();
-  const fieldScores = extractResult.confidence_scores ?? {};
   const extractedValues = (extractResult.extracted ?? {}) as Record<string, unknown>;
-  // Compute overall confidence as average of scores for fields that have values.
-  // Null fields (legitimately absent — e.g. no WC coverage on a COI) are excluded
-  // so they don't drag the average down and trigger unnecessary review.
-  const scoreValues = Object.entries(fieldScores)
-    .filter(([field, v]) => Number.isFinite(v) && extractedValues[field] != null)
-    .map(([, v]) => v);
-  const confidence = scoreValues.length > 0
-    ? scoreValues.reduce((sum, v) => sum + v, 0) / scoreValues.length
-    : null;
+  let validateSchemaDef: Record<string, unknown> | undefined;
+  try {
+    validateSchemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
+  } catch {
+    // Schema YAML already validated upstream during extraction. If it
+    // somehow fails to parse here, fall through with no schema — the
+    // confidence map will be empty and routing skips automatically.
+    validateSchemaDef = undefined;
+  }
+  const provenanceByField = (extractResult.provenance ?? undefined) as
+    | Record<string, import("../extract/provenance").ProvenanceSpan | null>
+    | undefined;
+  const fieldScores = computeFieldConfidences(
+    validateSchemaDef,
+    extractedValues,
+    provenanceByField,
+  );
+  const confidence = aggregateDocConfidence(fieldScores);
   const threshold = Number(pipeline.reviewThreshold);
-  const lowField = findLowestConfidenceField(fieldScores, threshold, extractedValues);
+  const lowField = Number.isFinite(threshold)
+    ? findLowestField(fieldScores, threshold)
+    : null;
 
-  const routeToReview =
-    lowField !== null ||
-    (confidence !== null && Number.isFinite(threshold) && confidence < threshold);
+  const routeToReview = lowField !== null;
 
   recorder.record("validate", Date.now() - validateStart, routeToReview ? "warn" : "ok", {
     threshold,
@@ -1072,24 +1096,9 @@ class TraceRecorder {
 }
 
 // callExtract removed — extraction now runs in-process via extractFields()
-
-function findLowestConfidenceField(
-  scores: Record<string, number>,
-  threshold: number,
-  extractedValues?: Record<string, unknown>,
-): { name: string; confidence: number } | null {
-  let worst: { name: string; confidence: number } | null = null;
-  for (const [name, raw] of Object.entries(scores)) {
-    const c = Number(raw);
-    if (!Number.isFinite(c)) continue;
-    // Skip null fields — they're legitimately absent, not low confidence
-    if (extractedValues && extractedValues[name] == null) continue;
-    if (c < threshold && (worst === null || c < worst.confidence)) {
-      worst = { name, confidence: c };
-    }
-  }
-  return worst;
-}
+// findLowestConfidenceField removed — replaced by deterministic
+// `findLowestField` in extract/field-confidence.ts (no extractedValues
+// filter needed since null fields now score based on schema's required flag).
 
 function firstFieldName(scores: Record<string, number>): string | null {
   const keys = Object.keys(scores);

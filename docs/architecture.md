@@ -223,13 +223,29 @@ Each extracted value is validated and normalized against its field spec:
 
 ### Phase 5: Reconcile
 
-Results from all extraction groups are merged into a single output. When multiple groups extract the same field (from overlapping chunks), the reconciler uses agreement as a confidence signal:
-
-- **High confidence** -- multiple independent sources agree on the same value
-- **Medium confidence** -- single source, passes validation
-- **Low confidence** -- validation issues or conflicting sources
+Results from all extraction groups are merged into a single output. When multiple groups extract the same field (from overlapping chunks), the reconciler combines them and the value is scored against the schema.
 
 After reconciliation, any required fields still missing trigger **gap filling**: a broadened retry that searches up to 6 chunks with a targeted single-field prompt. Routing hints (`look_in`, `patterns`, `prefer_contains`) are *stripped* for the gap-fill re-route so it truly escapes whatever over-filtering the main pass ran into — the router falls back to generic type-based scoring across the full chunk pool. Per-field `extraction_hint` guidance is preserved in the prompt so the model still gets the disambiguation context. This catches values that were missed because the main pass's declared scope didn't include the right chunk.
+
+### Phase 6: Per-field confidence (deterministic)
+
+Each extracted value gets a confidence score in `[0.0, 1.0]` derived **entirely from the schema and the value** — never from the LLM's self-rated `__confidence` (which is conservatively calibrated noise; unambiguous correct picks routinely come back at ~0.7 and trip review thresholds for no reason). The LLM's `__confidence` key is stripped at JSON parse time so it can't leak into downstream code.
+
+Per-type scoring rules:
+
+| Type | 1.0 | 0.5 | 0.0 |
+|------|-----|-----|-----|
+| `enum` | value is in `options` (case-sensitive) | — | not in options |
+| `mapping` | value is a canonical key (case-sensitive) | — | not a canonical |
+| `integer` | parses + in `min`/`max` range | parses, no range declared | doesn't parse to int |
+| `number` | parses + in range | parses, no range declared | doesn't parse |
+| `date` | parses in schema's `format` (default `YYYY-MM-DD`) | valid date, wrong format | not a date |
+| `boolean` | strictly `true` or `false` | — | anything else |
+| `string` w/ `pattern` | matches regex | — | doesn't match |
+| `string` w/o pattern | non-empty + provenance found it | non-empty, no provenance hit (= 0.7) | empty |
+| any | value is `null`, schema doesn't require it | — | required field is null |
+
+**Doc-level confidence = `min` of per-field scores** (strict). The document is only as confident as its weakest field. The HITL review gate routes the doc to review when *any* field falls below the pipeline's `review_threshold` (default 0.85). Optional fields that come back null are scored 1.0 (legitimate absence) so they don't drag the doc down.
 
 The final output includes the extracted data, per-field confidence scores, and metadata about the extraction process (chunk count, group count, timing, gap-filled fields).
 
