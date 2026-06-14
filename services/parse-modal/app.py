@@ -500,10 +500,7 @@ def parse(
                 f"splitting into {(info['pages'] + 49) // 50} chunks"
             )
             chunks = _split_pdf(file_bytes, chunk_size=50)
-            args_list = [
-                (chunk_bytes, start - 1, filename, mime_type)
-                for chunk_bytes, start, _end in chunks
-            ]
+            args_list = [(chunk_bytes, start - 1, filename, mime_type) for chunk_bytes, start, _end in chunks]
             chunk_results = list(parse_chunk.starmap(args_list))
             return _merge_chunk_results(chunk_results, info["pages"])
 

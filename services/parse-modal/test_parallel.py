@@ -38,7 +38,6 @@ if "fastapi" not in sys.modules:
 import fitz  # noqa: E402
 from app import _merge_chunk_results, _split_pdf  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Test fixture: create synthetic PDFs with N pages
 # ---------------------------------------------------------------------------
@@ -347,10 +346,7 @@ class TestPageOffsetArithmetic:
         chunks = _split_pdf(pdf, chunk_size=50)
 
         # Simulate the args_list construction from parse()
-        args_list = [
-            (chunk_bytes, start - 1, "test.pdf", None)
-            for chunk_bytes, start, _end in chunks
-        ]
+        args_list = [(chunk_bytes, start - 1, "test.pdf", None) for chunk_bytes, start, _end in chunks]
 
         # First chunk: offset should be 0
         assert args_list[0][1] == 0
@@ -360,10 +356,7 @@ class TestPageOffsetArithmetic:
         pdf = _make_pdf(100)
         chunks = _split_pdf(pdf, chunk_size=50)
 
-        args_list = [
-            (chunk_bytes, start - 1, "test.pdf", None)
-            for chunk_bytes, start, _end in chunks
-        ]
+        args_list = [(chunk_bytes, start - 1, "test.pdf", None) for chunk_bytes, start, _end in chunks]
 
         # Second chunk: offset should be 50
         assert args_list[1][1] == 50
@@ -373,10 +366,7 @@ class TestPageOffsetArithmetic:
         pdf = _make_pdf(252)
         chunks = _split_pdf(pdf, chunk_size=50)
 
-        args_list = [
-            (chunk_bytes, start - 1, "test.pdf", None)
-            for chunk_bytes, start, _end in chunks
-        ]
+        args_list = [(chunk_bytes, start - 1, "test.pdf", None) for chunk_bytes, start, _end in chunks]
 
         expected_offsets = [0, 50, 100, 150, 200, 250]
         actual_offsets = [args[1] for args in args_list]
@@ -433,7 +423,7 @@ class TestPageOffsetArithmetic:
                 "pages": 50,
                 "ocr_skipped": False,
                 "text_map": [
-                    {"text": "a", "page": 1, "bbox": {}},   # offset 0 → page 1
+                    {"text": "a", "page": 1, "bbox": {}},  # offset 0 → page 1
                     {"text": "b", "page": 50, "bbox": {}},  # offset 0 → page 50
                 ],
             },
