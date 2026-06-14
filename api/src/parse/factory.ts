@@ -21,6 +21,7 @@
 import type { ParseProvider } from "./provider";
 import { DockerParseProvider } from "./docker";
 import { ModalParseProvider } from "./modal";
+import { ChunkedParseProvider } from "./chunked";
 
 export type ParseBackend = "docker" | "modal";
 
@@ -84,10 +85,20 @@ export async function createParseProvider(config: ParseConfig): Promise<ParsePro
       const { LiteParseProvider } = await import("./liteparse");
       const { SmartParseProvider } = await import("./smart");
       console.log("[parse] LiteParse detected — enabling smart routing (digital→liteparse, scanned→heavy)");
-      return new SmartParseProvider(new LiteParseProvider(), provider);
+      provider = new SmartParseProvider(new LiteParseProvider(), provider);
     } catch (err) {
       console.warn("[parse] LiteParse detected but failed to load:", (err as Error).message?.slice(0, 100));
     }
+  }
+
+  // Wrap with chunked parsing for large PDFs (after SmartParseProvider)
+  const chunkThreshold = parseInt(process.env.KOJI_CHUNK_PARSE_THRESHOLD ?? "80", 10);
+  if (chunkThreshold > 0) {
+    const chunkPages = parseInt(process.env.KOJI_CHUNK_PARSE_PAGES ?? "50", 10);
+    provider = new ChunkedParseProvider(provider, {
+      threshold: chunkThreshold,
+      chunkPages,
+    });
   }
 
   return provider;

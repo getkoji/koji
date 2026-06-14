@@ -318,6 +318,132 @@ def _convert_bytes(
 
 
 # ---------------------------------------------------------------------------
+# Parallel page-range parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _split_pdf(file_bytes: bytes, chunk_size: int = 50) -> list[tuple[bytes, int, int]]:
+    """Split a PDF into page-range chunks for parallel processing.
+
+    Args:
+        file_bytes: Raw PDF bytes.
+        chunk_size: Maximum pages per chunk.
+
+    Returns:
+        List of ``(chunk_bytes, start_page_1indexed, end_page_1indexed)``.
+        Each chunk is a valid standalone PDF containing exactly the pages
+        in its range.
+    """
+    import fitz
+
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    total = len(doc)
+    doc.close()
+
+    if total == 0:
+        return []
+
+    chunks: list[tuple[bytes, int, int]] = []
+    for start_0 in range(0, total, chunk_size):
+        end_0 = min(start_0 + chunk_size, total)
+        # Reopen each time — select() modifies the doc in place
+        chunk_doc = fitz.open(stream=file_bytes, filetype="pdf")
+        chunk_doc.select(list(range(start_0, end_0)))
+        chunk_bytes = chunk_doc.tobytes(deflate=True)
+        chunk_doc.close()
+        chunks.append((chunk_bytes, start_0 + 1, end_0))
+
+    return chunks
+
+
+def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
+    """Merge results from parallel parse_chunk calls into a single response.
+
+    Args:
+        chunk_results: Ordered list of dicts from parse_chunk, each with
+            ``markdown``, ``pages``, ``ocr_skipped``, ``text_map``.
+        total_pages: Total page count of the original document.
+
+    Returns:
+        A single dict matching the standard parse response shape.
+    """
+    if not chunk_results:
+        return {
+            "markdown": "",
+            "pages": total_pages,
+            "ocr_skipped": False,
+            "text_map": [],
+        }
+
+    if len(chunk_results) == 1:
+        result = chunk_results[0]
+        result["pages"] = total_pages
+        result["ocr_skipped"] = False  # parallel path = scanned doc = OCR always ran
+        return result
+
+    markdowns: list[str] = []
+    all_text_map: list[dict] = []
+
+    for r in chunk_results:
+        md = r.get("markdown", "")
+        if md:
+            markdowns.append(md)
+        all_text_map.extend(r.get("text_map", []))
+
+    return {
+        "markdown": "\n\n".join(markdowns),
+        "pages": total_pages,
+        "ocr_skipped": False,
+        "text_map": all_text_map,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Modal function — per-chunk parser for parallel fan-out
+# ---------------------------------------------------------------------------
+
+
+@app.function(
+    gpu="L4",
+    timeout=600,
+    memory=4096,
+    cpu=2.0,
+)
+def parse_chunk(
+    chunk_bytes: bytes,
+    page_offset: int,
+    filename: str,
+    mime_type: str | None,
+) -> dict:
+    """Parse a single PDF chunk and offset page numbers.
+
+    Called via ``parse_chunk.starmap(...)`` for parallel page-range
+    parsing of large scanned PDFs. Each invocation runs on its own
+    Modal L4 GPU container.
+
+    Args:
+        chunk_bytes: PDF bytes for this chunk (subset of pages).
+        page_offset: 0-based offset to add to text_map page numbers
+            so they reflect position in the original document.
+        filename: Original filename (for format detection).
+        mime_type: Optional MIME type.
+
+    Returns:
+        Dict with ``markdown``, ``pages``, ``ocr_skipped``, ``text_map``
+        where text_map page numbers are offset to reflect the original
+        document page positions.
+    """
+    result = _convert_bytes(filename, mime_type, chunk_bytes)
+
+    # Offset text_map page numbers so they refer to the original document
+    if page_offset > 0 and result.get("text_map"):
+        for segment in result["text_map"]:
+            segment["page"] = segment["page"] + page_offset
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Modal function
 # ---------------------------------------------------------------------------
 # SDK-invocable (``parse.remote(...)``) rather than a web endpoint — the
@@ -345,6 +471,11 @@ def parse(
 ) -> dict:
     """Parse a document and return ``{markdown, pages, ocr_skipped}``.
 
+    For scanned PDFs with more than 50 pages, splits the document into
+    50-page chunks and parses each on a separate Modal L4 GPU container
+    via ``parse_chunk.starmap()``. For all other documents, uses the
+    existing serial path.
+
     Args:
         filename: Original filename (used for suffix-based format
             detection and in error messages).
@@ -358,6 +489,25 @@ def parse(
         endpoint (minus ``filename`` / ``elapsed_seconds``, which the
         caller can attach itself).
     """
+    suffix = _suffix_for(filename, mime_type)
+
+    # Only consider parallel path for PDFs
+    if suffix == ".pdf":
+        info = _get_pdf_info(file_bytes)
+        if info["scanned"] and info["pages"] > 50:
+            print(
+                f"[koji-parse-modal] parallel parse: {info['pages']} scanned pages, "
+                f"splitting into {(info['pages'] + 49) // 50} chunks"
+            )
+            chunks = _split_pdf(file_bytes, chunk_size=50)
+            args_list = [
+                (chunk_bytes, start - 1, filename, mime_type)
+                for chunk_bytes, start, _end in chunks
+            ]
+            chunk_results = list(parse_chunk.starmap(args_list))
+            return _merge_chunk_results(chunk_results, info["pages"])
+
+    # Serial path — unchanged for small docs, digital PDFs, images, etc.
     return _convert_bytes(filename, mime_type, file_bytes)
 
 
