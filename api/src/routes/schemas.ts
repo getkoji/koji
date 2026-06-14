@@ -6,6 +6,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
+import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { and } from "drizzle-orm";
@@ -87,6 +88,44 @@ schemas.get("/:slug", requires("schema:read"), async (c) => {
   if (sv) latestVersion = sv;
 
   return c.json({ ...s, latestVersion });
+});
+
+/**
+ * GET /api/schemas/:slug/fields — structured field metadata for a schema.
+ *
+ * Returns the latest committed version's YAML normalized into a stable JSON
+ * shape (`{ fields: FieldMeta[] }`). Lets browser clients drop in-browser
+ * YAML parsing for things like the review-page override dropdown.
+ *
+ * Returns 404 if the schema slug doesn't exist for this tenant, an empty
+ * `fields: []` if the schema exists but has no committed YAML yet.
+ */
+schemas.get("/:slug/fields", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
+      .from(schema.schemas)
+      .where(eq(schema.schemas.slug, slug))
+      .limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const [sv] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ yamlSource: schema.schemaVersions.yamlSource })
+      .from(schema.schemaVersions)
+      .where(eq(schema.schemaVersions.schemaId, s.id))
+      .orderBy(desc(schema.schemaVersions.versionNumber))
+      .limit(1)
+  );
+
+  // Prefer committed YAML; fall back to draft (covers freshly created schemas
+  // that haven't committed v1 yet — same shape, same parser).
+  const yamlSource = sv?.yamlSource ?? s.draftYaml ?? "";
+  const fields = extractFieldMetas(yamlSource);
+  return c.json({ fields });
 });
 
 schemas.post(

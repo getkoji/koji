@@ -345,6 +345,37 @@ export interface paths {
         patch: operations["updateSchemaDraft"];
         trace?: never;
     };
+    "/projects/{projectSlug}/schemas/{schemaSlug}/fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
+                projectSlug: components["parameters"]["ProjectSlug"];
+                /** @description Schema slug, unique within the project. */
+                schemaSlug: components["parameters"]["SchemaSlug"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Structured field metadata for a schema
+         * @description Returns the latest committed version's YAML normalized into a stable
+         *     JSON shape. Lets clients (notably the review UI's override dropdowns)
+         *     consume schema field metadata without parsing YAML on the wire.
+         *
+         *     If the schema exists but has no committed YAML, falls back to the
+         *     in-progress draft. If nothing is available, returns `{ fields: [] }`.
+         *     Unknown YAML keys on a field are silently dropped (forward-compat).
+         */
+        get: operations["getSchemaFields"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{projectSlug}/schemas/{schemaSlug}/versions": {
         parameters: {
             query?: never;
@@ -2631,6 +2662,48 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * @description Structured representation of one field declared in a schema's YAML.
+         *     Decouples client UI (dropdowns, validation hints) from the YAML syntax.
+         *     Forward-compatible: unknown source keys are silently dropped server-side
+         *     rather than reflected here.
+         */
+        SchemaFieldMeta: {
+            name: string;
+            /**
+             * @description Schema-declared type. Common values are `string`, `number`,
+             *     `integer`, `boolean`, `date`, `object`, `array`, `enum`,
+             *     `mapping`. Other strings may appear as new types are added —
+             *     consume permissively.
+             */
+            type: string;
+            description?: string;
+            required?: boolean;
+            /**
+             * @description Enum values, coerced to strings + deduped server-side. Omitted
+             *     when the field has no enum constraint.
+             */
+            enum?: string[];
+            /**
+             * @description Legacy `options` alias. Surfaced only when present in the YAML
+             *     AND not equivalent to `enum`. Treat the same as `enum` when
+             *     deriving dropdown options.
+             */
+            options?: string[];
+            /**
+             * @description Bucket key → aliases. The bucket keys are the canonical/normalized
+             *     values (use them as dropdown options). Aliases are surface forms
+             *     the extractor accepts and folds into the bucket.
+             */
+            mappings?: {
+                [key: string]: string[];
+            };
+            /** @description Regex pattern (from `validate.regex` or top-level `pattern`). */
+            pattern?: string;
+        };
+        SchemaFieldList: {
+            fields: components["schemas"]["SchemaFieldMeta"][];
+        };
         CommitSchemaVersionRequest: {
             commit_message?: string;
             /**
@@ -4246,6 +4319,33 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    getSchemaFields: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project (tenant) slug. Lowercase alphanumeric + hyphens. */
+                projectSlug: components["parameters"]["ProjectSlug"];
+                /** @description Schema slug, unique within the project. */
+                schemaSlug: components["parameters"]["SchemaSlug"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Field metadata. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaFieldList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
         };
     };
     listSchemaVersions: {
