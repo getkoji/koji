@@ -197,20 +197,32 @@ JSON:`;
 // ---------------------------------------------------------------------------
 
 function parseJsonResponse(raw: string): Record<string, unknown> | null {
+  let parsed: Record<string, unknown> | null = null;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     // Try to extract JSON object from the response
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
       try {
-        return JSON.parse(match[0]);
+        parsed = JSON.parse(match[0]);
       } catch {
-        return null;
+        parsed = null;
       }
     }
-    return null;
   }
+  // Strip the LLM's self-emitted `__confidence` at parse time so
+  // downstream code can't accidentally rely on it. See
+  // extract/field-confidence.ts for the deterministic replacement.
+  if (parsed && typeof parsed === "object") {
+    delete parsed.__confidence;
+    for (const v of Object.values(parsed)) {
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        delete (v as Record<string, unknown>).__confidence;
+      }
+    }
+  }
+  return parsed;
 }
 
 /**
@@ -254,24 +266,18 @@ const W_PROV = 0.70;
 const W_VAL = 0.30;
 
 /**
- * Extract and validate __confidence from a parsed LLM response.
- * Removes the key from the parsed object so downstream code never sees it.
+ * Compatibility shim — historically extracted `__confidence` from parsed
+ * LLM responses. Now a no-op: `__confidence` is stripped at parse time
+ * (see parseJsonResponse) and confidence is computed deterministically
+ * in `extract/field-confidence.ts`. Retained for back-compat callers.
  */
 export function extractLlmConfidence(
   parsed: Record<string, unknown>,
 ): Record<string, number> {
-  const raw = parsed.__confidence;
+  // Defensive double-strip in case a caller hands us an object that
+  // didn't come through parseJsonResponse.
   delete parsed.__confidence;
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const result: Record<string, number> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === "number" && v >= 0 && v <= 1) {
-      result[k] = v;
-    } else if (typeof v === "number") {
-      result[k] = Math.max(0, Math.min(1, v));
-    }
-  }
-  return result;
+  return {};
 }
 
 /**

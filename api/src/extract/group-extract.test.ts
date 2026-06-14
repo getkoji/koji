@@ -510,47 +510,37 @@ describe("unwrapNestedResult", () => {
 // extractLlmConfidence
 // ---------------------------------------------------------------------------
 
-describe("extractLlmConfidence", () => {
-  it("extracts valid confidence dict and pops it from parsed", () => {
+describe("extractLlmConfidence (compat shim, always empty)", () => {
+  // The LLM's self-emitted __confidence is now stripped at parse time
+  // (see parseJsonResponse) and the deterministic scorer in
+  // extract/field-confidence.ts replaces it. extractLlmConfidence is
+  // retained as a no-op for backwards compatibility.
+  it("always returns an empty dict (no LLM signal used for routing)", () => {
     const parsed: Record<string, unknown> = {
       name: "Acme",
       __confidence: { name: 0.95, date: 0.8 },
     };
-    const expected = new Set(["name", "date"]);
-    const conf = extractLlmConfidence(parsed, expected);
-    expect(conf).toEqual({ name: 0.95, date: 0.8 });
-    expect(parsed.__confidence).toBeUndefined();
+    const conf = extractLlmConfidence(parsed, new Set(["name", "date"]));
+    expect(conf).toEqual({});
   });
 
-  it("returns empty dict when __confidence is missing", () => {
-    const parsed: Record<string, unknown> = { name: "Acme" };
-    expect(extractLlmConfidence(parsed, new Set(["name"]))).toEqual({});
-  });
-
-  it("returns empty dict when __confidence is malformed (not a dict)", () => {
+  it("defensively strips __confidence even when called directly", () => {
     const parsed: Record<string, unknown> = {
       name: "Acme",
-      __confidence: "not a dict",
+      __confidence: { name: 0.95 },
     };
-    expect(extractLlmConfidence(parsed, new Set(["name"]))).toEqual({});
+    extractLlmConfidence(parsed, new Set(["name"]));
     expect(parsed.__confidence).toBeUndefined();
   });
 
-  it("clamps out-of-range values to [0, 1]", () => {
-    const parsed: Record<string, unknown> = {
-      __confidence: { a: -0.5, b: 1.5 },
-    };
-    const conf = extractLlmConfidence(parsed, new Set(["a", "b"]));
-    expect(conf.a).toBe(0.0);
-    expect(conf.b).toBe(1.0);
-  });
-
-  it("only includes fields in the expected set", () => {
-    const parsed: Record<string, unknown> = {
-      __confidence: { name: 0.9, extra: 0.5 },
-    };
-    const conf = extractLlmConfidence(parsed, new Set(["name"]));
-    expect(conf).toEqual({ name: 0.9 });
+  it("returns empty dict regardless of input shape", () => {
+    expect(extractLlmConfidence({ name: "Acme" }, new Set(["name"]))).toEqual({});
+    expect(
+      extractLlmConfidence(
+        { __confidence: "not a dict" } as Record<string, unknown>,
+        new Set(["name"]),
+      ),
+    ).toEqual({});
   });
 });
 
@@ -686,7 +676,7 @@ describe("extractGroup", () => {
     expect(result.total).toBe(100);
   });
 
-  it("strips __confidence and attaches as __llm_confidence", async () => {
+  it("strips __confidence at parse time (does not attach __llm_confidence)", async () => {
     const provider = mockProvider(
       JSON.stringify({
         name: "Acme",
@@ -700,7 +690,8 @@ describe("extractGroup", () => {
 
     const result = await extractGroup(group, "test", provider);
     expect(result.name).toBe("Acme");
-    expect(result.__llm_confidence).toEqual({ name: 0.95 });
+    // LLM self-rated confidence is noise — stripped at parse and not surfaced.
+    expect(result.__llm_confidence).toBeUndefined();
     expect(result.__confidence).toBeUndefined();
   });
 
@@ -801,7 +792,7 @@ describe("fillGap", () => {
     expect(result.filing_date).toBe("2025-01-01");
   });
 
-  it("attaches __llm_confidence when present", async () => {
+  it("strips __confidence at parse time (does not attach __llm_confidence)", async () => {
     const provider = mockProvider(
       JSON.stringify({
         name: "Acme",
@@ -817,6 +808,6 @@ describe("fillGap", () => {
       "test",
       provider,
     );
-    expect(result.__llm_confidence).toEqual({ name: 0.85 });
+    expect(result.__llm_confidence).toBeUndefined();
   });
 });

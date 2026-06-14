@@ -355,26 +355,27 @@ export function unwrapNestedResult(
 }
 
 /**
- * Pop __confidence from a parsed LLM response and return per-field scores.
- * Returns a dict mapping field names to floats in [0.0, 1.0].
- * Port of Python _extract_llm_confidence.
+ * Compatibility shim — historically extracted the LLM's self-emitted
+ * `__confidence` from a parsed response. The signal proved untrustworthy
+ * (LLMs are conservatively calibrated even when correct, flooding the HITL
+ * review queue with false positives), so it's now stripped at parse time
+ * in `parseJsonResponse` and this function is a no-op.
+ *
+ * Per-field confidence is now computed deterministically in
+ * `extract/field-confidence.ts` from the field schema + extracted value
+ * + provenance. See `computeFieldConfidence`.
+ *
+ * Retained as an exported symbol because external callers (and tests
+ * documenting the deletion behavior) still import it.
  */
 export function extractLlmConfidence(
   parsed: Record<string, unknown>,
-  expectedFields: Set<string>,
+  _expectedFields: Set<string>,
 ): Record<string, number> {
-  const raw = parsed.__confidence;
+  // Defensive double-strip in case a caller hands us a parsed object that
+  // didn't come through parseJsonResponse.
   delete parsed.__confidence;
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const result: Record<string, number> = {};
-  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (key in Object.fromEntries([...expectedFields].map((f) => [f, true])) === false) continue;
-    if (!expectedFields.has(key)) continue;
-    if (typeof val === "number") {
-      result[key] = Math.max(0.0, Math.min(1.0, val));
-    }
-  }
-  return result;
+  return {};
 }
 
 /**
@@ -448,20 +449,41 @@ export function extractSourceContexts(parsed: Record<string, unknown>): Record<s
 // JSON parsing with fallback
 // ---------------------------------------------------------------------------
 
+/**
+ * Strip the LLM's self-emitted `__confidence` key from a parsed response and
+ * any nested objects at the top level. We never use the LLM's self-rated
+ * confidence for routing — see `extract/field-confidence.ts` for the
+ * deterministic scorer that replaced it. Stripping at parse time means
+ * downstream code physically cannot accidentally read it back.
+ */
+function stripLlmConfidence(obj: Record<string, unknown>): void {
+  if (!obj || typeof obj !== "object") return;
+  delete obj.__confidence;
+  // Also drop it from nested objects (some LLMs emit per-section
+  // confidence blocks rather than a top-level one).
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      delete (v as Record<string, unknown>).__confidence;
+    }
+  }
+}
+
 function parseJsonResponse(raw: string): Record<string, unknown> | null {
+  let parsed: Record<string, unknown> | null = null;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
       try {
-        return JSON.parse(match[0]);
+        parsed = JSON.parse(match[0]);
       } catch {
-        return null;
+        parsed = null;
       }
     }
-    return null;
   }
+  if (parsed && typeof parsed === "object") stripLlmConfidence(parsed);
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +513,10 @@ export async function extractGroup(
       return {};
     }
 
-    const llmConf = extractLlmConfidence(parsed, expectedFields);
+    // `__confidence` is stripped at parse time (parseJsonResponse). We no
+    // longer surface __llm_confidence on the result — it was a noisy signal
+    // that callers eventually started routing on, even after we'd "stopped
+    // using it." Easier to physically remove it.
     // Strip __source_text from array items and collect them
     const sourceTexts = extractSourceTexts(parsed);
     // Collect scalar __source_text and __source_context (top-level objects
@@ -499,9 +524,6 @@ export async function extractGroup(
     const scalarSourceTexts = extractScalarSourceTexts(parsed);
     const sourceContexts = extractSourceContexts(parsed);
     const result = unwrapNestedResult(parsed, expectedFields);
-    if (Object.keys(llmConf).length > 0) {
-      result.__llm_confidence = llmConf;
-    }
     if (Object.keys(sourceTexts).length > 0) {
       result.__source_texts = sourceTexts;
     }
@@ -548,11 +570,8 @@ export async function fillGap(
       return {};
     }
 
-    const llmConf = extractLlmConfidence(parsed, new Set([fieldName]));
+    // `__confidence` is stripped at parse time — see parseJsonResponse.
     const result = unwrapNestedResult(parsed, new Set([fieldName]));
-    if (Object.keys(llmConf).length > 0) {
-      result.__llm_confidence = llmConf;
-    }
     return result;
   } catch (e) {
     console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
