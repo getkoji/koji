@@ -9,10 +9,10 @@ import { ArrowLeft, Check, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
-import { review as reviewApi, type ReviewDetail } from "@/lib/api";
+import { review as reviewApi, schemas as schemasApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
-import { extractFieldOptionsFromSchemaYaml } from "./fieldOptions";
+import { deriveFieldOptions } from "./fieldOptions";
 
 type DecisionKind = "accept" | "override" | "reject" | "skip";
 
@@ -43,29 +43,25 @@ export default function ReviewDetailPage() {
 
   const { data: queueIds } = useApi(useCallback(() => reviewApi.queueIds("pending"), []));
 
-  // Fetch schema to get field options for enum/mapping dropdowns. The
-  // extraction logic lives in `./fieldOptions.ts` as a pure function so it's
-  // unit-testable and (more importantly) doesn't depend on a hand-rolled
-  // regex that mis-identifies arbitrary YAML keys (like `patterns:`, `type:`,
-  // etc.) as enum options.
+  // Fetch structured field metadata from the API. The server parses the
+  // schema YAML once and ships a stable JSON shape (`SchemaFieldMeta[]`);
+  // the dashboard derives the override dropdown options from that. No
+  // client-side YAML parsing — schemas can declare arbitrary keys
+  // (`patterns:`, future validators, etc.) without leaking into the UI.
   const [fieldOptions, setFieldOptions] = useState<string[] | null>(null);
   useEffect(() => {
     if (!item?.schemaSlug || !item?.fieldName) return;
     let cancelled = false;
-    import("@/lib/api").then(({ api }) => {
-      api
-        .get<{ latestVersion?: { yamlSource?: string } }>(`/api/schemas/${item.schemaSlug}`)
-        .then((schema) => {
-          if (cancelled) return;
-          const yamlSource = schema.latestVersion?.yamlSource;
-          if (!yamlSource) return;
-          const options = extractFieldOptionsFromSchemaYaml(yamlSource, item.fieldName);
-          if (options && options.length > 0) {
-            setFieldOptions(options);
-          }
-        })
-        .catch(() => {});
-    });
+    schemasApi
+      .fields(item.schemaSlug)
+      .then((fields) => {
+        if (cancelled) return;
+        const options = deriveFieldOptions(fields, item.fieldName);
+        if (options && options.length > 0) {
+          setFieldOptions(options);
+        }
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
