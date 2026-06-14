@@ -46,3 +46,36 @@ Available components include: Accordion, AlertDialog, Avatar, Badge, Button, But
 The package exports from `./src/index.ts` and also supports deep imports via `@koji/ui/components/ui/<name>`.
 
 **Note:** Many existing pages still use raw `<button>` / `<input>` elements (legacy). New code should use `@koji/ui`. A full migration pass is tracked as oss-155.
+
+## Displaying customer documents: use `<DocumentViewer />`
+
+**Anywhere the dashboard needs to render a customer document (PDF, image, etc.) — use the shared `DocumentViewer`.**
+
+```typescript
+import { DocumentViewer } from "@/components/shared/DocumentViewer";
+
+<DocumentViewer
+  url={item.documentPreviewUrl}      // from the API — see "Document preview URLs" below
+  mimeType={item.documentMimeType}   // required, drives the renderer choice
+  filename={item.documentFilename}   // optional, used as <img alt> and fallback
+  highlights={highlights}            // optional, PDF bbox highlights
+  activeField={activeField}          // optional, PDF page navigation
+/>
+```
+
+It picks the right renderer for you:
+- `application/pdf` → `<PdfViewer />` (react-pdf, supports highlights + field navigation)
+- `image/*` → `<img>` with `object-contain`
+- Unknown / `null` MIME → "preview unavailable" / "unsupported" fallback (never an `<iframe>`)
+
+**Do NOT** roll your own `<iframe src={...} />` block for documents. iframes against raw signed-storage URLs trigger downloads instead of inline rendering whenever the object's key has no recognised extension (production keys are UUIDs). DocumentViewer is the only document-rendering surface we maintain.
+
+### Document preview URLs
+
+The `url` prop must come from an endpoint that streams the file with `Content-Disposition: inline` and the correct `Content-Type`. In Koji that means the HMAC-signed `/api/jobs/:jobSlug/documents/:documentId/preview` endpoint (see `koji/api/src/routes/jobs.ts` + `koji/api/src/auth/middleware.ts` for the token scheme).
+
+API endpoints that return a `documentPreviewUrl` field for the dashboard to consume:
+- `GET /api/jobs/:slug/documents/:docId` → `documentPreviewUrl + documentToken`
+- `GET /api/review/:itemId` → `documentPreviewUrl + documentToken`
+
+If you're adding a new API response that surfaces a document, mirror those routes — build the URL with `generatePreviewToken(basePath, masterKey)` from `auth/middleware`. Do **not** pass a raw `storage.getSignedUrl(...)` result to the dashboard for document display; the iframe download bug will come back.
