@@ -35,10 +35,9 @@ if "fastapi" not in sys.modules:
     _fastapi_mock.Request = MagicMock()
     sys.modules["fastapi"] = _fastapi_mock
 
-import fitz
-import pytest
+import fitz  # noqa: E402
 
-from app import _merge_chunk_results, _split_pdf
+from app import _merge_chunk_results, _split_pdf  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
