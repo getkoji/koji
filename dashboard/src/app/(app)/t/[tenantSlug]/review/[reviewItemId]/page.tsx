@@ -3,12 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Check, X, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Check, X, ChevronLeft, ChevronRight } from "lucide-react";
+// `FileText` was previously used by the local `DocumentPreview` component;
+// the preview now lives in `<DocumentViewer />` (which owns its own icons).
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import { review as reviewApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
+import { extractFieldOptionsFromSchemaYaml } from "./fieldOptions";
 
 type DecisionKind = "accept" | "override" | "reject" | "skip";
 
@@ -39,36 +43,32 @@ export default function ReviewDetailPage() {
 
   const { data: queueIds } = useApi(useCallback(() => reviewApi.queueIds("pending"), []));
 
-  // Fetch schema to get field options for enum/mapping dropdowns
+  // Fetch schema to get field options for enum/mapping dropdowns. The
+  // extraction logic lives in `./fieldOptions.ts` as a pure function so it's
+  // unit-testable and (more importantly) doesn't depend on a hand-rolled
+  // regex that mis-identifies arbitrary YAML keys (like `patterns:`, `type:`,
+  // etc.) as enum options.
   const [fieldOptions, setFieldOptions] = useState<string[] | null>(null);
   useEffect(() => {
     if (!item?.schemaSlug || !item?.fieldName) return;
+    let cancelled = false;
     import("@/lib/api").then(({ api }) => {
-      api.get<{ latestVersion?: { yamlSource?: string } }>(`/api/schemas/${item.schemaSlug}`)
+      api
+        .get<{ latestVersion?: { yamlSource?: string } }>(`/api/schemas/${item.schemaSlug}`)
         .then((schema) => {
-          if (schema.latestVersion?.yamlSource) {
-            // Simple YAML parse for the field's options/mappings
-            const yaml = schema.latestVersion.yamlSource;
-            const fieldMatch = yaml.match(new RegExp(`${item.fieldName}:[\\s\\S]*?(?=\\n  \\w|\\n\\w|$)`));
-            if (fieldMatch) {
-              const block = fieldMatch[0];
-              // Check for mappings (keys are the options)
-              const mappingKeys = [...block.matchAll(/^\s{4,6}(\w+):\s*\[/gm)].map(m => m[1]!);
-              if (mappingKeys.length > 0) {
-                setFieldOptions(mappingKeys);
-                return;
-              }
-              // Check for options array
-              const optMatch = block.match(/options:\s*\[([^\]]+)\]/);
-              if (optMatch) {
-                setFieldOptions(optMatch[1]!.split(",").map(s => s.trim().replace(/^["']|["']$/g, "")));
-                return;
-              }
-            }
+          if (cancelled) return;
+          const yamlSource = schema.latestVersion?.yamlSource;
+          if (!yamlSource) return;
+          const options = extractFieldOptionsFromSchemaYaml(yamlSource, item.fieldName);
+          if (options && options.length > 0) {
+            setFieldOptions(options);
           }
         })
         .catch(() => {});
     });
+    return () => {
+      cancelled = true;
+    };
   }, [item?.schemaSlug, item?.fieldName]);
 
   // Queue position math
@@ -254,7 +254,11 @@ export default function ReviewDetailPage() {
       </StickyHeader>
 
       <div className="flex-1 min-h-0 grid grid-cols-2 gap-4 px-10 pt-4 pb-4 overflow-hidden">
-        <DocumentPreview url={item.documentPreviewUrl} mimeType={item.documentMimeType} />
+        <DocumentViewer
+          url={item.documentPreviewUrl}
+          mimeType={item.documentMimeType}
+          filename={item.documentFilename}
+        />
         <div className="flex flex-col min-h-0 gap-4 overflow-y-auto">
           <FieldPanel item={item} confidence={confidence} />
 
@@ -420,68 +424,13 @@ function ReviewHeader({
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Document preview
-
-function DocumentPreview({
-  url,
-  mimeType,
-}: {
-  url: string | null;
-  mimeType: string | null;
-}) {
-  const [errored, setErrored] = useState(false);
-
-  if (!url) {
-    return (
-      <div className="flex items-center justify-center border border-border rounded-sm bg-cream-2/40 text-ink-3 text-[13px]">
-        <div className="flex flex-col items-center gap-2 p-8 text-center">
-          <FileText className="w-6 h-6 text-ink-4" />
-          <span>Document preview unavailable.</span>
-          <span className="font-mono text-[10px] text-ink-4 max-w-[36ch]">
-            The source file isn&apos;t in storage yet. Previews appear once the pipeline finishes
-            ingesting the document.
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  if (errored) {
-    return (
-      <div className="flex items-center justify-center border border-border rounded-sm bg-cream-2/40 text-ink-3 text-[13px]">
-        <div className="flex flex-col items-center gap-2 p-8 text-center">
-          <FileText className="w-6 h-6 text-ink-4" />
-          <span>Preview failed to load.</span>
-          <span className="font-mono text-[10px] text-ink-4">
-            The signed URL may have expired or the object is missing.
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const isImage = mimeType?.startsWith("image/");
-  return (
-    <div className="border border-border rounded-sm bg-cream-2/40 overflow-hidden">
-      {isImage ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={url}
-          alt="Document preview"
-          className="w-full h-full object-contain"
-          onError={() => setErrored(true)}
-        />
-      ) : (
-        <iframe
-          src={url}
-          className="w-full h-full border-0"
-          title="Document preview"
-          onError={() => setErrored(true)}
-        />
-      )}
-    </div>
-  );
-}
+// Document preview — uses the canonical <DocumentViewer /> from
+// `@/components/shared/DocumentViewer`. The previous local implementation
+// embedded the document in a raw `<iframe>` against a presigned storage
+// URL; that triggered downloads for any object whose key didn't end in a
+// recognised extension. The shared viewer routes PDFs through `PdfViewer`
+// (which fetches via the HMAC-signed `/preview` endpoint) so the inline
+// disposition is always honoured.
 
 // ──────────────────────────────────────────────────────────────────────
 // Field + decision panels
@@ -529,7 +478,7 @@ function FieldPanel({
                 {name}
               </code>
               <span className="font-mono text-[11.5px] text-ink truncate">
-                {stringifyValue(value)}
+                <InlineValue value={value} />
               </span>
               <div className="flex justify-end">
                 {isFlagged && confidence !== null ? (
@@ -603,9 +552,7 @@ function DecisionPanel({
             <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
               Model proposed
             </span>
-            <code className="font-mono text-[12px] text-ink bg-cream-2 border border-border rounded-sm px-2 py-1.5 break-all">
-              {stringifyValue(item.proposedValue)}
-            </code>
+            <ValueDisplay value={item.proposedValue} />
           </div>
           <div className="flex flex-col gap-1">
             <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
@@ -822,9 +769,7 @@ function ResolvedPanel({ item }: { item: ReviewDetail }) {
           <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
             Final value
           </span>
-          <code className="font-mono text-[12px] text-ink bg-cream-2 border border-border rounded-sm px-2 py-1.5 block break-all">
-            {stringifyValue(item.finalValue ?? item.proposedValue)}
-          </code>
+          <ValueDisplay value={item.finalValue ?? item.proposedValue} />
         </div>
         {item.note && (
           <div>
@@ -840,8 +785,90 @@ function ResolvedPanel({ item }: { item: ReviewDetail }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Display components — exported as small named functions so each branch
+// (null, scalar, object/array) is easy to test in isolation and so future
+// surfaces (jobs, schemas, etc.) can reuse the same conventions.
+
+/**
+ * Render an extracted value for a block-level context (Decision panel,
+ * resolved summary, etc.). Shows a muted "—" for null/undefined so the
+ * reviewer can tell the model proposed *nothing*, vs. having a broken
+ * empty box.  Objects/arrays render as pretty-printed JSON.
+ */
+function ValueDisplay({ value }: { value: unknown }) {
+  if (value === null || value === undefined) {
+    return (
+      <span
+        data-testid="value-display-null"
+        className="font-mono text-[12px] text-ink-4 italic bg-cream-2 border border-border rounded-sm px-2 py-1.5 block"
+      >
+        — null —
+      </span>
+    );
+  }
+
+  if (typeof value === "string") {
+    return (
+      <code
+        data-testid="value-display-string"
+        className="font-mono text-[12px] text-ink bg-cream-2 border border-border rounded-sm px-2 py-1.5 block break-all whitespace-pre-wrap"
+      >
+        {value.length === 0 ? <span className="text-ink-4 italic">(empty string)</span> : value}
+      </code>
+    );
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return (
+      <code
+        data-testid="value-display-scalar"
+        className="font-mono text-[12px] text-ink bg-cream-2 border border-border rounded-sm px-2 py-1.5 block break-all"
+      >
+        {String(value)}
+      </code>
+    );
+  }
+
+  // object / array — pretty-printed JSON in a <pre> so nested structure is legible
+  let json: string;
+  try {
+    json = JSON.stringify(value, null, 2);
+  } catch {
+    json = String(value);
+  }
+  return (
+    <pre
+      data-testid="value-display-json"
+      className="font-mono text-[11px] text-ink bg-cream-2 border border-border rounded-sm px-2 py-1.5 block overflow-x-auto whitespace-pre"
+    >
+      {json}
+    </pre>
+  );
+}
+
+/**
+ * Compact inline rendering for table cells / single-line contexts where a
+ * full <pre> block would blow out the row height. Mirrors ValueDisplay's
+ * type matrix but always returns a single line.
+ */
+function InlineValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) {
+    return <span className="text-ink-4 italic">—</span>;
+  }
+  return <>{stringifyValue(value)}</>;
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Helpers
 
+/**
+ * Serialise an unknown value to a single string. Used by `InlineValue` and
+ * also by the override <input>/<select> pre-fill so the dropdown can use
+ * the proposal as the default value. Kept distinct from `ValueDisplay`
+ * because the React node form needs to differentiate nullish from "" for
+ * UX, but the string-form callers want them collapsed to the same input
+ * value.
+ */
 function stringifyValue(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v;

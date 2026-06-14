@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import { and, eq, desc, asc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, generatePreviewToken } from "../auth/middleware";
 import { requireFeature } from "../billing/middleware";
 
 export const review = new Hono<Env>();
@@ -119,18 +119,31 @@ review.get("/:id", requires("review:read"), async (c) => {
     return c.json({ error: "Review item not found" }, 404);
   }
 
-  // Try to produce a signed URL for the document. Swallow errors — seeded rows
-  // may point to storage objects that don't exist in the bucket.
+  // Build a document preview URL via the HMAC-signed `/api/jobs/.../preview`
+  // endpoint instead of a raw signed-storage URL. The preview endpoint sets
+  // `Content-Disposition: inline` and the correct `Content-Type`, so browsers
+  // render the document inline (PDF viewer / image) instead of triggering a
+  // download — which is what storage providers do for keys without
+  // recognized extensions.
+  //
+  // Same pattern as the jobs document-detail route; mirror it here so any
+  // page that knows a review item ID can render the document with the
+  // shared `<DocumentViewer />` component.
   let documentPreviewUrl: string | null = null;
-  if (row.documentStorageKey) {
-    try {
-      documentPreviewUrl = await storage.getSignedUrl(row.documentStorageKey, 3600);
-    } catch {
-      documentPreviewUrl = null;
+  let documentToken: string | null = null;
+  if (row.documentStorageKey && row.documentId && row.jobSlug) {
+    const previewPath = `/api/jobs/${row.jobSlug}/documents/${row.documentId}/preview`;
+    const basePath = `/api/jobs/${row.jobSlug}/documents/${row.documentId}`;
+    const masterKey = c.get("masterKey") as string | null;
+    if (masterKey) {
+      documentToken = generatePreviewToken(basePath, masterKey);
+      documentPreviewUrl = `${previewPath}?token=${documentToken}`;
+    } else {
+      documentPreviewUrl = previewPath;
     }
   }
 
-  return c.json({ ...row, documentPreviewUrl });
+  return c.json({ ...row, documentPreviewUrl, documentToken });
 });
 
 // ──────────────────────────────────────────────────────────────────────
