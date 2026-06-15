@@ -298,7 +298,28 @@ describe("ChunkedParseProvider", () => {
     ).rejects.toThrow("chunk 2 exploded");
   });
 
-  // 9. Concurrency — verify max 3 concurrent parses
+  // 9. slicePdf failure → fallback to single parse
+  it("falls back to single parse when slicePdf throws (corrupt PDF)", async () => {
+    __pageCount = 150;
+    const inner = makeMockProvider();
+    (inner.slicePdf as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("slice failed: code=7: cannot find object in xref (1493 0 R)"),
+    );
+    const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
+
+    const result = await chunked.parse({
+      filename: "corrupt.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: PDF_BUFFER,
+    });
+
+    // Should have fallen back to single parse (called with the full buffer)
+    expect(result.markdown).toBeDefined();
+    // parse should have been called once (the fallback), not per-chunk
+    expect(inner.parse).toHaveBeenCalledTimes(1);
+  });
+
+  // 10. Concurrency — verify max 3 concurrent parses
   it("limits concurrent parses to the configured concurrency", async () => {
     __pageCount = 300; // 6 chunks of 50
     let activeConcurrency = 0;

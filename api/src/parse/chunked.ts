@@ -13,6 +13,14 @@ import type {
   TextMapSegment,
 } from "./provider";
 
+/** Sentinel error for slicePdf failures — triggers fallback to single parse. */
+class SliceFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SliceFailedError";
+  }
+}
+
 export interface ChunkedParseConfig {
   /** Pages per chunk. Default 50. */
   chunkPages?: number;
@@ -89,15 +97,31 @@ export class ChunkedParseProvider implements ParseProvider {
       chunks.push({ startPage: start, endPage: end });
     }
 
-    // Parse chunks with bounded concurrency
+    // Parse chunks with bounded concurrency.
+    // If slicing fails (corrupt xref table, malformed PDF), fall back to
+    // parsing the full document as a single unit — Docling handles reading
+    // corrupt PDFs more gracefully than slicing them.
+    // Parse chunks with bounded concurrency.
+    // If slicing fails (corrupt xref table, malformed PDF), fall back to
+    // parsing the full document as a single unit.
     const results = await this.runWithConcurrency(
       chunks,
       async (chunk) => {
-        const sliceResult = await this.inner.slicePdf!({
-          fileBuffer: input.fileBuffer,
-          startPage: chunk.startPage,
-          endPage: chunk.endPage,
-        });
+        let sliceResult;
+        try {
+          sliceResult = await this.inner.slicePdf!({
+            fileBuffer: input.fileBuffer,
+            startPage: chunk.startPage,
+            endPage: chunk.endPage,
+          });
+        } catch (err) {
+          console.warn(
+            `[chunked-parse] slicePdf failed for ${input.filename} pages ${chunk.startPage}-${chunk.endPage}, falling back to single parse:`,
+            err instanceof Error ? err.message : err,
+          );
+          // Throw a sentinel error so runWithConcurrency propagates it
+          throw new SliceFailedError(err instanceof Error ? err.message : String(err));
+        }
         const chunkBuffer = Buffer.from(sliceResult.pdf_base64, "base64");
         return {
           response: await this.inner.parse({
@@ -108,7 +132,17 @@ export class ChunkedParseProvider implements ParseProvider {
           startPage: chunk.startPage,
         };
       },
-    );
+    ).catch((err) => {
+      if (err instanceof SliceFailedError) {
+        // Fall back to single-document parse
+        return null;
+      }
+      throw err; // Re-throw parse errors — those are real failures
+    });
+
+    if (results === null) {
+      return this.inner.parse(input);
+    }
 
     // Merge results in order
     return this.mergeResults(results, pageCount);
