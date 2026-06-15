@@ -1,178 +1,118 @@
 /**
- * Unit tests for `extractFieldOptionsFromSchemaYaml`.
+ * Tests for the `deriveFieldOptions` helper — derives the override-dropdown
+ * options from the server's `SchemaFieldMeta[]` payload.
  *
- * The pre-fix implementation regex-matched any indented `key:` followed by
- * `[` and returned those keys as enum options — so schema metadata like
- * `patterns:`, `examples:`, `description:` would leak into the override
- * dropdown. These tests pin the correct behaviour: only `enum`, `options`,
- * and `mappings` blocks contribute, everything else returns `null`.
+ * The old test suite parsed YAML in-process; the API now does that and
+ * returns FieldMeta[] over the wire. These tests keep the same regression
+ * coverage (the `patterns:` leak, enum/options/mappings shapes, dedup, etc.)
+ * targeting the new helper.
  */
 
 import { describe, it, expect } from "vitest";
-import { extractFieldOptionsFromSchemaYaml } from "./fieldOptions";
+import type { SchemaFieldMeta } from "@/lib/api";
+import { deriveFieldOptions } from "./fieldOptions";
 
-describe("extractFieldOptionsFromSchemaYaml", () => {
-  it("returns enum values when the field declares `enum`", () => {
-    const yaml = `
-fields:
-  governance:
-    type: string
-    enum: ["hoa", "condo", "coop"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "governance")).toEqual([
-      "hoa",
-      "condo",
-      "coop",
-    ]);
+describe("deriveFieldOptions", () => {
+  it("returns enum values when the field declares enum", () => {
+    const fields: SchemaFieldMeta[] = [
+      { name: "governance", type: "string", enum: ["hoa", "condo", "coop"] },
+    ];
+    expect(deriveFieldOptions(fields, "governance")).toEqual(["hoa", "condo", "coop"]);
   });
 
   it("returns options when the field declares the legacy `options` alias", () => {
-    const yaml = `
-fields:
-  community_type:
-    type: string
-    options: ["monoline", "multiline"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "community_type")).toEqual([
-      "monoline",
-      "multiline",
-    ]);
+    const fields: SchemaFieldMeta[] = [
+      { name: "community_type", type: "string", options: ["monoline", "multiline"] },
+    ];
+    expect(deriveFieldOptions(fields, "community_type")).toEqual(["monoline", "multiline"]);
   });
 
-  it("returns mapping keys when the field declares `mappings`", () => {
-    const yaml = `
-fields:
-  state:
-    type: string
-    mappings:
-      CA: ["California", "Calif", "Cal."]
-      NY: ["New York", "NYS"]
-      TX: ["Texas", "Tex."]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "state")).toEqual([
-      "CA",
-      "NY",
-      "TX",
-    ]);
-  });
-
-  it("ignores `patterns` (the regression that motivated this rewrite)", () => {
-    const yaml = `
-fields:
-  unit_address_range:
-    type: string
-    patterns:
-      - regex: "^[0-9]+-[0-9]+$"
-      - regex: "^Unit [A-Z]$"
-    description: "Range like 1-100 or Unit A"
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "unit_address_range")).toBeNull();
-  });
-
-  it("ignores arbitrary metadata keys (description, examples, type, format)", () => {
-    const yaml = `
-fields:
-  primary_address:
-    type: string
-    description: "The street address"
-    examples: ["100 Main St", "200 Elm Ave"]
-    format: "free_text"
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "primary_address")).toBeNull();
+  it("returns mapping keys when the field declares mappings", () => {
+    const fields: SchemaFieldMeta[] = [
+      {
+        name: "state",
+        type: "string",
+        mappings: {
+          CA: ["California", "Calif", "Cal."],
+          NY: ["New York", "NYS"],
+          TX: ["Texas", "Tex."],
+        },
+      },
+    ];
+    expect(deriveFieldOptions(fields, "state")).toEqual(["CA", "NY", "TX"]);
   });
 
   it("returns null for fields the schema doesn't declare", () => {
-    const yaml = `
-fields:
-  state:
-    type: string
-    enum: ["CA", "NY"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "country")).toBeNull();
+    const fields: SchemaFieldMeta[] = [
+      { name: "state", type: "string", enum: ["CA", "NY"] },
+    ];
+    expect(deriveFieldOptions(fields, "country")).toBeNull();
   });
 
-  it("returns null for invalid YAML instead of throwing", () => {
-    const yaml = "fields:\n  bad: [unterminated";
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "bad")).toBeNull();
+  it("returns null when the field has no enum/options/mappings (the `patterns:` regression)", () => {
+    // The whole point of the rewrite: schemas can declare `patterns:` (regex
+    // lists) without leaking into the override dropdown. Since the API
+    // normalizer drops unknown keys, this is a "field exists, but has no
+    // option source" case.
+    const fields: SchemaFieldMeta[] = [
+      {
+        name: "unit_address_range",
+        type: "string",
+        description: "Range like 1-100 or Unit A",
+        pattern: "^[0-9]+-[0-9]+$",
+      },
+    ];
+    expect(deriveFieldOptions(fields, "unit_address_range")).toBeNull();
   });
 
-  it("returns null when the source string is empty", () => {
-    expect(extractFieldOptionsFromSchemaYaml("", "any_field")).toBeNull();
+  it("returns null when the schema field has neither enum nor options nor mappings", () => {
+    const fields: SchemaFieldMeta[] = [
+      { name: "primary_address", type: "string", description: "The street address" },
+    ];
+    expect(deriveFieldOptions(fields, "primary_address")).toBeNull();
   });
 
-  it("supports the legacy top-level shape (no `fields:` wrapper)", () => {
-    const yaml = `
-governance:
-  type: string
-  enum: ["hoa", "condo"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "governance")).toEqual([
-      "hoa",
-      "condo",
-    ]);
+  it("returns null for null / empty fields input", () => {
+    expect(deriveFieldOptions(null, "any_field")).toBeNull();
+    expect(deriveFieldOptions(undefined, "any_field")).toBeNull();
+    expect(deriveFieldOptions([], "any_field")).toBeNull();
   });
 
-  it("supports the `properties:` json-schema shape", () => {
-    const yaml = `
-type: object
-properties:
-  status:
-    type: string
-    enum: ["open", "closed", "pending"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "status")).toEqual([
-      "open",
-      "closed",
-      "pending",
-    ]);
+  it("returns null for an empty field name", () => {
+    const fields: SchemaFieldMeta[] = [
+      { name: "x", type: "string", enum: ["a"] },
+    ];
+    expect(deriveFieldOptions(fields, "")).toBeNull();
   });
 
-  it("returns null when enum is declared but empty", () => {
-    const yaml = `
-fields:
-  blank:
-    type: string
-    enum: []
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "blank")).toBeNull();
+  it("returns null when enum is declared but empty (defensive — the API drops these)", () => {
+    const fields: SchemaFieldMeta[] = [{ name: "blank", type: "string", enum: [] }];
+    expect(deriveFieldOptions(fields, "blank")).toBeNull();
   });
 
-  it("filters out non-scalar enum entries (objects, arrays)", () => {
-    // YAML.parse will accept these; we should not surface them as dropdown
-    // values because the override input expects a single string.
-    const yaml = `
-fields:
-  mixed:
-    type: string
-    enum:
-      - "ok"
-      - { unexpected: "shape" }
-      - "fine"
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "mixed")).toEqual(["ok", "fine"]);
+  it("dedups duplicate entries (defensive — the API does this server-side too)", () => {
+    const fields: SchemaFieldMeta[] = [
+      { name: "dupes", type: "string", enum: ["a", "b", "a", "c", "b"] },
+    ];
+    expect(deriveFieldOptions(fields, "dupes")).toEqual(["a", "b", "c"]);
   });
 
-  it("dedups duplicate enum entries", () => {
-    const yaml = `
-fields:
-  dupes:
-    type: string
-    enum: ["a", "b", "a", "c", "b"]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "dupes")).toEqual(["a", "b", "c"]);
+  it("prefers enum over options when both are present", () => {
+    const fields: SchemaFieldMeta[] = [
+      { name: "x", type: "string", enum: ["a", "b"], options: ["x", "y"] },
+    ];
+    expect(deriveFieldOptions(fields, "x")).toEqual(["a", "b"]);
   });
 
-  it("coerces numeric/boolean enum entries to strings", () => {
-    const yaml = `
-fields:
-  numeric:
-    type: integer
-    enum: [1, 2, 3]
-flag:
-  type: boolean
-  enum: [true, false]
-`;
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "numeric")).toEqual(["1", "2", "3"]);
-    expect(extractFieldOptionsFromSchemaYaml(yaml, "flag")).toEqual(["true", "false"]);
+  it("prefers options over mappings when both are present and enum is absent", () => {
+    const fields: SchemaFieldMeta[] = [
+      {
+        name: "x",
+        type: "string",
+        options: ["o1", "o2"],
+        mappings: { M1: ["a"], M2: ["b"] },
+      },
+    ];
+    expect(deriveFieldOptions(fields, "x")).toEqual(["o1", "o2"]);
   });
 });

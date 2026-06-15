@@ -626,6 +626,34 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /projects/{projectSlug}/schemas/{schemaSlug}/fields:
+    parameters:
+      - $ref: '#/components/parameters/ProjectSlug'
+      - $ref: '#/components/parameters/SchemaSlug'
+    get:
+      operationId: getSchemaFields
+      tags: [Schemas]
+      summary: Structured field metadata for a schema
+      description: |
+        Returns the latest committed version's YAML normalized into a stable
+        JSON shape. Lets clients (notably the review UI's override dropdowns)
+        consume schema field metadata without parsing YAML on the wire.
+
+        If the schema exists but has no committed YAML, falls back to the
+        in-progress draft. If nothing is available, returns `{ fields: [] }`.
+        Unknown YAML keys on a field are silently dropped (forward-compat).
+      responses:
+        '200':
+          description: Field metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaFieldList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /projects/{projectSlug}/schemas/{schemaSlug}/versions:
     parameters:
       - $ref: '#/components/parameters/ProjectSlug'
@@ -4029,6 +4057,66 @@ components:
               type: object
               description: Parsed form of the YAML, as used by the server.
               additionalProperties: true
+
+    SchemaFieldMeta:
+      type: object
+      required: [name, type]
+      description: |
+        Structured representation of one field declared in a schema's YAML.
+        Decouples client UI (dropdowns, validation hints) from the YAML syntax.
+        Forward-compatible: unknown source keys are silently dropped server-side
+        rather than reflected here.
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: |
+            Schema-declared type. Common values are `string`, `number`,
+            `integer`, `boolean`, `date`, `object`, `array`, `enum`,
+            `mapping`. Other strings may appear as new types are added —
+            consume permissively.
+        description:
+          type: string
+        required:
+          type: boolean
+        enum:
+          type: array
+          description: |
+            Enum values, coerced to strings + deduped server-side. Omitted
+            when the field has no enum constraint.
+          items:
+            type: string
+        options:
+          type: array
+          description: |
+            Legacy `options` alias. Surfaced only when present in the YAML
+            AND not equivalent to `enum`. Treat the same as `enum` when
+            deriving dropdown options.
+          items:
+            type: string
+        mappings:
+          type: object
+          description: |
+            Bucket key → aliases. The bucket keys are the canonical/normalized
+            values (use them as dropdown options). Aliases are surface forms
+            the extractor accepts and folds into the bucket.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        pattern:
+          type: string
+          description: Regex pattern (from `validate.regex` or top-level `pattern`).
+
+    SchemaFieldList:
+      type: object
+      required: [fields]
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaFieldMeta'
 
     CommitSchemaVersionRequest:
       type: object
