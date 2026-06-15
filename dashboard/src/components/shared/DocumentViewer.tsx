@@ -89,9 +89,20 @@ export interface DocumentViewerProps {
   highlights?: BBoxHighlight[];
   /** Field name currently in focus — drives PDF page navigation. */
   activeField?: string | null;
-  /** PdfViewer scroll behaviour. Defaults to "scroll" (always-visible scrollbars). */
+  /**
+   * PdfViewer overflow behaviour. Defaults to `"auto"` — same as the
+   * schema build page, which is the proven-working reviewer surface.
+   * `"scroll"` forces an always-visible scrollbar; `"hidden"` suppresses
+   * it entirely.
+   */
   overflow?: "auto" | "scroll" | "hidden";
-  /** PdfViewer display mode. Defaults to "scroll" (all pages in one column). */
+  /**
+   * PdfViewer display mode. Defaults to `"paginated"` — same as the
+   * schema build page. Paginated mode gives reviewers `<` / `>` arrows
+   * and shows one page at a time, which matches the canonical reviewer
+   * UX in Koji. `"scroll"` stacks every page in one tall column — opt
+   * into that only when the surface explicitly wants long-form scroll.
+   */
   mode?: "paginated" | "scroll";
   /** Optional override for the wrapper element's className. */
   className?: string;
@@ -103,8 +114,8 @@ export function DocumentViewer({
   filename,
   highlights,
   activeField,
-  overflow = "scroll",
-  mode = "scroll",
+  overflow = "auto",
+  mode = "paginated",
   className,
 }: DocumentViewerProps) {
   const [errored, setErrored] = useState(false);

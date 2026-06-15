@@ -69,6 +69,12 @@ It picks the right renderer for you:
 - `application/octet-stream` / `binary/octet-stream` / `null` MIME → `<PdfViewer />` **optimistically** — most uploads in Koji land in storage with a generic / missing Content-Type, and customer documents are overwhelmingly PDFs. PdfViewer surfaces a visible error if the bytes aren't actually a PDF. (Real fix is to sniff MIME at upload time; until then DocumentViewer compensates.)
 - Anything else (text/html, text/plain, application/zip, …) → "preview unavailable" / "unsupported" fallback (never an `<iframe>`)
 
+### Scroll and pagination defaults
+
+`DocumentViewer` defaults to `mode="paginated"` and `overflow="auto"` — same as the schema build page (`/t/[tenantSlug]/schemas/[schemaSlug]/build`), which is the canonical reviewer surface. You get `<` / `>` arrow navigation through pages and a scrollbar within the visible page when content overflows. Opt into `mode="scroll"` only if the surface explicitly wants every page stacked vertically in one long column.
+
+**Tailwind gotcha**: `overflow-auto` / `overflow-scroll` / `overflow-hidden` must appear as literal strings somewhere Tailwind can see. PdfViewer maps the prop through an explicit dictionary for this reason — never write `` className={`overflow-${variable}`} `` for these (or any Tailwind utility), the JIT compiler will silently drop the class.
+
 **Do NOT** roll your own `<iframe src={...} />` block for documents. iframes against raw signed-storage URLs trigger downloads instead of inline rendering whenever the object's key has no recognised extension (production keys are UUIDs). DocumentViewer is the only document-rendering surface we maintain.
 
 ### Document preview URLs
