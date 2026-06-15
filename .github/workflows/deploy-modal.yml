@@ -1,0 +1,25 @@
+name: Deploy Modal Parse Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/parse-modal/**"
+
+jobs:
+  deploy:
+    name: Deploy to Modal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install modal
+      - name: Deploy parse service
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          cd services/parse-modal
+          modal deploy app.py
