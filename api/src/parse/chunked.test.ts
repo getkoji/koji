@@ -319,6 +319,91 @@ describe("ChunkedParseProvider", () => {
     expect(inner.parse).toHaveBeenCalledTimes(1);
   });
 
+  // 9a. Probe-and-bail: only one slicePdf attempt on corrupt PDFs
+  it("only probes slicePdf once before falling back (no parallel waste)", async () => {
+    // 6 chunks × concurrency 3 used to fire 3 wasted slice calls per wave.
+    // The probe path should attempt exactly once and short-circuit.
+    __pageCount = 300;
+    const inner = makeMockProvider();
+    (inner.slicePdf as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("slice failed: code=7: cannot find object in xref (1493 0 R)"),
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const chunked = new ChunkedParseProvider(inner, {
+      chunkPages: 50,
+      threshold: 80,
+      concurrency: 3,
+    });
+
+    await chunked.parse({
+      filename: "corrupt-big.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: PDF_BUFFER,
+    });
+
+    expect(inner.slicePdf).toHaveBeenCalledTimes(1);
+    expect(inner.parse).toHaveBeenCalledTimes(1);
+    // Exactly one warning at the real fallback point — not one per worker.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]![0]).toMatch(/cannot slice/);
+  });
+
+  // 9b. Probe success reused — chunk 0 isn't re-sliced
+  it("reuses the probe result for chunk 0 instead of slicing it twice", async () => {
+    __pageCount = 150; // 3 chunks of 50
+    const inner = makeMockProvider();
+    const chunked = new ChunkedParseProvider(inner, {
+      chunkPages: 50,
+      threshold: 80,
+    });
+
+    await chunked.parse({
+      filename: "big.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: PDF_BUFFER,
+    });
+
+    // Exactly N calls, not N+1 (chunk 0 reuses the probe slice).
+    expect(inner.slicePdf).toHaveBeenCalledTimes(3);
+    expect(inner.parse).toHaveBeenCalledTimes(3);
+    const sliceCalls = (inner.slicePdf as ReturnType<typeof vi.fn>).mock.calls;
+    expect(sliceCalls[0]![0]).toMatchObject({ startPage: 1, endPage: 50 });
+    expect(sliceCalls[1]![0]).toMatchObject({ startPage: 51, endPage: 100 });
+    expect(sliceCalls[2]![0]).toMatchObject({ startPage: 101, endPage: 150 });
+  });
+
+  // 9c. Post-probe slice failures are NOT swallowed
+  it("surfaces slice errors that occur after the probe succeeds", async () => {
+    __pageCount = 150;
+    const inner = makeMockProvider();
+    let sliceCallCount = 0;
+    (inner.slicePdf as ReturnType<typeof vi.fn>).mockImplementation(async (input) => {
+      sliceCallCount++;
+      if (sliceCallCount === 1) {
+        // Probe succeeds
+        return {
+          pdf_base64: Buffer.from("chunk-pdf").toString("base64"),
+          pages: input.endPage - input.startPage + 1,
+          byte_size: 1000,
+        };
+      }
+      // Subsequent calls fail — a transient error, not a corrupt-xref signal.
+      throw new Error("transient network error");
+    });
+    const chunked = new ChunkedParseProvider(inner, {
+      chunkPages: 50,
+      threshold: 80,
+    });
+
+    await expect(
+      chunked.parse({
+        filename: "flaky.pdf",
+        mimeType: "application/pdf",
+        fileBuffer: PDF_BUFFER,
+      }),
+    ).rejects.toThrow("transient network error");
+  });
+
   // 10. Concurrency — verify max 3 concurrent parses
   it("limits concurrent parses to the configured concurrency", async () => {
     __pageCount = 300; // 6 chunks of 50
