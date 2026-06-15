@@ -78,6 +78,11 @@ export function initParseProvider(provider: ParseProvider) {
   _parseProvider = provider;
 }
 
+/** Get the current parse provider (for step-based flows that need direct access). */
+export function getParseProvider(): ParseProvider | null {
+  return _parseProvider;
+}
+
 interface IngestionProcessPayload {
   documentId: string;
 }
