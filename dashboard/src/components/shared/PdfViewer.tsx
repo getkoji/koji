@@ -56,6 +56,17 @@ interface PdfViewerProps {
   mode?: "paginated" | "scroll";
 }
 
+// Tailwind only ships classes it can see as literal strings. Mapping the
+// overflow prop through this dictionary keeps the class names statically
+// visible to the JIT compiler, so all three options actually generate CSS.
+// Previously this used `overflow-${overflow}` which compiled to no CSS at
+// all and silently broke scrolling.
+const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
+  auto: "overflow-auto",
+  scroll: "overflow-scroll",
+  hidden: "overflow-hidden",
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -202,8 +213,11 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
         </div>
       )}
 
-      {/* PDF document */}
-      <div ref={containerRef} className={`flex-1 min-h-0 overflow-${overflow}`}>
+      {/* PDF document. Tailwind class names MUST be literal strings — a
+          template like `overflow-${overflow}` does not get picked up by the
+          JIT compiler, so the generated CSS will be missing the overflow
+          rule and the container will not scroll. Use an explicit map. */}
+      <div ref={containerRef} className={`flex-1 min-h-0 ${overflowClass[overflow]}`}>
         <ReactPdfDocument
           file={file}
           onLoadSuccess={(pdf) => {
