@@ -314,9 +314,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/metrics:
+  /metrics:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - name: period
         in: query
         required: false
@@ -344,9 +343,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/activity:
+  /activity:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Since'
     get:
@@ -374,9 +372,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/alerts:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /alerts:
     get:
       operationId: listProjectAlerts
       tags: [Projects]
@@ -402,9 +398,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/users:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /users:
     get:
       operationId: listProjectUsers
       tags: [Projects]
@@ -455,9 +449,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/users/{userId}:
+  /users/{userId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/UserId'
     patch:
       operationId: updateProjectUser
@@ -500,9 +493,7 @@ paths:
   # §3.3 Schemas
   # ==========================================================================
 
-  /projects/{projectSlug}/schemas:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /schemas:
     get:
       operationId: listSchemas
       tags: [Schemas]
@@ -558,9 +549,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}:
+  /schemas/{schemaSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getSchema
@@ -626,9 +616,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/fields:
+  /schemas/{schemaSlug}/fields:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getSchemaFields
@@ -654,9 +643,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/versions:
+  /schemas/{schemaSlug}/versions:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: listSchemaVersions
@@ -709,9 +697,8 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}:
+  /schemas/{schemaSlug}/versions/{versionNumber}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/VersionNumber'
     get:
@@ -728,9 +715,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/versions/{versionNumber}/rollback:
+  /schemas/{schemaSlug}/versions/{versionNumber}/rollback:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/VersionNumber'
     post:
@@ -761,9 +747,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/deploy:
+  /schemas/{schemaSlug}/deploy:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     post:
       operationId: deploySchema
@@ -801,9 +786,8 @@ paths:
   # §3.4 Schema samples (Build mode)
   # ==========================================================================
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/samples:
+  /schemas/{schemaSlug}/samples:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: listSchemaSamples
@@ -866,9 +850,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}:
+  /schemas/{schemaSlug}/samples/{sampleId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/SampleId'
     delete:
@@ -883,9 +866,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/samples/{sampleId}/test:
+  /schemas/{schemaSlug}/samples/{sampleId}/test:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/SampleId'
     post:
@@ -925,9 +907,8 @@ paths:
   # §3.5 Schema corpus
   # ==========================================================================
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/corpus:
+  /schemas/{schemaSlug}/corpus:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
@@ -1007,9 +988,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/promote-from-review:
+  /schemas/{schemaSlug}/corpus/promote-from-review:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     post:
       operationId: promoteReviewToCorpus
@@ -1040,9 +1020,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}:
+  /schemas/{schemaSlug}/corpus/{corpusEntryId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/CorpusEntryId'
     get:
@@ -1096,9 +1075,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/retag:
+  /schemas/{schemaSlug}/corpus/{corpusEntryId}/retag:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/CorpusEntryId'
     post:
@@ -1129,9 +1107,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/corpus/{corpusEntryId}/history:
+  /schemas/{schemaSlug}/corpus/{corpusEntryId}/history:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/CorpusEntryId'
     get:
@@ -1159,9 +1136,8 @@ paths:
   # §3.6 Validate & Benchmarks
   # ==========================================================================
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/validate:
+  /schemas/{schemaSlug}/validate:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     post:
       operationId: triggerValidateRun
@@ -1189,9 +1165,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs:
+  /schemas/{schemaSlug}/validate/runs:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
@@ -1217,9 +1192,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}:
+  /schemas/{schemaSlug}/validate/runs/{runId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/RunId'
     get:
@@ -1237,9 +1211,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/regressions:
+  /schemas/{schemaSlug}/validate/runs/{runId}/regressions:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/RunId'
     get:
@@ -1263,9 +1236,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/validate/runs/{runId}/dismiss:
+  /schemas/{schemaSlug}/validate/runs/{runId}/dismiss:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - $ref: '#/components/parameters/RunId'
     post:
@@ -1289,9 +1261,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks:
+  /schemas/{schemaSlug}/benchmarks:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getBenchmarkHeadline
@@ -1308,9 +1279,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/trend:
+  /schemas/{schemaSlug}/benchmarks/trend:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
       - name: versions
         in: query
@@ -1341,9 +1311,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/fields:
+  /schemas/{schemaSlug}/benchmarks/fields:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getBenchmarkFieldMatrix
@@ -1360,9 +1329,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/models:
+  /schemas/{schemaSlug}/benchmarks/models:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getBenchmarkModelComparison
@@ -1385,9 +1353,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/categories:
+  /schemas/{schemaSlug}/benchmarks/categories:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     get:
       operationId: getBenchmarkCategories
@@ -1409,9 +1376,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/schemas/{schemaSlug}/benchmarks/run:
+  /schemas/{schemaSlug}/benchmarks/run:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SchemaSlug'
     post:
       operationId: triggerBenchmarkRun
@@ -1440,9 +1406,7 @@ paths:
   # §3.7 Pipelines
   # ==========================================================================
 
-  /projects/{projectSlug}/pipelines:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /pipelines:
     get:
       operationId: listPipelines
       tags: [Pipelines]
@@ -1492,9 +1456,8 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
-  /projects/{projectSlug}/pipelines/{pipelineSlug}:
+  /pipelines/{pipelineSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/PipelineSlug'
     get:
       operationId: getPipeline
@@ -1552,9 +1515,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/pipelines/{pipelineSlug}/run:
+  /pipelines/{pipelineSlug}/run:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/PipelineSlug'
     post:
       operationId: runPipeline
@@ -1579,9 +1541,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/pipelines/{pipelineSlug}/pause:
+  /pipelines/{pipelineSlug}/pause:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/PipelineSlug'
     post:
       operationId: pausePipeline
@@ -1602,9 +1563,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/pipelines/{pipelineSlug}/resume:
+  /pipelines/{pipelineSlug}/resume:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/PipelineSlug'
     post:
       operationId: resumePipeline
@@ -1622,9 +1582,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/pipelines/{pipelineSlug}/stages/{stageName}:
+  /pipelines/{pipelineSlug}/stages/{stageName}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/PipelineSlug'
       - $ref: '#/components/parameters/StageName'
     get:
@@ -1648,9 +1607,7 @@ paths:
   # §3.8 Sources
   # ==========================================================================
 
-  /projects/{projectSlug}/sources:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /sources:
     get:
       operationId: listSources
       tags: [Sources]
@@ -1697,9 +1654,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/sources/{sourceSlug}:
+  /sources/{sourceSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
     get:
       operationId: getSource
@@ -1749,9 +1705,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/sources/{sourceSlug}/test:
+  /sources/{sourceSlug}/test:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
     post:
       operationId: testSourceConnection
@@ -1773,9 +1728,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/sources/{sourceSlug}/pause:
+  /sources/{sourceSlug}/pause:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
     post:
       operationId: pauseSource
@@ -1793,9 +1747,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/sources/{sourceSlug}/resume:
+  /sources/{sourceSlug}/resume:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
     post:
       operationId: resumeSource
@@ -1813,9 +1766,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/sources/{sourceSlug}/ingestions:
+  /sources/{sourceSlug}/ingestions:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
@@ -1843,9 +1795,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/sources/{sourceSlug}/webhook:
+  /sources/{sourceSlug}/webhook:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/SourceSlug'
     post:
       operationId: receiveSourceWebhook
@@ -1902,9 +1853,8 @@ paths:
   # §3.9 Jobs
   # ==========================================================================
 
-  /projects/{projectSlug}/jobs:
+  /jobs:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Since'
@@ -1942,9 +1892,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}:
+  /jobs/{jobSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
     get:
       operationId: getJob
@@ -1961,9 +1910,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs:
+  /jobs/{jobSlug}/docs:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
@@ -1989,9 +1937,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/retry:
+  /jobs/{jobSlug}/retry:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
     post:
       operationId: retryJob
@@ -2018,9 +1965,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/cancel:
+  /jobs/{jobSlug}/cancel:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
     post:
       operationId: cancelJob
@@ -2039,9 +1985,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/download:
+  /jobs/{jobSlug}/download:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - name: format
         in: query
@@ -2078,9 +2023,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/stream:
+  /jobs/{jobSlug}/stream:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
     get:
       operationId: streamJobEvents
@@ -2107,9 +2051,8 @@ paths:
   # §3.10 Document traces
   # ==========================================================================
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}:
+  /jobs/{jobSlug}/docs/{documentId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/DocumentId'
     get:
@@ -2126,9 +2069,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace:
+  /jobs/{jobSlug}/docs/{documentId}/trace:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/DocumentId'
     get:
@@ -2146,9 +2088,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}:
+  /jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/DocumentId'
       - $ref: '#/components/parameters/StageId'
@@ -2166,9 +2107,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}/raw:
+  /jobs/{jobSlug}/docs/{documentId}/trace/stages/{stageId}/raw:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/DocumentId'
       - $ref: '#/components/parameters/StageId'
@@ -2197,9 +2137,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
-  /projects/{projectSlug}/jobs/{jobSlug}/docs/{documentId}/original:
+  /jobs/{jobSlug}/docs/{documentId}/original:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/JobSlug'
       - $ref: '#/components/parameters/DocumentId'
     get:
@@ -2265,9 +2204,8 @@ paths:
   # §3.11 Review queue
   # ==========================================================================
 
-  /projects/{projectSlug}/review:
+  /review:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
       - name: status
@@ -2320,9 +2258,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/review/{reviewId}:
+  /review/{reviewId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     get:
       operationId: getReviewItem
@@ -2339,9 +2276,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/review/{reviewId}/accept:
+  /review/{reviewId}/accept:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     post:
       operationId: acceptReviewItem
@@ -2367,9 +2303,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/review/{reviewId}/override:
+  /review/{reviewId}/override:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     post:
       operationId: overrideReviewItem
@@ -2397,9 +2332,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/review/{reviewId}/skip:
+  /review/{reviewId}/skip:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     post:
       operationId: skipReviewItem
@@ -2417,9 +2351,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/review/{reviewId}/escalate:
+  /review/{reviewId}/escalate:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     post:
       operationId: escalateReviewItem
@@ -2445,9 +2378,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/review/{reviewId}/assign:
+  /review/{reviewId}/assign:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ReviewId'
     post:
       operationId: assignReviewItem
@@ -2473,9 +2405,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/review/bulk-approve:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /review/bulk-approve:
     post:
       operationId: bulkApproveReview
       tags: [Review queue]
@@ -2507,9 +2437,7 @@ paths:
   # §3.12 Model endpoints
   # ==========================================================================
 
-  /projects/{projectSlug}/endpoints:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /endpoints:
     get:
       operationId: listModelEndpoints
       tags: [Model endpoints]
@@ -2556,9 +2484,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/endpoints/{endpointSlug}:
+  /endpoints/{endpointSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/EndpointSlug'
     get:
       operationId: getModelEndpoint
@@ -2613,9 +2540,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/endpoints/{endpointSlug}/test:
+  /endpoints/{endpointSlug}/test:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/EndpointSlug'
     post:
       operationId: testModelEndpoint
@@ -2633,9 +2559,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/endpoints/{endpointSlug}/usage:
+  /endpoints/{endpointSlug}/usage:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/EndpointSlug'
       - name: range
         in: query
@@ -2665,9 +2590,7 @@ paths:
   # §3.13 Agent
   # ==========================================================================
 
-  /projects/{projectSlug}/agent/session:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /agent/session:
     post:
       operationId: createAgentSession
       tags: [Agent]
@@ -2694,9 +2617,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/agent/sessions/{agentSessionId}:
+  /agent/sessions/{agentSessionId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/AgentSessionId'
     delete:
       operationId: deleteAgentSession
@@ -2708,9 +2630,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/agent/sessions/{agentSessionId}/history:
+  /agent/sessions/{agentSessionId}/history:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/AgentSessionId'
     get:
       operationId: getAgentSessionHistory
@@ -2732,9 +2653,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/agent/sessions/{agentSessionId}/message:
+  /agent/sessions/{agentSessionId}/message:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/AgentSessionId'
     post:
       operationId: sendAgentMessage
@@ -2764,9 +2684,8 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /projects/{projectSlug}/agent/sessions/{agentSessionId}/accept-edit:
+  /agent/sessions/{agentSessionId}/accept-edit:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/AgentSessionId'
     post:
       operationId: acceptAgentEdit
@@ -2795,9 +2714,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/agent/sessions/{agentSessionId}/reject-edit:
+  /agent/sessions/{agentSessionId}/reject-edit:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/AgentSessionId'
     post:
       operationId: rejectAgentEdit
@@ -2938,9 +2856,8 @@ paths:
   # §3.15 Audit log
   # ==========================================================================
 
-  /projects/{projectSlug}/audit:
+  /audit:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Since'
@@ -2991,9 +2908,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /projects/{projectSlug}/audit/export:
+  /audit/export:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - name: format
         in: query
         required: true
@@ -3029,9 +2945,7 @@ paths:
   # §3.16 API keys
   # ==========================================================================
 
-  /projects/{projectSlug}/api-keys:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /api-keys:
     get:
       operationId: listApiKeys
       tags: [API keys]
@@ -3085,9 +2999,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/api-keys/{apiKeyId}:
+  /api-keys/{apiKeyId}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/ApiKeyId'
     patch:
       operationId: updateApiKey
@@ -3128,9 +3041,7 @@ paths:
   # §3.17 Webhooks out (inferred — api-endpoints.md §5.4 flags this as TODO)
   # ==========================================================================
 
-  /projects/{projectSlug}/webhooks:
-    parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
+  /webhooks:
     get:
       operationId: listWebhookTargets
       tags: [Webhooks out]
@@ -3181,9 +3092,8 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
-  /projects/{projectSlug}/webhooks/{webhookSlug}:
+  /webhooks/{webhookSlug}:
     parameters:
-      - $ref: '#/components/parameters/ProjectSlug'
       - $ref: '#/components/parameters/WebhookSlug'
     get:
       operationId: getWebhookTarget
