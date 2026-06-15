@@ -202,8 +202,41 @@ export class ModalParseProvider implements ParseProvider {
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<{ pollUrl: string } | { result: ParseResponse }> {
+    // Retry on transient errors (cold start connection resets)
+    const MAX_ATTEMPTS = 2;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.dispatchOnce(input);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const msg = lastError.message.toLowerCase();
+        const retryable = attempt < MAX_ATTEMPTS && (
+          msg.includes("urlopen error") ||
+          msg.includes("connection") ||
+          msg.includes("econnr") ||
+          msg.includes("fetch failed") ||
+          /parse\s+(?:5\d{2}|422|429)\s+\(modal\)/.test(msg)
+        );
+        if (retryable) {
+          console.log(`[koji-parse] dispatchParse attempt ${attempt}/${MAX_ATTEMPTS} failed, retrying in 3s`);
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+        throw lastError;
+      }
+    }
+    throw lastError!;
+  }
+
+  private async dispatchOnce(input: {
+    filename: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  }): Promise<{ pollUrl: string } | { result: ParseResponse }> {
     const { filename, mimeType, fileBuffer } = input;
-    const deadline = Date.now() + 180_000; // 3 min — covers Modal cold start + initial response
+    const deadline = Date.now() + 180_000;
 
     const part = Uint8Array.from(fileBuffer);
     const form = new FormData();
