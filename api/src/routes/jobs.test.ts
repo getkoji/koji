@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { parseRangeHeader } from "./jobs";
 
 describe("embed-data highlights from provenanceJson", () => {
   /** Mirrors the provenance → highlights transform in the embed-data endpoint. */
@@ -221,5 +222,64 @@ describe("trace timeline on rerun", () => {
     // as history, and the API picks the most recent one.
     const traceCount = 3; // after 3 runs
     expect(traceCount).toBe(3);
+  });
+});
+
+/**
+ * parseRangeHeader pins the HTTP Range parsing used by the document
+ * preview endpoint. pdf.js relies on the server understanding common
+ * range forms (open-ended, closed, suffix) so it can lazy-fetch a PDF
+ * instead of downloading the whole file before showing page 1. Any
+ * regression here re-introduces the "preview hangs for 30s on big PDFs"
+ * bug.
+ */
+describe("parseRangeHeader", () => {
+  it("returns null for missing or non-bytes ranges", () => {
+    expect(parseRangeHeader(undefined, 1000)).toBeNull();
+    expect(parseRangeHeader("", 1000)).toBeNull();
+    expect(parseRangeHeader("items=0-100", 1000)).toBeNull();
+  });
+
+  it("parses a closed range", () => {
+    expect(parseRangeHeader("bytes=0-99", 1000)).toEqual({ start: 0, end: 99 });
+  });
+
+  it("parses an open-ended range as start..size-1", () => {
+    expect(parseRangeHeader("bytes=500-", 1000)).toEqual({ start: 500, end: 999 });
+  });
+
+  it("clamps an end past the object size down to size-1", () => {
+    // pdf.js often asks for `bytes=N-N+CHUNK` where N+CHUNK > size; HTTP
+    // says we should clamp rather than reject.
+    expect(parseRangeHeader("bytes=900-99999", 1000)).toEqual({ start: 900, end: 999 });
+  });
+
+  it("parses suffix ranges (last N bytes — pdf.js xref tail probe)", () => {
+    expect(parseRangeHeader("bytes=-200", 1000)).toEqual({ start: 800, end: 999 });
+  });
+
+  it("treats a suffix larger than the file as the whole file", () => {
+    expect(parseRangeHeader("bytes=-5000", 1000)).toEqual({ start: 0, end: 999 });
+  });
+
+  it("rejects an out-of-bounds start", () => {
+    expect(parseRangeHeader("bytes=2000-3000", 1000)).toBeNull();
+  });
+
+  it("rejects an inverted range", () => {
+    expect(parseRangeHeader("bytes=500-100", 1000)).toBeNull();
+  });
+
+  it("rejects multi-range requests (we only serve single ranges)", () => {
+    expect(parseRangeHeader("bytes=0-50,100-150", 1000)).toBeNull();
+  });
+
+  it("rejects garbage that parses to NaN", () => {
+    expect(parseRangeHeader("bytes=foo-bar", 1000)).toBeNull();
+  });
+
+  it("returns null when the underlying size is 0", () => {
+    expect(parseRangeHeader("bytes=-100", 0)).toBeNull();
+    expect(parseRangeHeader("bytes=0-99", 0)).toBeNull();
   });
 });

@@ -69,6 +69,14 @@ It picks the right renderer for you:
 - `application/octet-stream` / `binary/octet-stream` / `null` MIME → `<PdfViewer />` **optimistically** — most uploads in Koji land in storage with a generic / missing Content-Type, and customer documents are overwhelmingly PDFs. PdfViewer surfaces a visible error if the bytes aren't actually a PDF. (Real fix is to sniff MIME at upload time; until then DocumentViewer compensates.)
 - Anything else (text/html, text/plain, application/zip, …) → "preview unavailable" / "unsupported" fallback (never an `<iframe>`)
 
+### Lazy loading
+
+The viewer pipeline is lazy by default:
+
+- **Defer-mount** — `DocumentViewer` does not mount its renderer (PdfViewer / `<img>`) until the wrapper intersects the viewport. Pass `lazy={false}` to force-mount on first render (e.g. server-side surfaces or contexts where the observer can lie about visibility). Once mounted, the renderer stays mounted — re-mounting would re-fetch and re-parse the PDF.
+- **Range fetch** — the `/api/jobs/:slug/documents/:docId/preview` endpoint emits `Accept-Ranges: bytes` and honours `Range:` headers (and `HEAD`). pdf.js uses this to stream the document in chunks instead of downloading the whole PDF before rendering page 1. A 60-page scanned PDF that previously took 5–8 s to first-paint now paints page 1 in well under a second.
+- **Page virtualization in scroll mode** — `PdfViewer` only mounts `<ReactPdfPage>` for pages near the viewport. Pages outside the rootMargin show a height-claimed placeholder so scroll position stays stable. Once a page has rendered it stays rendered (scrolling back is free). Page 1 is eagerly rendered to give the document something to show before the user starts scrolling.
+
 ### Scroll and pagination defaults
 
 `DocumentViewer` defaults to `mode="paginated"` and `overflow="auto"` — same as the schema build page (`/t/[tenantSlug]/schemas/[schemaSlug]/build`), which is the canonical reviewer surface. You get `<` / `>` arrow navigation through pages and a scrollbar within the visible page when content overflows. Opt into `mode="scroll"` only if the surface explicitly wants every page stacked vertically in one long column.
