@@ -203,7 +203,7 @@ export class ModalParseProvider implements ParseProvider {
     fileBuffer: Buffer;
   }): Promise<{ pollUrl: string } | { result: ParseResponse }> {
     const { filename, mimeType, fileBuffer } = input;
-    const deadline = Date.now() + 30_000; // 30s deadline for dispatch only
+    const deadline = Date.now() + 180_000; // 3 min — covers Modal cold start + initial response
 
     const part = Uint8Array.from(fileBuffer);
     const form = new FormData();
@@ -238,7 +238,7 @@ export class ModalParseProvider implements ParseProvider {
    * or null if still processing (303 redirect = still running).
    */
   async pollParse(pollUrl: string): Promise<ParseResponse | null> {
-    const deadline = Date.now() + 30_000; // 30s per poll attempt
+    const deadline = Date.now() + 180_000; // 3 min — Modal's proxy returns 303 within 150s
     const resp = await this.fetchNoFollow(pollUrl, { method: "GET", deadline });
 
     if (resp.status === 200) {
