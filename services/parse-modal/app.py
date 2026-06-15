@@ -1090,12 +1090,24 @@ async def slice_pdf(request: Request):
                 status_code=400,
             )
 
-        # Reopen the doc for slicing — select() modifies in-place
-        slice_doc = pymupdf.open(str(tmp_path))
+        # Reopen the doc for slicing — select() modifies in-place.
+        # If select fails (corrupt xref), repair the PDF first by
+        # re-saving with garbage collection, then retry.
         page_list = list(range(start_page - 1, end_page))
-        slice_doc.select(page_list)
-        pdf_bytes = slice_doc.tobytes(deflate=True)
-        slice_doc.close()
+        try:
+            slice_doc = pymupdf.open(str(tmp_path))
+            slice_doc.select(page_list)
+            pdf_bytes = slice_doc.tobytes(deflate=True)
+            slice_doc.close()
+        except Exception as slice_err:
+            print(f"[slice_pdf] Initial slice failed ({slice_err}), repairing PDF and retrying")
+            repair_doc = pymupdf.open(str(tmp_path))
+            repaired_bytes = repair_doc.tobytes(garbage=4, deflate=True)
+            repair_doc.close()
+            retry_doc = pymupdf.open(stream=repaired_bytes, filetype="pdf")
+            retry_doc.select(page_list)
+            pdf_bytes = retry_doc.tobytes(deflate=True)
+            retry_doc.close()
         doc.close()
 
         b64 = base64.b64encode(pdf_bytes).decode("ascii")
