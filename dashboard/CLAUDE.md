@@ -64,9 +64,10 @@ import { DocumentViewer } from "@/components/shared/DocumentViewer";
 ```
 
 It picks the right renderer for you:
-- `application/pdf` → `<PdfViewer />` (react-pdf, supports highlights + field navigation)
+- `application/pdf` / `application/x-pdf` → `<PdfViewer />` (react-pdf, supports highlights + field navigation)
 - `image/*` → `<img>` with `object-contain`
-- Unknown / `null` MIME → "preview unavailable" / "unsupported" fallback (never an `<iframe>`)
+- `application/octet-stream` / `binary/octet-stream` / `null` MIME → `<PdfViewer />` **optimistically** — most uploads in Koji land in storage with a generic / missing Content-Type, and customer documents are overwhelmingly PDFs. PdfViewer surfaces a visible error if the bytes aren't actually a PDF. (Real fix is to sniff MIME at upload time; until then DocumentViewer compensates.)
+- Anything else (text/html, text/plain, application/zip, …) → "preview unavailable" / "unsupported" fallback (never an `<iframe>`)
 
 **Do NOT** roll your own `<iframe src={...} />` block for documents. iframes against raw signed-storage URLs trigger downloads instead of inline rendering whenever the object's key has no recognised extension (production keys are UUIDs). DocumentViewer is the only document-rendering surface we maintain.
 

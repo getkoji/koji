@@ -25,6 +25,47 @@ import { FileText } from "lucide-react";
 import { useState } from "react";
 import type { BBoxHighlight } from "./PdfViewer";
 
+export type DocumentRenderer = "pdf" | "image" | "unsupported";
+
+/**
+ * Decide how to render a document given its MIME type.
+ *
+ * Real-world wrinkle: a meaningful fraction of customer documents land in
+ * the database with `application/octet-stream` because the upload client
+ * (browser drag-drop, CLI, certain integrations) never set a Content-Type
+ * header and storage backends preserve that as-is. Those documents are
+ * overwhelmingly PDFs in practice — the rest of the pipeline assumes PDF
+ * or image input — so we route octet-stream to the PDF renderer
+ * optimistically. PdfViewer surfaces a visible error if the bytes aren't
+ * actually a PDF, which is the worst case here. The previous behaviour
+ * rendered an "unsupported" screen for octet-stream and made the review
+ * queue unusable for any tenant whose upload path didn't sniff MIME.
+ *
+ * Real fix is to sniff MIME at upload time and stop persisting
+ * `application/octet-stream` — tracked separately. This function is the
+ * forgiving client-side fallback until that lands.
+ */
+export function pickDocumentRenderer(
+  mimeType: string | null,
+  url: string | null,
+): DocumentRenderer {
+  if (!url) return "unsupported";
+  if (mimeType?.startsWith("image/")) return "image";
+  if (
+    mimeType === "application/pdf" ||
+    mimeType === "application/x-pdf" ||
+    mimeType === "application/octet-stream" ||
+    mimeType === "binary/octet-stream" ||
+    mimeType == null
+  ) {
+    return "pdf";
+  }
+  // Other text-ish MIMEs the PDF viewer can't handle — explicit unsupported
+  // rather than guess. Customer-facing docs in Koji are overwhelmingly PDF
+  // or image, so the long tail isn't worth a renderer.
+  return "unsupported";
+}
+
 const PdfViewer = dynamic(
   () => import("./PdfViewer").then((m) => m.PdfViewer),
   { ssr: false },
@@ -92,13 +133,9 @@ export function DocumentViewer({
     );
   }
 
-  const isImage = mimeType?.startsWith("image/");
-  const isPdf =
-    mimeType === "application/pdf" ||
-    mimeType === "application/x-pdf" ||
-    (mimeType == null && url.includes(".pdf"));
+  const renderer = pickDocumentRenderer(mimeType, url);
 
-  if (isImage) {
+  if (renderer === "image") {
     return (
       <div className={wrapperClass}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -112,7 +149,7 @@ export function DocumentViewer({
     );
   }
 
-  if (isPdf) {
+  if (renderer === "pdf") {
     return (
       <div className={wrapperClass} data-testid="document-viewer-pdf">
         <PdfViewer
