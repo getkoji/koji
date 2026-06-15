@@ -4,6 +4,15 @@
  *
  * Wraps any ParseProvider that has `slicePdf`. For small PDFs or non-PDFs,
  * delegates directly to the inner provider with zero overhead.
+ *
+ * Unsliceable-PDF handling: some PDFs have corrupt cross-reference tables
+ * (e.g. "cannot find object in xref"). The inner slicer can't carve them
+ * up, but the parser itself can usually still read them end-to-end. We
+ * probe the first chunk's slice sequentially before fanning out, so a
+ * single failed slice call is enough to fall back to a one-shot
+ * full-document parse — no wasted parallel slice attempts on the rest of
+ * the chunks, and one clear log line instead of one per concurrent
+ * worker.
  */
 
 import { PDFDocument } from "pdf-lib";
@@ -13,13 +22,7 @@ import type {
   TextMapSegment,
 } from "./provider";
 
-/** Sentinel error for slicePdf failures — triggers fallback to single parse. */
-class SliceFailedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SliceFailedError";
-  }
-}
+type SliceResult = { pdf_base64: string; pages: number; byte_size: number };
 
 export interface ChunkedParseConfig {
   /** Pages per chunk. Default 50. */
@@ -97,52 +100,58 @@ export class ChunkedParseProvider implements ParseProvider {
       chunks.push({ startPage: start, endPage: end });
     }
 
-    // Parse chunks with bounded concurrency.
-    // If slicing fails (corrupt xref table, malformed PDF), fall back to
-    // parsing the full document as a single unit — Docling handles reading
-    // corrupt PDFs more gracefully than slicing them.
-    // Parse chunks with bounded concurrency.
-    // If slicing fails (corrupt xref table, malformed PDF), fall back to
-    // parsing the full document as a single unit.
-    const results = await this.runWithConcurrency(
-      chunks,
-      async (chunk) => {
-        let sliceResult;
-        try {
-          sliceResult = await this.inner.slicePdf!({
-            fileBuffer: input.fileBuffer,
-            startPage: chunk.startPage,
-            endPage: chunk.endPage,
-          });
-        } catch (err) {
-          console.warn(
-            `[chunked-parse] slicePdf failed for ${input.filename} pages ${chunk.startPage}-${chunk.endPage}, falling back to single parse:`,
-            err instanceof Error ? err.message : err,
-          );
-          // Throw a sentinel error so runWithConcurrency propagates it
-          throw new SliceFailedError(err instanceof Error ? err.message : String(err));
-        }
-        const chunkBuffer = Buffer.from(sliceResult.pdf_base64, "base64");
-        return {
-          response: await this.inner.parse({
-            filename: input.filename,
-            mimeType: input.mimeType,
-            fileBuffer: chunkBuffer,
-          }),
-          startPage: chunk.startPage,
-        };
-      },
-    ).catch((err) => {
-      if (err instanceof SliceFailedError) {
-        // Fall back to single-document parse
-        return null;
-      }
-      throw err; // Re-throw parse errors — those are real failures
-    });
-
-    if (results === null) {
+    // Probe the first chunk sequentially. A corrupt-xref PDF will fail
+    // here in ~200ms; cheaper than fanning out and watching every parallel
+    // worker fail the same way. If the probe succeeds, the result is
+    // handed to chunk 0's worker so we don't re-slice the same range.
+    let probeSlice: SliceResult;
+    try {
+      probeSlice = await this.inner.slicePdf!({
+        fileBuffer: input.fileBuffer,
+        startPage: chunks[0]!.startPage,
+        endPage: chunks[0]!.endPage,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[chunked-parse] ${input.filename}: cannot slice (${reason}). ` +
+          `Parsing the full ${pageCount}-page document as a single unit ` +
+          `— provenance/text_map will not be per-chunk.`,
+      );
       return this.inner.parse(input);
     }
+
+    // Probe succeeded → run all chunks with bounded concurrency. Chunk 0
+    // reuses the probe result. After-probe slice failures are real errors
+    // (e.g. transient network) — propagate them rather than silently
+    // re-parsing the whole document.
+    type ChunkWork = {
+      chunk: { startPage: number; endPage: number };
+      prefetchedSlice?: SliceResult;
+    };
+    const chunkWork: ChunkWork[] = chunks.map((chunk, i) => ({
+      chunk,
+      prefetchedSlice: i === 0 ? probeSlice : undefined,
+    }));
+
+    const results = await this.runWithConcurrency(chunkWork, async (work) => {
+      const sliceResult =
+        work.prefetchedSlice ??
+        (await this.inner.slicePdf!({
+          fileBuffer: input.fileBuffer,
+          startPage: work.chunk.startPage,
+          endPage: work.chunk.endPage,
+        }));
+      const chunkBuffer = Buffer.from(sliceResult.pdf_base64, "base64");
+      return {
+        response: await this.inner.parse({
+          filename: input.filename,
+          mimeType: input.mimeType,
+          fileBuffer: chunkBuffer,
+        }),
+        startPage: work.chunk.startPage,
+      };
+    });
 
     // Merge results in order
     return this.mergeResults(results, pageCount);
