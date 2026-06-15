@@ -131,6 +131,56 @@ export class S3Storage implements StorageProvider {
     }
   }
 
+  async head(key: string): Promise<{ contentType: string; size: number } | null> {
+    try {
+      const resp = await this.client.send(new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }));
+      return {
+        contentType: resp.ContentType ?? "application/octet-stream",
+        size: resp.ContentLength ?? 0,
+      };
+    } catch (err: unknown) {
+      const name = (err as { name?: string }).name;
+      if (name === "NoSuchKey" || name === "NotFound") return null;
+      throw err;
+    }
+  }
+
+  async getRange(
+    key: string,
+    start: number,
+    end: number,
+  ): Promise<{ data: Buffer; contentType: string; totalSize: number } | null> {
+    try {
+      const resp = await this.client.send(new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Range: `bytes=${start}-${end}`,
+      }));
+      if (!resp.Body) return null;
+      const bytes = await resp.Body.transformToByteArray();
+      // ContentRange comes back as `bytes start-end/total` — parse the
+      // total so the caller can build the response Content-Range without
+      // a separate HEAD round-trip.
+      const contentRange = resp.ContentRange ?? "";
+      const totalMatch = /\/(\d+)$/.exec(contentRange);
+      const totalSize = totalMatch
+        ? parseInt(totalMatch[1]!, 10)
+        : (resp.ContentLength ?? bytes.length);
+      return {
+        data: Buffer.from(bytes),
+        contentType: resp.ContentType ?? "application/octet-stream",
+        totalSize,
+      };
+    } catch (err: unknown) {
+      const name = (err as { name?: string }).name;
+      if (name === "NoSuchKey" || name === "InvalidRange") return null;
+      throw err;
+    }
+  }
+
   async getSignedUploadUrl(key: string, contentType: string, expiresIn = 600): Promise<string> {
     return s3GetSignedUrl(
       this.publicClient ?? this.client,

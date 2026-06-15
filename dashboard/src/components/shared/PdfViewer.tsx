@@ -255,7 +255,12 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
             </ReactPdfPage>
           ) : (
             allPageNumbers.map((pageNum) => (
-              <div key={pageNum} data-page-number={pageNum}>
+              <LazyPage
+                key={pageNum}
+                pageNumber={pageNum}
+                width={containerWidth}
+                scrollRoot={containerRef.current}
+              >
                 <ReactPdfPage
                   pageNumber={pageNum}
                   width={containerWidth}
@@ -269,11 +274,95 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
                     />
                   )}
                 </ReactPdfPage>
-              </div>
+              </LazyPage>
             ))
           )}
         </ReactPdfDocument>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lazy page wrapper — used in scroll mode to defer page render until the
+// row is within (or near) the viewport. Without this, mounting a
+// 300-page PDF causes react-pdf to schedule 300 simultaneous renders and
+// the dashboard freezes for several seconds. The wrapper claims its
+// estimated box up front so scroll positions stay stable as pages
+// hydrate, and once a page has been rendered it stays rendered — the
+// user can scroll back without re-paying the cost.
+// ---------------------------------------------------------------------------
+
+/**
+ * Approximate page height assuming US-Letter aspect ratio (11/8.5). Used
+ * as a placeholder height before the page has actually been rendered and
+ * the browser knows the real box. Wrong for landscape or A3 documents
+ * but only matters for the placeholder — the real page replaces it the
+ * moment it scrolls into view.
+ */
+const ESTIMATED_PAGE_ASPECT = 11 / 8.5;
+
+function LazyPage({
+  pageNumber,
+  width,
+  scrollRoot,
+  children,
+}: {
+  pageNumber: number;
+  width: number | undefined;
+  scrollRoot: HTMLDivElement | null;
+  children: React.ReactNode;
+}) {
+  const elRef = useRef<HTMLDivElement>(null);
+  // First page always renders immediately so the document has something
+  // to show on initial load; later pages hydrate on scroll.
+  const [hasRendered, setHasRendered] = useState(pageNumber === 1);
+
+  useEffect(() => {
+    if (hasRendered) return;
+    const el = elRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setHasRendered(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setHasRendered(true);
+            observer.disconnect();
+            return;
+          }
+        }
+      },
+      // Mount a couple of viewports ahead/behind so fast scrolling
+      // doesn't reveal placeholder boxes.
+      { root: scrollRoot, rootMargin: "800px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasRendered, scrollRoot]);
+
+  const placeholderHeight = width ? width * ESTIMATED_PAGE_ASPECT : 800;
+
+  return (
+    <div
+      ref={elRef}
+      data-page-number={pageNumber}
+      data-rendered={hasRendered ? "true" : "false"}
+      style={hasRendered ? undefined : { minHeight: placeholderHeight }}
+    >
+      {hasRendered ? (
+        children
+      ) : (
+        <div
+          className="flex items-center justify-center text-ink-4 font-mono text-[10px]"
+          style={{ height: placeholderHeight }}
+        >
+          Page {pageNumber}
+        </div>
+      )}
     </div>
   );
 }

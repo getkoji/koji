@@ -22,7 +22,7 @@
 
 import dynamic from "next/dynamic";
 import { FileText } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BBoxHighlight } from "./PdfViewer";
 
 export type DocumentRenderer = "pdf" | "image" | "unsupported";
@@ -106,6 +106,20 @@ export interface DocumentViewerProps {
   mode?: "paginated" | "scroll";
   /** Optional override for the wrapper element's className. */
   className?: string;
+  /**
+   * When true (default), the renderer (PdfViewer / `<img>`) is not
+   * mounted until the wrapper scrolls into the viewport. This avoids
+   * downloading/parsing PDF bytes for surfaces where the viewer starts
+   * off-screen (collapsed panels, hidden tabs, virtualized lists). Once
+   * the wrapper has been visible at least once, the renderer stays
+   * mounted — re-mounting on every scroll would re-trigger pdf.js setup
+   * and lose user scroll position.
+   *
+   * Pass `false` to force-mount immediately (e.g. the review queue's
+   * always-on document pane, server-rendered surfaces, anywhere
+   * IntersectionObserver might lie about visibility).
+   */
+  lazy?: boolean;
 }
 
 export function DocumentViewer({
@@ -117,8 +131,42 @@ export function DocumentViewer({
   overflow = "auto",
   mode = "paginated",
   className,
+  lazy = true,
 }: DocumentViewerProps) {
   const [errored, setErrored] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Once the renderer has been mounted, stay mounted — re-mounting on
+  // each viewport intersection would force pdf.js to refetch + reparse
+  // the document and lose the user's page position.
+  const [hasBeenVisible, setHasBeenVisible] = useState(!lazy);
+
+  useEffect(() => {
+    if (hasBeenVisible) return;
+    const el = containerRef.current;
+    if (!el) return;
+    // Headless test environments / older browsers without
+    // IntersectionObserver — degrade to "mounted from the start".
+    if (typeof IntersectionObserver === "undefined") {
+      setHasBeenVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setHasBeenVisible(true);
+            observer.disconnect();
+            return;
+          }
+        }
+      },
+      // 200px rootMargin warms up the renderer just before it scrolls
+      // into view, so the user doesn't see a flash of "Loading...".
+      { rootMargin: "200px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasBeenVisible]);
 
   const wrapperClass =
     className ??
@@ -146,9 +194,27 @@ export function DocumentViewer({
 
   const renderer = pickDocumentRenderer(mimeType, url);
 
+  // Visibility-gated mount. Until the wrapper has been visible at least
+  // once, render the skeleton (which still claims the same box so layout
+  // doesn't jump when the renderer mounts). After it's been visible, the
+  // renderer stays mounted permanently.
+  if (!hasBeenVisible) {
+    return (
+      <div
+        ref={containerRef}
+        className={`${wrapperClass} flex items-center justify-center`}
+        data-testid="document-viewer-skeleton"
+      >
+        <span className="animate-pulse font-mono text-[11px] text-ink-4">
+          Loading preview…
+        </span>
+      </div>
+    );
+  }
+
   if (renderer === "image") {
     return (
-      <div className={wrapperClass}>
+      <div ref={containerRef} className={wrapperClass}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={url}
@@ -162,7 +228,11 @@ export function DocumentViewer({
 
   if (renderer === "pdf") {
     return (
-      <div className={wrapperClass} data-testid="document-viewer-pdf">
+      <div
+        ref={containerRef}
+        className={wrapperClass}
+        data-testid="document-viewer-pdf"
+      >
         <PdfViewer
           url={url}
           highlights={highlights}
