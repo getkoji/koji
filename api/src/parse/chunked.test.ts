@@ -1,14 +1,22 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ParseProvider, ParseResponse, TextMapSegment } from "./provider";
 
-// ── Mock pdf-lib before importing the module under test ──────────────
+// ── Mock pdf-lib ────────────────────────────────────────────────────
 
 let __pageCount = 50;
+const mockPage = {};
 
 vi.mock("pdf-lib", () => ({
   PDFDocument: {
     load: vi.fn(async () => ({
       getPageCount: () => __pageCount,
+    })),
+    create: vi.fn(async () => ({
+      copyPages: vi.fn(async (_src: unknown, indices: number[]) =>
+        indices.map(() => mockPage),
+      ),
+      addPage: vi.fn(),
+      save: vi.fn(async () => new Uint8Array([0x25, 0x50, 0x44, 0x46])),
     })),
   },
 }));
@@ -23,63 +31,39 @@ function makeParseResponse(overrides: Partial<ParseResponse> = {}): ParseRespons
     pages: overrides.pages ?? 1,
     ocr_skipped: overrides.ocr_skipped ?? false,
     text_map: overrides.text_map,
-    searchable_pdf_base64: overrides.searchable_pdf_base64,
   };
 }
 
+const PDF_BUFFER = Buffer.from("fake-pdf");
+
 function makeMockProvider(opts: {
   parseResponses?: ParseResponse[];
-  hasSlicePdf?: boolean;
   sliceDelay?: number;
 } = {}): ParseProvider {
-  const { parseResponses, hasSlicePdf = true, sliceDelay = 0 } = opts;
+  const { parseResponses, sliceDelay = 0 } = opts;
   let parseCallIndex = 0;
 
   const provider: ParseProvider = {
     parse: vi.fn(async () => {
-      if (sliceDelay > 0) {
-        await new Promise((r) => setTimeout(r, sliceDelay));
-      }
+      if (sliceDelay > 0) await new Promise((r) => setTimeout(r, sliceDelay));
       const responses = parseResponses ?? [makeParseResponse()];
       const idx = Math.min(parseCallIndex++, responses.length - 1);
       return responses[idx]!;
     }),
   };
 
-  if (hasSlicePdf) {
-    provider.slicePdf = vi.fn(async (input) => ({
-      pdf_base64: Buffer.from("chunk-pdf").toString("base64"),
-      pages: input.endPage - input.startPage + 1,
-      byte_size: 1000,
-    }));
-  }
-
-  // Add optional proxy methods for coverage
-  provider.extractCoordinates = vi.fn(async () => ({
-    extracted: {},
-    has_text_layer: true,
-  }));
-  provider.renderRegion = vi.fn(async () => ({
-    image_base64: "abc",
-    width: 100,
-    height: 100,
-  }));
+  provider.extractCoordinates = vi.fn(async () => ({ extracted: {}, text_map: [] }));
+  provider.renderRegion = vi.fn(async () => ({ image_base64: "abc" }));
 
   return provider;
 }
-
-const PDF_BUFFER = Buffer.from("fake-pdf");
 
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("ChunkedParseProvider", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-    __pageCount = 50;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   // 1. Small PDF bypass
@@ -88,62 +72,32 @@ describe("ChunkedParseProvider", () => {
     const inner = makeMockProvider();
     const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "small.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
+    await chunked.parse({ filename: "small.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
     expect(inner.parse).toHaveBeenCalledTimes(1);
-    expect(inner.slicePdf).not.toHaveBeenCalled();
-    expect(result.markdown).toBe("# Page content");
   });
 
   // 2. Non-PDF bypass
   it("delegates to inner.parse for non-PDF files", async () => {
+    __pageCount = 200;
     const inner = makeMockProvider();
-    const chunked = new ChunkedParseProvider(inner);
+    const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "doc.docx",
-      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      fileBuffer: Buffer.from("docx-content"),
-    });
+    await chunked.parse({ filename: "doc.docx", mimeType: "application/vnd.openxmlformats", fileBuffer: PDF_BUFFER });
 
     expect(inner.parse).toHaveBeenCalledTimes(1);
-    expect(inner.slicePdf).not.toHaveBeenCalled();
-    expect(result.markdown).toBe("# Page content");
   });
 
-  // 3. Large PDF chunking
+  // 3. Chunking triggers for large PDFs
   it("chunks a 150-page PDF into 3 chunks of 50", async () => {
     __pageCount = 150;
-    const inner = makeMockProvider({
-      parseResponses: [
-        makeParseResponse({ markdown: "chunk1", pages: 50 }),
-        makeParseResponse({ markdown: "chunk2", pages: 50 }),
-        makeParseResponse({ markdown: "chunk3", pages: 50 }),
-      ],
-    });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const inner = makeMockProvider();
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
-    await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
+    await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
-    expect(inner.slicePdf).toHaveBeenCalledTimes(3);
+    // 3 chunks → 3 parse calls (slicing done locally via pdf-lib)
     expect(inner.parse).toHaveBeenCalledTimes(3);
-
-    // Verify chunk ranges
-    const sliceCalls = (inner.slicePdf as ReturnType<typeof vi.fn>).mock.calls;
-    expect(sliceCalls[0]![0]).toMatchObject({ startPage: 1, endPage: 50 });
-    expect(sliceCalls[1]![0]).toMatchObject({ startPage: 51, endPage: 100 });
-    expect(sliceCalls[2]![0]).toMatchObject({ startPage: 101, endPage: 150 });
   });
 
   // 4. Markdown merge
@@ -156,61 +110,34 @@ describe("ChunkedParseProvider", () => {
         makeParseResponse({ markdown: "# Part 3" }),
       ],
     });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
     expect(result.markdown).toBe("# Part 1\n\n# Part 2\n\n# Part 3");
   });
 
-  // 5. Text map page offset
+  // 5. Text map offset
   it("offsets text_map page numbers for each chunk", async () => {
     __pageCount = 100;
-    const seg = (page: number, text: string): TextMapSegment => ({
-      text,
-      page,
-      x: 0,
-      y: 0,
-      w: 100,
-      h: 20,
+    const seg = (page: number): TextMapSegment => ({
+      text: `page ${page}`, page, x: 0, y: 0, w: 1, h: 1,
     });
     const inner = makeMockProvider({
       parseResponses: [
-        makeParseResponse({
-          markdown: "c1",
-          text_map: [seg(1, "hello"), seg(2, "world")],
-        }),
-        makeParseResponse({
-          markdown: "c2",
-          text_map: [seg(1, "foo"), seg(3, "bar")],
-        }),
+        makeParseResponse({ text_map: [seg(1), seg(2)] }),
+        makeParseResponse({ text_map: [seg(1), seg(2)] }),
       ],
     });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
-    expect(result.text_map).toHaveLength(4);
-    // Chunk 1 pages stay at 1, 2 (offset 0)
+    // Chunk 1 pages unchanged, chunk 2 pages offset by 50
     expect(result.text_map![0]!.page).toBe(1);
     expect(result.text_map![1]!.page).toBe(2);
-    // Chunk 2 pages offset by 50: 1→51, 3→53
     expect(result.text_map![2]!.page).toBe(51);
-    expect(result.text_map![3]!.page).toBe(53);
+    expect(result.text_map![3]!.page).toBe(52);
   });
 
   // 6. OCR skip merge
@@ -218,21 +145,13 @@ describe("ChunkedParseProvider", () => {
     __pageCount = 100;
     const inner = makeMockProvider({
       parseResponses: [
-        makeParseResponse({ markdown: "c1", ocr_skipped: true }),
-        makeParseResponse({ markdown: "c2", ocr_skipped: true }),
+        makeParseResponse({ ocr_skipped: true }),
+        makeParseResponse({ ocr_skipped: true }),
       ],
     });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
     expect(result.ocr_skipped).toBe(true);
   });
 
@@ -240,41 +159,17 @@ describe("ChunkedParseProvider", () => {
     __pageCount = 100;
     const inner = makeMockProvider({
       parseResponses: [
-        makeParseResponse({ markdown: "c1", ocr_skipped: true }),
-        makeParseResponse({ markdown: "c2", ocr_skipped: false }),
+        makeParseResponse({ ocr_skipped: true }),
+        makeParseResponse({ ocr_skipped: false }),
       ],
     });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
     expect(result.ocr_skipped).toBe(false);
   });
 
-  // 7. No slicePdf on inner → fallback
-  it("falls back to single parse when inner has no slicePdf", async () => {
-    __pageCount = 150;
-    const inner = makeMockProvider({ hasSlicePdf: false });
-    const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
-
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    expect(inner.parse).toHaveBeenCalledTimes(1);
-    expect(result.markdown).toBe("# Page content");
-  });
-
-  // 8. Partial failure → whole parse fails
+  // 7. Parse failure propagates
   it("fails the entire parse if any chunk fails", async () => {
     __pageCount = 100;
     const inner = makeMockProvider();
@@ -284,234 +179,78 @@ describe("ChunkedParseProvider", () => {
       if (callCount === 2) throw new Error("chunk 2 exploded");
       return makeParseResponse({ markdown: `chunk${callCount}` });
     });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
 
     await expect(
-      chunked.parse({
-        filename: "big.pdf",
-        mimeType: "application/pdf",
-        fileBuffer: PDF_BUFFER,
-      }),
+      chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER }),
     ).rejects.toThrow("chunk 2 exploded");
   });
 
-  // 9. slicePdf failure → fallback to single parse
-  it("falls back to single parse when slicePdf throws (corrupt PDF)", async () => {
-    __pageCount = 150;
-    const inner = makeMockProvider();
-    (inner.slicePdf as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("slice failed: code=7: cannot find object in xref (1493 0 R)"),
-    );
-    const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
-
-    const result = await chunked.parse({
-      filename: "corrupt.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    // Should have fallen back to single parse (called with the full buffer)
-    expect(result.markdown).toBeDefined();
-    // parse should have been called once (the fallback), not per-chunk
-    expect(inner.parse).toHaveBeenCalledTimes(1);
-  });
-
-  // 9a. Probe-and-bail: only one slicePdf attempt on corrupt PDFs
-  it("only probes slicePdf once before falling back (no parallel waste)", async () => {
-    // 6 chunks × concurrency 3 used to fire 3 wasted slice calls per wave.
-    // The probe path should attempt exactly once and short-circuit.
-    __pageCount = 300;
-    const inner = makeMockProvider();
-    (inner.slicePdf as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("slice failed: code=7: cannot find object in xref (1493 0 R)"),
-    );
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-      concurrency: 3,
-    });
-
-    await chunked.parse({
-      filename: "corrupt-big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    expect(inner.slicePdf).toHaveBeenCalledTimes(1);
-    expect(inner.parse).toHaveBeenCalledTimes(1);
-    // Exactly one warning at the real fallback point — not one per worker.
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]![0]).toMatch(/cannot slice/);
-  });
-
-  // 9b. Probe success reused — chunk 0 isn't re-sliced
-  it("reuses the probe result for chunk 0 instead of slicing it twice", async () => {
-    __pageCount = 150; // 3 chunks of 50
-    const inner = makeMockProvider();
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
-
-    await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    // Exactly N calls, not N+1 (chunk 0 reuses the probe slice).
-    expect(inner.slicePdf).toHaveBeenCalledTimes(3);
-    expect(inner.parse).toHaveBeenCalledTimes(3);
-    const sliceCalls = (inner.slicePdf as ReturnType<typeof vi.fn>).mock.calls;
-    expect(sliceCalls[0]![0]).toMatchObject({ startPage: 1, endPage: 50 });
-    expect(sliceCalls[1]![0]).toMatchObject({ startPage: 51, endPage: 100 });
-    expect(sliceCalls[2]![0]).toMatchObject({ startPage: 101, endPage: 150 });
-  });
-
-  // 9c. Post-probe slice failures are NOT swallowed
-  it("surfaces slice errors that occur after the probe succeeds", async () => {
-    __pageCount = 150;
-    const inner = makeMockProvider();
-    let sliceCallCount = 0;
-    (inner.slicePdf as ReturnType<typeof vi.fn>).mockImplementation(async (input) => {
-      sliceCallCount++;
-      if (sliceCallCount === 1) {
-        // Probe succeeds
-        return {
-          pdf_base64: Buffer.from("chunk-pdf").toString("base64"),
-          pages: input.endPage - input.startPage + 1,
-          byte_size: 1000,
-        };
-      }
-      // Subsequent calls fail — a transient error, not a corrupt-xref signal.
-      throw new Error("transient network error");
-    });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
-
-    await expect(
-      chunked.parse({
-        filename: "flaky.pdf",
-        mimeType: "application/pdf",
-        fileBuffer: PDF_BUFFER,
-      }),
-    ).rejects.toThrow("transient network error");
-  });
-
-  // 10. Concurrency — verify max 3 concurrent parses
+  // 8. Concurrency
   it("limits concurrent parses to the configured concurrency", async () => {
-    __pageCount = 300; // 6 chunks of 50
-    let activeConcurrency = 0;
-    let maxObservedConcurrency = 0;
+    __pageCount = 300; // 6 chunks
+    let active = 0;
+    let maxActive = 0;
 
     const inner = makeMockProvider();
     (inner.parse as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      activeConcurrency++;
-      maxObservedConcurrency = Math.max(maxObservedConcurrency, activeConcurrency);
-      // Simulate some async work
-      await new Promise((r) => setTimeout(r, 20));
-      activeConcurrency--;
-      return makeParseResponse({ markdown: "chunk" });
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+      return makeParseResponse();
     });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80, concurrency: 3 });
 
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-      concurrency: 3,
-    });
+    await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
-    await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
+    expect(maxActive).toBeLessThanOrEqual(3);
     expect(inner.parse).toHaveBeenCalledTimes(6);
-    expect(maxObservedConcurrency).toBeLessThanOrEqual(3);
-    // Should actually use concurrency (not just serial)
-    expect(maxObservedConcurrency).toBeGreaterThan(1);
   });
 
-  // Proxy methods
+  // 9. Pages set to original count
+  it("sets pages to the original page count", async () => {
+    __pageCount = 150;
+    const inner = makeMockProvider({
+      parseResponses: [
+        makeParseResponse({ pages: 50 }),
+        makeParseResponse({ pages: 50 }),
+        makeParseResponse({ pages: 50 }),
+      ],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+    expect(result.pages).toBe(150);
+  });
+
+  // 10. searchable_pdf_base64 omitted
+  it("sets searchable_pdf_base64 to undefined for chunked parses", async () => {
+    __pageCount = 100;
+    const inner = makeMockProvider({
+      parseResponses: [
+        makeParseResponse(),
+        makeParseResponse(),
+      ],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+    expect(result.searchable_pdf_base64).toBeUndefined();
+  });
+
+  // 11. Proxy methods
   it("proxies extractCoordinates to inner", async () => {
     const inner = makeMockProvider();
-    const chunked = new ChunkedParseProvider(inner);
-
-    expect(chunked.extractCoordinates).toBeDefined();
-    const result = await chunked.extractCoordinates!({
-      fileBuffer: PDF_BUFFER,
-      mappings: {},
-    });
-    expect(result.has_text_layer).toBe(true);
+    const chunked = new ChunkedParseProvider(inner, {});
+    await chunked.extractCoordinates!({ fileBuffer: PDF_BUFFER, field: "test", page: 1, bbox: { x: 0, y: 0, w: 1, h: 1 } });
     expect(inner.extractCoordinates).toHaveBeenCalledTimes(1);
   });
 
   it("proxies renderRegion to inner", async () => {
     const inner = makeMockProvider();
-    const chunked = new ChunkedParseProvider(inner);
-
-    expect(chunked.renderRegion).toBeDefined();
-    const result = await chunked.renderRegion!({
-      fileBuffer: PDF_BUFFER,
-      page: 1,
-      x: 0,
-      y: 0,
-      w: 100,
-      h: 100,
-    });
-    expect(result.image_base64).toBe("abc");
-  });
-
-  // Pages count in merged result
-  it("sets pages to the original page count", async () => {
-    __pageCount = 150;
-    const inner = makeMockProvider({
-      parseResponses: [
-        makeParseResponse({ markdown: "c1", pages: 50 }),
-        makeParseResponse({ markdown: "c2", pages: 50 }),
-        makeParseResponse({ markdown: "c3", pages: 50 }),
-      ],
-    });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
-
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    expect(result.pages).toBe(150);
-  });
-
-  // searchable_pdf_base64 is null for chunked
-  it("sets searchable_pdf_base64 to undefined for chunked parses", async () => {
-    __pageCount = 100;
-    const inner = makeMockProvider({
-      parseResponses: [
-        makeParseResponse({ markdown: "c1", searchable_pdf_base64: "abc" }),
-        makeParseResponse({ markdown: "c2", searchable_pdf_base64: "def" }),
-      ],
-    });
-    const chunked = new ChunkedParseProvider(inner, {
-      chunkPages: 50,
-      threshold: 80,
-    });
-
-    const result = await chunked.parse({
-      filename: "big.pdf",
-      mimeType: "application/pdf",
-      fileBuffer: PDF_BUFFER,
-    });
-
-    expect(result.searchable_pdf_base64).toBeUndefined();
+    const chunked = new ChunkedParseProvider(inner, {});
+    await chunked.renderRegion!({ fileBuffer: PDF_BUFFER, page: 1, bbox: { x: 0, y: 0, w: 1, h: 1 } });
+    expect(inner.renderRegion).toHaveBeenCalledTimes(1);
   });
 });

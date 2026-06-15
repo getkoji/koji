@@ -22,8 +22,6 @@ import type {
   TextMapSegment,
 } from "./provider";
 
-type SliceResult = { pdf_base64: string; pages: number; byte_size: number };
-
 export interface ChunkedParseConfig {
   /** Pages per chunk. Default 50. */
   chunkPages?: number;
@@ -84,8 +82,8 @@ export class ChunkedParseProvider implements ParseProvider {
     const pdfDoc = await PDFDocument.load(input.fileBuffer);
     const pageCount = pdfDoc.getPageCount();
 
-    // Under threshold or inner lacks slicePdf → delegate directly
-    if (pageCount <= this.threshold || !this.inner.slicePdf) {
+    // Under threshold → delegate directly
+    if (pageCount <= this.threshold) {
       return this.inner.parse(input);
     }
 
@@ -100,61 +98,39 @@ export class ChunkedParseProvider implements ParseProvider {
       chunks.push({ startPage: start, endPage: end });
     }
 
-    // Probe the first chunk sequentially. A corrupt-xref PDF will fail
-    // here in ~200ms; cheaper than fanning out and watching every parallel
-    // worker fail the same way. If the probe succeeds, the result is
-    // handed to chunk 0's worker so we don't re-slice the same range.
-    let probeSlice: SliceResult;
-    try {
-      probeSlice = await this.inner.slicePdf!({
-        fileBuffer: input.fileBuffer,
-        startPage: chunks[0]!.startPage,
-        endPage: chunks[0]!.endPage,
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[chunked-parse] ${input.filename}: cannot slice (${reason}). ` +
-          `Parsing the full ${pageCount}-page document as a single unit ` +
-          `— provenance/text_map will not be per-chunk.`,
+    // Slice locally with pdf-lib — handles corrupt xref tables that the
+    // remote slicePdf endpoint chokes on. No HTTP roundtrip per chunk.
+    const results = await this.runWithConcurrency(chunks, async (chunk) => {
+      const chunkBuffer = await this.sliceWithPdfLib(
+        input.fileBuffer, chunk.startPage, chunk.endPage,
       );
-      return this.inner.parse(input);
-    }
-
-    // Probe succeeded → run all chunks with bounded concurrency. Chunk 0
-    // reuses the probe result. After-probe slice failures are real errors
-    // (e.g. transient network) — propagate them rather than silently
-    // re-parsing the whole document.
-    type ChunkWork = {
-      chunk: { startPage: number; endPage: number };
-      prefetchedSlice?: SliceResult;
-    };
-    const chunkWork: ChunkWork[] = chunks.map((chunk, i) => ({
-      chunk,
-      prefetchedSlice: i === 0 ? probeSlice : undefined,
-    }));
-
-    const results = await this.runWithConcurrency(chunkWork, async (work) => {
-      const sliceResult =
-        work.prefetchedSlice ??
-        (await this.inner.slicePdf!({
-          fileBuffer: input.fileBuffer,
-          startPage: work.chunk.startPage,
-          endPage: work.chunk.endPage,
-        }));
-      const chunkBuffer = Buffer.from(sliceResult.pdf_base64, "base64");
       return {
         response: await this.inner.parse({
           filename: input.filename,
           mimeType: input.mimeType,
           fileBuffer: chunkBuffer,
         }),
-        startPage: work.chunk.startPage,
+        startPage: chunk.startPage,
       };
     });
 
     // Merge results in order
     return this.mergeResults(results, pageCount);
+  }
+
+  /** Slice a page range using pdf-lib locally. Handles corrupt xref tables. */
+  private async sliceWithPdfLib(
+    fileBuffer: Buffer,
+    startPage: number,
+    endPage: number,
+  ): Promise<Buffer> {
+    const srcDoc = await PDFDocument.load(fileBuffer);
+    const newDoc = await PDFDocument.create();
+    const indices: number[] = [];
+    for (let i = startPage - 1; i < endPage; i++) indices.push(i);
+    const pages = await newDoc.copyPages(srcDoc, indices);
+    for (const page of pages) newDoc.addPage(page);
+    return Buffer.from(await newDoc.save());
   }
 
   private async runWithConcurrency<T, R>(
