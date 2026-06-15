@@ -97,6 +97,8 @@ export interface ParseProvider {
     filename: string;
     mimeType: string;
     fileBuffer: Buffer;
+    /** Force OCR on the document, bypassing the text-detection heuristic. */
+    forceOcr?: boolean;
   }): Promise<{ pollUrl: string } | { result: ParseResponse }>;
 
   /** Poll a dispatched parse job. Returns null if still processing. */

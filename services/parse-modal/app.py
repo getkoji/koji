@@ -271,26 +271,29 @@ def _convert_bytes(
     filename: str,
     mime_type: str | None,
     file_bytes: bytes,
+    *,
+    force_ocr: bool = False,
 ) -> dict:
     """Write bytes to a tempfile and run the Docling pipeline.
 
     Mirrors ``_convert_sync`` in services/parse/main.py. Returns a dict
     with the fields the client expects: ``markdown``, ``pages``,
     ``ocr_skipped``, ``text_map``.
+
+    When ``force_ocr`` is True, always run OCR regardless of the text-layer
+    heuristic. Used for chunks sliced from a document that was already
+    detected as scanned — individual chunks may have enough watermark text
+    to fool the per-chunk heuristic.
     """
     import tempfile
     from pathlib import Path
 
     suffix = _suffix_for(filename, mime_type)
 
-    # Decide OCR strategy using the same heuristic as the docker service.
-    #   - images         → always OCR (force_full_page)
-    #   - digital PDFs   → skip OCR (trust the text layer)
-    #   - scanned PDFs   → full OCR
-    #   - anything else  → run the no-OCR converter (docling handles
-    #                      docx/html/pptx via its digital pipeline)
     skip_ocr = False
-    if suffix == ".pdf":
+    if force_ocr:
+        skip_ocr = False
+    elif suffix == ".pdf":
         info = _get_pdf_info(file_bytes)
         skip_ocr = not info["scanned"]
     elif _is_image(filename, mime_type):
@@ -468,6 +471,7 @@ def parse(
     filename: str,
     mime_type: str | None,
     file_bytes: bytes,
+    force_ocr: bool = False,
 ) -> dict:
     """Parse a document and return ``{markdown, pages, ocr_skipped}``.
 
@@ -505,7 +509,7 @@ def parse(
             return _merge_chunk_results(chunk_results, info["pages"])
 
     # Serial path — unchanged for small docs, digital PDFs, images, etc.
-    return _convert_bytes(filename, mime_type, file_bytes)
+    return _convert_bytes(filename, mime_type, file_bytes, force_ocr=force_ocr)
 
 
 # ---------------------------------------------------------------------------
@@ -596,12 +600,16 @@ async def parse_http(request: Request):
             status_code=400,
         )
 
+    # force_ocr: when the caller (Inngest chunking step) knows the original
+    # document was scanned, it passes this flag so individual chunks don't
+    # re-run the text-detection heuristic (which can be fooled by watermarks).
+    force_ocr_raw = form.get("force_ocr")
+    force_ocr = force_ocr_raw in ("true", "1", True) if force_ocr_raw else False
+
     start = time.time()
     try:
         file_bytes = await upload.read()
-        # ``parse.local()`` invokes the same-container function directly
-        # (no cross-container RPC) since we live in the same Modal app.
-        result = parse.local(filename, mime_type, file_bytes)
+        result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
         elapsed = round(time.time() - start, 2)
         return JSONResponse(
             {

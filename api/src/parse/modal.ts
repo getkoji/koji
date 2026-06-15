@@ -234,8 +234,9 @@ export class ModalParseProvider implements ParseProvider {
     filename: string;
     mimeType: string;
     fileBuffer: Buffer;
+    forceOcr?: boolean;
   }): Promise<{ pollUrl: string } | { result: ParseResponse }> {
-    const { filename, mimeType, fileBuffer } = input;
+    const { filename, mimeType, fileBuffer, forceOcr } = input;
     const deadline = Date.now() + 180_000;
 
     const part = Uint8Array.from(fileBuffer);
@@ -243,6 +244,7 @@ export class ModalParseProvider implements ParseProvider {
     form.append("file", new Blob([part], { type: mimeType }), filename);
     form.append("filename", filename);
     form.append("mime_type", mimeType);
+    if (forceOcr) form.append("force_ocr", "true");
 
     const resp = await this.fetchNoFollow(this.url, {
       method: "POST",
