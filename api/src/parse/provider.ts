@@ -87,4 +87,18 @@ export interface ParseProvider {
     startPage: number;
     endPage: number;
   }): Promise<{ pdf_base64: string; pages: number; byte_size: number }>;
+
+  /**
+   * Dispatch a parse without waiting for the result. Returns a poll URL
+   * if the backend supports async dispatch, or the result directly for
+   * fast completions. Used by Inngest step-based flows.
+   */
+  dispatchParse?(input: {
+    filename: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  }): Promise<{ pollUrl: string } | { result: ParseResponse }>;
+
+  /** Poll a dispatched parse job. Returns null if still processing. */
+  pollParse?(pollUrl: string): Promise<ParseResponse | null>;
 }

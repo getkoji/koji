@@ -92,7 +92,7 @@ export async function createParseProvider(config: ParseConfig): Promise<ParsePro
   }
 
   // Wrap with chunked parsing for large PDFs (after SmartParseProvider)
-  const chunkThreshold = parseInt(process.env.KOJI_CHUNK_PARSE_THRESHOLD ?? "80", 10);
+  const chunkThreshold = parseInt(process.env.KOJI_CHUNK_PARSE_THRESHOLD ?? "40", 10);
   if (chunkThreshold > 0) {
     const chunkPages = parseInt(process.env.KOJI_CHUNK_PARSE_PAGES ?? "50", 10);
     provider = new ChunkedParseProvider(provider, {

@@ -191,6 +191,70 @@ export class ModalParseProvider implements ParseProvider {
   }
 
   /**
+   * Dispatch a parse request to Modal and return the poll URL immediately
+   * without waiting for the result. Used by Inngest step-based flows to
+   * avoid holding a Vercel function idle during OCR.
+   *
+   * Returns null if Modal responds with 200 synchronously (small/fast docs).
+   */
+  async dispatchParse(input: {
+    filename: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  }): Promise<{ pollUrl: string } | { result: ParseResponse }> {
+    const { filename, mimeType, fileBuffer } = input;
+    const deadline = Date.now() + 30_000; // 30s deadline for dispatch only
+
+    const part = Uint8Array.from(fileBuffer);
+    const form = new FormData();
+    form.append("file", new Blob([part], { type: mimeType }), filename);
+    form.append("filename", filename);
+    form.append("mime_type", mimeType);
+
+    const resp = await this.fetchNoFollow(this.url, {
+      method: "POST",
+      body: form,
+      deadline,
+    });
+
+    if (resp.status === 200) {
+      return { result: await this.readResponse(resp) };
+    }
+
+    if (resp.status === 303 || resp.status === 302) {
+      const loc = resp.headers.get("location");
+      if (!loc) throw new Error("parse (modal): 303 with no Location header");
+      const pollUrl = new URL(loc, this.url).toString();
+      await resp.arrayBuffer().catch(() => undefined);
+      return { pollUrl };
+    }
+
+    const body = await resp.text().catch(() => "");
+    throw new Error(`parse ${resp.status} (modal): ${body.slice(0, 300)}`);
+  }
+
+  /**
+   * Poll a Modal parse job for its result. Returns the result if ready,
+   * or null if still processing (303 redirect = still running).
+   */
+  async pollParse(pollUrl: string): Promise<ParseResponse | null> {
+    const deadline = Date.now() + 30_000; // 30s per poll attempt
+    const resp = await this.fetchNoFollow(pollUrl, { method: "GET", deadline });
+
+    if (resp.status === 200) {
+      return this.readResponse(resp);
+    }
+
+    if (resp.status === 303 || resp.status === 302) {
+      await resp.arrayBuffer().catch(() => undefined);
+      return null; // Still processing
+    }
+
+    const body = await resp.text().catch(() => "");
+    throw new Error(`parse poll ${resp.status} (modal): ${body.slice(0, 300)}`);
+  }
+
+  /**
    * fetch() wrapper that (a) disables auto-redirect so we can drive the
    * poll loop ourselves, (b) attaches Modal proxy-auth headers on every
    * request, and (c) times out each individual hop against the overall

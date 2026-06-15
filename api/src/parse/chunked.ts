@@ -66,6 +66,12 @@ export class ChunkedParseProvider implements ParseProvider {
     if (inner.slicePdf) {
       this.slicePdf = inner.slicePdf.bind(inner);
     }
+    if (inner.dispatchParse) {
+      this.dispatchParse = inner.dispatchParse.bind(inner);
+    }
+    if (inner.pollParse) {
+      this.pollParse = inner.pollParse.bind(inner);
+    }
   }
 
   async parse(input: {
