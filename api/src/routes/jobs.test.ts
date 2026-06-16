@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseRangeHeader } from "./jobs";
+import { nextJobStatusAfterDocFinalize, parseRangeHeader } from "./jobs";
 
 describe("embed-data highlights from provenanceJson", () => {
   /** Mirrors the provenance → highlights transform in the embed-data endpoint. */
@@ -249,8 +249,6 @@ describe("parseRangeHeader", () => {
   });
 
   it("clamps an end past the object size down to size-1", () => {
-    // pdf.js often asks for `bytes=N-N+CHUNK` where N+CHUNK > size; HTTP
-    // says we should clamp rather than reject.
     expect(parseRangeHeader("bytes=900-99999", 1000)).toEqual({ start: 900, end: 999 });
   });
 
@@ -281,5 +279,109 @@ describe("parseRangeHeader", () => {
   it("returns null when the underlying size is 0", () => {
     expect(parseRangeHeader("bytes=-100", 0)).toBeNull();
     expect(parseRangeHeader("bytes=0-99", 0)).toBeNull();
+  });
+});
+
+/**
+ * `nextJobStatusAfterDocFinalize` decides the JOB-level status to write
+ * when a document terminally transitions outside the organic ingestion
+ * pipeline (force-fail, manual reaper, batch consolidator, …). The
+ * organic paths in `ingestion/process.ts` know they're handling the last
+ * doc and set status at the same call site as the counter bump; this
+ * helper exists for the after-the-fact case, and it MUST be the only
+ * source of truth for the rule "what does this job become when all its
+ * docs are accounted for?" Drift between callers reintroduces the
+ * forever-`running` bug this commit fixes.
+ */
+describe("nextJobStatusAfterDocFinalize", () => {
+  const base = {
+    status: "running" as const,
+    docsTotal: 1,
+    docsProcessed: 1,
+    docsPassed: 0,
+    docsReviewing: 0,
+  };
+
+  it("returns null if the job row is missing", () => {
+    expect(nextJobStatusAfterDocFinalize(undefined)).toBeNull();
+  });
+
+  it("returns null when the job is still mid-flight (processed < total)", () => {
+    expect(
+      nextJobStatusAfterDocFinalize({ ...base, docsTotal: 2, docsProcessed: 1 }),
+    ).toBeNull();
+  });
+
+  it("returns null when the job is not in running state", () => {
+    // Reaper or retry races shouldn't be able to flip a terminal job
+    // back. If status is already `complete` or `failed`, leave it.
+    expect(
+      nextJobStatusAfterDocFinalize({ ...base, status: "complete" }),
+    ).toBeNull();
+    expect(
+      nextJobStatusAfterDocFinalize({ ...base, status: "failed" }),
+    ).toBeNull();
+  });
+
+  it("returns null when docsTotal is zero (pre-doc job, queued shell, …)", () => {
+    expect(
+      nextJobStatusAfterDocFinalize({ ...base, docsTotal: 0, docsProcessed: 0 }),
+    ).toBeNull();
+  });
+
+  // The motivating case: single-doc job, the only doc was force-failed.
+  // Before this fix, the job stayed `running` forever — no path
+  // transitioned the status row.
+  it("returns 'failed' when the only document was force-failed", () => {
+    // docsPassed and docsReviewing both 0 → no success → job failed.
+    expect(
+      nextJobStatusAfterDocFinalize({
+        ...base,
+        docsTotal: 1,
+        docsProcessed: 1,
+        docsPassed: 0,
+        docsReviewing: 0,
+      }),
+    ).toBe("failed");
+  });
+
+  it("returns 'complete' when at least one document passed", () => {
+    expect(
+      nextJobStatusAfterDocFinalize({
+        ...base,
+        docsTotal: 2,
+        docsProcessed: 2,
+        docsPassed: 1,
+        docsReviewing: 0,
+      }),
+    ).toBe("complete");
+  });
+
+  it("returns 'complete' when a document ended up in review", () => {
+    // review-requested counts as a successful outcome at the job level
+    // — the document is still in flight for human action, but the
+    // pipeline did its job. Mirrors the organic-complete semantics in
+    // ingestion/process.ts.
+    expect(
+      nextJobStatusAfterDocFinalize({
+        ...base,
+        docsTotal: 1,
+        docsProcessed: 1,
+        docsPassed: 0,
+        docsReviewing: 1,
+      }),
+    ).toBe("complete");
+  });
+
+  it("returns 'failed' for a batch where every document failed", () => {
+    expect(
+      nextJobStatusAfterDocFinalize({
+        ...base,
+        docsTotal: 5,
+        docsProcessed: 5,
+        docsPassed: 0,
+        docsReviewing: 0,
+      }),
+    ).toBe("failed");
   });
 });

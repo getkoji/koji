@@ -21,6 +21,41 @@ export const jobs = new Hono<Env>();
  *   7d    → now - 7 days
  *   30d   → now - 30 days
  */
+/**
+ * Decide the next job status after a document transitions to a terminal
+ * state. Used by the force-fail handler — and any other code path that
+ * needs to finalize a job after-the-fact instead of at the same call
+ * site as the doc-status change.
+ *
+ * Returns the new status string, or `null` if the job should stay where
+ * it is. The caller writes the update (and sets `completedAt` to its
+ * own clock, so this function stays pure and unit-testable).
+ *
+ * Semantics mirror `ingestion/process.ts`: any doc that passed or ended
+ * up in review counts as job-level success; only jobs whose every
+ * document failed get `failed`. Jobs not in `running` state are
+ * untouched — re-running a finalize on an already-terminal job must
+ * not flip it back.
+ */
+export function nextJobStatusAfterDocFinalize(
+  job:
+    | {
+        status: string;
+        docsTotal: number;
+        docsProcessed: number;
+        docsPassed: number;
+        docsReviewing: number;
+      }
+    | undefined,
+): "complete" | "failed" | null {
+  if (!job) return null;
+  if (job.status !== "running") return null;
+  if (job.docsTotal <= 0) return null;
+  if (job.docsProcessed < job.docsTotal) return null;
+  const hadSuccess = job.docsPassed > 0 || job.docsReviewing > 0;
+  return hadSuccess ? "complete" : "failed";
+}
+
 function resolveSince(raw: string | undefined): { cutoff: Date | null } | { error: string } {
   if (!raw || raw === "all") return { cutoff: null };
 
@@ -771,6 +806,31 @@ jobs.post("/:slug/documents/:docId/fail", requires("job:run"), async (c) => {
       docsFailed: sql`${schema.jobs.docsFailed} + 1`,
       docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
     }).where(eq(schema.jobs.id, doc.jobId));
+
+    // Transition the parent job to a terminal state if this was the last
+    // outstanding document. The organic completion paths in
+    // `ingestion/process.ts` set status + completedAt at the same time
+    // they bump the counters because they're handling single-doc jobs
+    // and already know they're the last. Force-fail can target any
+    // document in any job shape (single, batch, fan-out), so we re-read
+    // the row inside the same tx and finalize based on the new counts.
+    // Without this the job stays in `running` forever when its only
+    // document is force-failed.
+    const [refreshed] = await tx.select({
+      docsTotal: schema.jobs.docsTotal,
+      docsProcessed: schema.jobs.docsProcessed,
+      docsPassed: schema.jobs.docsPassed,
+      docsReviewing: schema.jobs.docsReviewing,
+      status: schema.jobs.status,
+    }).from(schema.jobs).where(eq(schema.jobs.id, doc.jobId)).limit(1);
+
+    const nextStatus = nextJobStatusAfterDocFinalize(refreshed);
+    if (nextStatus) {
+      await tx.update(schema.jobs).set({
+        status: nextStatus,
+        completedAt: now,
+      }).where(eq(schema.jobs.id, doc.jobId));
+    }
   });
 
   return c.json({ ok: true });
