@@ -13,6 +13,7 @@ export type FeatureKey =
   | "max_pipelines"
   | "max_webhooks"
   | "max_sources"
+  | "max_concurrent_jobs"
   | "hitl_review"
   | "benchmarks"
   | "sso"
