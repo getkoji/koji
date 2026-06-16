@@ -239,7 +239,71 @@ describe("ChunkedParseProvider", () => {
     expect(result.searchable_pdf_base64).toBeUndefined();
   });
 
-  // 11. Proxy methods
+  // 11. Encrypted-PDF handling — owner-password / no-print restrictions
+  //     are common in customer documents. pdf-lib refuses to load them
+  //     unless we pass ignoreEncryption:true. Confirm the option is
+  //     actually forwarded so a regression doesn't silently revert.
+  it("passes ignoreEncryption to PDFDocument.load", async () => {
+    __pageCount = 150;
+    const { PDFDocument } = await import("pdf-lib");
+    const loadSpy = PDFDocument.load as ReturnType<typeof vi.fn>;
+    loadSpy.mockClear();
+
+    const inner = makeMockProvider();
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+    await chunked.parse({ filename: "encrypted.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    // Both the page-count detection and every slice call must opt into
+    // ignoreEncryption — without the flag set on the slice path we'd
+    // succeed at counting pages but fail at slicing.
+    expect(loadSpy).toHaveBeenCalled();
+    for (const call of loadSpy.mock.calls) {
+      expect(call[1]).toMatchObject({ ignoreEncryption: true });
+    }
+  });
+
+  // 12. Truly un-loadable PDF: pdf-lib can't even count pages → fall back
+  //     to whole-doc parse (the inner provider's recovery heuristics may
+  //     still handle it).
+  it("falls back to single parse when PDFDocument.load throws on page-count", async () => {
+    const { PDFDocument } = await import("pdf-lib");
+    const loadSpy = PDFDocument.load as ReturnType<typeof vi.fn>;
+    loadSpy.mockClear();
+    loadSpy.mockRejectedValueOnce(new Error("Input document is encrypted"));
+
+    const inner = makeMockProvider();
+    const chunked = new ChunkedParseProvider(inner, { threshold: 80 });
+    const result = await chunked.parse({ filename: "encrypted.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    expect(result.markdown).toBeDefined();
+    // Single fallback call — no chunked workers fired.
+    expect(inner.parse).toHaveBeenCalledTimes(1);
+  });
+
+  // 13. Slice failure (encrypted content stream, malformed page tree)
+  //     after a successful page-count read also falls back — but parse
+  //     errors from the inner provider after a successful slice MUST NOT
+  //     fall back, they should propagate.
+  it("falls back to single parse when sliceWithPdfLib throws mid-stream", async () => {
+    __pageCount = 150;
+    const { PDFDocument } = await import("pdf-lib");
+    const loadSpy = PDFDocument.load as ReturnType<typeof vi.fn>;
+    loadSpy.mockClear();
+    // First call (page-count) succeeds; subsequent calls (slice path) throw.
+    loadSpy.mockImplementationOnce(async () => ({ getPageCount: () => 150 }));
+    loadSpy.mockRejectedValue(new Error("encrypted content stream"));
+
+    const inner = makeMockProvider();
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+    const result = await chunked.parse({ filename: "encrypted.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    expect(result.markdown).toBeDefined();
+    // Inner.parse called exactly once for the fallback — no per-chunk
+    // calls succeeded because slice always threw.
+    expect(inner.parse).toHaveBeenCalledTimes(1);
+  });
+
+  // 14. Proxy methods
   it("proxies extractCoordinates to inner", async () => {
     const inner = makeMockProvider();
     const chunked = new ChunkedParseProvider(inner, {});

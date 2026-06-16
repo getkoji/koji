@@ -22,6 +22,19 @@ import type {
   TextMapSegment,
 } from "./provider";
 
+/**
+ * Sentinel for pdf-lib slice failures. Wrapping these distinguishes
+ * "PDF can't be sliced, fall back to whole-doc parse" from "the inner
+ * parse provider failed on a chunk, propagate the real error". The
+ * outer catch only swallows SliceFailedError; anything else bubbles.
+ */
+class SliceFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SliceFailedError";
+  }
+}
+
 export interface ChunkedParseConfig {
   /** Pages per chunk. Default 50. */
   chunkPages?: number;
@@ -84,9 +97,30 @@ export class ChunkedParseProvider implements ParseProvider {
       return this.inner.parse(input);
     }
 
-    // Get page count cheaply via pdf-lib
-    const pdfDoc = await PDFDocument.load(input.fileBuffer);
-    const pageCount = pdfDoc.getPageCount();
+    // Get page count cheaply via pdf-lib. `ignoreEncryption: true` is
+    // important: many customer PDFs ship with an owner-password / no-print
+    // restriction encryption dictionary but no actual content encryption
+    // (insurance carriers and law firms do this routinely). pdf-lib
+    // refuses to load them by default; with the flag set, the page tree
+    // is still readable and the bytes flow through to the parse service
+    // exactly as uploaded. If the load fails anyway (truly corrupt or
+    // genuinely password-protected so the page tree itself is opaque),
+    // fall back to the inner provider with the whole document — the
+    // parse service has its own recovery heuristics that work where
+    // pdf-lib can't.
+    let pageCount: number;
+    try {
+      const pdfDoc = await PDFDocument.load(input.fileBuffer, {
+        ignoreEncryption: true,
+      });
+      pageCount = pdfDoc.getPageCount();
+    } catch (err) {
+      console.warn(
+        `[chunked-parse] ${input.filename}: pdf-lib could not load document (${err instanceof Error ? err.message : String(err)}). ` +
+          `Parsing as a single unit — chunking and per-chunk provenance unavailable for this document.`,
+      );
+      return this.inner.parse(input);
+    }
 
     // Under threshold → delegate directly
     if (pageCount <= this.threshold) {
@@ -106,19 +140,40 @@ export class ChunkedParseProvider implements ParseProvider {
 
     // Slice locally with pdf-lib — handles corrupt xref tables that the
     // remote slicePdf endpoint chokes on. No HTTP roundtrip per chunk.
-    const results = await this.runWithConcurrency(chunks, async (chunk) => {
-      const chunkBuffer = await this.sliceWithPdfLib(
-        input.fileBuffer, chunk.startPage, chunk.endPage,
-      );
-      return {
-        response: await this.inner.parse({
-          filename: input.filename,
-          mimeType: input.mimeType,
-          fileBuffer: chunkBuffer,
-        }),
-        startPage: chunk.startPage,
-      };
-    });
+    // The slice itself is wrapped in a sentinel so we can distinguish
+    // "this PDF is unsliceable, fall back to whole-doc" from "the inner
+    // parse provider failed, real error, propagate". Parse errors after
+    // a successful slice should bubble up unchanged.
+    let results;
+    try {
+      results = await this.runWithConcurrency(chunks, async (chunk) => {
+        let chunkBuffer: Buffer;
+        try {
+          chunkBuffer = await this.sliceWithPdfLib(
+            input.fileBuffer, chunk.startPage, chunk.endPage,
+          );
+        } catch (err) {
+          throw new SliceFailedError(err instanceof Error ? err.message : String(err));
+        }
+        return {
+          response: await this.inner.parse({
+            filename: input.filename,
+            mimeType: input.mimeType,
+            fileBuffer: chunkBuffer,
+          }),
+          startPage: chunk.startPage,
+        };
+      });
+    } catch (err) {
+      if (err instanceof SliceFailedError) {
+        console.warn(
+          `[chunked-parse] ${input.filename}: pdf-lib slice failed mid-stream (${err.message}). ` +
+            `Falling back to single-document parse.`,
+        );
+        return this.inner.parse(input);
+      }
+      throw err;
+    }
 
     // Merge results in order
     return this.mergeResults(results, pageCount);
@@ -130,7 +185,9 @@ export class ChunkedParseProvider implements ParseProvider {
     startPage: number,
     endPage: number,
   ): Promise<Buffer> {
-    const srcDoc = await PDFDocument.load(fileBuffer);
+    const srcDoc = await PDFDocument.load(fileBuffer, {
+      ignoreEncryption: true,
+    });
     const newDoc = await PDFDocument.create();
     const indices: number[] = [];
     for (let i = startPage - 1; i < endPage; i++) indices.push(i);
