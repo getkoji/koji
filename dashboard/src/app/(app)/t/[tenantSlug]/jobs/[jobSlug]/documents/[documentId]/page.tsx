@@ -12,6 +12,7 @@ import { DetailLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { jobs as jobsApi, type DocumentDetail, type TraceStageRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { prettyStageName } from "./format";
 
 const PdfViewer = dynamic(
   () => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer),
@@ -714,25 +715,9 @@ function normalizeStatus(s: string): "ok" | "warn" | "fail" {
   return "ok";
 }
 
-const STAGE_LABELS: Record<string, string> = {
-  ingress: "Ingress",
-  integrity: "Integrity check",
-  ocr_quality: "OCR quality",
-  parse: "Parse",
-  classify: "Classify",
-  extract: "Extract",
-  normalize: "Normalize",
-  validate: "Validate",
-  review: "Review queue",
-  hitl_router: "Review queue",
-  human_review: "Human review",
-  emit: "Emit",
-  deliver: "Deliver",
-};
-
-function prettyStageName(name: string): string {
-  return STAGE_LABELS[name] ?? name.replaceAll("_", " ");
-}
+// `STAGE_LABELS` and `prettyStageName` live in ./format so they can be
+// unit-tested — vitest in the dashboard package can't load page.tsx
+// (Next.js component module).
 
 function stageMeta(r: TraceStageRow): string {
   if (r.errorMessage) return r.errorMessage;
