@@ -25,6 +25,14 @@ export interface PlanFeatures {
   max_pipelines: number | null;
   max_webhooks: number | null;
   max_sources: number | null;
+  /**
+   * Maximum simultaneously running jobs per tenant. `null` = unlimited.
+   * Enforced by `requireConcurrencySlot()` middleware in
+   * `api/src/billing/concurrency.ts`. Honors planOverridesJson, so a
+   * tenant on Scale (default 5) can be bumped to a higher number — or
+   * unlimited — via a per-tenant override.
+   */
+  max_concurrent_jobs: number | null;
   hitl_review: boolean;
   benchmarks: boolean;
   sso: boolean;
@@ -45,6 +53,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       max_pipelines: 1,
       max_webhooks: 1,
       max_sources: 1,
+      max_concurrent_jobs: 1,
       hitl_review: false,
       benchmarks: false,
       sso: false,
@@ -64,6 +73,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       max_pipelines: null,
       max_webhooks: null,
       max_sources: null,
+      max_concurrent_jobs: 5,
       hitl_review: true,
       benchmarks: true,
       sso: false,
@@ -83,6 +93,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       max_pipelines: null,
       max_webhooks: null,
       max_sources: null,
+      max_concurrent_jobs: null, // unlimited (or per-contract)
       hitl_review: true,
       benchmarks: true,
       sso: true,
@@ -212,6 +223,7 @@ export function featureLabel(feature: FeatureKey): string {
     max_pipelines: "pipelines",
     max_webhooks: "webhooks",
     max_sources: "sources",
+    max_concurrent_jobs: "concurrent jobs",
     hitl_review: "HITL review",
     benchmarks: "benchmarks",
     sso: "SSO",

@@ -47,6 +47,16 @@ describe("PLANS", () => {
     expect(PLANS.scale.features.benchmarks).toBe(true);
     expect(PLANS.scale.features.sso).toBe(false);
   });
+
+  // max_concurrent_jobs used to live in a hard-coded table in
+  // `concurrency.ts` that bypassed planOverridesJson entirely. Now it's
+  // a PlanFeatures field — these assertions pin the per-tier defaults so
+  // a future tweak can't silently change them.
+  it("max_concurrent_jobs tracks free=1, scale=5, enterprise=unlimited", () => {
+    expect(PLANS.free.features.max_concurrent_jobs).toBe(1);
+    expect(PLANS.scale.features.max_concurrent_jobs).toBe(5);
+    expect(PLANS.enterprise.features.max_concurrent_jobs).toBeNull();
+  });
 });
 
 describe("getEffectivePlan", () => {
@@ -116,6 +126,27 @@ describe("getEffectivePlan", () => {
       planOverridesJson: { bogus_key: 42 } as any,
     });
     expect(plan.features.max_schemas).toBe(3); // unchanged
+  });
+
+  // Concurrency overrides — the motivating case for moving the limit
+  // into PlanFeatures. Superkey-style scenario: Scale tier pricing,
+  // higher (or unlimited) concurrency slots.
+  it("applies max_concurrent_jobs override (raise the limit)", () => {
+    const plan = getEffectivePlan({
+      plan: "scale",
+      planOverridesJson: { max_concurrent_jobs: 25 },
+    });
+    expect(plan.features.max_concurrent_jobs).toBe(25);
+    // Pricing untouched — the override path doesn't change billing.
+    expect(plan.priceMonthUsd).toBe(499);
+  });
+
+  it("applies max_concurrent_jobs override (unlimited via null)", () => {
+    const plan = getEffectivePlan({
+      plan: "scale",
+      planOverridesJson: { max_concurrent_jobs: null },
+    });
+    expect(plan.features.max_concurrent_jobs).toBeNull();
   });
 });
 

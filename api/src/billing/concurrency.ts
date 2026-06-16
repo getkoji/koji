@@ -2,29 +2,22 @@
  * Concurrency gate — limits concurrent running jobs per tenant based on plan.
  *
  * Checks the jobs table for status='running' and compares against the
- * plan limit. Excess jobs are queued (soft rejection with 429), not rejected.
+ * tenant's effective `max_concurrent_jobs` (plan default merged with
+ * planOverridesJson). Excess jobs are queued (soft rejection with 429),
+ * not rejected — the client is expected to retry.
+ *
+ * The limit lives in `PlanFeatures` (see `plans.ts`), so it goes through
+ * the same `getEffectivePlan` path as every other tier-gated value. The
+ * admin UI's per-tenant overrides apply here too: a Scale tenant with
+ * `{ "max_concurrent_jobs": 25 }` in `plan_overrides_json` gets 25
+ * concurrent slots, not the Scale default of 5. Setting the override to
+ * `null` removes the cap entirely.
  */
 
 import type { Context, Next } from "hono";
 import { sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { getTenantId } from "../auth/middleware";
-import type { PlanId } from "./adapter";
-
-interface PlanConcurrencyLimits {
-  maxConcurrentJobs: number | null; // null = unlimited
-}
-
-const CONCURRENCY_LIMITS: Record<PlanId, PlanConcurrencyLimits> = {
-  free: { maxConcurrentJobs: 1 },
-  scale: { maxConcurrentJobs: 5 },
-  enterprise: { maxConcurrentJobs: null }, // unlimited (or per-contract)
-};
-
-function limitsForPlan(plan: string): PlanConcurrencyLimits {
-  return CONCURRENCY_LIMITS[plan as PlanId] ?? CONCURRENCY_LIMITS.free;
-}
 
 /**
  * Middleware that checks whether the tenant has a concurrency slot available.
@@ -38,11 +31,19 @@ export function requireConcurrencySlot() {
       return;
     }
 
+    // We pass currentCount=0 because the real count comes from the
+    // jobs table below — checkQuantityGate just resolves the effective
+    // limit for us via getEffectivePlan(tenant) + override merge.
     const billing = c.get("billing");
-    const result = await billing.canUse(tenantId, "max_schemas"); // just to get currentPlan
-    const limits = limitsForPlan(result.currentPlan);
+    const gate = await billing.checkQuantityGate(
+      tenantId,
+      "max_concurrent_jobs",
+      0,
+    );
 
-    if (limits.maxConcurrentJobs === null) {
+    // null/undefined limit = unlimited (enterprise default, or any tier
+    // with the override pinned to null). Skip the DB count entirely.
+    if (gate.limit == null) {
       await next();
       return;
     }
@@ -56,14 +57,14 @@ export function requireConcurrencySlot() {
     );
 
     const running = row?.count ?? 0;
-    if (running >= limits.maxConcurrentJobs) {
+    if (running >= gate.limit) {
       return c.json(
         {
           error: {
             code: "concurrency_limit",
-            message: `All ${limits.maxConcurrentJobs} concurrent job slots are in use on your ${result.currentPlan} plan. Your job will be queued — try again shortly.`,
+            message: `All ${gate.limit} concurrent job slots are in use on your ${gate.currentPlan} plan. Your job will be queued — try again shortly.`,
             running,
-            limit: limits.maxConcurrentJobs,
+            limit: gate.limit,
           },
         },
         { status: 429, headers: { "Retry-After": "30" } },
