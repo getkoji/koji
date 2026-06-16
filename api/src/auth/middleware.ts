@@ -85,10 +85,21 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return;
     }
 
-    // Document preview + embed — validated via time-limited HMAC token.
-    // The token is signed against the document base path (without the
-    // trailing /preview or /embed-data), so one token works for all
-    // sub-endpoints on the same document.
+    // Document preview / embed / stream — these endpoints accept either
+    // a session cookie (normal dashboard user) OR a time-limited HMAC
+    // preview token (embed viewer, external iframe). The handlers
+    // themselves are dual-auth aware: if `tenantId` is set they use
+    // RLS, otherwise they fall back to a raw-DB read gated by the token.
+    //
+    // Auth rules here:
+    //   - Token present + valid    → bypass session auth, set next().
+    //   - Token present + invalid  → 403 with "expired token" so the
+    //     embed viewer can re-fetch a fresh token instead of silently
+    //     prompting for login.
+    //   - Token absent             → fall through to the normal
+    //     session-cookie auth path below. (Previously this returned
+    //     403 too, which 403'd every cookie-authenticated dashboard
+    //     hit on /stream — the bug we're fixing here.)
     const docEndpointMatch = path.match(/^(\/api\/jobs\/[^/]+\/documents\/[^/]+)\/(preview|embed-data|stream)$/);
     if (docEndpointMatch) {
       const basePath = docEndpointMatch[1]!;
@@ -98,11 +109,16 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         return;
       }
       const previewToken = c.req.query("token");
-      if (previewToken && verifyPreviewToken(previewToken, basePath, masterKey)) {
-        await next();
-        return;
+      if (previewToken) {
+        if (verifyPreviewToken(previewToken, basePath, masterKey)) {
+          await next();
+          return;
+        }
+        return c.json({ error: "Invalid or expired preview token" }, 403);
       }
-      return c.json({ error: "Invalid or expired preview token" }, 403);
+      // No token → fall through to the session-cookie / bearer auth
+      // path below. The handler at jobs.ts checks `tenantId` to know
+      // which read path to use.
     }
 
     // --- Stage 1: Identify ---

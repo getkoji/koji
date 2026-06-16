@@ -26,9 +26,23 @@ function createTestApp(opts: {
   users?: Map<string, Principal>;
   memberships?: Map<string, { roles: string[] }>; // key: `${userId}:${tenantId}`
   tenants?: Map<string, string>; // slug → id
+  /**
+   * Sets `c.masterKey` before the auth middleware runs. Required for
+   * the doc-endpoint matcher branch (HMAC preview-token validation
+   * lives behind this guard — without it the matcher just `next()`s
+   * unconditionally).
+   */
+  masterKey?: string;
 }) {
   const adapter = createMockAdapter(opts.users ?? new Map());
   const app = new Hono<Env>();
+
+  if (opts.masterKey) {
+    app.use("*", async (c, next) => {
+      c.set("masterKey", opts.masterKey!);
+      await next();
+    });
+  }
 
   // Track state so the mock can figure out which table is being queried
   app.use("*", async (c, next) => {
@@ -182,6 +196,72 @@ describe("authMiddleware", () => {
       headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme" },
     });
     expect(withHeader.status).toBe(200);
+  });
+
+  // Regression: the doc-endpoint matcher used to 403 whenever
+  // `?token=` was absent on /preview, /embed-data, or /stream — but
+  // those endpoints support dual-auth (preview token OR session
+  // cookie). The dashboard sends cookie-authenticated GETs on
+  // /stream with no token, and got hammered with 403s in production.
+  describe("doc-endpoint dual-auth (preview | embed-data | stream)", () => {
+    it("falls through to session auth when token is absent", async () => {
+      const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+      const app = createTestApp({
+        users,
+        tenants,
+        memberships,
+        masterKey: "test-master-key",
+      });
+      app.get(
+        "/api/jobs/:slug/documents/:docId/stream",
+        (c) => c.json({ ok: true }),
+      );
+
+      const res = await app.request(
+        "/api/jobs/job-1/documents/doc-1/stream",
+        {
+          headers: {
+            Cookie: "koji_session=valid-token",
+            "x-koji-tenant": "acme",
+          },
+        },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it("still 403s when an explicit invalid token is supplied", async () => {
+      // An explicitly-passed bad token is a sign the embed viewer's
+      // token expired — return 403 so the client can refresh. Falling
+      // through to session auth in that case would silently 401 the
+      // embed iframe and break the UX.
+      const app = createTestApp({ users, tenants, masterKey: "test-master-key" });
+      app.get(
+        "/api/jobs/:slug/documents/:docId/preview",
+        (c) => c.json({ ok: true }),
+      );
+
+      const res = await app.request(
+        "/api/jobs/job-1/documents/doc-1/preview?token=nope",
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("401s when token is absent AND no session cookie is set", async () => {
+      // The fall-through must reach the normal auth path — which 401s
+      // without a cookie. If a future change accidentally `next()`s
+      // here without a token, we'd be silently opening up the
+      // endpoint to anonymous requests.
+      const app = createTestApp({ users, tenants, masterKey: "test-master-key" });
+      app.get(
+        "/api/jobs/:slug/documents/:docId/stream",
+        (c) => c.json({ ok: true }),
+      );
+
+      const res = await app.request(
+        "/api/jobs/job-1/documents/doc-1/stream",
+      );
+      expect(res.status).toBe(401);
+    });
   });
 });
 
