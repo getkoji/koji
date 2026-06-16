@@ -312,31 +312,54 @@ jobs.get("/:slug/documents/:docId/stream", async (c) => {
 
       if (trace) {
         // Get all stages for this trace
+        // Select the full TraceStageRow shape the dashboard expects —
+        // see dashboard/src/lib/api.ts. Previously we omitted half the
+        // fields AND emitted them under different keys
+        // (`name` instead of `stageName`, `summary` instead of
+        // `summaryJson`). When the dashboard merged an SSE-pushed stage
+        // into its rows, every read of `stageName`, `stageOrder`, etc.
+        // returned `undefined` — `prettyStageName(undefined).replaceAll`
+        // then crashed the entire page mid-render. The mismatch was
+        // invisible during steady-state polling because the initial
+        // /documents/:id payload uses the correct shape; only the
+        // SSE-push code path was broken.
         const stages = await query((tx) =>
           tx
             .select({
               id: schema.traceStages.id,
               stageName: schema.traceStages.stageName,
+              stageOrder: schema.traceStages.stageOrder,
               status: schema.traceStages.status,
+              startedAt: schema.traceStages.startedAt,
+              completedAt: schema.traceStages.completedAt,
               durationMs: schema.traceStages.durationMs,
               summaryJson: schema.traceStages.summaryJson,
+              errorMessage: schema.traceStages.errorMessage,
             })
             .from(schema.traceStages)
             .where(eq(schema.traceStages.traceId, trace.id))
             .orderBy(asc(schema.traceStages.stageOrder)),
         ) as any[];
 
-        // Emit new stages only
+        // Emit new stages only — payload is the verbatim TraceStageRow
+        // shape from dashboard/src/lib/api.ts. Adding or renaming a
+        // field on either side without the other will break this
+        // contract silently; keep them aligned.
         for (const stage of stages) {
           if (!sentStageIds.has(stage.id)) {
             sentStageIds.add(stage.id);
             await stream.writeSSE({
               event: "stage",
               data: JSON.stringify({
-                name: stage.stageName,
+                id: stage.id,
+                stageName: stage.stageName,
+                stageOrder: stage.stageOrder,
                 status: stage.status,
+                startedAt: stage.startedAt,
+                completedAt: stage.completedAt,
                 durationMs: stage.durationMs,
-                summary: stage.summaryJson,
+                summaryJson: stage.summaryJson,
+                errorMessage: stage.errorMessage,
               }),
             });
           }
