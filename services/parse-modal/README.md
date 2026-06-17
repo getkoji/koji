@@ -62,6 +62,12 @@ The deployed app exposes two entry points:
 
 The HTTP endpoint is what the platform uses — Modal's Python SDK has no stable Node equivalent for remote-invoking a function, so we go through HTTP instead.
 
+### Auto-deploy on merge
+
+A GitHub Action (`.github/workflows/deploy-modal.yml`) auto-runs `modal deploy app.py` on any push to `main` that touches `services/parse-modal/**`. Secrets (`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`) come from the repo's Actions secrets. The runner installs both `modal` and `fastapi` — the latter is required because `modal deploy` imports `app.py` locally before uploading.
+
+If a deploy fails for an infrastructure reason (missing runner dep, Modal API blip) and the fix lives outside `services/parse-modal/`, the workflow won't re-fire on the fix's merge. Either touch a file in `services/parse-modal/` (a README update like this one) to re-trigger the path filter, or — once `workflow_dispatch` is added to the workflow — run `gh workflow run "Deploy Modal Parse Service"` to redeploy the current `main` HEAD without a code change.
+
 ## Local smoke test
 
 ```bash
