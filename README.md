@@ -49,9 +49,11 @@ Most document AI tools dump your entire file into an LLM and hope for the best. 
 
 ## Quick Start
 
-**Option 1: Koji Cloud (30 seconds, no install)**
+**Option 1: Koji Cloud (fastest way to try it)**
 
-Go to [console.getkoji.dev](https://console.getkoji.dev), upload a document, define a schema, and see extraction results with source highlighting. No API keys, no Docker, no setup.
+1. Sign up at [console.getkoji.dev](https://console.getkoji.dev)
+2. Add your LLM API key in **Settings → Model Catalog** (OpenAI, Anthropic, or any OpenAI-compatible provider)
+3. Create a schema, upload a document, and see extraction results with source highlighting
 
 **Option 2: Self-host**
 
