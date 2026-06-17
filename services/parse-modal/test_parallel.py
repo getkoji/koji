@@ -38,6 +38,7 @@ if "fastapi" not in sys.modules:
 import fitz  # noqa: E402
 from app import (  # noqa: E402
     _merge_chunk_results,
+    _raw_text_fallback,
     _should_retry_with_ocr,
     _should_retry_with_pypdfium,
     _split_pdf,
@@ -555,6 +556,80 @@ class TestShouldRetryWithPypdfium:
         assert _should_retry_with_pypdfium("HTTP 504 from Modal", "default") is False
         assert _should_retry_with_pypdfium("Memory limit exceeded", "default") is False
 
+    def test_triggers_on_docling_internal_stl_error(self):
+        # Sharon Lakes Covenants 2nd Amendment.pdf production error —
+        # a C++ STL out-of-bounds from inside docling-parse's native
+        # bindings. Different from the Poplar empty-text case but
+        # similarly best handled by swapping to PyPdfium because the
+        # failure is inside Docling's internals.
+        sharon_lakes_error = "basic_string::at: __n (which is 1) >= this->size() (which is 1)"
+        assert _should_retry_with_pypdfium(sharon_lakes_error, "default") is True
+
+    def test_triggers_on_other_stl_markers(self):
+        # Any std::-prefixed message bubbling up from native bindings —
+        # we treat them all as "Docling internal, try a different
+        # backend". Wording drifts across Docling versions and we'd
+        # rather over-retry on a real error than under-retry and let a
+        # parseable document permanently fail.
+        assert _should_retry_with_pypdfium("std::out_of_range", "default") is True
+        assert _should_retry_with_pypdfium("STL exception: ...", "default") is True
+
     def test_handles_none_or_empty(self):
         assert _should_retry_with_pypdfium(None, "default") is False
         assert _should_retry_with_pypdfium("", "default") is False
+
+
+# ---------------------------------------------------------------------------
+# Raw-text fallback
+#
+# When every Docling backend has failed, _raw_text_fallback uses pymupdf
+# to pull the text layer out and return a "## Page N\n\n<text>\n\n" markdown
+# block per page. Quality-degraded (no layout, no OCR) but better than a
+# permanent 422 — the document moves through the pipeline and the user
+# sees something.
+# ---------------------------------------------------------------------------
+
+
+class TestRawTextFallback:
+    def test_extracts_text_from_a_digital_pdf(self):
+        pdf = _make_pdf(3)
+        result = _raw_text_fallback(pdf, "test.pdf")
+        assert result["pages"] == 3
+        assert result["ocr_skipped"] is True
+        # _make_pdf writes "Page N" on each page
+        assert "Page 1" in result["markdown"]
+        assert "Page 2" in result["markdown"]
+        assert "Page 3" in result["markdown"]
+        # Headings present
+        assert "## Page 1" in result["markdown"]
+        assert "## Page 2" in result["markdown"]
+
+    def test_returns_parse_response_shape(self):
+        # The downstream API consumer expects {markdown, pages,
+        # ocr_skipped, text_map} — same keys as the Docling path.
+        # Drift would silently break the inngest queue which destructures
+        # these.
+        pdf = _make_pdf(1)
+        result = _raw_text_fallback(pdf, "test.pdf")
+        assert set(result.keys()) == {"markdown", "pages", "ocr_skipped", "text_map"}
+        assert isinstance(result["markdown"], str)
+        assert isinstance(result["pages"], int)
+        assert isinstance(result["ocr_skipped"], bool)
+        assert isinstance(result["text_map"], list)
+
+    def test_handles_empty_text_layer(self):
+        # Scanned PDFs return empty text per page from pymupdf — we
+        # still return a result with the page count rather than raise.
+        # The user gets a parse "success" but empty content, which is
+        # better than a parse 422 that gets stuck.
+        pdf = fitz.open()
+        pdf.new_page()
+        pdf.new_page()
+        empty_pdf_bytes = pdf.tobytes()
+        pdf.close()
+
+        result = _raw_text_fallback(empty_pdf_bytes, "scanned.pdf")
+        assert result["pages"] == 2
+        # Markdown has the page headings but no real text content
+        assert "## Page 1" in result["markdown"]
+        assert "## Page 2" in result["markdown"]
