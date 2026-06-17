@@ -23,6 +23,7 @@ Deploy: ``modal deploy app.py`` (requires ``MODAL_TOKEN_ID`` +
 from __future__ import annotations
 
 import asyncio
+import io
 
 import modal
 
@@ -418,6 +419,49 @@ def _raw_text_fallback(file_bytes: bytes, filename: str) -> dict:
             parts.append(f"## Page {i + 1}\n\n{text}\n")
     markdown = "\n".join(parts)
     print(f"[koji-parse-modal] {filename}: raw-text fallback succeeded — {pages} pages, {len(markdown)} markdown chars")
+    return {
+        "markdown": markdown,
+        "pages": pages,
+        "ocr_skipped": True,
+        "text_map": [],
+    }
+
+
+def _pdfplumber_fallback(file_bytes: bytes, filename: str) -> dict:
+    """Final-final fallback for genuinely malformed PDFs.
+
+    ``_raw_text_fallback`` uses pymupdf which sits on top of MuPDF. The
+    default Docling path uses pypdfium2. Both of those libraries
+    sometimes refuse the same documents at byte level — e.g. a corrupt
+    Policy Commercial.pdf surfaced with::
+
+        pypdfium2: Failed to load document (PDFium: Data format error)
+        pymupdf:   FzErrorFormat: code=7: no objects found
+
+    pdfplumber uses pdfminer.six, a pure-Python PDF parser with no
+    shared lineage with the other two. It's slower and less
+    feature-complete (no layout reconstruction, no table extraction)
+    but its parsing tolerance is different from pdfium/MuPDF — some
+    PDFs that fail both upstream succeed here, and vice versa.
+
+    Returns the same ``{markdown, pages, ocr_skipped, text_map}``
+    shape. ``ocr_skipped`` is True because pdfplumber has no OCR — for
+    fully-scanned PDFs that fell through to this layer, the markdown
+    will be empty per page but pages will be correct.
+    """
+    import pdfplumber
+
+    parts: list[str] = []
+    pages = 0
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        pages = len(pdf.pages)
+        for i, page in enumerate(pdf.pages):
+            text = (page.extract_text() or "").strip()
+            parts.append(f"## Page {i + 1}\n\n{text}\n")
+    markdown = "\n".join(parts)
+    print(
+        f"[koji-parse-modal] {filename}: pdfplumber fallback succeeded — {pages} pages, {len(markdown)} markdown chars"
+    )
     return {
         "markdown": markdown,
         "pages": pages,
@@ -939,10 +983,26 @@ async def parse_http(request: Request):
                 result = _raw_text_fallback(file_bytes, filename)
                 last_err = None
             except Exception as raw_err:
-                # Even raw extraction blew up — propagate the original
-                # Docling error (more diagnostic) but chain the raw
-                # failure so logs show both.
-                raise last_err from raw_err
+                # pymupdf couldn't open the document either — try
+                # pdfplumber as one more attempt with a totally
+                # different parsing engine (pdfminer.six). Some
+                # PDFs that fail pdfium AND mupdf at the byte level
+                # are still parseable through pdfminer.
+                print(f"[koji-parse-modal] {filename}: pymupdf raw-text also failed ({raw_err!r}); trying pdfplumber")
+                try:
+                    result = _pdfplumber_fallback(file_bytes, filename)
+                    last_err = None
+                except Exception as plumber_err:
+                    # Three different PDF libraries refused the file —
+                    # this document is malformed at the byte level and
+                    # no amount of fallback will help. Propagate the
+                    # original Docling error (most diagnostic) chained
+                    # through the new failures so logs show every layer.
+                    print(
+                        f"[koji-parse-modal] {filename}: pdfplumber also failed "
+                        f"({plumber_err!r}); giving up — document is malformed"
+                    )
+                    raise last_err from plumber_err
 
         assert result is not None  # last_err is None → we have a result
 
