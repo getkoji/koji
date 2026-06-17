@@ -587,6 +587,19 @@ def parse_chunk(
     parsing of large scanned PDFs. Each invocation runs on its own
     Modal L4 GPU container.
 
+    OCR is FORCED. The chunked path is reached only after the parent
+    document was already classified as scanned by ``_should_chunk`` /
+    ``_get_pdf_info``. Re-running the scanned heuristic on a 50-page
+    chunk can flip the answer — page footers ("Page X of Y"),
+    watermarks, or stray text-layer fragments push the average above
+    the < 50 chars/page threshold, Docling then skips OCR, and the
+    chunk returns ~500 chars of footer text instead of the real
+    scanned content. Across 3 chunks of a 104-page scanned PDF that
+    came out to a suspiciously consistent ~1451 chars of nothing
+    (Gold Hill Commerce Park II Property, 2026-06-16). Force OCR here
+    so each chunk treats itself as scanned regardless of what its own
+    bytes look like to the heuristic.
+
     Args:
         chunk_bytes: PDF bytes for this chunk (subset of pages).
         page_offset: 0-based offset to add to text_map page numbers
@@ -599,7 +612,7 @@ def parse_chunk(
         where text_map page numbers are offset to reflect the original
         document page positions.
     """
-    result = _convert_bytes(filename, mime_type, chunk_bytes)
+    result = _convert_bytes(filename, mime_type, chunk_bytes, force_ocr=True)
 
     # Offset text_map page numbers so they refer to the original document
     if page_offset > 0 and result.get("text_map"):
