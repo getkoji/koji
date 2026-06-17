@@ -159,6 +159,103 @@ function findNormalized(haystack: string, needle: string): { offset: number; len
 }
 
 /**
+ * Multi-line address matching. Addresses are often extracted as a single
+ * comma-separated string ("123 Main St, Suite 200, New York, NY 10001")
+ * but appear in the source as multiple lines:
+ *   123 Main St
+ *   Suite 200
+ *   New York, NY 10001
+ *
+ * Builds a regex where commas/newlines in the needle match either commas
+ * or newlines (with optional surrounding whitespace) in the haystack.
+ */
+function findMultiLine(haystack: string, needle: string): { offset: number; length: number } | null {
+  // Only try if the needle contains commas or newlines — avoid overhead
+  // for simple strings.
+  if (!needle.includes(",") && !needle.includes("\n")) return null;
+
+  // Split on comma-or-newline boundaries, keep non-empty trimmed segments.
+  const segments = needle.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 2) return null;
+
+  // Join the (regex-escaped) segments with a flexible separator that
+  // matches comma or newline plus any surrounding whitespace.
+  const escaped = segments.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(escaped.join("[,\\n\\r]\\s*"), "i");
+  const m = haystack.match(pattern);
+  if (m && m.index !== undefined) {
+    return { offset: m.index, length: m[0].length };
+  }
+  return null;
+}
+
+/**
+ * Fuzzy OCR text matching. OCR engines commonly confuse visually similar
+ * characters. This function builds a regex with character classes for
+ * commonly confused pairs (l/1/I/|, 0/O/o, 5/S/s, 8/B, g/9/q, Z/2) plus
+ * the rn↔m substitution (the "cornpany" / "company" classic), then
+ * attempts a match.
+ *
+ * Only fires as a last-resort fallback because the false-positive risk
+ * grows on short strings — require ≥ 6 characters before even trying.
+ * The match also has to *differ* from the original needle; otherwise it
+ * would have been caught by an earlier exact-or-case-insensitive pass
+ * and shouldn't get re-reported by this layer.
+ */
+function findFuzzyOcr(haystack: string, needle: string): { offset: number; length: number } | null {
+  if (needle.length < 6) return null;
+
+  // Common OCR confusion pairs (bidirectional). Map each problem
+  // character to a character class that accepts any visually-similar
+  // variant.
+  const ocrMap: Record<string, string> = {
+    l: "[l1I|]",
+    "1": "[1lI|]",
+    I: "[Il1|]",
+    "0": "[0Oo]",
+    O: "[O0o]",
+    o: "[o0O]",
+    "5": "[5S]",
+    S: "[S5]",
+    s: "[s5]",
+    "8": "[8B]",
+    B: "[B8]",
+    g: "[g9q]",
+    "9": "[9gq]",
+    q: "[qg9]",
+    Z: "[Z2]",
+    "2": "[2Z]",
+  };
+
+  let patternStr = "";
+  for (const ch of needle) {
+    if (ocrMap[ch]) {
+      patternStr += ocrMap[ch];
+    } else if (/[.*+?^${}()|[\]\\]/.test(ch)) {
+      patternStr += "\\" + ch;
+    } else {
+      patternStr += ch;
+    }
+  }
+
+  // Handle "rn" ↔ "m" substitution (common OCR confusion). The second
+  // replace guards against re-rewriting the "m" we just inserted as part
+  // of an "(?:rn|m)" group.
+  patternStr = patternStr.replace(/rn/g, "(?:rn|m)");
+  patternStr = patternStr.replace(/(?<!(?:\(\?:rn\|))m(?!\))/g, "(?:m|rn)");
+
+  try {
+    const m = haystack.match(new RegExp(patternStr, "i"));
+    if (m && m.index !== undefined && m[0].toLowerCase() !== needle.toLowerCase()) {
+      return { offset: m.index, length: m[0].length };
+    }
+  } catch {
+    // Malformed regex from an unusual character combination — fall through.
+  }
+  return null;
+}
+
+/**
  * Search for a dollar amount in multiple representations:
  * - "$1,000,000" / "$1000000" / "1,000,000" / "1000000"
  */
@@ -264,6 +361,9 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
     `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${yy}`,
     // YYYY/MM/DD
     `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`,
+    // Month DD, YY and Mon DD, YY — named month with 2-digit year
+    `${monthNames[month - 1]} ${day}, ${yy}`,
+    `${monthAbbr[month - 1]} ${day}, ${yy}`,
     // Ordinal formats: "29th of April, 2003", "29th day of April, 2003"
     `${ordinal} of ${monthNames[month - 1]}, ${year}`,
     `${ordinal} of ${monthNames[month - 1]} ${year}`,
@@ -275,14 +375,29 @@ function findDate(haystack: string, value: string): { offset: number; length: nu
   }
 
   // Regex fallback: match ordinal + optional "day" + "of" + month + year
-  // Handles OCR variations like "29th day\n\nof April, 2003"
+  // (4-digit OR 2-digit). Handles OCR variations like
+  // "29th day\n\nof April, 2003".
   const ordinalPattern = new RegExp(
-    `${ordinal}\\s+(?:day\\s+)?(?:of\\s+)?${monthNames[month - 1]}[,\\s]+${year}`,
+    `${ordinal}\\s+(?:day\\s+)?(?:of\\s+)?${monthNames[month - 1]}[,\\s]+(?:${year}|${yy})`,
     "i",
   );
   const ordMatch = haystack.match(ordinalPattern);
   if (ordMatch && ordMatch.index !== undefined) {
     return { offset: ordMatch.index, length: ordMatch[0].length };
+  }
+
+  // Final regex fallback: flexible separators around numeric date pieces.
+  // Accepts MM/DD/YYYY, MM-DD-YYYY, or 2-digit-year variants, with
+  // optional whitespace/newlines around separators (common in OCR
+  // output). Negative-lookahead on the year guards against bleeding
+  // into a longer numeric run.
+  const flexDatePattern = new RegExp(
+    `0?${month}\\s*[/\\-]\\s*0?${day}\\s*[/\\-]\\s*(?:${year}|${yy})(?![\\d])`,
+    "i",
+  );
+  const flexMatch = haystack.match(flexDatePattern);
+  if (flexMatch && flexMatch.index !== undefined) {
+    return { offset: flexMatch.index, length: flexMatch[0].length };
   }
 
   return null;
@@ -652,6 +767,17 @@ function resolveScalar(
       }
       if (!result && /^\d{4}-\d{1,2}-\d{1,2}$/.test(value)) {
         result = findDate(markdown, value);
+      }
+      // Multi-line address matching: extracted value has commas but
+      // source has line breaks instead (or vice versa).
+      if (!result) {
+        result = findMultiLine(markdown, value);
+      }
+      // Fuzzy OCR matching as the absolute last resort — guards against
+      // visually-similar character confusion (l/1/I, 0/O/o, 5/S, 8/B,
+      // g/9/q, Z/2, rn↔m).
+      if (!result) {
+        result = findFuzzyOcr(markdown, value);
       }
     }
   } else if (typeof value === "number") {
