@@ -36,7 +36,11 @@ if "fastapi" not in sys.modules:
     sys.modules["fastapi"] = _fastapi_mock
 
 import fitz  # noqa: E402
-from app import _merge_chunk_results, _split_pdf  # noqa: E402
+from app import (  # noqa: E402
+    _merge_chunk_results,
+    _should_retry_with_ocr,
+    _split_pdf,
+)
 
 # ---------------------------------------------------------------------------
 # Test fixture: create synthetic PDFs with N pages
@@ -456,3 +460,54 @@ class TestPageOffsetArithmetic:
         # Verify page numbers are in ascending order
         pages = [seg["page"] for seg in result["text_map"]]
         assert pages == [1, 50, 51, 100, 101, 120]
+
+
+# ---------------------------------------------------------------------------
+# OCR-retry decision
+#
+# When Docling fails on a scanned PDF that slipped past
+# `_get_pdf_info`'s heuristic, the parse endpoint retries once with
+# force_ocr=True. The decision must:
+#   - trigger on the known Docling "no extractable text" wording
+#   - NOT trigger if force_ocr was already on (then the heuristic isn't
+#     to blame and a retry would just fail the same way)
+#   - NOT trigger on unrelated errors
+# Drift in the matcher would reintroduce the production 422 we shipped
+# this for: "parse 422 (modal): can not retrieve a line, no lines are
+# known" on documents the heuristic mis-classifies.
+# ---------------------------------------------------------------------------
+
+
+class TestShouldRetryWithOcr:
+    def test_triggers_on_canonical_docling_message(self):
+        # The exact wording that surfaced in production.
+        msg = "can not retrieve a line, no lines are known"
+        assert _should_retry_with_ocr(msg, already_force_ocr=False) is True
+
+    def test_triggers_on_alternate_wordings(self):
+        # Docling has drifted across versions — match a couple of
+        # equivalent failure phrasings too.
+        assert _should_retry_with_ocr("no text found in document", False) is True
+        assert _should_retry_with_ocr("Error: no lines parsed", False) is True
+
+    def test_case_insensitive(self):
+        assert _should_retry_with_ocr("NO LINES ARE KNOWN", False) is True
+
+    def test_does_not_trigger_when_already_force_ocr(self):
+        # If OCR was on for the first attempt and Docling still produced
+        # an empty-text error, retrying with the same flag would be a
+        # waste — propagate the original error instead.
+        msg = "can not retrieve a line, no lines are known"
+        assert _should_retry_with_ocr(msg, already_force_ocr=True) is False
+
+    def test_does_not_trigger_on_unrelated_errors(self):
+        # Real errors (timeouts, decode failures, OOM) should NOT trip
+        # the OCR retry — those won't be fixed by turning on OCR and
+        # silently retrying would mask real bugs.
+        assert _should_retry_with_ocr("HTTP 504 from Modal", False) is False
+        assert _should_retry_with_ocr("Memory limit exceeded", False) is False
+        assert _should_retry_with_ocr("Invalid PDF header", False) is False
+
+    def test_handles_none_or_empty(self):
+        assert _should_retry_with_ocr(None, False) is False
+        assert _should_retry_with_ocr("", False) is False
