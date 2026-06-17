@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/getkoji/koji/stargazers"><img src="https://img.shields.io/github/stars/getkoji/koji?style=flat" alt="Stars" /></a>
+  <a href="https://github.com/getkoji/koji/stargazers"><img src="https://img.shields.io/github/stars/getkoji/koji?style=flat&color=171410" alt="Stars" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
-  <a href="https://console.getkoji.dev"><img src="https://img.shields.io/badge/try-Koji%20Cloud-vermillion" alt="Try Koji Cloud" /></a>
+  <a href="https://console.getkoji.dev"><img src="https://img.shields.io/badge/try-Koji%20Cloud-c33520" alt="Try Koji Cloud" /></a>
 </p>
 
 <p align="center">
