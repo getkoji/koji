@@ -320,6 +320,24 @@ _EMPTY_TEXT_LAYER_MARKERS = (
     "no lines",
 )
 
+# Errors that strongly indicate a Docling internal failure — usually an
+# unhandled edge case in the native (Rust/C++) bindings. These propagate
+# as Python exceptions with a recognisable shape:
+#
+#   - "basic_string::at: __n (which is 1) >= this->size() (which is 1)"
+#     (Sharon Lakes Covenants 2nd Amendment.pdf — C++ STL out-of-bounds
+#     from inside docling-parse's native code)
+#   - other ``std::``-prefixed messages bubbling up from native bindings
+#
+# We can't fix Docling from here, but the document might be readable by
+# a different backend (PyPdfium) or by raw text extraction (pymupdf).
+_DOCLING_INTERNAL_MARKERS = (
+    "basic_string",
+    "std::",
+    "stl exception",
+    "segmentation fault",
+)
+
 
 def _should_retry_with_ocr(
     error_message: str | None,
@@ -347,24 +365,63 @@ def _should_retry_with_pypdfium(
     """Decide whether a parse failure should be retried with the
     PyPdfium backend instead of the default DoclingParseV2 backend.
 
-    Fires when the default backend reports the same empty-text-layer
-    error AFTER OCR was already forced on. That signature means the
-    failure isn't an OCR-policy problem (we already tried OCR) — it's
-    the V2 page-tree parser bailing on a malformed PDF before OCR ever
-    gets a chance to run. The V2 backend traceback is identical in
-    that case to the no-OCR run because the failure is at
-    ``DoclingParseV2PageBackend.__init__`` → ``load_page``, well
-    before the OCR pipeline executes.
+    Fires on two signatures:
 
-    The retry only fires once: if PyPdfium ALSO fails, the document
-    is genuinely unreadable and we let the error propagate.
+    1. **Empty-text-layer markers** ("no lines are known", "no text
+       found"). The V2 page-tree parser is bailing at page-load before
+       OCR runs. PyPdfium tolerates malformed PDFs the V2 parser
+       rejects.
+
+    2. **Docling internal markers** ("basic_string", "std::", ...).
+       The V2 parser made it past page-load but a native binding raised
+       an STL exception or worse mid-pipeline. PyPdfium goes through a
+       different code path and may not hit the same edge case.
+
+    The retry never fires when already on PyPdfium — if PyPdfium ALSO
+    failed, the document is genuinely unreadable by Docling and we let
+    the error propagate (so the raw-text fallback can take a swing).
     """
     if current_backend != "default":
         return False
     if not error_message:
         return False
     haystack = error_message.lower()
-    return any(marker in haystack for marker in _EMPTY_TEXT_LAYER_MARKERS)
+    return any(marker in haystack for marker in (*_EMPTY_TEXT_LAYER_MARKERS, *_DOCLING_INTERNAL_MARKERS))
+
+
+def _raw_text_fallback(file_bytes: bytes, filename: str) -> dict:
+    """Last-resort text extraction with pymupdf, bypassing Docling entirely.
+
+    Returns the same ``{markdown, pages, ocr_skipped, text_map}`` shape
+    the Docling path returns, so the caller can't tell the difference at
+    the wire level. The markdown is a flat "## Page N\\n\\n<text>\\n\\n"
+    per page — no headings, no tables, no layout. text_map is empty
+    (we don't have bounding boxes from raw text extraction).
+
+    This path runs ONLY after every Docling attempt has failed. For
+    digital PDFs it returns the full text layer; for fully-scanned PDFs
+    it returns mostly empty strings (because pymupdf has no OCR). In the
+    latter case, the caller still gets a "successful" parse with
+    ``pages > 0`` and the document moves through the pipeline — better
+    than a hard 422 that leaves it stuck in the failed bucket forever.
+    """
+    import fitz  # pymupdf
+
+    parts: list[str] = []
+    pages = 0
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        pages = len(doc)
+        for i, page in enumerate(doc):
+            text = page.get_text("text").strip()
+            parts.append(f"## Page {i + 1}\n\n{text}\n")
+    markdown = "\n".join(parts)
+    print(f"[koji-parse-modal] {filename}: raw-text fallback succeeded — {pages} pages, {len(markdown)} markdown chars")
+    return {
+        "markdown": markdown,
+        "pages": pages,
+        "ocr_skipped": True,
+        "text_map": [],
+    }
 
 
 def _convert_bytes(
@@ -722,37 +779,53 @@ async def parse_http(request: Request):
     start = time.time()
     try:
         file_bytes = await upload.read()
-        # Three-layer fallback for malformed / encrypted / scanned PDFs:
+        # Four-layer fallback for malformed / encrypted / scanned PDFs and
+        # for Docling's own internal failures. Each layer fires only when
+        # the conditions match — a happy-path digital PDF still goes
+        # through the single ``parse.local(... force_ocr=force_ocr)`` call
+        # and nothing else.
         #
-        #   1. Default backend, force_ocr as requested by the caller.
-        #      Handles the >99% common case.
+        #   1. Default backend, force_ocr as the caller asked.
         #   2. If the error message names an empty-text-layer condition
-        #      AND force_ocr wasn't already on, retry with the default
-        #      backend + force_ocr=True. Catches scanned PDFs that
-        #      slipped past `_get_pdf_info`'s heuristic.
-        #   3. If the V2 page-tree parser bails on the same error
-        #      EVEN with OCR forced on, the failure is at the backend
-        #      layer (DoclingParseV2PageBackend.__init__ → load_page)
-        #      before OCR runs. Swap to the PyPdfium backend which is
-        #      more tolerant of corrupt-xref / missing-object-ref PDFs.
-        #      That's where The Poplar 1.20.2024.pdf case landed.
+        #      AND force_ocr wasn't already on, retry with force_ocr=True
+        #      on the default backend. Catches scanned PDFs the heuristic
+        #      mis-classified as digital. (oss-189)
+        #   3. If the remaining error names either an empty-text-layer
+        #      condition OR a Docling-internal failure (basic_string,
+        #      std::, …), swap to the PyPdfium backend with OCR on. V2's
+        #      Rust/C++ bindings die on certain malformed PDFs at
+        #      page-load (The Poplar) or mid-pipeline (Sharon Lakes);
+        #      PyPdfium takes a different code path and may not hit the
+        #      same edge case. (oss-193, oss-194)
+        #   4. If every Docling attempt failed, fall back to raw pymupdf
+        #      text extraction. Quality-degraded (no layout, no tables,
+        #      no OCR) but better than a permanent 422. The document
+        #      moves through the pipeline and the user sees something.
+        #      Only digital PDFs benefit here — fully-scanned PDFs
+        #      produce empty pages, but the request still completes.
+        result = None
+        last_err: Exception | None = None
         try:
             result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
         except Exception as first_err:
-            if not _should_retry_with_ocr(str(first_err), force_ocr):
-                raise
+            last_err = first_err
+
+        if last_err is not None and _should_retry_with_ocr(str(last_err), force_ocr):
             print(
-                f"[koji-parse-modal] {filename}: first attempt failed with {first_err!r}; retrying with force_ocr=True"
+                f"[koji-parse-modal] {filename}: first attempt failed with {last_err!r}; retrying with force_ocr=True"
             )
             try:
                 result = parse.local(filename, mime_type, file_bytes, force_ocr=True)
-            except Exception as second_err:
-                if not _should_retry_with_pypdfium(str(second_err), "default"):
-                    raise
-                print(
-                    f"[koji-parse-modal] {filename}: OCR retry also failed with "
-                    f"{second_err!r}; falling back to PyPdfium backend"
-                )
+                last_err = None
+            except Exception as ocr_err:
+                last_err = ocr_err
+
+        if last_err is not None and _should_retry_with_pypdfium(str(last_err), "default"):
+            print(
+                f"[koji-parse-modal] {filename}: Docling default backend "
+                f"failed with {last_err!r}; falling back to PyPdfium backend"
+            )
+            try:
                 result = parse.local(
                     filename,
                     mime_type,
@@ -760,6 +833,25 @@ async def parse_http(request: Request):
                     force_ocr=True,
                     backend="pypdfium",
                 )
+                last_err = None
+            except Exception as pypdfium_err:
+                last_err = pypdfium_err
+
+        if last_err is not None:
+            print(
+                f"[koji-parse-modal] {filename}: every Docling attempt failed "
+                f"({last_err!r}); falling back to pymupdf raw-text extraction"
+            )
+            try:
+                result = _raw_text_fallback(file_bytes, filename)
+                last_err = None
+            except Exception as raw_err:
+                # Even raw extraction blew up — propagate the original
+                # Docling error (more diagnostic) but chain the raw
+                # failure so logs show both.
+                raise last_err from raw_err
+
+        assert result is not None  # last_err is None → we have a result
 
         elapsed = round(time.time() - start, 2)
         return JSONResponse(
