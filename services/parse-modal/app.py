@@ -392,6 +392,21 @@ def _should_retry_with_pypdfium(
     return any(marker in haystack for marker in (*_EMPTY_TEXT_LAYER_MARKERS, *_DOCLING_INTERNAL_MARKERS))
 
 
+class MalformedPdfError(Exception):
+    """Raised when every parse fallback (Docling default / OCR / PyPdfium
+    backend, pymupdf raw text, pdfplumber raw text) refuses the document
+    at the byte level — pdfium reports "Data format error", MuPDF
+    reports "no objects found", and pdfminer.six reports "No /Root
+    object! - Is this really a PDF?". The document is genuinely
+    unparseable; no further library is likely to help.
+
+    The message is what surfaces to the user via the 422 response body,
+    so it must be self-contained and actionable — no temp filenames,
+    no library names, no traceback. The full chain is preserved as the
+    exception's ``__cause__`` for log diagnosis.
+    """
+
+
 def _raw_text_fallback(file_bytes: bytes, filename: str) -> dict:
     """Last-resort text extraction with pymupdf, bypassing Docling entirely.
 
@@ -995,14 +1010,21 @@ async def parse_http(request: Request):
                 except Exception as plumber_err:
                     # Three different PDF libraries refused the file —
                     # this document is malformed at the byte level and
-                    # no amount of fallback will help. Propagate the
-                    # original Docling error (most diagnostic) chained
-                    # through the new failures so logs show every layer.
+                    # no amount of fallback will help. Surface a
+                    # user-actionable message via MalformedPdfError; the
+                    # full library chain is attached as __cause__ so
+                    # operators can still diagnose from the traceback
+                    # in Modal logs.
                     print(
                         f"[koji-parse-modal] {filename}: pdfplumber also failed "
-                        f"({plumber_err!r}); giving up — document is malformed"
+                        f"({plumber_err!r}); giving up — document is malformed. "
+                        f"Original Docling error: {last_err!r}"
                     )
-                    raise last_err from plumber_err
+                    raise MalformedPdfError(
+                        f"Document {filename!r} could not be parsed — "
+                        "file may be corrupt or not a valid PDF. "
+                        "Re-export from the source application and re-upload."
+                    ) from plumber_err
 
         assert result is not None  # last_err is None → we have a result
 
