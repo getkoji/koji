@@ -18,11 +18,13 @@ def _make_config(base_port: int = 9400) -> KojiConfig:
 
 
 class TestGetPortMap:
-    def test_returns_all_five_services(self):
+    def test_returns_all_four_services(self):
+        # Extract was removed in oss-152 — cluster runs UI, Server,
+        # Ollama, Parse.
         config = _make_config(9400)
         ports = _get_port_map(config)
-        assert len(ports) == 5
-        assert set(ports.keys()) == {"UI", "Server", "Ollama", "Parse", "Extract"}
+        assert len(ports) == 4
+        assert set(ports.keys()) == {"UI", "Server", "Ollama", "Parse"}
 
     def test_ports_derived_from_base(self):
         config = _make_config(9400)
@@ -31,7 +33,6 @@ class TestGetPortMap:
         assert ports["Server"] == 9401
         assert ports["Ollama"] == 9410
         assert ports["Parse"] == 9411
-        assert ports["Extract"] == 9412
 
 
 # ── check_port_conflicts ─────────────────────────────────────────────
