@@ -243,6 +243,37 @@ def _generate_searchable_pdf(file_path: str) -> bytes | None:
         return None
 
 
+def _annotate_md_offsets(markdown: str, text_map: list[dict]) -> None:
+    """Annotate each text_map segment with md_offset and md_length.
+
+    Scans forward through the markdown for each word in document order.
+    Words appear in both the text_map and the markdown in the same order,
+    so a single forward pass aligns them correctly. Segments that can't
+    be located are left unannotated (no md_offset field).
+    """
+    pos = 0
+    md_lower = markdown.lower()
+
+    for seg in text_map:
+        word = seg["text"]
+
+        # Try exact match first (case-sensitive, forward from pos)
+        idx = markdown.find(word, pos)
+        if idx != -1:
+            seg["md_offset"] = idx
+            seg["md_length"] = len(word)
+            pos = idx + len(word)
+            continue
+
+        # Case-insensitive fallback
+        word_lower = word.lower()
+        idx = md_lower.find(word_lower, pos)
+        if idx != -1:
+            seg["md_offset"] = idx
+            seg["md_length"] = len(word)
+            pos = idx + len(word)
+
+
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
     conv = get_converter(ocr=not skip_ocr)
@@ -254,10 +285,13 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     if not skip_ocr:
         searchable_pdf = _generate_searchable_pdf(file_path)
 
+    text_map = _build_text_map(result.document)
+    _annotate_md_offsets(markdown, text_map)
+
     out: dict = {
         "markdown": markdown,
         "pages": result.document.num_pages(),
-        "text_map": _build_text_map(result.document),
+        "text_map": text_map,
     }
     if searchable_pdf:
         out["searchable_pdf_base64"] = base64.b64encode(searchable_pdf).decode("ascii")
