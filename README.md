@@ -18,8 +18,8 @@
 <p align="center">
   <a href="https://console.getkoji.dev">Try it now (no install)</a> &middot;
   <a href="#quick-start">Self-host</a> &middot;
-  <a href="docs/integration.md">API Docs</a> &middot;
-  <a href="docs/schema-guide.md">Schema Guide</a>
+  <a href="https://docs.getkoji.dev/integration/">API Docs</a> &middot;
+  <a href="https://docs.getkoji.dev/schema-guide/">Schema Guide</a>
 </p>
 
 ---
@@ -207,10 +207,10 @@ BYO model — local or API. No vendor lock-in.
 
 ## Documentation
 
-- **[Integration Guide](docs/integration.md)** — HTTP API, presigned uploads, programmatic usage
-- **[Schema Guide](docs/schema-guide.md)** — Fields, types, hints, arrays, dependencies
-- **[API Reference](docs/api-reference.md)** — Complete endpoint reference
-- **[Configuration](docs/configuration.md)** — koji.yaml, environment variables, model setup
+- **[Integration Guide](https://docs.getkoji.dev/integration/)** — HTTP API, presigned uploads, programmatic usage
+- **[Schema Guide](https://docs.getkoji.dev/schema-guide/)** — Fields, types, hints, arrays, dependencies
+- **[API Reference](https://docs.getkoji.dev/api-reference/)** — Complete endpoint reference
+- **[Configuration](https://docs.getkoji.dev/configuration/)** — koji.yaml, environment variables, model setup
 
 ## Contributing
 
