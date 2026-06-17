@@ -1,83 +1,166 @@
-# Koji
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="Koji" width="120" />
+</p>
 
-Documents in. Structured data out.
+<h1 align="center">Koji</h1>
 
-Koji is a self-hosted document processing platform. Parse, classify, and extract structured data from any document — PDFs, Word, images, scans — using local models or any API provider.
+<p align="center">
+  <strong>Documents in. Structured data out.</strong><br />
+  Open source document processing platform — parse, classify, and extract structured data from any document.
+</p>
+
+<p align="center">
+  <a href="https://github.com/getkoji/koji/stargazers"><img src="https://img.shields.io/github/stars/getkoji/koji?style=flat" alt="Stars" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License" /></a>
+  <a href="https://console.getkoji.dev"><img src="https://img.shields.io/badge/try-Koji%20Cloud-vermillion" alt="Try Koji Cloud" /></a>
+</p>
+
+<p align="center">
+  <a href="https://console.getkoji.dev">Try it now (no install)</a> &middot;
+  <a href="#quick-start">Self-host</a> &middot;
+  <a href="docs/integration.md">API Docs</a> &middot;
+  <a href="docs/schema-guide.md">Schema Guide</a>
+</p>
+
+---
+
+<!-- TODO: Replace with a real screenshot/GIF of the build tool showing
+     a PDF with bbox highlights on the left, extracted JSON on the right.
+     This is the single most important element on the page. -->
+
+<p align="center">
+  <img src="docs/assets/hero-screenshot.png" alt="Koji extracting structured data from a scanned PDF" width="800" />
+</p>
+
+---
+
+**96.2% extraction accuracy** across 11 document types. A 252-page scanned insurance policy parses and extracts in 15 seconds.
+
+Most document AI tools dump your entire file into an LLM and hope for the best. Koji uses an intelligent pipeline — it maps document structure, routes each field to the relevant sections, extracts in parallel, retries on misses, and scores confidence. The result: fewer tokens, faster extraction, higher accuracy.
+
+| | Koji | AWS Textract | Azure Doc Intelligence | Raw GPT-4 |
+|---|---|---|---|---|
+| **Self-hosted** | Yes (Apache 2.0) | No | No | No |
+| **Custom schemas** | YAML — any field, any doc type | Predefined models only | Predefined + custom training | Prompt engineering |
+| **Scanned PDFs** | Full OCR + intelligent chunking | Yes | Yes | No native OCR |
+| **Confidence scoring** | Per-field provenance + validation | Per-word confidence | Per-field confidence | None |
+| **100+ page docs** | Parallel chunking, no timeout | Page limits | Page limits | Context window limits |
+| **Cost** | Your LLM API key | $1.50/page | $0.01-0.10/page | ~$0.02/page (input tokens) |
 
 ## Quick Start
+
+**Option 1: Koji Cloud (30 seconds, no install)**
+
+Go to [console.getkoji.dev](https://console.getkoji.dev), upload a document, define a schema, and see extraction results with source highlighting. No API keys, no Docker, no setup.
+
+**Option 2: Self-host**
 
 ```bash
 # Install the CLI
 uv tool install git+https://github.com/getkoji/koji.git
 
-# Check your environment
-koji doctor
+# Scaffold a project
+koji init myproject && cd myproject
 
-# Initialize a project
-koji init myproject
-cd myproject
-
-# Set your OpenAI API key (or use ollama for fully local)
+# Set your LLM key (or use ollama for fully local)
 export OPENAI_API_KEY=sk-...
 
 # Start the cluster
 koji start
 ```
 
-Dashboard is now running at [http://127.0.0.1:9400](http://127.0.0.1:9400).
+Dashboard at [localhost:9400](http://localhost:9400). API at [localhost:9401](http://localhost:9401).
 
 ## Process Your First Document
 
-Create a schema that describes what you want to extract:
+Define what you want to extract:
 
 ```yaml
 # schemas/invoice.yaml
+kind: schema
 name: invoice
 fields:
-  invoice_number:
-    type: string
-    required: true
-  date:
-    type: date
   vendor:
     type: string
-  total_amount:
+    required: true
+  invoice_number:
+    type: string
+  date:
+    type: date
+  total:
     type: number
     required: true
+  items:
+    type: array
+    items:
+      type: object
+      properties:
+        description: { type: string }
+        quantity: { type: number }
+        amount: { type: number }
 ```
 
-Process a document:
+Run it:
 
 ```bash
 koji process ./invoice.pdf --schema ./schemas/invoice.yaml
 ```
 
-Output:
-
 ```json
 {
+  "vendor": "Acme Corp",
   "invoice_number": "INV-2026-0042",
   "date": "2026-03-15",
-  "vendor": "Acme Corp",
-  "total_amount": 4250.00
+  "total": 4250.00,
+  "items": [
+    { "description": "Widget A", "quantity": 100, "amount": 2500.00 },
+    { "description": "Widget B", "quantity": 50, "amount": 1750.00 }
+  ]
 }
 ```
 
-## Intelligent Extraction
+Push schemas to the cloud or use the HTTP API:
 
-Koji doesn't dump your entire document into an LLM. It uses a phased pipeline:
+```bash
+koji push                    # Push schemas to Koji Cloud
+koji login                   # Authenticate with your account
+```
 
-1. **Map** — classify every section, detect content signals (tables, dates, dollar amounts)
-2. **Route** — schema `hints` direct each field to specific chunks
-3. **Extract** — fields sharing chunks are extracted together, minimizing LLM calls
-4. **Validate** — type checking, format normalization, enum matching
-5. **Reconcile** — merge results, deduplicate, confidence scoring
+## How It Works
 
-Result: a 232-page insurance policy → 2 LLM calls, 2.7 seconds via gpt-4o-mini.
+Koji's extraction pipeline is smarter than "send everything to an LLM":
+
+```
+Document (PDF, image, DOCX, scan)
+    |
+    v
+1. PARSE ---- OCR + layout detection (Docling, EasyOCR)
+    |          Scanned? Full-page OCR. Digital? Fast text extraction.
+    |          Large doc? Parallel chunking across GPU containers.
+    v
+2. MAP ------- Split at headings, classify sections, detect signals
+    |          (tables, dates, dollar amounts, key-value pairs)
+    v
+3. ROUTE ----- Score each field against each chunk using schema hints
+    |          Group co-located fields to minimize LLM calls
+    v
+4. EXTRACT --- Parallel LLM calls per group (not one giant prompt)
+    |          Wave-based field dependencies for conditional logic
+    v
+5. RECONCILE - Merge results, deduplicate arrays, confidence scoring
+    |          Per-field provenance: where in the document was this found?
+    v
+6. VALIDATE -- Type checking, enum matching, format normalization
+    |          Gap-fill retries for missing required fields
+    v
+Structured JSON + confidence scores + source highlighting
+```
+
+A 232-page insurance policy: **2 LLM calls, 2.7 seconds, gpt-4o-mini.**
 
 ## Schema Hints
 
-Hints tell the router where to look — no hardcoded domain knowledge:
+Hints tell the router where to look — no hardcoded domain knowledge in the engine:
 
 ```yaml
 fields:
@@ -85,78 +168,54 @@ fields:
     type: string
     required: true
     hints:
-      look_in: [declarations]
-      patterns: ["policy.*number"]
-      signals: [has_policy_numbers]
+      look_in: [declarations]        # Only search "declarations" sections
+      patterns: ["policy.*number"]   # Regex boost for matching chunks
+      signals: [has_policy_numbers]  # Boost chunks with policy-number-like strings
+
+  effective_date:
+    type: date
+    depends_on: [form_type]          # Extract after form_type is known
+    extraction_hint_by:              # Conditional extraction instructions
+      form_type:
+        "10-K": "Look for the fiscal year end date"
+        "10-Q": "Look for the quarterly period end date"
 ```
-
-## Configuration
-
-All behavior is driven by `koji.yaml`:
-
-```yaml
-project: my-pipeline
-
-cluster:
-  base_port: 9400
-
-# Optional: disable services you don't need
-services:
-  ollama: false  # Using OpenAI only
-
-output:
-  structured: ./output/
-```
-
-### Multiple Clusters
-
-Run multiple clusters simultaneously — each gets its own port range:
-
-```bash
-# Terminal 1 — base_port: 9400
-cd ~/project-a && koji start
-
-# Terminal 2 — base_port: 9500
-cd ~/project-b && koji start
-```
-
-No port conflicts. Each cluster is fully isolated.
 
 ## Model Providers
 
-Koji is model-agnostic. BYO model — local or API:
+BYO model — local or API. No vendor lock-in.
 
-| Provider | Model string | Notes |
-|----------|-------------|-------|
-| OpenAI | `openai/gpt-4o-mini` | Set `OPENAI_API_KEY` env var |
-| Ollama | `llama3.2` | Local, runs in the cluster |
-| Any OpenAI-compatible | `custom/model-name` | Set `KOJI_OPENAI_URL` env var |
+| Provider | Example | Notes |
+|----------|---------|-------|
+| OpenAI | `openai/gpt-4o-mini` | Set `OPENAI_API_KEY` |
+| Anthropic | `anthropic/claude-sonnet-4-20250514` | Set `ANTHROPIC_API_KEY` |
+| Ollama | `llama3.2` | Fully local, runs in the cluster |
+| Any OpenAI-compatible | `custom/model-name` | Set `KOJI_OPENAI_URL` |
 
-```bash
-koji extract ./output/doc.md --schema ./schema.yaml --model openai/gpt-4o-mini
-```
-
-## CLI Commands
+## CLI
 
 | Command | Description |
 |---------|-------------|
-| `koji init [dir]` | Scaffold a new project (`--template invoice` and friends; `--list-templates`) |
-| `koji start` | Start the processing cluster |
-| `koji stop` | Stop the cluster |
-| `koji status` | Show service health |
-| `koji process <path>` | Parse a document (add `--schema` for full pipeline) |
-| `koji extract <md>` | Extract from already-parsed markdown |
-| `koji test --schema <schema>` | Run schema regression tests against fixture files |
-| `koji bench --corpus <path>` | Benchmark extraction accuracy against a validation corpus |
-| `koji logs [service]` | Stream service logs (`-f` to follow) |
+| `koji init [dir]` | Scaffold a project (`--template invoice`, `--list-templates`) |
+| `koji start` / `stop` | Start or stop the processing cluster |
+| `koji process <path>` | Parse + extract a document |
+| `koji extract <md>` | Extract from pre-parsed markdown |
+| `koji push` | Push schemas and pipelines to Koji Cloud |
+| `koji bench` | Benchmark accuracy against a validation corpus |
+| `koji test` | Run extraction regression tests |
 | `koji doctor` | Check environment health |
-| `koji version` | Show version |
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
-- [Schema Examples](schemas/examples/)
+- **[Integration Guide](docs/integration.md)** — HTTP API, presigned uploads, programmatic usage
+- **[Schema Guide](docs/schema-guide.md)** — Fields, types, hints, arrays, dependencies
+- **[API Reference](docs/api-reference.md)** — Complete endpoint reference
+- **[Configuration](docs/configuration.md)** — koji.yaml, environment variables, model setup
+
+## Contributing
+
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+[Apache 2.0](LICENSE) — use it commercially, modify it, self-host it. No strings.
