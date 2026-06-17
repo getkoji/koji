@@ -15,7 +15,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install modal
+      # `modal deploy` imports app.py locally to introspect the function
+      # graph. app.py has a top-level `from fastapi import Request` (see
+      # services/parse-modal/app.py around line 551), so fastapi must be
+      # importable on the runner — even though the Modal runtime image
+      # already pins fastapi[standard] for runtime requests. Without this
+      # the deploy fails with `ModuleNotFoundError: No module named
+      # 'fastapi'` before Modal ever sees the manifest.
+      - run: pip install modal fastapi
       - name: Deploy parse service
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
