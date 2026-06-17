@@ -311,6 +311,56 @@ def _build_text_map(document) -> list[dict]:
         return []
 
 
+def _annotate_md_offsets(markdown: str, text_map: list[dict]) -> None:
+    """Annotate each text_map segment with md_offset and md_length.
+
+    L3 provenance — mirrors ``services/parse/main.py::_annotate_md_offsets``
+    so downstream extraction (api/src/extract/provenance.ts) can resolve
+    bounding boxes via direct character-offset lookup instead of fuzzy
+    text matching for dates, currencies, multi-line addresses, etc.
+
+    Scans forward through the markdown for each segment in document
+    order. Segments appear in both the text_map and the markdown in the
+    same order, so a single forward pass aligns them correctly. A cursor
+    (``pos``) tracks how far we've consumed so duplicate text resolves
+    to the next occurrence after the previous match, not the first one
+    in the document — critical for documents that repeat dates, names,
+    or headings across pages.
+
+    Segments that can't be located (e.g. whitespace-normalisation
+    differences between Docling's emitted segment text and the exported
+    markdown, or markdown decoration like ``## `` / table formatting
+    that the segment text doesn't carry) are left unannotated — no
+    ``md_offset`` / ``md_length`` field. The consumer in provenance.ts
+    skips those segments when scanning for overlap, so missing
+    annotations degrade gracefully back to the legacy fuzzy-match path.
+
+    Mutates ``text_map`` in place — same signature and contract as the
+    docker service so behaviour stays identical at the wire level.
+    """
+    pos = 0
+    md_lower = markdown.lower()
+
+    for seg in text_map:
+        word = seg["text"]
+
+        # Try exact match first (case-sensitive, forward from pos)
+        idx = markdown.find(word, pos)
+        if idx != -1:
+            seg["md_offset"] = idx
+            seg["md_length"] = len(word)
+            pos = idx + len(word)
+            continue
+
+        # Case-insensitive fallback
+        word_lower = word.lower()
+        idx = md_lower.find(word_lower, pos)
+        if idx != -1:
+            seg["md_offset"] = idx
+            seg["md_length"] = len(word)
+            pos = idx + len(word)
+
+
 # Substrings that signal Docling failed because there's no extractable
 # text layer — usually a scanned PDF that slipped past `_get_pdf_info`'s
 # heuristic. When the parse fails with one of these and force_ocr is
@@ -534,11 +584,17 @@ def _convert_bytes(
         result = conv.convert(tmp_path)
         markdown = result.document.export_to_markdown()
         pages = result.document.num_pages()
+        text_map = _build_text_map(result.document)
+        # L3 provenance: annotate each segment with its markdown character
+        # offset so downstream extraction can resolve bboxes via direct
+        # offset lookup instead of fuzzy text matching. Mirrors the docker
+        # service (services/parse/main.py::_convert_sync).
+        _annotate_md_offsets(markdown, text_map)
         return {
             "markdown": markdown,
             "pages": pages,
             "ocr_skipped": skip_ocr,
-            "text_map": _build_text_map(result.document),
+            "text_map": text_map,
         }
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -583,6 +639,9 @@ def _split_pdf(file_bytes: bytes, chunk_size: int = 50) -> list[tuple[bytes, int
     return chunks
 
 
+_CHUNK_MARKDOWN_SEPARATOR = "\n\n"
+
+
 def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
     """Merge results from parallel parse_chunk calls into a single response.
 
@@ -593,6 +652,20 @@ def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
 
     Returns:
         A single dict matching the standard parse response shape.
+
+    L3 provenance: each chunk's ``text_map`` segments carry ``md_offset``
+    values local to that chunk's markdown (annotated in
+    ``_convert_bytes`` via ``_annotate_md_offsets``). When concatenating
+    chunk markdowns with ``"\\n\\n"`` separators, we shift each segment's
+    ``md_offset`` by the cumulative length of preceding chunks' markdown
+    plus the separator length so offsets remain valid against the merged
+    markdown string. Chunks with empty markdown are skipped in both the
+    join and the offset accumulator, matching the pre-L3 behaviour of
+    not introducing blank separators.
+
+    Segments that lack ``md_offset`` (the annotator couldn't locate them
+    in the chunk markdown) pass through unmodified — the legacy fuzzy
+    path on the consumer side handles them.
     """
     if not chunk_results:
         return {
@@ -610,15 +683,32 @@ def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
 
     markdowns: list[str] = []
     all_text_map: list[dict] = []
+    # Running length (in characters) of the merged markdown so far,
+    # including separators between non-empty chunks. Used to shift each
+    # chunk's md_offset values into the merged-document coordinate space.
+    running_md_length = 0
+    separator_len = len(_CHUNK_MARKDOWN_SEPARATOR)
 
     for r in chunk_results:
         md = r.get("markdown", "")
+        chunk_offset = running_md_length
+
         if md:
+            if markdowns:
+                # We'll prepend a separator before this chunk's markdown
+                # in the final join. Account for it in the offset.
+                chunk_offset += separator_len
             markdowns.append(md)
-        all_text_map.extend(r.get("text_map", []))
+            running_md_length = chunk_offset + len(md)
+
+        for segment in r.get("text_map", []):
+            if chunk_offset and segment.get("md_offset") is not None:
+                # Shift L3 offset into merged-document coordinate space.
+                segment = {**segment, "md_offset": segment["md_offset"] + chunk_offset}
+            all_text_map.append(segment)
 
     return {
-        "markdown": "\n\n".join(markdowns),
+        "markdown": _CHUNK_MARKDOWN_SEPARATOR.join(markdowns),
         "pages": total_pages,
         "ocr_skipped": False,
         "text_map": all_text_map,

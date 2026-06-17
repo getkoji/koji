@@ -37,6 +37,7 @@ if "fastapi" not in sys.modules:
 
 import fitz  # noqa: E402
 from app import (  # noqa: E402
+    _annotate_md_offsets,
     _merge_chunk_results,
     _raw_text_fallback,
     _should_retry_with_ocr,
@@ -633,3 +634,387 @@ class TestRawTextFallback:
         # Markdown has the page headings but no real text content
         assert "## Page 1" in result["markdown"]
         assert "## Page 2" in result["markdown"]
+
+
+# ---------------------------------------------------------------------------
+# L3 provenance — markdown character offset annotation
+#
+# _annotate_md_offsets stamps each text_map segment with md_offset and
+# md_length so downstream extraction (api/src/extract/provenance.ts) can
+# resolve bounding boxes via a direct O(n) overlap scan instead of fuzzy
+# string matching. Mirrors services/parse/main.py — parity with the
+# docker service is the whole point of this app (see module docstring).
+#
+# Algorithm: single forward pass with a cursor (`pos`) advancing past
+# each matched segment, so duplicate text resolves to the next
+# occurrence rather than the first one. Segments that can't be located
+# are left unannotated (no md_offset field) so the consumer falls back
+# to the fuzzy path for those individual segments.
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotateMdOffsets:
+    def test_simple_forward_match(self):
+        """Segments appearing once in the markdown resolve to their offset."""
+        markdown = "Invoice Number: INV-001"
+        text_map = [
+            {"text": "Invoice", "page": 1, "bbox": {}},
+            {"text": "Number:", "page": 1, "bbox": {}},
+            {"text": "INV-001", "page": 1, "bbox": {}},
+        ]
+        _annotate_md_offsets(markdown, text_map)
+
+        assert text_map[0]["md_offset"] == 0
+        assert text_map[0]["md_length"] == 7
+        assert text_map[1]["md_offset"] == 8
+        assert text_map[1]["md_length"] == 7
+        assert text_map[2]["md_offset"] == 16
+        assert text_map[2]["md_length"] == 7
+
+        # Offsets must point at the exact substring
+        for seg in text_map:
+            o, n = seg["md_offset"], seg["md_length"]
+            assert markdown[o : o + n] == seg["text"]
+
+    def test_duplicate_text_resolves_to_successive_occurrences(self):
+        """Cursor advances past each match so duplicates resolve in order.
+
+        Without the cursor, every "2024-03-15" segment would resolve
+        to offset 11 (the first occurrence). The forward-cursor design
+        ensures the second segment resolves to the second occurrence.
+        """
+        markdown = "Effective: 2024-03-15\n\nRenewal: 2024-03-15"
+        text_map = [
+            {"text": "Effective:", "page": 1, "bbox": {}},
+            {"text": "2024-03-15", "page": 1, "bbox": {}},
+            {"text": "Renewal:", "page": 2, "bbox": {}},
+            {"text": "2024-03-15", "page": 2, "bbox": {}},
+        ]
+        _annotate_md_offsets(markdown, text_map)
+
+        # First "2024-03-15" at offset 11, second at offset 32
+        assert text_map[1]["md_offset"] == 11
+        assert text_map[3]["md_offset"] == 32
+        assert text_map[1]["md_offset"] != text_map[3]["md_offset"]
+
+    def test_case_insensitive_fallback(self):
+        """Falls back to case-insensitive search when exact-case fails.
+
+        Docling sometimes upper/lower-cases segment text differently
+        from the markdown it exports (e.g. heading normalisation). The
+        annotator falls back to a case-insensitive find so those
+        segments still get annotated.
+        """
+        markdown = "Total Amount Due: $500"
+        text_map = [
+            {"text": "TOTAL", "page": 1, "bbox": {}},  # uppercased
+        ]
+        _annotate_md_offsets(markdown, text_map)
+        assert text_map[0]["md_offset"] == 0
+        assert text_map[0]["md_length"] == 5
+
+    def test_unfindable_segment_left_unannotated(self):
+        """Segments that don't appear in the markdown get no md_offset.
+
+        Whitespace/encoding differences between Docling's emitted text
+        and the markdown can make some segments unfindable. Those
+        segments must be left without md_offset so the consumer falls
+        back to fuzzy matching for them individually instead of getting
+        a wrong offset.
+        """
+        markdown = "Hello world"
+        text_map = [
+            {"text": "Hello", "page": 1, "bbox": {}},
+            {"text": "NOTFOUND", "page": 1, "bbox": {}},
+            {"text": "world", "page": 1, "bbox": {}},
+        ]
+        _annotate_md_offsets(markdown, text_map)
+
+        assert text_map[0]["md_offset"] == 0
+        assert "md_offset" not in text_map[1]
+        assert "md_length" not in text_map[1]
+        # The cursor stays put after the missing segment, so "world"
+        # still resolves correctly.
+        assert text_map[2]["md_offset"] == 6
+
+    def test_cursor_prevents_backward_match(self):
+        """Once we've passed a position, we don't rewind to match earlier.
+
+        If segment N is unfindable forward of pos, segment N+1 must
+        still resolve forward of pos — never to a position earlier in
+        the markdown. This prevents an unfindable middle segment from
+        causing the rest of the document to misalign.
+        """
+        markdown = "alpha beta alpha gamma"
+        text_map = [
+            {"text": "alpha", "page": 1, "bbox": {}},  # first occurrence
+            {"text": "beta", "page": 1, "bbox": {}},
+            {"text": "alpha", "page": 1, "bbox": {}},  # second occurrence
+            {"text": "gamma", "page": 1, "bbox": {}},
+        ]
+        _annotate_md_offsets(markdown, text_map)
+
+        assert text_map[0]["md_offset"] == 0
+        assert text_map[2]["md_offset"] == 11  # the second "alpha", not the first
+
+    def test_handles_empty_text_map(self):
+        """Empty text_map is a no-op."""
+        markdown = "Hello world"
+        text_map: list[dict] = []
+        _annotate_md_offsets(markdown, text_map)
+        assert text_map == []
+
+    def test_handles_empty_markdown(self):
+        """No markdown to match against — every segment left unannotated."""
+        markdown = ""
+        text_map = [
+            {"text": "Hello", "page": 1, "bbox": {}},
+        ]
+        _annotate_md_offsets(markdown, text_map)
+        assert "md_offset" not in text_map[0]
+
+    def test_mutates_in_place(self):
+        """Function returns None and mutates the input list."""
+        text_map = [{"text": "Hello", "page": 1, "bbox": {}}]
+        ret = _annotate_md_offsets("Hello", text_map)
+        assert ret is None
+        assert text_map[0]["md_offset"] == 0
+
+
+# ---------------------------------------------------------------------------
+# L3 provenance — chunked merge offset adjustment
+#
+# Each chunk's text_map carries md_offset values local to that chunk's
+# markdown. When _merge_chunk_results concatenates chunks with "\n\n"
+# separators, those local offsets need to be shifted into the merged
+# markdown's coordinate space — otherwise the consumer's offset lookup
+# would point at the wrong position in the final document.
+# ---------------------------------------------------------------------------
+
+
+class TestMergeChunkResultsMdOffset:
+    def test_single_chunk_offsets_unchanged(self):
+        """Single-chunk passthrough leaves md_offset values as-is.
+
+        With one chunk there's no offset shift to apply; the chunk's
+        markdown IS the merged markdown.
+        """
+        chunk = {
+            "markdown": "Hello world",
+            "pages": 10,
+            "ocr_skipped": False,
+            "text_map": [
+                {"text": "Hello", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 5},
+                {"text": "world", "page": 1, "bbox": {}, "md_offset": 6, "md_length": 5},
+            ],
+        }
+        result = _merge_chunk_results([chunk], total_pages=10)
+        assert result["text_map"][0]["md_offset"] == 0
+        assert result["text_map"][1]["md_offset"] == 6
+
+    def test_two_chunks_shift_by_first_length_plus_separator(self):
+        """Second chunk's offsets shift by len(chunk1) + len(separator)."""
+        chunk_a = {
+            "markdown": "Hello world",  # length 11
+            "pages": 50,
+            "ocr_skipped": False,
+            "text_map": [
+                {"text": "Hello", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 5},
+                {"text": "world", "page": 1, "bbox": {}, "md_offset": 6, "md_length": 5},
+            ],
+        }
+        chunk_b = {
+            "markdown": "Foo bar",  # length 7
+            "pages": 50,
+            "ocr_skipped": False,
+            "text_map": [
+                {"text": "Foo", "page": 51, "bbox": {}, "md_offset": 0, "md_length": 3},
+                {"text": "bar", "page": 51, "bbox": {}, "md_offset": 4, "md_length": 3},
+            ],
+        }
+        result = _merge_chunk_results([chunk_a, chunk_b], total_pages=100)
+
+        merged_md = result["markdown"]
+        assert merged_md == "Hello world\n\nFoo bar"  # 11 + 2 + 7 = 20 chars
+
+        # Chunk A offsets unchanged
+        assert result["text_map"][0]["md_offset"] == 0
+        assert result["text_map"][1]["md_offset"] == 6
+        # Chunk B offsets shifted by 13 (11 + separator len 2)
+        assert result["text_map"][2]["md_offset"] == 13
+        assert result["text_map"][3]["md_offset"] == 17
+
+        # And each shifted offset must point at the right substring
+        for seg in result["text_map"]:
+            o, n = seg["md_offset"], seg["md_length"]
+            assert merged_md[o : o + n] == seg["text"]
+
+    def test_three_chunks_cumulative_shift(self):
+        """Each chunk's offsets shift by the cumulative preceding length."""
+        chunks = [
+            {
+                "markdown": "AAAA",  # len 4
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "AAAA", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 4}],
+            },
+            {
+                "markdown": "BB",  # len 2
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "BB", "page": 51, "bbox": {}, "md_offset": 0, "md_length": 2}],
+            },
+            {
+                "markdown": "CCC",  # len 3
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "CCC", "page": 101, "bbox": {}, "md_offset": 0, "md_length": 3}],
+            },
+        ]
+        result = _merge_chunk_results(chunks, total_pages=150)
+
+        # Merged: "AAAA\n\nBB\n\nCCC"
+        # Offsets: A=0, B=4+2=6, C=4+2+2+2=10
+        assert result["markdown"] == "AAAA\n\nBB\n\nCCC"
+        assert result["text_map"][0]["md_offset"] == 0
+        assert result["text_map"][1]["md_offset"] == 6
+        assert result["text_map"][2]["md_offset"] == 10
+        for seg in result["text_map"]:
+            o, n = seg["md_offset"], seg["md_length"]
+            assert result["markdown"][o : o + n] == seg["text"]
+
+    def test_segments_without_md_offset_pass_through(self):
+        """Segments lacking md_offset are not shifted (defensive merge)."""
+        chunks = [
+            {
+                "markdown": "first",
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "first", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 5}],
+            },
+            {
+                "markdown": "second",
+                "pages": 50,
+                "ocr_skipped": False,
+                # No md_offset — segment that the annotator couldn't locate
+                "text_map": [{"text": "second", "page": 51, "bbox": {}}],
+            },
+        ]
+        result = _merge_chunk_results(chunks, total_pages=100)
+        # First segment annotated, offset unchanged (it was the only one
+        # in chunk A which is the leading chunk)
+        assert result["text_map"][0]["md_offset"] == 0
+        # Second segment — no md_offset means the consumer falls back to
+        # fuzzy match. We MUST NOT invent an offset for it.
+        assert "md_offset" not in result["text_map"][1]
+
+    def test_empty_chunk_does_not_consume_offset_budget(self):
+        """Chunks with empty markdown contribute zero to the running offset.
+
+        Empty-markdown chunks are skipped in the join (no separator
+        added either — see existing test_empty_markdown_skipped_in_join)
+        so they must also not advance the offset accumulator. Otherwise
+        the next chunk's segments would shift too far.
+        """
+        chunks = [
+            {
+                "markdown": "Hello",  # len 5
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "Hello", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 5}],
+            },
+            {
+                "markdown": "",  # empty chunk
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [],
+            },
+            {
+                "markdown": "world",
+                "pages": 2,
+                "ocr_skipped": False,
+                "text_map": [{"text": "world", "page": 101, "bbox": {}, "md_offset": 0, "md_length": 5}],
+            },
+        ]
+        result = _merge_chunk_results(chunks, total_pages=102)
+        # Merged: "Hello\n\nworld" — empty chunk did not introduce a separator
+        assert result["markdown"] == "Hello\n\nworld"
+        # "world" lives at offset 7 in the merged markdown
+        assert result["text_map"][1]["md_offset"] == 7
+        assert result["markdown"][7:12] == "world"
+
+    def test_does_not_mutate_input_segments(self):
+        """The shift creates new dicts rather than mutating chunk inputs.
+
+        Modal returns chunk results from remote functions; if we
+        mutated the dicts in place we'd be reaching across what is
+        logically a network boundary and breaking idempotency for
+        retries.
+        """
+        seg = {"text": "Foo", "page": 51, "bbox": {}, "md_offset": 0, "md_length": 3}
+        chunks = [
+            {
+                "markdown": "abc",
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [{"text": "abc", "page": 1, "bbox": {}, "md_offset": 0, "md_length": 3}],
+            },
+            {
+                "markdown": "Foo",
+                "pages": 50,
+                "ocr_skipped": False,
+                "text_map": [seg],
+            },
+        ]
+        _merge_chunk_results(chunks, total_pages=100)
+        # Original segment dict still has its original md_offset
+        assert seg["md_offset"] == 0
+
+
+# ---------------------------------------------------------------------------
+# L3 provenance — end-to-end via _convert_bytes (synthetic digital PDF)
+#
+# These tests exercise the full annotate-during-parse path on a tiny
+# synthetic PDF, validating that md_offset/md_length actually point at
+# the right substring in the exported markdown. Skipped automatically
+# when Docling isn't installed (the docker service has docling; the
+# Modal image has it; pytest in a bare venv may not).
+# ---------------------------------------------------------------------------
+
+
+class TestConvertBytesMdOffsets:
+    def _make_digital_pdf(self) -> bytes:
+        """Build a digital PDF with two text segments we can reason about."""
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Invoice Number: INV-12345")
+        page.insert_text((72, 120), "Total Due: $1,234.56")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        return pdf_bytes
+
+    def test_segments_carry_offset_into_markdown(self):
+        try:
+            import docling  # noqa: F401
+        except ImportError:
+            import pytest
+
+            pytest.skip("docling not installed in this environment")
+
+        from app import _convert_bytes
+
+        pdf = self._make_digital_pdf()
+        result = _convert_bytes("invoice.pdf", "application/pdf", pdf)
+
+        text_map = result["text_map"]
+        markdown = result["markdown"]
+        assert len(text_map) > 0
+
+        # Every annotated segment's (offset, length) must point at the
+        # correct substring (case-insensitive — the annotator falls back
+        # to case-insensitive matching).
+        annotated = [s for s in text_map if "md_offset" in s]
+        assert len(annotated) > 0
+        for seg in annotated:
+            o, n = seg["md_offset"], seg["md_length"]
+            assert markdown[o : o + n].lower() == seg["text"].lower()
