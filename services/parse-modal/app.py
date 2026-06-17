@@ -630,6 +630,35 @@ def parse_chunk(
     memory=4096,
     cpu=2.0,
 )
+def _should_chunk(
+    filename: str,
+    mime_type: str | None,
+    file_bytes: bytes,
+) -> tuple[bool, dict | None]:
+    """Decide whether to split a document into parallel chunks.
+
+    Returns ``(should_chunk, pdf_info)``. ``pdf_info`` is non-None only
+    when the input is a PDF and ``_get_pdf_info`` actually probed it.
+    Decision: scanned PDF with more than 50 pages → chunk so each 50-page
+    range runs OCR on its own GPU container in parallel. Anything else
+    runs serially in the calling container.
+
+    Extracted as a pure helper so both the sync ``parse()`` entrypoint
+    (used by ``modal run app.py::main``) and the async ``_parse_endpoint``
+    (used in production) can share the decision. Production needs to
+    bypass ``parse()`` and call ``parse_chunk.starmap.aio(...)`` directly
+    because Modal 1.x raises ``InvalidError`` when sync ``.starmap()`` is
+    called from a running event loop:
+
+      You can't `iter(Function.starmap())` from an async function.
+      Use `async for ... in Function.starmap.aio()` instead.
+    """
+    if _suffix_for(filename, mime_type) != ".pdf":
+        return False, None
+    info = _get_pdf_info(file_bytes)
+    return (info["scanned"] and info["pages"] > 50), info
+
+
 def parse(
     filename: str,
     mime_type: str | None,
@@ -644,6 +673,13 @@ def parse(
     via ``parse_chunk.starmap()``. For all other documents, uses the
     existing serial path.
 
+    NB: this entry point is sync-only. It MUST NOT be called from an
+    async context — ``parse_chunk.starmap()`` raises ``InvalidError``
+    when invoked from a running event loop. The production HTTP endpoint
+    handles its own chunking via ``parse_chunk.starmap.aio()`` and calls
+    ``parse()`` only on the non-chunked path. This sync entrypoint is
+    used by ``modal run app.py::main`` for ad-hoc local testing.
+
     Args:
         filename: Original filename (used for suffix-based format
             detection and in error messages).
@@ -657,20 +693,17 @@ def parse(
         endpoint (minus ``filename`` / ``elapsed_seconds``, which the
         caller can attach itself).
     """
-    suffix = _suffix_for(filename, mime_type)
-
-    # Only consider parallel path for PDFs
-    if suffix == ".pdf":
-        info = _get_pdf_info(file_bytes)
-        if info["scanned"] and info["pages"] > 50:
-            print(
-                f"[koji-parse-modal] parallel parse: {info['pages']} scanned pages, "
-                f"splitting into {(info['pages'] + 49) // 50} chunks"
-            )
-            chunks = _split_pdf(file_bytes, chunk_size=50)
-            args_list = [(chunk_bytes, start - 1, filename, mime_type) for chunk_bytes, start, _end in chunks]
-            chunk_results = list(parse_chunk.starmap(args_list))
-            return _merge_chunk_results(chunk_results, info["pages"])
+    should_chunk, info = _should_chunk(filename, mime_type, file_bytes)
+    if should_chunk:
+        assert info is not None
+        print(
+            f"[koji-parse-modal] parallel parse: {info['pages']} scanned pages, "
+            f"splitting into {(info['pages'] + 49) // 50} chunks"
+        )
+        chunks = _split_pdf(file_bytes, chunk_size=50)
+        args_list = [(chunk_bytes, start - 1, filename, mime_type) for chunk_bytes, start, _end in chunks]
+        chunk_results = list(parse_chunk.starmap(args_list))
+        return _merge_chunk_results(chunk_results, info["pages"])
 
     # Serial path — unchanged for small docs, digital PDFs, images, etc.
     return _convert_bytes(
@@ -805,8 +838,28 @@ async def parse_http(request: Request):
         #      produce empty pages, but the request still completes.
         result = None
         last_err: Exception | None = None
+
+        # First-attempt path selection: a >50-page scanned PDF gets the
+        # parallel chunked path via ``parse_chunk.starmap.aio(...)``. We
+        # CANNOT delegate to ``parse.local()`` for this case from the async
+        # endpoint — Modal 1.x raises InvalidError when sync ``starmap()``
+        # is called from a running event loop. Anything else goes through
+        # ``parse.local()`` which runs ``_convert_bytes`` inline.
+        should_chunk, chunk_info = _should_chunk(filename, mime_type, file_bytes)
         try:
-            result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
+            if should_chunk and chunk_info is not None:
+                print(
+                    f"[koji-parse-modal] parallel parse: {chunk_info['pages']} scanned pages, "
+                    f"splitting into {(chunk_info['pages'] + 49) // 50} chunks"
+                )
+                chunks = _split_pdf(file_bytes, chunk_size=50)
+                args_list = [(chunk_bytes, start - 1, filename, mime_type) for chunk_bytes, start, _end in chunks]
+                chunk_results = []
+                async for r in parse_chunk.starmap.aio(args_list):
+                    chunk_results.append(r)
+                result = _merge_chunk_results(chunk_results, chunk_info["pages"])
+            else:
+                result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
         except Exception as first_err:
             last_err = first_err
 
