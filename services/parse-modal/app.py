@@ -118,15 +118,56 @@ app = modal.App("koji-parse", image=image)
 # and returns near-empty markdown).
 _converter_full_ocr = None
 _converter_no_ocr = None
+_converter_pypdfium_ocr = None
 
 
-def _get_converter(ocr: bool):
-    """Return a cached DocumentConverter (OCR on or off)."""
+def _get_converter(ocr: bool, backend: str = "default"):
+    """Return a cached DocumentConverter.
+
+    Two axes:
+
+    - ``ocr``: whether OCR runs. OCR-on uses
+      ``EasyOcrOptions(force_full_page_ocr=True)`` so every page is run
+      through OCR regardless of the (often-misleading) text layer.
+    - ``backend``: which PDF backend Docling uses to walk the page tree.
+      ``"default"`` is ``DoclingParseV2DocumentBackend`` — the fast
+      Rust-based parser that handles >99% of real PDFs but raises
+      ``RuntimeError: can not retrieve a line, no lines are known`` on
+      certain malformed inputs (corrupt xref, missing object refs,
+      encrypted-then-tampered-with documents). ``"pypdfium"`` uses
+      ``PyPdfiumDocumentBackend``, which goes through pypdfium2 directly
+      and is more permissive — it'll walk pages a V2-strict parse
+      rejects, at the cost of slightly lower-quality layout detection on
+      clean PDFs.
+
+    Three combinations are wired up — see ``_parse_endpoint`` for the
+    fallback chain.
+    """
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    global _converter_full_ocr, _converter_no_ocr
+    global _converter_full_ocr, _converter_no_ocr, _converter_pypdfium_ocr
+
+    if backend == "pypdfium":
+        if _converter_pypdfium_ocr is None:
+            from docling.backend.pypdfium2_backend import (
+                PyPdfiumDocumentBackend,
+            )
+
+            opts = PdfPipelineOptions(
+                do_ocr=True,
+                ocr_options=EasyOcrOptions(force_full_page_ocr=True),
+            )
+            _converter_pypdfium_ocr = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=opts,
+                        backend=PyPdfiumDocumentBackend,
+                    ),
+                },
+            )
+        return _converter_pypdfium_ocr
 
     if ocr:
         if _converter_full_ocr is None:
@@ -299,12 +340,40 @@ def _should_retry_with_ocr(
     return any(marker in haystack for marker in _EMPTY_TEXT_LAYER_MARKERS)
 
 
+def _should_retry_with_pypdfium(
+    error_message: str | None,
+    current_backend: str,
+) -> bool:
+    """Decide whether a parse failure should be retried with the
+    PyPdfium backend instead of the default DoclingParseV2 backend.
+
+    Fires when the default backend reports the same empty-text-layer
+    error AFTER OCR was already forced on. That signature means the
+    failure isn't an OCR-policy problem (we already tried OCR) — it's
+    the V2 page-tree parser bailing on a malformed PDF before OCR ever
+    gets a chance to run. The V2 backend traceback is identical in
+    that case to the no-OCR run because the failure is at
+    ``DoclingParseV2PageBackend.__init__`` → ``load_page``, well
+    before the OCR pipeline executes.
+
+    The retry only fires once: if PyPdfium ALSO fails, the document
+    is genuinely unreadable and we let the error propagate.
+    """
+    if current_backend != "default":
+        return False
+    if not error_message:
+        return False
+    haystack = error_message.lower()
+    return any(marker in haystack for marker in _EMPTY_TEXT_LAYER_MARKERS)
+
+
 def _convert_bytes(
     filename: str,
     mime_type: str | None,
     file_bytes: bytes,
     *,
     force_ocr: bool = False,
+    backend: str = "default",
 ) -> dict:
     """Write bytes to a tempfile and run the Docling pipeline.
 
@@ -316,6 +385,11 @@ def _convert_bytes(
     heuristic. Used for chunks sliced from a document that was already
     detected as scanned — individual chunks may have enough watermark text
     to fool the per-chunk heuristic.
+
+    ``backend`` selects which Docling PDF backend reads the page tree —
+    ``"default"`` (DoclingParseV2, fast/strict) or ``"pypdfium"``
+    (PyPdfium, slower but tolerant of malformed PDFs). See
+    ``_get_converter`` for the full matrix.
     """
     import tempfile
     from pathlib import Path
@@ -338,7 +412,7 @@ def _convert_bytes(
         tmp_path = tmp.name
 
     try:
-        conv = _get_converter(ocr=not skip_ocr)
+        conv = _get_converter(ocr=not skip_ocr, backend=backend)
         result = conv.convert(tmp_path)
         markdown = result.document.export_to_markdown()
         pages = result.document.num_pages()
@@ -504,6 +578,7 @@ def parse(
     mime_type: str | None,
     file_bytes: bytes,
     force_ocr: bool = False,
+    backend: str = "default",
 ) -> dict:
     """Parse a document and return ``{markdown, pages, ocr_skipped}``.
 
@@ -541,7 +616,13 @@ def parse(
             return _merge_chunk_results(chunk_results, info["pages"])
 
     # Serial path — unchanged for small docs, digital PDFs, images, etc.
-    return _convert_bytes(filename, mime_type, file_bytes, force_ocr=force_ocr)
+    return _convert_bytes(
+        filename,
+        mime_type,
+        file_bytes,
+        force_ocr=force_ocr,
+        backend=backend,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -641,23 +722,44 @@ async def parse_http(request: Request):
     start = time.time()
     try:
         file_bytes = await upload.read()
+        # Three-layer fallback for malformed / encrypted / scanned PDFs:
+        #
+        #   1. Default backend, force_ocr as requested by the caller.
+        #      Handles the >99% common case.
+        #   2. If the error message names an empty-text-layer condition
+        #      AND force_ocr wasn't already on, retry with the default
+        #      backend + force_ocr=True. Catches scanned PDFs that
+        #      slipped past `_get_pdf_info`'s heuristic.
+        #   3. If the V2 page-tree parser bails on the same error
+        #      EVEN with OCR forced on, the failure is at the backend
+        #      layer (DoclingParseV2PageBackend.__init__ → load_page)
+        #      before OCR runs. Swap to the PyPdfium backend which is
+        #      more tolerant of corrupt-xref / missing-object-ref PDFs.
+        #      That's where The Poplar 1.20.2024.pdf case landed.
         try:
             result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
         except Exception as first_err:
-            # Some scanned PDFs evade `_get_pdf_info`'s "is this scanned"
-            # heuristic — Docling then tries to read a text layer that
-            # isn't there and surfaces messages like:
-            #   "can not retrieve a line, no lines are known"
-            #   "no text found"
-            # Retry once with force_ocr=True so OCR kicks in. The retry
-            # only fires when force_ocr was not already set; otherwise
-            # the heuristic isn't to blame and we let the error propagate.
             if not _should_retry_with_ocr(str(first_err), force_ocr):
                 raise
             print(
                 f"[koji-parse-modal] {filename}: first attempt failed with {first_err!r}; retrying with force_ocr=True"
             )
-            result = parse.local(filename, mime_type, file_bytes, force_ocr=True)
+            try:
+                result = parse.local(filename, mime_type, file_bytes, force_ocr=True)
+            except Exception as second_err:
+                if not _should_retry_with_pypdfium(str(second_err), "default"):
+                    raise
+                print(
+                    f"[koji-parse-modal] {filename}: OCR retry also failed with "
+                    f"{second_err!r}; falling back to PyPdfium backend"
+                )
+                result = parse.local(
+                    filename,
+                    mime_type,
+                    file_bytes,
+                    force_ocr=True,
+                    backend="pypdfium",
+                )
 
         elapsed = round(time.time() - start, 2)
         return JSONResponse(

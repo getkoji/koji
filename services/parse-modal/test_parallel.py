@@ -39,6 +39,7 @@ import fitz  # noqa: E402
 from app import (  # noqa: E402
     _merge_chunk_results,
     _should_retry_with_ocr,
+    _should_retry_with_pypdfium,
     _split_pdf,
 )
 
@@ -511,3 +512,49 @@ class TestShouldRetryWithOcr:
     def test_handles_none_or_empty(self):
         assert _should_retry_with_ocr(None, False) is False
         assert _should_retry_with_ocr("", False) is False
+
+
+# ---------------------------------------------------------------------------
+# PyPdfium-backend retry decision
+#
+# When the DoclingParseV2 backend can't even load the page tree (e.g.
+# "The Poplar 1.20.2024.pdf" — corrupt xref, missing object refs), OCR
+# can't save us because OCR runs AFTER page-load. The third fallback
+# layer swaps to the PyPdfium backend, which goes through pypdfium2
+# and tolerates malformed PDFs.
+#
+# Decision rules:
+#   - Must be currently on the "default" backend (no point swapping if
+#     we're already on pypdfium and STILL hit the same error)
+#   - Error message must name an empty-text-layer condition (same
+#     marker set as the OCR retry)
+# ---------------------------------------------------------------------------
+
+
+class TestShouldRetryWithPypdfium:
+    # The signature error from production for the Poplar PDF — both the
+    # initial no-OCR attempt AND the force_ocr=True retry failed with
+    # this, because the V2 page-tree parser can't load the document at
+    # all.
+    POPLAR_ERROR = "can not retrieve a line, no lines are known"
+
+    def test_triggers_on_canonical_v2_backend_error(self):
+        assert _should_retry_with_pypdfium(self.POPLAR_ERROR, "default") is True
+
+    def test_triggers_on_alternate_wordings(self):
+        assert _should_retry_with_pypdfium("no text found in document", "default") is True
+
+    def test_does_not_trigger_when_already_on_pypdfium(self):
+        # If PyPdfium ALSO failed with the same error, the document is
+        # genuinely unreadable — propagate the error rather than loop.
+        assert _should_retry_with_pypdfium(self.POPLAR_ERROR, "pypdfium") is False
+
+    def test_does_not_trigger_on_unrelated_errors(self):
+        # OOM, timeouts, malformed headers — keep these propagating
+        # naturally so real bugs don't hide behind a backend swap.
+        assert _should_retry_with_pypdfium("HTTP 504 from Modal", "default") is False
+        assert _should_retry_with_pypdfium("Memory limit exceeded", "default") is False
+
+    def test_handles_none_or_empty(self):
+        assert _should_retry_with_pypdfium(None, "default") is False
+        assert _should_retry_with_pypdfium("", "default") is False
