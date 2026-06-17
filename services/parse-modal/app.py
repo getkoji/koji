@@ -267,6 +267,38 @@ def _build_text_map(document) -> list[dict]:
         return []
 
 
+# Substrings that signal Docling failed because there's no extractable
+# text layer — usually a scanned PDF that slipped past `_get_pdf_info`'s
+# heuristic. When the parse fails with one of these and force_ocr is
+# off, we retry once with OCR forced on. Treated as a single source of
+# truth so the retry logic in `_parse_endpoint` stays in sync with what
+# the unit tests assert.
+_EMPTY_TEXT_LAYER_MARKERS = (
+    "no lines are known",
+    "no text found",
+    "no lines",
+)
+
+
+def _should_retry_with_ocr(
+    error_message: str | None,
+    already_force_ocr: bool,
+) -> bool:
+    """Decide whether a parse failure should be retried with force_ocr=True.
+
+    Pure helper so tests can pin every branch without spinning up the
+    FastAPI / Modal stack. Match is case-insensitive on a substring of
+    the Docling error wording — wording has drifted across Docling
+    versions, so the matchers are deliberately loose.
+    """
+    if already_force_ocr:
+        return False
+    if not error_message:
+        return False
+    haystack = error_message.lower()
+    return any(marker in haystack for marker in _EMPTY_TEXT_LAYER_MARKERS)
+
+
 def _convert_bytes(
     filename: str,
     mime_type: str | None,
@@ -609,7 +641,25 @@ async def parse_http(request: Request):
     start = time.time()
     try:
         file_bytes = await upload.read()
-        result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
+        try:
+            result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
+        except Exception as first_err:
+            # Some scanned PDFs evade `_get_pdf_info`'s "is this scanned"
+            # heuristic — Docling then tries to read a text layer that
+            # isn't there and surfaces messages like:
+            #   "can not retrieve a line, no lines are known"
+            #   "no text found"
+            # Retry once with force_ocr=True so OCR kicks in. The retry
+            # only fires when force_ocr was not already set; otherwise
+            # the heuristic isn't to blame and we let the error propagate.
+            if not _should_retry_with_ocr(str(first_err), force_ocr):
+                raise
+            print(
+                f"[koji-parse-modal] {filename}: first attempt failed with "
+                f"{first_err!r}; retrying with force_ocr=True"
+            )
+            result = parse.local(filename, mime_type, file_bytes, force_ocr=True)
+
         elapsed = round(time.time() - start, 2)
         return JSONResponse(
             {
