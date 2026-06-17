@@ -655,8 +655,7 @@ async def parse_http(request: Request):
             if not _should_retry_with_ocr(str(first_err), force_ocr):
                 raise
             print(
-                f"[koji-parse-modal] {filename}: first attempt failed with "
-                f"{first_err!r}; retrying with force_ocr=True"
+                f"[koji-parse-modal] {filename}: first attempt failed with {first_err!r}; retrying with force_ocr=True"
             )
             result = parse.local(filename, mime_type, file_bytes, force_ocr=True)
 
