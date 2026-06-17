@@ -1006,6 +1006,125 @@ describe("date format variants", () => {
     expect(result.date).not.toBeNull();
     expect(result.date!.chunk).toBe("2017/12/04");
   });
+
+  it("finds Month DD, YY format (named month, 2-digit year)", () => {
+    const markdown = "Effective: March 15, 24";
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("March 15, 24");
+  });
+
+  it("finds Mon DD, YY format (abbreviated month, 2-digit year)", () => {
+    const markdown = "Due: Mar 15, 24";
+    const result = resolveProvenance({ due_date: "2024-03-15" }, markdown);
+
+    expect(result.due_date).not.toBeNull();
+    expect(result.due_date!.chunk).toBe("Mar 15, 24");
+  });
+
+  it("finds date with OCR-style whitespace around separators", () => {
+    // pdf->text often emits "03 / 15 / 2024" — flex regex fallback
+    // accepts MM/DD/YYYY or MM-DD-YYYY with optional whitespace around
+    // separators, including the 2-digit-year variants.
+    const markdown = "Effective: 03 / 15 / 2024";
+    const result = resolveProvenance({ date: "2024-03-15" }, markdown);
+
+    expect(result.date).not.toBeNull();
+    expect(result.date!.chunk).toBe("03 / 15 / 2024");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-line address matching
+// ---------------------------------------------------------------------------
+
+describe("multi-line address matching", () => {
+  it("matches comma-separated address against newline-separated source", () => {
+    const markdown = "Address:\n123 Main Street\nSuite 200\nNew York, NY 10001";
+    const result = resolveProvenance(
+      { address: "123 Main Street, Suite 200, New York, NY 10001" },
+      markdown,
+    );
+
+    expect(result.address).not.toBeNull();
+    expect(result.address!.chunk).toContain("123 Main Street");
+    expect(result.address!.chunk).toContain("Suite 200");
+    expect(result.address!.chunk).toContain("New York");
+  });
+
+  it("matches address with mixed comma and newline separators", () => {
+    const markdown = "Mailing:\n456 Oak Ave, Apt 3B\nChicago, IL 60601";
+    const result = resolveProvenance(
+      { mailing_address: "456 Oak Ave, Apt 3B, Chicago, IL 60601" },
+      markdown,
+    );
+
+    expect(result.mailing_address).not.toBeNull();
+    expect(result.mailing_address!.chunk).toContain("456 Oak Ave");
+  });
+
+  it("does not use multi-line matching for short non-address strings", () => {
+    // Simple comma-free strings should hit findExact first, not the
+    // multi-line fallback (which only kicks in when commas/newlines
+    // are present).
+    const markdown = "Value: hello world";
+    const result = resolveProvenance({ val: "hello world" }, markdown);
+
+    expect(result.val).not.toBeNull();
+    expect(result.val!.chunk).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fuzzy OCR text matching
+// ---------------------------------------------------------------------------
+
+describe("fuzzy OCR text matching", () => {
+  it("matches l/1 confusion (common OCR error)", () => {
+    // Source has "P0licy" (OCR confused o→0); extract has "Policy".
+    const markdown = "Document: P0licy Number ABC-123";
+    const result = resolveProvenance({ doc_type: "Policy Number ABC-123" }, markdown);
+
+    expect(result.doc_type).not.toBeNull();
+    expect(result.doc_type!.chunk).toBe("P0licy Number ABC-123");
+  });
+
+  it("matches O/0 confusion", () => {
+    const markdown = "Reference: C0NTRACT-2024-001";
+    const result = resolveProvenance({ reference: "CONTRACT-2024-001" }, markdown);
+
+    expect(result.reference).not.toBeNull();
+    expect(result.reference!.chunk).toBe("C0NTRACT-2024-001");
+  });
+
+  it("does not apply fuzzy matching to short strings", () => {
+    // Fuzzy matching requires ≥ 6 chars to keep false positives down.
+    const markdown = "Code: AB1";
+    const result = resolveProvenance({ code: "ABl" }, markdown);
+
+    expect(result.code).toBeNull();
+  });
+
+  it("prefers exact match over fuzzy match", () => {
+    // findExact runs before findFuzzyOcr in the resolveScalar chain, so
+    // when both forms are present, the exact one wins.
+    const markdown = "Name: POLICY HOLDER\nRef: P0LICY HOLDER";
+    const result = resolveProvenance({ name: "POLICY HOLDER" }, markdown);
+
+    expect(result.name).not.toBeNull();
+    expect(result.name!.chunk).toBe("POLICY HOLDER");
+  });
+
+  it("matches rn ↔ m confusion (cornpany / company)", () => {
+    // OCR often splits "m" into "rn" on certain fonts. We swap both
+    // directions in the regex.
+    const markdown = "cornpany: Acme International";
+    const result = resolveProvenance({ entity: "company: Acme International" }, markdown);
+
+    expect(result.entity).not.toBeNull();
+    expect(result.entity!.chunk).toContain("cornpany");
+  });
 });
 
 // ---------------------------------------------------------------------------
