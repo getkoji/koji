@@ -1,5 +1,5 @@
 /**
- * Post-extraction normalization — TypeScript port of services/extract/normalize.py.
+ * Post-extraction normalization.
  *
  * Schema-declared `normalize:` transforms applied after LLM extraction.
  * All transforms are pure and deterministic. Unknown transform names are

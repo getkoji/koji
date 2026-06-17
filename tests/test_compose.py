@@ -66,19 +66,11 @@ class TestServicesDefaults:
         assert "koji-api" in svc
         assert "koji-dashboard" in svc
         assert "koji-parse" in svc
-        assert "koji-extract" in svc
         assert "ollama" in svc
 
-    def test_extract_depends_on_ollama(self):
+    def test_no_extract_service(self):
         compose = generate_compose(_make_config(), PROJECT_DIR)
-        extract = compose["services"]["koji-extract"]
-        assert "depends_on" in extract
-        assert "ollama" in extract["depends_on"]
-
-    def test_extract_has_ollama_url(self):
-        compose = generate_compose(_make_config(), PROJECT_DIR)
-        env = compose["services"]["koji-extract"]["environment"]
-        assert "KOJI_OLLAMA_URL" in env
+        assert "koji-extract" not in compose["services"]
 
 
 class TestOllamaDisabled:
@@ -88,23 +80,9 @@ class TestOllamaDisabled:
         compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
         assert "ollama" not in compose["services"]
 
-    def test_extract_no_ollama_dependency(self):
-        compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
-        extract = compose["services"]["koji-extract"]
-        assert "depends_on" not in extract
-
-    def test_extract_no_ollama_url(self):
-        compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
-        env = compose["services"]["koji-extract"]["environment"]
-        assert "KOJI_OLLAMA_URL" not in env
-
     def test_no_ollama_volume(self):
         compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
         assert "koji-test-ollama-data" not in compose["volumes"]
-
-    def test_extract_still_present(self):
-        compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
-        assert "koji-extract" in compose["services"]
 
     def test_parse_still_present(self):
         compose = generate_compose(_make_config(ollama=False), PROJECT_DIR)
@@ -128,9 +106,9 @@ class TestParseDisabled:
         compose = generate_compose(_make_config(parse=False), PROJECT_DIR)
         assert "ollama" in compose["services"]
 
-    def test_extract_still_present(self):
+    def test_api_still_present(self):
         compose = generate_compose(_make_config(parse=False), PROJECT_DIR)
-        assert "koji-extract" in compose["services"]
+        assert "koji-api" in compose["services"]
 
 
 class TestBothDisabled:
@@ -141,7 +119,6 @@ class TestBothDisabled:
         svc = compose["services"]
         assert "koji-api" in svc
         assert "koji-dashboard" in svc
-        assert "koji-extract" in svc
         assert "koji-parse" not in svc
         assert "ollama" not in svc
 
@@ -183,10 +160,6 @@ class TestPullModeDefault:
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
         assert compose["services"]["koji-parse"]["image"] == "ghcr.io/getkoji/parse:latest"
 
-    def test_extract_image_ref(self):
-        compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
-        assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:latest"
-
     def test_ollama_still_uses_upstream_image(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR)
         assert compose["services"]["ollama"]["image"] == "ollama/ollama:latest"
@@ -201,7 +174,6 @@ class TestVersionTag:
         assert compose["services"]["koji-api"]["image"] == "ghcr.io/getkoji/api:v0.2.0"
         assert compose["services"]["koji-dashboard"]["image"] == "ghcr.io/getkoji/dashboard:v0.2.0"
         assert compose["services"]["koji-parse"]["image"] == "ghcr.io/getkoji/parse:v0.2.0"
-        assert compose["services"]["koji-extract"]["image"] == "ghcr.io/getkoji/extract:v0.2.0"
 
     def test_default_version_is_latest(self):
         config = KojiConfig(project="test")
@@ -217,7 +189,7 @@ class TestDevMode:
     def test_dev_arg_produces_build_blocks(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
         # Only Koji-built services have build blocks (not koji-db, koji-minio, koji-mailpit, koji-minio-init)
-        buildable = ["koji-api", "koji-dashboard", "koji-parse", "koji-extract"]
+        buildable = ["koji-api", "koji-dashboard", "koji-parse"]
         for name in buildable:
             svc = compose["services"][name]
             assert "build" in svc, f"{name} should have a build block in dev mode"
@@ -231,9 +203,6 @@ class TestDevMode:
 
         parse_build = compose["services"]["koji-parse"]["build"]
         assert parse_build["dockerfile"] == "docker/parse.Dockerfile"
-
-        extract_build = compose["services"]["koji-extract"]["build"]
-        assert extract_build["dockerfile"] == "docker/extract.Dockerfile"
 
         dashboard_build = compose["services"]["koji-dashboard"]["build"]
         assert dashboard_build["dockerfile"] == "docker/dashboard.Dockerfile"

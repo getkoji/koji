@@ -1,13 +1,9 @@
 /**
- * Resolve a pipeline's model endpoint into the decrypted config payload
- * the extract service expects.
+ * Resolve a pipeline's model endpoint into a decrypted provider config.
  *
- * The extract service accepts an optional `endpoint` block on every
- * POST /extract request (see services/extract/main.py EndpointConfig).
- * When present, it overrides env-var defaults and routes to the matching
- * provider adapter. This module does the Node-side work: look up the
- * pipeline's modelProviderId, fetch + decrypt the authJson envelope,
- * and shape a plain JSON object suitable for the wire.
+ * Looks up the pipeline's modelProviderId, fetches + decrypts the authJson
+ * envelope, and returns a ready-to-use LLM provider instance. Used by the
+ * in-process extraction pipeline to route LLM calls to the correct endpoint.
  *
  * Returns null when:
  *   - The pipeline has no modelProviderId set (fall through to env-var

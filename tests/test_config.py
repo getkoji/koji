@@ -49,7 +49,6 @@ class TestClusterConfig:
         assert c.server_port == 9401
         assert c.ollama_port == 9410
         assert c.parse_port == 9411
-        assert c.extract_port == 9412
 
     def test_custom_base_port(self):
         c = ClusterConfig(base_port=9500)
@@ -57,7 +56,6 @@ class TestClusterConfig:
         assert c.server_port == 9501
         assert c.ollama_port == 9510
         assert c.parse_port == 9511
-        assert c.extract_port == 9512
 
     def test_port_offsets(self):
         c = ClusterConfig(base_port=8000)
@@ -65,7 +63,6 @@ class TestClusterConfig:
         assert c.server_port == c.base_port + 1
         assert c.ollama_port == c.base_port + 10
         assert c.parse_port == c.base_port + 11
-        assert c.extract_port == c.base_port + 12
 
     def test_custom_name(self):
         c = ClusterConfig(name="production")

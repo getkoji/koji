@@ -128,9 +128,6 @@ jobs:
           - name: parse
             dockerfile: docker/parse.Dockerfile
             context: .
-          - name: extract
-            dockerfile: docker/extract.Dockerfile
-            context: .
           - name: dashboard
             dockerfile: docker/dashboard.Dockerfile
             context: .

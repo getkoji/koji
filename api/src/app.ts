@@ -99,8 +99,6 @@ export interface CreateAppDeps {
 
   /** Public dashboard URL — used in invite / password-reset emails. */
   appUrl: string;
-  /** Base URL for the extract service. */
-  extractUrl: string;
   /** Base URL for the parse service (only hit directly by Node `routes/extract.ts`;
    *  Workers go through the parseProvider). */
   parseUrl: string;
@@ -187,7 +185,6 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     c.set("emailSender", deps.emailSender);
     c.set("masterKey", deps.masterKey);
     c.set("appUrl", deps.appUrl);
-    c.set("extractUrl", deps.extractUrl);
     c.set("parseUrl", deps.parseUrl);
     c.set("authAdapterKind", deps.authAdapterKind);
     c.set("billing", billing);

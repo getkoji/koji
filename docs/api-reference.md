@@ -50,11 +50,6 @@ Cluster status including health of all downstream services, cluster metadata, an
       "url": "http://koji-parse:9410",
       "response_ms": 45
     },
-    "extract": {
-      "status": "healthy",
-      "url": "http://koji-extract:9420",
-      "response_ms": 32
-    },
     "ollama": {
       "status": "unreachable",
       "url": "http://ollama:11434",
