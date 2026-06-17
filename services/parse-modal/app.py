@@ -22,6 +22,8 @@ Deploy: ``modal deploy app.py`` (requires ``MODAL_TOKEN_ID`` +
 
 from __future__ import annotations
 
+import asyncio
+
 import modal
 
 # ---------------------------------------------------------------------------
@@ -866,11 +868,21 @@ async def parse_http(request: Request):
         last_err: Exception | None = None
 
         # First-attempt path selection: a >50-page scanned PDF gets the
-        # parallel chunked path via ``parse_chunk.starmap.aio(...)``. We
-        # CANNOT delegate to ``parse.local()`` for this case from the async
-        # endpoint — Modal 1.x raises InvalidError when sync ``starmap()``
-        # is called from a running event loop. Anything else goes through
+        # parallel chunked path via ``parse_chunk.remote.aio(...)`` fanned
+        # out under ``asyncio.gather``. We CANNOT delegate to
+        # ``parse.local()`` for this case from the async endpoint — Modal
+        # 1.x raises InvalidError when sync ``starmap()`` is called from
+        # a running event loop. Anything else goes through
         # ``parse.local()`` which runs ``_convert_bytes`` inline.
+        #
+        # Why ``asyncio.gather`` of per-chunk ``remote.aio`` calls instead
+        # of ``starmap.aio``: production was hitting transient
+        # ``URLError(ConnectionResetError)`` from inside ``starmap.aio``'s
+        # batched dispatch, which discards work for every chunk in the
+        # batch on a single connection blip. Fanning the dispatch out
+        # makes each chunk's connection independent, so a reset on one
+        # chunk doesn't kill the others, and we can add per-chunk
+        # retry logic locally if needed.
         should_chunk, chunk_info = _should_chunk(filename, mime_type, file_bytes)
         try:
             if should_chunk and chunk_info is not None:
@@ -879,10 +891,12 @@ async def parse_http(request: Request):
                     f"splitting into {(chunk_info['pages'] + 49) // 50} chunks"
                 )
                 chunks = _split_pdf(file_bytes, chunk_size=50)
-                args_list = [(chunk_bytes, start - 1, filename, mime_type) for chunk_bytes, start, _end in chunks]
-                chunk_results = []
-                async for r in parse_chunk.starmap.aio(args_list):
-                    chunk_results.append(r)
+                chunk_results = await asyncio.gather(
+                    *[
+                        parse_chunk.remote.aio(chunk_bytes, start - 1, filename, mime_type)
+                        for chunk_bytes, start, _end in chunks
+                    ]
+                )
                 result = _merge_chunk_results(chunk_results, chunk_info["pages"])
             else:
                 result = parse.local(filename, mime_type, file_bytes, force_ocr=force_ocr)
