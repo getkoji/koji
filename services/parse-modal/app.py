@@ -624,12 +624,6 @@ def parse_chunk(
 # traffic worth pinning a warm container for.
 
 
-@app.function(
-    gpu="L4",
-    timeout=600,
-    memory=4096,
-    cpu=2.0,
-)
 def _should_chunk(
     filename: str,
     mime_type: str | None,
@@ -642,6 +636,19 @@ def _should_chunk(
     Decision: scanned PDF with more than 50 pages → chunk so each 50-page
     range runs OCR on its own GPU container in parallel. Anything else
     runs serially in the calling container.
+
+    Pure-Python helper, NOT a Modal function. The previous revision
+    (#299) landed an ``@app.function(...)`` decorator above this
+    definition by accident — the decorator was meant for ``parse()``
+    below. Modal then wrapped ``_should_chunk`` in a ``Function`` object
+    and every call from ``_parse_endpoint`` failed at the first line:
+
+      File "/root/app.py", line 848, in parse_http
+          should_chunk, chunk_info = _should_chunk(filename, mime_type, file_bytes)
+      TypeError: 'Function' object is not callable
+
+    Keep this as a plain ``def``. The Modal decorator belongs on
+    ``parse()`` immediately below.
 
     Extracted as a pure helper so both the sync ``parse()`` entrypoint
     (used by ``modal run app.py::main``) and the async ``_parse_endpoint``
@@ -659,6 +666,12 @@ def _should_chunk(
     return (info["scanned"] and info["pages"] > 50), info
 
 
+@app.function(
+    gpu="L4",
+    timeout=600,
+    memory=4096,
+    cpu=2.0,
+)
 def parse(
     filename: str,
     mime_type: str | None,
