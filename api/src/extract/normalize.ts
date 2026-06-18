@@ -435,7 +435,80 @@ export function normalizeExtracted(
       }
     }
 
+    // map: replace value via a lookup table
+    const mapTable = spec.map as Record<string, unknown> | undefined;
+    if (mapTable && typeof mapTable === "object" && typeof value === "string") {
+      let mapped = mapTable[value];
+      if (mapped === undefined) {
+        // Case-insensitive fallback
+        const valueLower = value.trim().toLowerCase();
+        for (const [k, v] of Object.entries(mapTable)) {
+          if (typeof k === "string" && k.trim().toLowerCase() === valueLower) {
+            mapped = v;
+            break;
+          }
+        }
+      }
+      if (mapped !== undefined) {
+        report.applied.push({ field: fieldName, transform: `map ${JSON.stringify(value)} -> ${JSON.stringify(mapped)}` });
+        value = mapped;
+      }
+    }
+
+    // default: fill in fallback for null/empty
+    const defaultVal = spec.default;
+    if (defaultVal !== undefined && (value == null || (typeof value === "string" && !value.trim()))) {
+      report.applied.push({ field: fieldName, transform: `default -> ${JSON.stringify(defaultVal)}` });
+      value = defaultVal;
+    }
+
     result[fieldName] = value;
+  }
+
+  // concat: combine multiple fields into one
+  for (const [fieldName, spec] of Object.entries(fieldsSpec)) {
+    if (!spec || typeof spec !== "object") continue;
+    const concatConfig = spec.concat as Record<string, unknown> | undefined;
+    if (!concatConfig || typeof concatConfig !== "object") continue;
+
+    const current = result[fieldName];
+    if (current != null && (typeof current !== "string" || current.trim())) continue;
+
+    const sourceFields = (concatConfig.fields ?? []) as string[];
+    const separator = String(concatConfig.separator ?? " ");
+    const parts: string[] = [];
+    for (const src of sourceFields) {
+      const v = result[src];
+      if (v != null && String(v).trim()) parts.push(String(v).trim());
+    }
+    if (parts.length > 0) {
+      result[fieldName] = parts.join(separator);
+      report.applied.push({ field: fieldName, transform: `concat from [${sourceFields.join(", ")}]` });
+    }
+  }
+
+  // computed: populate from a template referencing other fields
+  for (const [fieldName, spec] of Object.entries(fieldsSpec)) {
+    if (!spec || typeof spec !== "object") continue;
+    const template = spec.computed as string | undefined;
+    if (typeof template !== "string") continue;
+
+    const current = result[fieldName];
+    if (current != null && (typeof current !== "string" || current.trim())) continue;
+
+    let computed = template;
+    for (const [key, val] of Object.entries(result)) {
+      const placeholder = `{${key}}`;
+      if (computed.includes(placeholder)) {
+        computed = computed.replaceAll(placeholder, val != null ? String(val).trim() : "");
+      }
+    }
+    // Clean up remaining unreferenced placeholders
+    computed = computed.replace(/\{[^}]+\}/g, "").trim();
+    if (computed) {
+      result[fieldName] = computed;
+      report.applied.push({ field: fieldName, transform: "computed from template" });
+    }
   }
 
   // Derived fields
@@ -506,6 +579,23 @@ export function normalizeExtracted(
         result[fieldName] = resolvedValue;
         report.applied.push({ field: fieldName, transform: `resolve "${resolveTemplate}" → ${resolved}` });
       }
+    }
+  }
+
+  // rename: rename output keys (applied last)
+  const renames: Array<[string, string]> = [];
+  for (const [fieldName, spec] of Object.entries(fieldsSpec)) {
+    if (!spec || typeof spec !== "object") continue;
+    const newName = spec.rename as string | undefined;
+    if (typeof newName === "string" && newName !== fieldName && fieldName in result) {
+      renames.push([fieldName, newName]);
+    }
+  }
+  for (const [oldName, newName] of renames) {
+    if (!(newName in result)) {
+      result[newName] = result[oldName];
+      delete result[oldName];
+      report.applied.push({ field: oldName, transform: `rename -> ${newName}` });
     }
   }
 
