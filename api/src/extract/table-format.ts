@@ -4,7 +4,7 @@
  * Detects markdown pipe tables and converts them to HTML <table> elements
  * when the content is table-heavy. HTML tables preserve column alignment
  * and structure better than pipe-delimited markdown, improving LLM
- * extraction accuracy on tabular documents (loss runs, schedules, invoices).
+ * extraction accuracy on tabular documents.
  *
  * Non-table content (headings, paragraphs, lists) is left as markdown.
  */
