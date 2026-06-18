@@ -10,6 +10,65 @@ import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 export const webhookTargets = new Hono<Env>();
 
 /**
+ * Max bytes for the JSON-serialized headers map. Keeps the encrypted blob
+ * small enough to fit comfortably in any HTTP server's header limits at
+ * delivery time and prevents unbounded storage growth from a misconfigured
+ * caller. Auth tokens, bearer JWTs, and custom routing keys easily fit.
+ */
+const MAX_HEADERS_BYTES = 4096;
+
+/**
+ * Reject the body when:
+ *   - any header name is reserved (Koji-* or Content-Type — we own those
+ *     at delivery time, can't let a caller shadow them)
+ *   - the JSON-serialized headers map exceeds MAX_HEADERS_BYTES
+ *
+ * Returns null on success, a `{ error }` object the caller should pass to
+ * `c.json(..., 400)` on rejection.
+ */
+function validateHeaders(headers: Record<string, string>): { error: string } | null {
+  const reserved = Object.keys(headers).filter(
+    (k) => k.toLowerCase().startsWith("koji-") || k.toLowerCase() === "content-type",
+  );
+  if (reserved.length > 0) {
+    return { error: `Reserved header names: ${reserved.join(", ")}` };
+  }
+  const serialized = JSON.stringify(headers);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_HEADERS_BYTES) {
+    return {
+      error: `Headers exceed ${MAX_HEADERS_BYTES} bytes when serialized`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Decrypt a stored header blob into the original header map. On failure
+ * (corrupt blob, wrong master key, etc.) returns {} and logs — never
+ * throws, so the caller can keep delivering the webhook even if the
+ * custom headers were lost to a rotation event.
+ */
+function decryptHeadersOrEmpty(
+  blob: Buffer | null,
+  masterKey: string | null,
+  tenantId: string,
+  context: string,
+): Record<string, string> {
+  if (!blob || !masterKey) return {};
+  try {
+    return JSON.parse(decrypt(blob.toString("utf8"), masterKey, tenantId)) as Record<
+      string,
+      string
+    >;
+  } catch (err) {
+    console.warn(
+      `[webhook-targets] failed to decrypt custom headers in ${context} for tenant ${tenantId}: ${err instanceof Error ? err.message : err}. Headers will be omitted from this request.`,
+    );
+    return {};
+  }
+}
+
+/**
  * GET /api/webhook-targets — list active targets.
  */
 webhookTargets.get("/", requires("webhook:read"), async (c) => {
@@ -33,18 +92,15 @@ webhookTargets.get("/", requires("webhook:read"), async (c) => {
       .from(schema.webhookTargets)
   );
 
-  // Mask encrypted headers: only return header names, never values
+  // Mask encrypted headers: only return header names, never values.
+  // We still need to decrypt to recover the names — the alternative would
+  // be storing names in plaintext, which leaks "this endpoint has an
+  // Authorization header" to anyone who can read the row.
   const masterKey = c.get("masterKey");
   const data = rows.map((r) => {
     const { headersEncrypted, ...rest } = r;
-    let headerNames: string[] = [];
-    if (headersEncrypted && masterKey) {
-      try {
-        const blob = headersEncrypted.toString("utf8");
-        const parsed = JSON.parse(decrypt(blob, masterKey, tenantId)) as Record<string, string>;
-        headerNames = Object.keys(parsed);
-      } catch { /* corrupt or missing key — skip */ }
-    }
+    const headers = decryptHeadersOrEmpty(headersEncrypted, masterKey, tenantId, "GET /");
+    const headerNames = Object.keys(headers);
     return { ...rest, headerCount: headerNames.length, headerNames };
   });
 
@@ -88,14 +144,10 @@ webhookTargets.post(
     return c.json({ error: "name, slug, and url are required" }, 400);
   }
 
-  // Validate custom headers — block reserved prefixes
+  // Validate custom headers — block reserved prefixes + size cap
   if (body.headers && typeof body.headers === "object") {
-    const reserved = Object.keys(body.headers).filter(
-      (k) => k.toLowerCase().startsWith("koji-") || k.toLowerCase() === "content-type",
-    );
-    if (reserved.length > 0) {
-      return c.json({ error: `Reserved header names: ${reserved.join(", ")}` }, 400);
-    }
+    const err = validateHeaders(body.headers);
+    if (err) return c.json(err, 400);
   }
   if (!body.event_filters?.length) {
     return c.json({ error: "At least one event filter is required" }, 400);
@@ -196,13 +248,14 @@ webhookTargets.patch("/:id", requires("webhook:write"), async (c) => {
     const masterKey = c.get("masterKey");
     if (body.headers === null || Object.keys(body.headers).length === 0) {
       updates.headersEncrypted = null;
-    } else if (masterKey) {
-      const reserved = Object.keys(body.headers).filter(
-        (k) => k.toLowerCase().startsWith("koji-") || k.toLowerCase() === "content-type",
-      );
-      if (reserved.length > 0) {
-        return c.json({ error: `Reserved header names: ${reserved.join(", ")}` }, 400);
-      }
+    } else if (!masterKey) {
+      // Caller asked to set headers but we can't encrypt — fail loudly
+      // rather than silently dropping the update, which would let them
+      // think they'd configured headers that never get sent.
+      return c.json({ error: "KOJI_MASTER_KEY is not set" }, 500);
+    } else {
+      const err = validateHeaders(body.headers);
+      if (err) return c.json(err, 400);
       updates.headersEncrypted = Buffer.from(
         encrypt(JSON.stringify(body.headers), masterKey, tenantId),
         "utf8",
@@ -282,13 +335,12 @@ webhookTargets.post("/:id/test", requires("webhook:write"), async (c) => {
   const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
 
   // Decrypt custom headers if present
-  let customHeaders: Record<string, string> = {};
-  if (target.headersEncrypted) {
-    try {
-      const blob = target.headersEncrypted.toString("utf8");
-      customHeaders = JSON.parse(decrypt(blob, masterKey, tenantId)) as Record<string, string>;
-    } catch { /* best-effort */ }
-  }
+  const customHeaders = decryptHeadersOrEmpty(
+    target.headersEncrypted,
+    masterKey,
+    tenantId,
+    `POST /${targetId}/test`,
+  );
 
   const start = Date.now();
   try {
