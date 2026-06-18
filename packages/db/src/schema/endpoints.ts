@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  text,
   timestamp,
   uniqueIndex,
   uuid,
@@ -51,6 +52,11 @@ export const modelEndpoints = pgTable(
     pricingOverrideJson: jsonb("pricing_override_json"),
     status: varchar("status", { length: 16 }).notNull().default("active"),
     lastHealthCheckAt: timestamp("last_health_check_at", { withTimezone: true, mode: "date" }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true, mode: "date" }),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true, mode: "date" }),
+    lastFailureReason: text("last_failure_reason"),
+    healthState: varchar("health_state", { length: 16 }).notNull().default("healthy"),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),

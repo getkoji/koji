@@ -21,8 +21,15 @@ import type { Db } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { createProvider } from "./providers";
 import type { ModelProvider } from "./providers";
+import { wrapProviderWithHealthTracking } from "./endpoint-health";
 
 export interface ExtractEndpointPayload {
+  /**
+   * UUID of the source `model_endpoints` row, when this payload originated
+   * from a tenant-configured endpoint. Health tracking attaches to this
+   * id; the env-var fallback path leaves it undefined.
+   */
+  endpoint_id?: string;
   provider: string;
   model: string;
   base_url?: string;
@@ -47,6 +54,7 @@ export async function resolveExtractEndpoint(
   const [endpoint] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
+        id: schema.modelEndpoints.id,
         provider: schema.modelEndpoints.provider,
         model: schema.modelEndpoints.model,
         configJson: schema.modelEndpoints.configJson,
@@ -101,6 +109,7 @@ export async function resolveExtractEndpoint(
   }
 
   const payload: ExtractEndpointPayload = {
+    endpoint_id: endpoint.id,
     provider: endpoint.provider,
     model: endpoint.model,
   };
@@ -180,5 +189,10 @@ export async function resolveTenantProvider(
   } catch {}
 
   const model = endpointPayload?.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
-  return { provider: createProvider(model, endpointPayload), model };
+  const rawProvider = createProvider(model, endpointPayload);
+  // Wrap in health-tracking when we have a tenant-configured endpoint to
+  // attribute results to. Env-var fallback (no endpoint_id) returns the
+  // raw provider — there's no row to record health against.
+  const provider = wrapProviderWithHealthTracking(rawProvider, db, endpointPayload?.endpoint_id);
+  return { provider, model };
 }
