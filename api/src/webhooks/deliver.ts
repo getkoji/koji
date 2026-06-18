@@ -115,6 +115,23 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
   const signedPayload = `${timestamp}.${JSON.stringify(payload)}`;
   const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
 
+  // Decrypt custom headers if present. We never let a decrypt failure
+  // block delivery — the signature and payload still go through — but we
+  // do log loudly so an operator notices that custom auth headers
+  // (Authorization, X-API-Key, etc.) are silently missing from outgoing
+  // requests, which is the symptom of a master-key rotation gone wrong.
+  let customHeaders: Record<string, string> = {};
+  if (target.headersEncrypted) {
+    try {
+      const blob = target.headersEncrypted.toString("utf8");
+      customHeaders = JSON.parse(decrypt(blob, _masterKey, job.tenantId)) as Record<string, string>;
+    } catch (err) {
+      console.warn(
+        `[webhooks/deliver] failed to decrypt custom headers for target ${webhookTargetId} (tenant ${job.tenantId}, event ${eventId}): ${err instanceof Error ? err.message : err}. Delivering without them.`,
+      );
+    }
+  }
+
   // Deliver
   let httpStatus = 0;
   let responseBody = "";
@@ -124,6 +141,7 @@ export async function handleWebhookDeliver(job: QueuedJob): Promise<void> {
     const resp = await fetch(target.url, {
       method: "POST",
       headers: {
+        ...customHeaders,
         "Content-Type": "application/json",
         "Koji-Signature": `t=${timestamp},v1=${v1}`,
         "Koji-Event-Id": eventId,
