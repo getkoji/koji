@@ -168,7 +168,6 @@ def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) ->
         console.print(f"  [bold]Dashboard:[/bold]   http://127.0.0.1:{config.cluster.ui_port}")
         console.print(f"  [bold]API Server:[/bold]  http://127.0.0.1:{config.cluster.server_port}")
         console.print(f"  [bold]Parse:[/bold]       http://127.0.0.1:{config.cluster.parse_port}")
-        console.print(f"  [bold]Extract:[/bold]     http://127.0.0.1:{config.cluster.extract_port}")
         console.print(f"  [bold]Ollama:[/bold]      http://127.0.0.1:{config.cluster.ollama_port}")
         console.print()
         console.print("[dim]To restart, run [bold]koji stop[/bold] then [bold]koji start[/bold].[/dim]")

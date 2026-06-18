@@ -174,3 +174,54 @@ def test_service_to_compose_mapping():
     assert SERVICE_TO_COMPOSE["parse"] == "koji-parse"
     assert SERVICE_TO_COMPOSE["dashboard"] == "koji-dashboard"
     assert SERVICE_TO_COMPOSE["ollama"] == "ollama"
+
+
+# ── Auth error helper ────────────────────────────────────────────────
+
+
+class _FakeResponse:
+    """Minimal httpx-shaped response stub for the auth helper tests."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+def test_check_http_auth_error_401_prints_and_returns_true(capsys):
+    from cli.main import _check_http_auth_error
+
+    handled = _check_http_auth_error(_FakeResponse(401), "https://api.example.com")
+    assert handled is True
+    out = capsys.readouterr().out
+    assert "Authentication failed" in out
+    assert "https://api.example.com" in out
+    assert "koji login" in out
+    assert "KOJI_API_KEY" in out
+
+
+def test_check_http_auth_error_403_prints_and_returns_true(capsys):
+    from cli.main import _check_http_auth_error
+
+    handled = _check_http_auth_error(_FakeResponse(403), "https://api.example.com")
+    assert handled is True
+    out = capsys.readouterr().out
+    assert "HTTP 403" in out
+
+
+def test_check_http_auth_error_other_status_returns_false_silently(capsys):
+    from cli.main import _check_http_auth_error
+
+    for status in (200, 404, 500, 502):
+        handled = _check_http_auth_error(_FakeResponse(status), "https://api.example.com")
+        assert handled is False
+    # No output for any non-auth status.
+    assert capsys.readouterr().out == ""
+
+
+# ── koji start --clean flag ──────────────────────────────────────────
+
+
+def test_start_clean_flag_registered():
+    """The --clean flag is wired into the start command."""
+    result = runner.invoke(app, ["start", "--help"])
+    assert result.exit_code == 0
+    assert "--clean" in result.stdout
