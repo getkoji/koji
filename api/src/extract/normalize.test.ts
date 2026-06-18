@@ -516,3 +516,225 @@ describe("resolve directive", () => {
     expect(result.gl_insurer_name).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// map directive
+// ---------------------------------------------------------------------------
+
+describe("map directive", () => {
+  it("replaces a string value via lookup table", () => {
+    const { value, report } = normField("Y", { map: { Y: "Yes", N: "No" } });
+    expect(value).toBe("Yes");
+    expect(report.applied.some((r) => r.transform.includes("map"))).toBe(true);
+  });
+
+  it("falls back to case-insensitive match when exact key missing", () => {
+    const { value } = normField("YES", { map: { yes: "Yes", no: "No" } });
+    expect(value).toBe("Yes");
+  });
+
+  it("trims whitespace for the case-insensitive fallback", () => {
+    const { value } = normField("  yes  ", { map: { yes: "Yes" } });
+    expect(value).toBe("Yes");
+  });
+
+  it("leaves the value untouched when no match", () => {
+    const { value, report } = normField("maybe", { map: { yes: "Yes", no: "No" } });
+    expect(value).toBe("maybe");
+    expect(report.applied.some((r) => r.transform.includes("map"))).toBe(false);
+  });
+
+  it("skips non-string values", () => {
+    const { value } = normField(42, { map: { "42": "forty-two" } });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// default directive
+// ---------------------------------------------------------------------------
+
+describe("default directive", () => {
+  it("fills null with the default", () => {
+    const { value, report } = normField(null, { default: "USD" });
+    expect(value).toBe("USD");
+    expect(report.applied.some((r) => r.transform.startsWith("default"))).toBe(true);
+  });
+
+  it("fills empty string with the default", () => {
+    const { value } = normField("", { default: "USD" });
+    expect(value).toBe("USD");
+  });
+
+  it("fills whitespace-only string with the default", () => {
+    const { value } = normField("   ", { default: "USD" });
+    expect(value).toBe("USD");
+  });
+
+  it("keeps a non-empty value", () => {
+    const { value } = normField("EUR", { default: "USD" });
+    expect(value).toBe("EUR");
+  });
+
+  it("keeps falsy-but-meaningful values (0, false)", () => {
+    expect(normField(0, { default: 999 }).value).toBe(0);
+    expect(normField(false, { default: true }).value).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// concat directive
+// ---------------------------------------------------------------------------
+
+describe("concat directive", () => {
+  it("combines source fields with the default space separator when target is empty", () => {
+    const extracted = { first: "Frank", last: "Thomas", full: null };
+    const schema = {
+      fields: {
+        first: { type: "string" },
+        last: { type: "string" },
+        full: { type: "string", concat: { fields: ["first", "last"] } },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.full).toBe("Frank Thomas");
+  });
+
+  it("honors a custom separator", () => {
+    const extracted = { city: "Toronto", state: "ON", combined: "" };
+    const schema = {
+      fields: {
+        city: { type: "string" },
+        state: { type: "string" },
+        combined: { type: "string", concat: { fields: ["city", "state"], separator: ", " } },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.combined).toBe("Toronto, ON");
+  });
+
+  it("trims and skips null/empty source fields", () => {
+    const extracted = { a: "  hello  ", b: null, c: "", d: "world", out: null };
+    const schema = {
+      fields: {
+        a: { type: "string" },
+        b: { type: "string" },
+        c: { type: "string" },
+        d: { type: "string" },
+        out: { type: "string", concat: { fields: ["a", "b", "c", "d"] } },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.out).toBe("hello world");
+  });
+
+  it("does NOT overwrite an existing non-empty target", () => {
+    const extracted = { first: "Frank", last: "Thomas", full: "Existing Name" };
+    const schema = {
+      fields: {
+        first: { type: "string" },
+        last: { type: "string" },
+        full: { type: "string", concat: { fields: ["first", "last"] } },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.full).toBe("Existing Name");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computed directive
+// ---------------------------------------------------------------------------
+
+describe("computed directive", () => {
+  it("interpolates {field} placeholders from other extracted values", () => {
+    const extracted = { city: "Toronto", country: "Canada", location: null };
+    const schema = {
+      fields: {
+        city: { type: "string" },
+        country: { type: "string" },
+        location: { type: "string", computed: "{city}, {country}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.location).toBe("Toronto, Canada");
+  });
+
+  it("strips placeholders with no matching field", () => {
+    const extracted = { city: "Toronto", out: null };
+    const schema = {
+      fields: {
+        city: { type: "string" },
+        out: { type: "string", computed: "{city} {missing}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.out).toBe("Toronto");
+  });
+
+  it("leaves the target untouched when the template produces empty output", () => {
+    const extracted = { out: null };
+    const schema = {
+      fields: {
+        out: { type: "string", computed: "{missing} {also_missing}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.out).toBeNull();
+  });
+
+  it("does NOT overwrite an existing non-empty target", () => {
+    const extracted = { city: "Toronto", country: "Canada", location: "Pre-filled" };
+    const schema = {
+      fields: {
+        city: { type: "string" },
+        country: { type: "string" },
+        location: { type: "string", computed: "{city}, {country}" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.location).toBe("Pre-filled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rename directive
+// ---------------------------------------------------------------------------
+
+describe("rename directive", () => {
+  it("renames a field's output key", () => {
+    const extracted = { policy_no: "ABC-123" };
+    const schema = {
+      fields: {
+        policy_no: { type: "string", rename: "policyNumber" },
+      },
+    };
+    const [result, report] = normalizeExtracted(extracted, schema);
+    expect(result.policyNumber).toBe("ABC-123");
+    expect("policy_no" in result).toBe(false);
+    expect(report.applied.some((r) => r.transform.startsWith("rename"))).toBe(true);
+  });
+
+  it("does NOT overwrite an existing field with the new name", () => {
+    const extracted = { policy_no: "ABC-123", policyNumber: "XYZ-789" };
+    const schema = {
+      fields: {
+        policy_no: { type: "string", rename: "policyNumber" },
+        policyNumber: { type: "string" },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.policyNumber).toBe("XYZ-789");
+    // The original key stays — collision short-circuits the rename.
+    expect(result.policy_no).toBe("ABC-123");
+  });
+
+  it("ignores a rename to the same name", () => {
+    const extracted = { name: "Frank" };
+    const schema = {
+      fields: { name: { type: "string", rename: "name" } },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.name).toBe("Frank");
+  });
+});
