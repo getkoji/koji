@@ -10,7 +10,7 @@ export const notifications = new Hono<Env>();
  * GET /api/notifications — list recent notifications.
  * Query params: limit (default 20), unread_only (default false).
  */
-notifications.get("/", requires("permission:read"), async (c) => {
+notifications.get("/", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const limit = Math.min(Number(c.req.query("limit") ?? 20), 100);
@@ -44,7 +44,7 @@ notifications.get("/", requires("permission:read"), async (c) => {
 /**
  * GET /api/notifications/count — unread notification count.
  */
-notifications.get("/count", requires("permission:read"), async (c) => {
+notifications.get("/count", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
@@ -61,10 +61,10 @@ notifications.get("/count", requires("permission:read"), async (c) => {
 /**
  * PATCH /api/notifications/:id/read — mark a single notification as read.
  */
-notifications.patch("/:id/read", requires("permission:read"), async (c) => {
+notifications.patch("/:id/read", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const id = c.req.param("id");
+  const id = c.req.param("id")!;
 
   await withRLS(db, tenantId, (tx) =>
     tx
@@ -84,7 +84,7 @@ notifications.patch("/:id/read", requires("permission:read"), async (c) => {
 /**
  * POST /api/notifications/read-all — mark all notifications as read.
  */
-notifications.post("/read-all", requires("permission:read"), async (c) => {
+notifications.post("/read-all", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 

@@ -11,6 +11,7 @@ import { requireQuantityGate } from "../billing/middleware";
 import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
+import { createNotification } from "../notifications/emit";
 import { createExtractionJob, addDocumentToJob, mimeTypeFor } from "../ingestion/process";
 
 /**
@@ -780,6 +781,13 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
     schema_version_id: body.schema_version_id,
     version_number: sv.versionNumber,
     deployed_by: principal.userId,
+  });
+
+  createNotification(tenantId, {
+    type: "schema.deployed",
+    title: `Schema deployed`,
+    body: `Pipeline updated to schema version ${sv.versionNumber}`,
+    data: { pipelineId, schemaVersionId: body.schema_version_id, versionNumber: sv.versionNumber },
   });
 
   return c.json(rows[0]);

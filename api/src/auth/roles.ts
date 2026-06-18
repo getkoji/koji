@@ -39,7 +39,8 @@ export type Permission =
   | "api_key:write"
   | "source:write"
   | "playground:use"
-  | "audit:read";
+  | "audit:read"
+  | "notification:read";
 
 export type Role =
   | "viewer"
@@ -62,6 +63,7 @@ const VIEWER_PERMS: Permission[] = [
   "member:read",
   "tenant:read",
   "audit:read",
+  "notification:read",
 ];
 
 const RUNNER_PERMS: Permission[] = [...VIEWER_PERMS, "job:run", "playground:use"];

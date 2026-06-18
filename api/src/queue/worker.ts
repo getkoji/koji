@@ -23,6 +23,12 @@ export interface WorkerOptions {
    * orphaned documents as failed.
    */
   onTerminalReap?: (job: ReapedJob) => Promise<void>;
+  /**
+   * Called after a job completes successfully. `durationMs` is the handler's
+   * execution time. Errors here are caught and logged — they never fail the
+   * job.
+   */
+  onJobSucceeded?: (job: { id: string; kind: string; tenantId: string }, durationMs: number) => Promise<void>;
 }
 
 export function startWorker(
@@ -72,9 +78,24 @@ export function startWorker(
           continue;
         }
 
+        const startedAt = Date.now();
         try {
           await handler(job);
           await queue.ack(job.id);
+          if (options?.onJobSucceeded) {
+            const durationMs = Date.now() - startedAt;
+            try {
+              await options.onJobSucceeded(
+                { id: job.id, kind: job.kind, tenantId: job.tenantId },
+                durationMs,
+              );
+            } catch (err) {
+              console.error(
+                `[worker-${id}] onJobSucceeded failed for ${job.kind}:${job.id}:`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           const retryable = !(err instanceof TerminalError);

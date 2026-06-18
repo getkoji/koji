@@ -518,6 +518,13 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       threshold,
     });
     recorder.recordDeliverStage(prepared);
+
+    createNotification(tenantId, {
+      type: "document.review_requested",
+      title: "Document needs review",
+      body: `Low confidence on ${reviewField} (${(reviewConfidence * 100).toFixed(0)}%)`,
+      data: { documentId, jobId, field: reviewField, confidence: reviewConfidence },
+    });
   } else {
     // Delivered
     await withRLS(db, tenantId, (tx) =>
