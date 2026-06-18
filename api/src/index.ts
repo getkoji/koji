@@ -27,6 +27,7 @@ import { SmtpEmailSender } from "./email/smtp";
 import { markDocFailed } from "./ingestion/process";
 import { createNotification } from "./notifications/emit";
 import { emitWebhookEvent } from "./webhooks/emit";
+import { startStuckJobSweeper } from "./jobs/sweeper";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5434/koji";
@@ -152,6 +153,13 @@ async function start() {
       });
     },
   });
+
+  // Application-level stuck-job sweeper — complementary to the queue
+  // reaper above. The queue reaper handles worker death (visibility
+  // timeout); this one handles application-level jobs that never reach
+  // a terminal state for other reasons.
+  startStuckJobSweeper(db);
+  console.log("[koji-api] Stuck-job sweeper started (10m no-progress / 30m hard-max, 60s interval)");
 
   serve({ fetch: app.fetch, port: PORT });
   console.log(`[koji-api] Ready`);
