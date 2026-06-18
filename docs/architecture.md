@@ -365,6 +365,8 @@ webhooks:
     secret: your-hmac-secret   # X-Koji-Signature header
 ```
 
+`job.failed` also fires for jobs that the API detects as stuck — running for more than 30 minutes, or running for more than 10 minutes without processing any documents. The `reason` field on the payload explains which condition tripped. Detection runs every 60 seconds in the background; consumers don't need to poll.
+
 ### Python SDK
 
 Integrate Koji into your applications programmatically:
