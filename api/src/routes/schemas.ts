@@ -6,6 +6,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
+import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
@@ -861,6 +862,20 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       durationMs: validateResult.durationMs,
     }).where(eq(schema.schemaRuns.id, schemaRun.id))
   );
+
+  if (validateResult.regressions.length > 0) {
+    createNotification(tenantId, {
+      type: "validate.regression",
+      title: `Validate regression detected`,
+      body: `${validateResult.regressions.length} field regression(s) on ${validateResult.docsTotal} docs (${validateResult.overallAccuracy.toFixed(1)}% accuracy)`,
+      data: {
+        schemaRunId: schemaRun.id,
+        regressionsCount: validateResult.regressions.length,
+        docsTotal: validateResult.docsTotal,
+        accuracy: validateResult.overallAccuracy,
+      },
+    });
+  }
 
   return c.json(validateResult);
 });

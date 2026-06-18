@@ -25,6 +25,8 @@ import { startWorker } from "./queue/worker";
 import { createParseProvider } from "./parse/factory";
 import { SmtpEmailSender } from "./email/smtp";
 import { markDocFailed } from "./ingestion/process";
+import { createNotification } from "./notifications/emit";
+import { emitWebhookEvent } from "./webhooks/emit";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5434/koji";
@@ -90,6 +92,8 @@ async function start() {
   // `platform/apps/hosted/src/index.ts`.
   startWorker(queue, handlers, {
     onTerminalReap: async (job) => {
+      // Domain-specific cleanup for ingestion.process. markDocFailed already
+      // emits document.failed (webhook + notification).
       if (job.kind === "ingestion.process") {
         const documentId = job.payload.documentId as string | undefined;
         if (!documentId) return;
@@ -114,7 +118,38 @@ async function start() {
           "Worker lost — job exceeded visibility timeout after max retries",
         );
         console.log(`[reaper] Marked document ${documentId} as failed`);
+        return;
       }
+
+      // Generic job.failed signal for every other kind so downstream consumers
+      // (dashboards, alerting, customer webhooks) see queue-level failures.
+      await emitWebhookEvent(job.tenantId, "job.failed", {
+        job_id: job.id,
+        kind: job.kind,
+        reason: "Worker lost — job exceeded visibility timeout after max retries",
+      });
+      createNotification(job.tenantId, {
+        type: "job.failed",
+        title: `Job failed: ${job.kind}`,
+        body: "Worker lost — job exceeded visibility timeout after max retries",
+        data: { jobId: job.id, kind: job.kind },
+      });
+    },
+    onJobSucceeded: async (job, durationMs) => {
+      // Only surface jobs that took noticeably long. Sub-60s jobs flood the
+      // bell icon for no operational value.
+      if (durationMs < 60_000) return;
+      await emitWebhookEvent(job.tenantId, "job.succeeded", {
+        job_id: job.id,
+        kind: job.kind,
+        duration_ms: durationMs,
+      });
+      createNotification(job.tenantId, {
+        type: "job.succeeded",
+        title: `Long-running job finished: ${job.kind}`,
+        body: `Completed in ${Math.round(durationMs / 1000)}s`,
+        data: { jobId: job.id, kind: job.kind, durationMs },
+      });
     },
   });
 
