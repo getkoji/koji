@@ -367,6 +367,8 @@ webhooks:
 
 `job.failed` also fires for jobs that the API detects as stuck — running for more than 30 minutes, or running for more than 10 minutes without processing any documents. The `reason` field on the payload explains which condition tripped. Detection runs every 60 seconds in the background; consumers don't need to poll.
 
+Every tenant-configured model endpoint also reports its own health: three consecutive call failures flip the endpoint to `unhealthy` and emit an `endpoint.unhealthy` event; the next successful call flips it back and emits `endpoint.recovered`. The payload identifies the endpoint by slug and ID so consumers can route alerts per-endpoint.
+
 ### Python SDK
 
 Integrate Koji into your applications programmatically:
