@@ -221,7 +221,16 @@ def test_check_http_auth_error_other_status_returns_false_silently(capsys):
 
 
 def test_start_clean_flag_registered():
-    """The --clean flag is wired into the start command."""
-    result = runner.invoke(app, ["start", "--help"])
-    assert result.exit_code == 0
-    assert "--clean" in result.stdout
+    """The --clean flag is wired into the start command's signature.
+
+    We introspect the callback's signature instead of grepping --help output:
+    Rich/typer's renderer interleaves ANSI escapes between dashes when the
+    terminal is narrow, which makes substring checks unreliable in CI.
+    """
+    import inspect
+
+    from cli.main import start
+
+    params = inspect.signature(start).parameters
+    assert "clean" in params
+    assert "dev" in params
