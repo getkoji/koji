@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -35,6 +36,22 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _check_http_auth_error(resp: Any, base_url: str) -> bool:
+    """If the response is a 401/403, print a helpful auth error and return True."""
+    if resp.status_code not in (401, 403):
+        return False
+    console.print(
+        f"\n[red bold]Authentication failed[/red bold] (HTTP {resp.status_code}) against [cyan]{base_url}[/cyan]\n"
+    )
+    console.print("  Your API key may be invalid, expired, or missing permissions.\n")
+    console.print("  To fix:")
+    console.print("    • Re-authenticate:  [bold]koji login[/bold]")
+    console.print("    • Or set env vars:  [bold]KOJI_API_URL[/bold] + [bold]KOJI_API_KEY[/bold]")
+    console.print(f"    • Server tried:     {base_url}")
+    console.print()
+    return True
 
 
 @app.callback(invoke_without_command=True)
@@ -86,10 +103,15 @@ def start(
         "--dev",
         help="Build images from local source instead of pulling from ghcr.io/getkoji. For Koji contributors.",
     ),
+    clean: bool = typer.Option(
+        False,
+        "--clean",
+        help="Destroy existing data and start fresh (equivalent to koji destroy + koji start).",
+    ),
 ):
     """Start the Koji cluster."""
     config = load_project_config()
-    start_cluster(config, dev=dev)
+    start_cluster(config, dev=dev, clean=clean)
 
 
 @app.command()
@@ -896,6 +918,9 @@ def push(
 
             resp = client.get(f"{base_url}/api/schemas/{slug}", headers=headers)
 
+            if _check_http_auth_error(resp, base_url):
+                raise SystemExit(1)
+
             if resp.status_code == 200:
                 existing = resp.json()
                 existing_yaml = existing.get("latestVersion", {}).get("yamlSource", "")
@@ -1046,6 +1071,8 @@ def pull(
 
     # Get all schemas
     resp = httpx.get(f"{base_url}/api/schemas", headers=headers, timeout=30)
+    if _check_http_auth_error(resp, base_url):
+        raise SystemExit(1)
     if resp.status_code != 200:
         console.print(f"[red]Failed to list schemas: HTTP {resp.status_code}[/red]")
         raise SystemExit(1)
