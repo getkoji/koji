@@ -500,3 +500,111 @@ class TestDataClasses:
         assert d["regressions"] == 0
         assert d["results"][0]["fixture"] == "a.md"
         assert d["results"][0]["fields"][0]["passed"] is True
+
+
+# ── Structural similarity for array-of-objects ────────────────────────
+
+
+class TestArrayOfDictsStructuralSimilarity:
+    """The structural-similarity comparator handles arrays where each item
+    is a dict and exact JSON equality is too strict (e.g. one nested field
+    differs between runs)."""
+
+    def _two_records(self, actual_carrier: str):
+        """Two-record dataset where each record has 4 top-level keys and
+        the actual differs from expected on one key (carrier_name). Per-
+        item structural similarity = 3/4 = 75%.
+
+        Tests the realistic case: same row count, same key set, the LLM
+        got most of them right but flubbed one string per row."""
+        expected = [
+            {
+                "policy_number": "GL-001",
+                "type": "general_liability",
+                "carrier_name": "Acme Insurance",
+                "limit": 1000000,
+            },
+            {"policy_number": "AUTO-002", "type": "commercial_auto", "carrier_name": "Acme Insurance", "limit": 500000},
+        ]
+        actual = [
+            {"policy_number": "GL-001", "type": "general_liability", "carrier_name": actual_carrier, "limit": 1000000},
+            {"policy_number": "AUTO-002", "type": "commercial_auto", "carrier_name": actual_carrier, "limit": 500000},
+        ]
+        return expected, actual
+
+    def test_passes_when_one_top_level_key_differs_with_fuzzy_threshold(self):
+        expected, actual = self._two_records("Acme")  # "Acme" vs "Acme Insurance"
+        r = compare_field("policies", expected, actual, fuzzy_threshold=0.7)
+        assert r.passed
+        assert "fuzzy structural match" in (r.detail or "")
+
+    def test_fails_when_similarity_below_threshold(self):
+        expected, actual = self._two_records("Acme")
+        # Per-item similarity 3/4 = 75%. Threshold 0.9 should reject.
+        r = compare_field("policies", expected, actual, fuzzy_threshold=0.9)
+        assert not r.passed
+
+    def test_only_engages_when_both_arrays_are_dicts(self):
+        # Arrays of strings should NOT trip the structural path even with
+        # a low threshold — the existing key-overlap fuzzy match owns it.
+        r = compare_field(
+            "tags",
+            ["a", "b", "c"],
+            ["a", "b", "different"],
+            fuzzy_threshold=0.1,
+        )
+        # Behavior: exact-match fails, key-overlap fuzzy fails at 2/3, but
+        # structural is NOT invoked (items aren't dicts). Net: not passed
+        # via the structural path.
+        if r.passed:
+            assert "structural" not in (r.detail or "")
+
+    def test_only_engages_when_lengths_match(self):
+        # Length mismatch short-circuits structural similarity — that's
+        # a different signal (missing/extra items) and we don't want to
+        # paper over it. Use a tight threshold so the upstream key-overlap
+        # fuzzy array match doesn't pass on partial coverage.
+        expected = [
+            {"a": 1, "b": 2},
+            {"a": 3, "b": 4},
+        ]
+        actual = [
+            {"a": 1, "b": 2},
+        ]
+        r = compare_field("items", expected, actual, fuzzy_threshold=1.0)
+        assert not r.passed
+        assert "structural" not in (r.detail or "")
+        assert "length" in (r.detail or "").lower()
+
+    def test_greedy_pairing_picks_best_match_not_positional(self):
+        # actual is in REVERSED order — greedy pairing should still pair
+        # each expected with its best-matching actual (and pass), instead
+        # of comparing position-by-position.
+        expected = [
+            {"id": "A", "label": "alpha", "n": 1},
+            {"id": "B", "label": "beta", "n": 2},
+        ]
+        actual = [
+            {"id": "B", "label": "beta", "n": 2},
+            {"id": "A", "label": "alpha", "n": 1},
+        ]
+        r = compare_field("items", expected, actual, fuzzy_threshold=0.9)
+        assert r.passed
+
+    def test_empty_arrays_match(self):
+        r = compare_field("items", [], [], fuzzy_threshold=0.7)
+        assert r.passed
+
+    def test_extra_items_in_actual_does_not_falsely_pass(self):
+        # Length-equal arrays — actual has a junk item not in expected.
+        # Structural runs; second pair has 0% overlap → average ~50%.
+        expected = [
+            {"a": 1, "b": 2},
+            {"a": 3, "b": 4},
+        ]
+        actual = [
+            {"a": 1, "b": 2},
+            {"junk": "nothing useful here"},
+        ]
+        r = compare_field("items", expected, actual, fuzzy_threshold=0.7)
+        assert not r.passed
