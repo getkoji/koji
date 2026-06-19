@@ -1221,6 +1221,26 @@ fields:
 
 Run extraction again. Iterate until accuracy is where you need it. Hints are surgical -- add them only where the router needs guidance.
 
+## Adaptive routing (small documents)
+
+Routing splits a document into chunks and sends each field only the chunks it scored highest for. That's essential on long documents, but on **small** documents it can drop useful surrounding context — and it costs extra LLM calls (one per field group, plus gap-fill retries). When a document has only a handful of chunks, sending the whole thing to the model in a single pass is at least as accurate and cheaper.
+
+Koji does this automatically: when a document has **fewer than 10 chunks**, the pipeline skips per-field routing and extracts the whole document in one pass. Above the threshold it routes normally. The switch is keyed purely on chunk count — it is document-type agnostic.
+
+You can tune or disable it per schema:
+
+```yaml
+routing:
+  full_document_below: 10   # default. Documents with fewer chunks → single full-document pass.
+                            # Set to 0 to always route per-field, regardless of size.
+```
+
+- **Default (`10`)**: full-document extraction below 10 chunks, routed extraction at 10+. Recommended.
+- **`0`**: disables adaptive routing — every document is routed per-field. Use only if you have a specific reason to force routing on small documents.
+- **Higher values**: extend full-document extraction to larger documents. Not recommended above ~10 — extraction accuracy degrades as the document grows, even when it still fits in the model's context window.
+
+This only affects the single-document path. Documents processed through a `classify` step are routed per matched section as before.
+
 ## Key-value pair scanning
 
 For documents with structured label-value data (forms, certificates, declarations pages), you can enable automatic key-value pair extraction alongside the schema-driven extraction:

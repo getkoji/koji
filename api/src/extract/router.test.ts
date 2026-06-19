@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   scoreChunk,
   routeFields,
+  routeAllChunks,
   groupRoutes,
   type FieldRoute,
 } from "./router";
@@ -762,5 +763,38 @@ describe("groupRoutes", () => {
     const allFields = groups.flatMap((g) => g.fields);
     expect(new Set(allFields).size).toBe(allFields.length);
     expect(allFields.sort()).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("routeAllChunks (adaptive full-document routing)", () => {
+  const schema = {
+    fields: {
+      a: { type: "string" },
+      b: { type: "number" },
+      c: { type: "date" },
+    },
+  };
+  const chunks = [makeChunk({ index: 0 }), makeChunk({ index: 1 }), makeChunk({ index: 2 })];
+
+  it("routes every field to the full chunk set with source full_document", () => {
+    const routes = routeAllChunks(schema, chunks);
+    expect(routes.map((r) => r.fieldName).sort()).toEqual(["a", "b", "c"]);
+    for (const r of routes) {
+      expect(r.chunks).toHaveLength(3);
+      expect(r.chunks).toEqual(chunks);
+      expect(r.source).toBe("full_document");
+    }
+  });
+
+  it("collapses to a single extraction group (one full-document LLM call)", () => {
+    const groups = groupRoutes(routeAllChunks(schema, chunks));
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.fields.sort()).toEqual(["a", "b", "c"]);
+    expect(groups[0]!.chunks).toHaveLength(3);
+  });
+
+  it("returns no routes for a schema with no fields", () => {
+    expect(routeAllChunks({ fields: {} }, chunks)).toEqual([]);
+    expect(routeAllChunks({}, chunks)).toEqual([]);
   });
 });

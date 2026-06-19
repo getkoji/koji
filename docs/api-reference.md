@@ -23,7 +23,7 @@ Liveness check for the API server.
 {
   "status": "healthy",
   "service": "koji-server",
-  "version": "0.9.1"
+  "version": "0.10.0"
 }
 ```
 

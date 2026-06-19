@@ -335,4 +335,50 @@ describe("intelligentExtract", () => {
     const result = await intelligentExtract(markdown, schema, provider, "gpt-4o-mini");
     expect(result.extracted.invoice_number).toBe("INV-001");
   });
+
+  describe("adaptive routing (full-document below threshold)", () => {
+    // 6 sections → 6 chunks: below the default 10-chunk threshold, above the
+    // 3-chunk per-field routing cap, so full-document mode is observable.
+    const markdown = [
+      "# Section A", "alpha content",
+      "# Section B", "beta content",
+      "# Section C", "gamma content",
+      "# Section D", "delta content",
+      "# Section E", "epsilon content",
+      "# Section F", "target_value: FOUND",
+    ].join("\n");
+    const schema = {
+      name: "doc",
+      fields: { a: { type: "string" }, b: { type: "string" }, target: { type: "string" } },
+    };
+    const response = JSON.stringify({ a: "x", b: "y", target: "FOUND" });
+
+    it("routes the whole document in one group when below the threshold (default 10)", async () => {
+      const provider = mockProvider(response);
+      const result = await intelligentExtract(markdown, schema, provider, "gpt-4o-mini");
+      const total = result.document_map_summary!.total_chunks as number;
+      expect(total).toBeGreaterThan(3); // more chunks than the per-field routing cap
+      expect(total).toBeLessThan(10); // below threshold → full-doc engages
+      expect(result.groups).toHaveLength(1);
+      expect(result.groups![0]!.chunkCount).toBe(total); // every chunk in one group
+    });
+
+    it("falls back to per-field routing when disabled (full_document_below: 0)", async () => {
+      const provider = mockProvider(response);
+      const disabled = { ...schema, routing: { full_document_below: 0 } };
+      const result = await intelligentExtract(markdown, disabled, provider, "gpt-4o-mini");
+      const total = result.document_map_summary!.total_chunks as number;
+      const maxGroupChunks = Math.max(...result.groups!.map((g) => g.chunkCount));
+      expect(maxGroupChunks).toBeLessThan(total); // per-field cap → no all-chunk group
+    });
+
+    it("uses per-field routing above a custom low threshold", async () => {
+      const provider = mockProvider(response);
+      const lowThreshold = { ...schema, routing: { full_document_below: 2 } };
+      const result = await intelligentExtract(markdown, lowThreshold, provider, "gpt-4o-mini");
+      const total = result.document_map_summary!.total_chunks as number;
+      const maxGroupChunks = Math.max(...result.groups!.map((g) => g.chunkCount));
+      expect(maxGroupChunks).toBeLessThan(total);
+    });
+  });
 });
