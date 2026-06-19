@@ -16,7 +16,7 @@
 
 import { buildDocumentMap, type Chunk } from "./document-map";
 import { routeFields, groupRoutes } from "./router";
-import { toposortFields, resolveConditionalHints, resolveWaveFields } from "./waves";
+import { toposortFields, resolveConditionalHints, resolveWaveFields, getSkippedFields } from "./waves";
 import { extractGroup, fillGap } from "./group-extract";
 import {
   reconcile,
@@ -78,6 +78,18 @@ async function extractOneSection(
   for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
     const wave = waves[waveIndex]!;
     const waveSchema = resolveWaveFields(schemaDef, wave, accumulated.extracted);
+
+    // Record skip_unless-gated fields as null/"skipped" before extraction
+    // — they're dropped from waveSchema, so the LLM never sees them.
+    const skippedFields = getSkippedFields(schemaDef, wave, accumulated.extracted);
+    for (const name of skippedFields) {
+      accumulated.extracted[name] = null;
+      accumulated.confidence[name] = "skipped";
+      accumulated.confidence_scores[name] = 0;
+    }
+    if (skippedFields.length > 0) {
+      console.log(`[koji-extract] Wave ${waveIndex}: skipped ${skippedFields.length} fields via skip_unless`);
+    }
 
     const waveRoutes = routeFields(waveSchema, sectionChunks);
     for (const r of waveRoutes) {
