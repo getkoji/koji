@@ -15,6 +15,19 @@ export interface FieldSpec {
   depends_on?: string[];
   extraction_hint?: string;
   extraction_hint_by?: Record<string, Record<string, string>>;
+  /**
+   * Gate field extraction on already-extracted parent values. The field
+   * is omitted from the LLM prompt entirely when a parent's value is
+   * NOT in the allowed list. More reliable than asking the LLM to
+   * "return null" since the field never reaches the model.
+   *
+   *   skip_unless:
+   *     form_type: ["8-K", "8-K/A"]
+   *
+   * Skipped fields are recorded as null with "skipped" confidence in
+   * the pipeline output.
+   */
+  skip_unless?: Record<string, unknown[]>;
   [key: string]: unknown;
 }
 
@@ -143,11 +156,56 @@ export function resolveConditionalHints(
   return fieldSpec;
 }
 
+// ── shouldSkipField ────────────────────────────────────────────────
+
+/**
+ * Return true when this field's `skip_unless` condition is NOT met
+ * against already-extracted values — i.e. the field should be skipped.
+ *
+ *   skip_unless:
+ *     form_type: ["8-K", "8-K/A"]
+ *
+ * Semantics, matching the Python reference:
+ *
+ *   - Missing or non-object `skip_unless` → never skips (return false).
+ *   - For each (parent, allowed[]) pair: if the parent's extracted value
+ *     is null/undefined OR its string form is NOT in `allowed`, skip.
+ *   - Non-list `allowed` values are ignored (defensive — bad schema).
+ *   - All conditions are AND'd: any failing parent triggers a skip.
+ *
+ * String coercion on both sides means a numeric or boolean parent value
+ * can match a string-encoded allowed list ("42" vs 42) the way schema
+ * authors expect.
+ */
+export function shouldSkipField(
+  fieldSpec: FieldSpec,
+  extractedSoFar: Record<string, unknown>,
+): boolean {
+  const skipUnless = fieldSpec.skip_unless;
+  if (!skipUnless || typeof skipUnless !== "object") return false;
+
+  for (const [parentName, allowed] of Object.entries(skipUnless)) {
+    if (!Array.isArray(allowed)) continue;
+    const parentValue = extractedSoFar[parentName];
+    if (parentValue === null || parentValue === undefined) return true;
+    const parentStr = String(parentValue);
+    const allowedStrs = allowed.map((v) => String(v));
+    if (!allowedStrs.includes(parentStr)) return true;
+  }
+  return false;
+}
+
 // ── resolveWaveFields ──────────────────────────────────────────────
 
 /**
  * Build a shallow schema copy whose `fields` block contains only the
  * given wave's fields with conditional hints resolved.
+ *
+ * Fields whose `skip_unless` condition is not met are omitted — they
+ * never reach the LLM prompt. Callers (the wave loop in
+ * intelligent-pipeline.ts) record those fields as null with "skipped"
+ * confidence. Use `getSkippedFields` to enumerate the skip set without
+ * having to diff `wave` against the returned schema.
  */
 export function resolveWaveFields(
   schemaDef: SchemaDef,
@@ -158,10 +216,31 @@ export function resolveWaveFields(
   const resolvedFields: Record<string, FieldSpec> = {};
 
   for (const name of wave) {
-    if (name in allFields) {
-      resolvedFields[name] = resolveConditionalHints(allFields[name] as FieldSpec, extractedSoFar);
-    }
+    const spec = allFields[name];
+    if (!spec) continue;
+    if (shouldSkipField(spec as FieldSpec, extractedSoFar)) continue;
+    resolvedFields[name] = resolveConditionalHints(spec as FieldSpec, extractedSoFar);
   }
 
   return { ...schemaDef, fields: resolvedFields };
+}
+
+/**
+ * Enumerate the names within `wave` whose `skip_unless` condition is
+ * not met given the already-extracted values. Returned names will NOT
+ * appear in the schema produced by `resolveWaveFields`.
+ */
+export function getSkippedFields(
+  schemaDef: SchemaDef,
+  wave: string[],
+  extractedSoFar: Record<string, unknown>,
+): string[] {
+  const allFields = schemaDef.fields ?? {};
+  const skipped: string[] = [];
+  for (const name of wave) {
+    const spec = allFields[name];
+    if (!spec) continue;
+    if (shouldSkipField(spec as FieldSpec, extractedSoFar)) skipped.push(name);
+  }
+  return skipped;
 }

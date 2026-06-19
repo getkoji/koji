@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toposortFields, resolveConditionalHints, resolveWaveFields } from "./waves";
+import { toposortFields, resolveConditionalHints, resolveWaveFields, shouldSkipField, getSkippedFields } from "./waves";
 
 // ---------------------------------------------------------------------------
 // toposortFields
@@ -341,5 +341,122 @@ describe("resolveWaveFields", () => {
     };
     const result = resolveWaveFields(schema, ["a", "nonexistent"], {});
     expect(Object.keys(result.fields)).toEqual(["a"]);
+  });
+
+  it("omits fields whose skip_unless condition is not met", () => {
+    const schema = {
+      fields: {
+        form_type: { type: "string" },
+        period_date_of_report: {
+          type: "date",
+          depends_on: ["form_type"],
+          skip_unless: { form_type: ["8-K", "8-K/A"] },
+        },
+      },
+    };
+    // Parent extracted as 10-K → period_date_of_report omitted
+    const result = resolveWaveFields(schema, ["period_date_of_report"], { form_type: "10-K" });
+    expect(Object.keys(result.fields)).toEqual([]);
+  });
+
+  it("keeps fields whose skip_unless condition is met", () => {
+    const schema = {
+      fields: {
+        form_type: { type: "string" },
+        period_date_of_report: {
+          type: "date",
+          depends_on: ["form_type"],
+          skip_unless: { form_type: ["8-K", "8-K/A"] },
+        },
+      },
+    };
+    const result = resolveWaveFields(schema, ["period_date_of_report"], { form_type: "8-K" });
+    expect(Object.keys(result.fields)).toEqual(["period_date_of_report"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSkipField
+// ---------------------------------------------------------------------------
+
+describe("shouldSkipField", () => {
+  it("returns false when no skip_unless is declared", () => {
+    expect(shouldSkipField({ type: "string" }, { form_type: "10-K" })).toBe(false);
+  });
+
+  it("returns false when parent value matches an allowed entry", () => {
+    const spec = { skip_unless: { form_type: ["8-K", "8-K/A"] } };
+    expect(shouldSkipField(spec, { form_type: "8-K" })).toBe(false);
+    expect(shouldSkipField(spec, { form_type: "8-K/A" })).toBe(false);
+  });
+
+  it("returns true when parent value is missing", () => {
+    const spec = { skip_unless: { form_type: ["8-K"] } };
+    expect(shouldSkipField(spec, {})).toBe(true);
+    expect(shouldSkipField(spec, { form_type: null })).toBe(true);
+    expect(shouldSkipField(spec, { form_type: undefined })).toBe(true);
+  });
+
+  it("returns true when parent value isn't in the allowed list", () => {
+    const spec = { skip_unless: { form_type: ["8-K", "6-K"] } };
+    expect(shouldSkipField(spec, { form_type: "10-K" })).toBe(true);
+    expect(shouldSkipField(spec, { form_type: "10-Q" })).toBe(true);
+  });
+
+  it("coerces parent and allowed values to strings for comparison", () => {
+    // Schema may store allowed list as numbers; LLM may return strings.
+    const spec = { skip_unless: { count: [1, 2, 3] } };
+    expect(shouldSkipField(spec, { count: "1" })).toBe(false);
+    expect(shouldSkipField(spec, { count: 2 })).toBe(false);
+    expect(shouldSkipField(spec, { count: "4" })).toBe(true);
+  });
+
+  it("AND's multiple parent conditions — any failure triggers a skip", () => {
+    const spec = {
+      skip_unless: {
+        form_type: ["8-K"],
+        region: ["US"],
+      },
+    };
+    expect(shouldSkipField(spec, { form_type: "8-K", region: "US" })).toBe(false);
+    expect(shouldSkipField(spec, { form_type: "8-K", region: "EU" })).toBe(true);
+    expect(shouldSkipField(spec, { form_type: "10-K", region: "US" })).toBe(true);
+  });
+
+  it("ignores a non-array allowed list (defensive — bad schema)", () => {
+    const spec = { skip_unless: { form_type: "8-K" as unknown as unknown[] } };
+    // Non-array → that parent's condition is skipped entirely; nothing else to fail.
+    expect(shouldSkipField(spec, { form_type: "10-K" })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSkippedFields
+// ---------------------------------------------------------------------------
+
+describe("getSkippedFields", () => {
+  it("returns only the fields whose condition fails", () => {
+    const schema = {
+      fields: {
+        form_type: { type: "string" },
+        a: { skip_unless: { form_type: ["8-K"] } },
+        b: { skip_unless: { form_type: ["10-K"] } },
+        c: { type: "string" }, // no skip_unless
+      },
+    };
+    expect(getSkippedFields(schema, ["a", "b", "c"], { form_type: "8-K" })).toEqual(["b"]);
+    expect(getSkippedFields(schema, ["a", "b", "c"], { form_type: "10-K" })).toEqual(["a"]);
+    expect(getSkippedFields(schema, ["a", "b", "c"], { form_type: "6-K" })).toEqual(["a", "b"]);
+  });
+
+  it("returns an empty array when no fields have skip_unless", () => {
+    const schema = { fields: { a: { type: "string" }, b: { type: "string" } } };
+    expect(getSkippedFields(schema, ["a", "b"], {})).toEqual([]);
+  });
+
+  it("does not flag fields missing from the schema", () => {
+    const schema = { fields: { a: { skip_unless: { x: ["1"] } } } };
+    expect(getSkippedFields(schema, ["a", "ghost"], { x: "1" })).toEqual([]);
+    expect(getSkippedFields(schema, ["a", "ghost"], {})).toEqual(["a"]);
   });
 });
