@@ -16,7 +16,7 @@ export interface FieldRoute {
   fieldName: string;
   fieldSpec: Record<string, unknown>;
   chunks: Chunk[];
-  source: "hint" | "signal_inferred" | "broadened" | "fallback";
+  source: "hint" | "signal_inferred" | "broadened" | "fallback" | "full_document";
 }
 
 export interface RouteGroup {
@@ -259,6 +259,26 @@ export function routeFields(
   }
 
   return routes;
+}
+
+/**
+ * Route every field to the full chunk set — used by adaptive routing when a
+ * document is small enough that per-field selection only loses context. Each
+ * field gets all chunks, so `groupRoutes` collapses them into a single group
+ * (one full-document LLM call). Generic and document-type agnostic — the only
+ * input is the chunk count, never the content or category.
+ */
+export function routeAllChunks(
+  schemaDef: Record<string, unknown>,
+  chunks: Chunk[],
+): FieldRoute[] {
+  const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
+  return Object.entries(fields).map(([fieldName, fieldSpec]) => ({
+    fieldName,
+    fieldSpec,
+    chunks,
+    source: "full_document" as const,
+  }));
 }
 
 // ---------------------------------------------------------------------------

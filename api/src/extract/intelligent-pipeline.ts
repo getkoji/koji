@@ -15,7 +15,7 @@
  */
 
 import { buildDocumentMap, type Chunk } from "./document-map";
-import { routeFields, groupRoutes } from "./router";
+import { routeFields, routeAllChunks, groupRoutes } from "./router";
 import { toposortFields, resolveConditionalHints, resolveWaveFields, getSkippedFields } from "./waves";
 import { extractGroup, fillGap } from "./group-extract";
 import {
@@ -57,6 +57,7 @@ async function extractOneSection(
   schemaName: string,
   provider: ModelProvider,
   fields: Record<string, Record<string, unknown>>,
+  routeAll: boolean = false,
 ): Promise<SectionResult> {
   const contextChunks = sectionChunks.slice(0, 2);
   const waves = toposortFields(schemaDef);
@@ -91,7 +92,9 @@ async function extractOneSection(
       console.log(`[koji-extract] Wave ${waveIndex}: skipped ${skippedFields.length} fields via skip_unless`);
     }
 
-    const waveRoutes = routeFields(waveSchema, sectionChunks);
+    const waveRoutes = routeAll
+      ? routeAllChunks(waveSchema, sectionChunks)
+      : routeFields(waveSchema, sectionChunks);
     for (const r of waveRoutes) {
       allRoutes.push({ fieldName: r.fieldName, chunks: r.chunks });
     }
@@ -307,7 +310,20 @@ export async function intelligentExtract(
 
   // ── Classifier OFF: single-section extraction ───────────────────
 
-  const sectionResult = await extractOneSection(chunks, chunks, schemaDef, schemaName, provider, fields);
+  // Adaptive routing: when a document is small enough that per-field chunk
+  // selection only drops useful context, route the whole document in one pass.
+  // Empirically, full-document extraction ties-or-beats routed extraction below
+  // ~10 chunks (and is cheaper); routing wins decisively above. Purely chunk-count
+  // driven — no document-type logic. Configurable / disable-able per schema.
+  const fullDocThreshold = resolveFullDocThreshold(schemaDef);
+  const routeAll = fullDocThreshold > 0 && chunks.length < fullDocThreshold;
+  if (routeAll) {
+    console.log(
+      `[koji-extract] Adaptive routing: ${chunks.length} < ${fullDocThreshold} chunks → full-document single pass`,
+    );
+  }
+
+  const sectionResult = await extractOneSection(chunks, chunks, schemaDef, schemaName, provider, fields, routeAll);
 
   const provenance = textMap
     ? resolveProvenance(
@@ -449,6 +465,24 @@ function sectionMatchesSchema(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/** Default adaptive-routing threshold: route the whole document in one pass
+ * below this many chunks. Empirically the routed/full-document crossover. */
+const DEFAULT_FULL_DOCUMENT_BELOW = 10;
+
+/**
+ * Resolve the adaptive-routing threshold from schema config
+ * (`routing.full_document_below`). Documents with fewer than this many chunks
+ * are extracted as a single full-document pass. Defaults to 10; set to 0 to
+ * disable (always route per-field). Generic — keyed only on chunk count.
+ */
+function resolveFullDocThreshold(schemaDef: Record<string, unknown>): number {
+  const routing = schemaDef.routing as Record<string, unknown> | undefined;
+  const v = routing?.full_document_below;
+  if (v === undefined || v === null) return DEFAULT_FULL_DOCUMENT_BELOW;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FULL_DOCUMENT_BELOW;
+}
 
 function getMissingRequired(
   accumulated: { confidence: Record<string, string> },
