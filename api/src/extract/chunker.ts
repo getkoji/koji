@@ -7,19 +7,25 @@
  * the DAG pipeline runner.
  */
 
+/**
+ * Canonical chunk shape, shared across the extraction module. Both chunkers
+ * (`chunkMarkdown` here and `buildDocumentMap` in document-map) produce this,
+ * and routing/extraction/reconciliation consume it. Fields that not every
+ * chunker populates are optional:
+ *  - `category` — only set by chunkers that classify (e.g. buildDocumentMap)
+ *  - positional metadata (`charOffset`/`charLength`/`lineCount`/`charCount`) —
+ *    informational; populated opportunistically, not relied on by the engine.
+ */
 export interface Chunk {
   index: number;
   title: string;
   content: string;
   category?: string;
-  signals: {
-    has_dates: boolean;
-    has_dollar_amounts: boolean;
-    has_tables: boolean;
-    has_key_value_pairs: boolean;
-  };
-  charOffset: number;
-  charLength: number;
+  signals: Record<string, boolean | number>;
+  charOffset?: number;
+  charLength?: number;
+  lineCount?: number;
+  charCount?: number;
 }
 
 const DATE_PATTERN = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}/i;

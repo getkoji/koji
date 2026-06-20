@@ -9,15 +9,11 @@
 
 // ── Data Types ──────────────────────────────────────────────────────
 
-export interface Chunk {
-  index: number;
-  title: string;
-  content: string;
-  category: string;
-  signals: Record<string, boolean | number>;
-  readonly lineCount: number;
-  readonly charCount: number;
-}
+// Chunk is defined once in chunker.ts (the canonical shape) and re-exported
+// here so existing `from "./document-map"` imports keep working. buildDocumentMap
+// always populates `category`, `lineCount`, and `charCount`.
+import type { Chunk } from "./chunker";
+export type { Chunk };
 
 function makeChunk(
   index: number,
@@ -509,7 +505,7 @@ function splitOversizedChunks(
   for (const chunk of chunks) {
     const lines = chunk.content.split("\n");
     if (lines.length <= CHUNK_MAX_LINES) {
-      out.push(makeChunk(nextIndex, chunk.title, chunk.content, chunk.category, chunk.signals));
+      out.push(makeChunk(nextIndex, chunk.title, chunk.content, chunk.category ?? "other", chunk.signals));
       nextIndex++;
       continue;
     }
