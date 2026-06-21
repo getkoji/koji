@@ -16,11 +16,11 @@ export function ListLayout({
     <div className="flex flex-col h-[calc(100vh-60px)]">
       <StickyHeader>{header}</StickyHeader>
       <div className="flex-1 min-h-0 flex flex-col">
-        {metricsStrip && <div className="px-10 pt-5 shrink-0">{metricsStrip}</div>}
+        {metricsStrip && <div className="px-4 sm:px-10 pt-5 shrink-0">{metricsStrip}</div>}
         {filterBar && (
-          <div className="px-10 pt-4 pb-2 shrink-0 border-b border-border">{filterBar}</div>
+          <div className="px-4 sm:px-10 pt-4 pb-2 shrink-0 border-b border-border">{filterBar}</div>
         )}
-        <div className="flex-1 overflow-y-auto px-10 pt-4 pb-8">{children}</div>
+        <div className="flex-1 overflow-y-auto px-4 sm:px-10 pt-4 pb-8">{children}</div>
       </div>
     </div>
   );

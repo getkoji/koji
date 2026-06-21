@@ -92,7 +92,7 @@ export default function ProjectOverviewPage() {
     : "Project overview and recent activity.";
 
   return (
-    <div className="px-10 py-8 pb-16">
+    <div className="px-4 sm:px-10 py-8 pb-16">
       {/* Editorial header */}
       <div className="flex items-start justify-between gap-8 mb-8">
         <div>
@@ -140,7 +140,7 @@ export default function ProjectOverviewPage() {
       )}
 
       {/* Content grid: activity + attention */}
-      <div className="grid gap-8" style={{ gridTemplateColumns: "1.4fr 1fr" }}>
+      <div className="grid gap-8 grid-cols-1 lg:grid-cols-[1.4fr_1fr]">
         <ActivityPanel
           loading={loading}
           items={overview?.recentActivity ?? []}
@@ -218,7 +218,7 @@ function MetricsStrip({
   return (
     <div
       className="grid gap-px bg-border border border-border rounded-sm mb-9"
-      style={{ gridTemplateColumns: "repeat(5, 1fr)" }}
+      style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}
     >
       {cards.map((m) => (
         <Link
@@ -550,7 +550,7 @@ function CreateSchemaDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
         <h2 className="text-[15px] font-medium text-ink mb-1">Create schema</h2>
