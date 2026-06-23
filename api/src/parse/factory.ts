@@ -5,11 +5,10 @@
  * `modal` routes to a Modal-hosted Docling service used by the hosted-cloud
  * tier; see `modal.ts` for the 303-polling + proxy-auth details.
  *
- * When `@llamaindex/liteparse` is installed (optional dep), the factory
- * auto-wraps the configured backend with SmartParseProvider. This routes
- * digital PDFs to LiteParse (sub-second, Rust, in-process) and scanned
- * PDFs to the heavy backend (Docling/Modal, OCR-capable). Disable with
- * KOJI_LITEPARSE=false.
+ * The configured backend is always wrapped with `SmartParseProvider`, which
+ * routes digital PDFs to `DigitalPdfProvider` (in-process pdfjs-dist) and
+ * everything else (scanned PDFs, images, DOCX/HTML/PPTX) to the heavy
+ * backend. Large PDFs are then chunked via `ChunkedParseProvider`.
  *
  * Config is injected so the same factory works under Node (where `index.ts`
  * reads `process.env`) and under Cloudflare Workers (where the entry point
@@ -22,6 +21,8 @@ import type { ParseProvider } from "./provider";
 import { DockerParseProvider } from "./docker";
 import { ModalParseProvider } from "./modal";
 import { ChunkedParseProvider } from "./chunked";
+import { DigitalPdfProvider } from "./digital-pdf";
+import { SmartParseProvider } from "./smart";
 
 export type ParseBackend = "docker" | "modal";
 
@@ -40,33 +41,19 @@ export interface ParseConfig {
   modalTimeoutMs?: number;
 }
 
-/**
- * Auto-wrap a provider with SmartParseProvider if LiteParse is available.
- * Silently returns the original provider if the native binary isn't installed.
- */
-async function liteparseAvailable(): Promise<boolean> {
-  if (process.env.KOJI_LITEPARSE === "false") return false;
-  try {
-    await import("@llamaindex/liteparse");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function createParseProvider(config: ParseConfig): Promise<ParseProvider> {
-  let provider: ParseProvider;
+  let heavy: ParseProvider;
 
   switch (config.backend) {
     case "docker": {
       if (!config.dockerUrl) {
         throw new Error("parse config: dockerUrl is required for the docker backend");
       }
-      provider = new DockerParseProvider({ url: config.dockerUrl });
+      heavy = new DockerParseProvider({ url: config.dockerUrl });
       break;
     }
     case "modal": {
-      provider = new ModalParseProvider({
+      heavy = new ModalParseProvider({
         url: config.modalUrl,
         tokenId: config.modalTokenId,
         tokenSecret: config.modalTokenSecret,
@@ -80,16 +67,10 @@ export async function createParseProvider(config: ParseConfig): Promise<ParsePro
     }
   }
 
-  if (await liteparseAvailable()) {
-    try {
-      const { LiteParseProvider } = await import("./liteparse");
-      const { SmartParseProvider } = await import("./smart");
-      console.log("[parse] LiteParse detected — enabling smart routing (digital→liteparse, scanned→heavy)");
-      provider = new SmartParseProvider(new LiteParseProvider(), provider);
-    } catch (err) {
-      console.warn("[parse] LiteParse detected but failed to load:", (err as Error).message?.slice(0, 100));
-    }
-  }
+  let provider: ParseProvider = new SmartParseProvider(
+    new DigitalPdfProvider(),
+    heavy,
+  );
 
   // Wrap with chunked parsing for large PDFs (after SmartParseProvider)
   const chunkThreshold = parseInt(process.env.KOJI_CHUNK_PARSE_THRESHOLD ?? "40", 10);

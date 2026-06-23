@@ -80,12 +80,12 @@ The API automatically routes documents to the fastest parser that can handle the
 
 | Document type | Parser | Speed | How it's detected |
 |--------------|--------|-------|-------------------|
-| Digital PDFs (has text layer) | **LiteParse** (Rust) | Fast (~100ms) | Average ≥ 50 chars/page over first 3 pages |
+| Digital PDFs (has text layer) | **pdfjs-dist** (in-process JS) | Fast (~20-50ms/page) | Average ≥ 50 chars/page over first 3 pages |
 | Scanned PDFs (no text layer) | **Docling** (OCR + layout) | Slow (~5-10s) | Average < 50 chars/page |
 | Images (JPEG, PNG, TIFF, etc.) | **Docling** | Slow | Detected by MIME type or extension |
-| Other formats (DOCX, HTML, etc.) | **LiteParse** | Fast | Everything that isn't a PDF or image |
+| Other formats (DOCX, HTML, etc.) | **Docling** | Slow | Everything that isn't a PDF or image |
 
-This is transparent — callers don't choose a parser. If LiteParse fails (unsupported format, corrupt file), the request falls back to Docling automatically with zero caller-side changes.
+This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt (heavy 1-2 character fragmentation, as seen historically on some carrier PDFs), the request falls back to Docling automatically with zero caller-side changes.
 
 #### Docling (heavy provider)
 

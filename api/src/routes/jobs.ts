@@ -1206,7 +1206,7 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
     return c.json({ error: "Cache blob missing from storage" }, 404);
   }
 
-  let payload: { markdown?: string; pages?: number; ocr_skipped?: boolean };
+  let payload: { markdown?: string; pages?: number; ocr_skipped?: boolean; engine?: string };
   try {
     payload = JSON.parse(blob.data.toString());
   } catch {
@@ -1223,6 +1223,9 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
       typeof payload.ocr_skipped === "boolean"
         ? payload.ocr_skipped
         : cached.ocrSkipped === "true",
+    // Which parser handled the document. Older cache entries (written before
+    // the engine field landed) don't carry this; returns null in that case.
+    engine: payload.engine ?? null,
     cachedAt: cached.createdAt,
   });
 });

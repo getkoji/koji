@@ -19,7 +19,6 @@
     "@koji/db": "workspace:*",
     "@koji/pipeline": "workspace:^",
     "@koji/types": "workspace:*",
-    "@llamaindex/liteparse": "^2.0.1",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
     "nodemailer": "^8.0.5",
