@@ -1,9 +1,9 @@
 /**
- * Convert LiteParse spatial output (text items with bounding boxes) to markdown.
+ * Convert spatial PDF text items (bounding boxes + font metadata) to markdown.
  *
- * LiteParse returns per-character/word bounding boxes with font metadata.
- * This module reconstructs document structure (headings, paragraphs, tables,
- * lists, bold text) from spatial relationships — no ML required.
+ * Consumed by `DigitalPdfProvider` (pdfjs-dist source). Reconstructs document
+ * structure — headings, paragraphs, tables, lists, bold text — purely from
+ * spatial relationships, no ML required.
  *
  * The output matches Docling's markdown format closely enough that downstream
  * consumers (extractFields, provenance matching, the parse UI) work unchanged.

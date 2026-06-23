@@ -264,7 +264,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 
   return streamSSE(c, async (stream) => {
     try {
-      // Step 1: Parse via ParseProvider (gets LiteParse routing, text_map, etc.)
+      // Step 1: Parse via ParseProvider (smart routing, text_map, etc.)
       let parseResult: Record<string, unknown> | null = null;
 
       await stream.writeSSE({
@@ -409,7 +409,7 @@ async function handleExtractRunJSON(
     // Cache hit
     parseResult = cachedParse;
   } else {
-    // Cache miss — parse via ParseProvider (gets LiteParse routing, text_map, etc.)
+    // Cache miss — parse via ParseProvider (smart routing, text_map, etc.)
     try {
       const parseProvider = c.get("parseProvider");
       const parsed = await parseProvider.parse({

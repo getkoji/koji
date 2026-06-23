@@ -228,6 +228,14 @@ export class ChunkedParseProvider implements ParseProvider {
     // OCR skipped: true only if ALL chunks skipped
     const ocr_skipped = chunks.every((c) => c.response.ocr_skipped);
 
+    // Engine: if every chunk reports the same engine, pass it through.
+    // Mixed (rare: e.g. one chunk fell back to heavy via SmartParseProvider)
+    // collapses to "docling" since heavy is always the fallback.
+    const engines = new Set(chunks.map((c) => c.response.engine));
+    const engine = engines.size === 1
+      ? chunks[0]!.response.engine
+      : "docling";
+
     // Text map: concatenate with page offset
     let text_map: TextMapSegment[] | undefined;
     const hasAnyTextMap = chunks.some((c) => c.response.text_map?.length);
@@ -246,6 +254,7 @@ export class ChunkedParseProvider implements ParseProvider {
       markdown,
       pages: totalPages,
       ocr_skipped,
+      engine,
       text_map,
       // searchable_pdf_base64 is not mergeable — skip for chunked parses
     };

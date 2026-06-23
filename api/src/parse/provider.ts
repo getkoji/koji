@@ -6,6 +6,17 @@
  * provider for the cloud tier (see platform-60).
  */
 
+/**
+ * Identifier for the parser that produced a ParseResponse. Surfaces in API
+ * responses and the trace's `parse.summary_json.engine` so bug reports name
+ * the actual engine instead of guessing.
+ *
+ * - `pdfjs`: in-process pdfjs-dist, used for digital PDFs (text-embedded)
+ * - `docling`: heavy provider (Docker sidecar or Modal-hosted), used for
+ *   scanned PDFs, images, and non-PDF formats (DOCX, HTML, …)
+ */
+export type ParseEngine = "pdfjs" | "docling";
+
 /** A word/segment with its spatial position on the page. */
 export interface TextMapSegment {
   text: string;
@@ -24,6 +35,8 @@ export interface ParseResponse {
   markdown: string;
   pages: number | null;
   ocr_skipped: boolean;
+  /** Which parser produced this response. */
+  engine: ParseEngine;
   /** Base64-encoded PDF with OCR text layer overlaid. Present when OCR ran. */
   searchable_pdf_base64?: string;
   /** Per-word spatial positions — used by provenance to resolve bounding boxes. */

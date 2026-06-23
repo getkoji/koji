@@ -207,7 +207,11 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       "parse",
       async () => {
         const result = await getOrParse(db, storage, parseProvider, tenantId, document);
-        return { value: result, summary: { markdown_chars: result.markdown.length } };
+        const summary: Record<string, unknown> = {
+          markdown_chars: result.markdown.length,
+        };
+        if (result.engine) summary.engine = result.engine;
+        return { value: result, summary };
       },
     );
     const markdown = parseOutput.markdown;
@@ -780,7 +784,7 @@ async function getOrParse(
     mimeType: string | null;
     contentHash: string;
   },
-): Promise<{ markdown: string; textMap?: any[] }> {
+): Promise<{ markdown: string; textMap?: any[]; engine?: string }> {
   const fileHash = document.contentHash;
 
   // 1. Cache lookup
@@ -802,7 +806,7 @@ async function getOrParse(
       const cacheBlob = await storage.getBuffer(cached.storageKey);
       if (cacheBlob) {
         try {
-          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string; text_map?: any[] };
+          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string; text_map?: any[]; engine?: string };
           if (payload.markdown) {
             console.log(`[ingestion.process] parse cache hit for ${fileHash.slice(0, 12)}…`);
             // Copy cached searchable PDF to this document's storage key if available
@@ -818,7 +822,7 @@ async function getOrParse(
                 }
               }
             } catch { /* best-effort */ }
-            return { markdown: payload.markdown, textMap: payload.text_map };
+            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.
@@ -872,6 +876,7 @@ async function getOrParse(
         markdown: parseResult.markdown,
         pages: parseResult.pages,
         ocr_skipped: parseResult.ocr_skipped,
+        engine: parseResult.engine,
         text_map: parseResult.text_map ?? [],
       }),
     );
@@ -898,7 +903,11 @@ async function getOrParse(
     }
   }
 
-  return { markdown: parseResult.markdown, textMap: (parseResult.text_map as any[]) ?? undefined };
+  return {
+    markdown: parseResult.markdown,
+    textMap: (parseResult.text_map as any[]) ?? undefined,
+    engine: parseResult.engine,
+  };
 }
 
 /**

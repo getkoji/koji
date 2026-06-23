@@ -3,8 +3,8 @@
  * (has text layer), scanned PDF (needs OCR), image, or other format.
  *
  * Used by SmartParseProvider to route documents to the appropriate parser:
- * - digital_pdf / other → LiteParse (fast, Rust, no OCR)
- * - scanned_pdf / image → Docling/Modal (OCR-capable)
+ * - digital_pdf → DigitalPdfProvider (in-process pdfjs-dist, no OCR)
+ * - scanned_pdf / image / other → Docling (OCR + DOCX/HTML/PPTX support)
  *
  * The heuristic matches services/parse/main.py get_pdf_info() exactly:
  * average < 50 chars/page over the first 3 pages → scanned.
@@ -56,7 +56,7 @@ export async function classifyDocument(
     return charsPerPage < 50 ? "scanned_pdf" : "digital_pdf";
   } catch {
     // If we can't parse the PDF header, assume digital (safe fallback —
-    // LiteParse will try and the SmartParseProvider catches errors)
+    // pdfjs will try and the SmartParseProvider falls back to heavy on error)
     return "digital_pdf";
   }
 }

@@ -30,6 +30,7 @@ function makeParseResponse(overrides: Partial<ParseResponse> = {}): ParseRespons
     markdown: overrides.markdown ?? "# Page content",
     pages: overrides.pages ?? 1,
     ocr_skipped: overrides.ocr_skipped ?? false,
+    engine: overrides.engine ?? "pdfjs",
     text_map: overrides.text_map,
   };
 }
