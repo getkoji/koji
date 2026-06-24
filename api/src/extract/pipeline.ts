@@ -15,6 +15,7 @@ import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
+import type { FitReport } from "./fit";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,8 @@ export interface ExtractionResult {
     ok: boolean;
     issues: Array<{ rule: string; field: string | null; message: string }>;
   };
+  /** Document-fit verdict — present when the schema declares a `fit` block. */
+  fit?: FitReport;
   /** Field-level text provenance: where each value was found in the source markdown. */
   provenance?: ProvenanceMap;
   /** Per-item verbatim source text for array-of-objects fields (from LLM). */
@@ -530,6 +533,14 @@ export async function extractFields(
   // This replaces the old single-shot approach that stuffed the entire document into one LLM call.
   const { intelligentExtract } = await import("./intelligent-pipeline");
   const result = await intelligentExtract(markdown, schemaDef, provider, model, textMap);
+
+  // A fit gate with `on_misfit: reject` short-circuits extraction — there is
+  // nothing to validate or normalize. The `fit` block already explains why.
+  if (result.fit?.extraction_skipped) {
+    result.normalization = { applied: [], warnings: [] };
+    result.validation = { ok: true, issues: [] };
+    return result;
+  }
 
   // KV pairs: extract if schema opts in (orthogonal to the pipeline)
   const includeKVPairs = Boolean(schemaDef.include_kv_pairs);

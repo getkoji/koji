@@ -26,6 +26,16 @@ import {
   snapToSource,
 } from "./reconcile";
 import { classifyChunksToSections, type Section } from "./packet-splitter";
+import {
+  parseFitConfig,
+  hasPreGate,
+  checkKeywords,
+  checkAssertion,
+  checkDerived,
+  assembleFit,
+  type FitConfig,
+  type FitCheck,
+} from "./fit";
 import type { ModelProvider } from "./providers";
 import type { ExtractionResult } from "./pipeline";
 import type { TextMap } from "./provenance";
@@ -298,6 +308,31 @@ export async function intelligentExtract(
     return emptyResult(model, schemaName, fieldNames, start);
   }
 
+  // Phase 1b: Document-fit pre-extraction gate. The schema's `fit` block can
+  // declare a keyword check (free) and a `requires` assertion (one yes/no LLM
+  // call) that run before extraction. Under `on_misfit: reject`, a failed
+  // pre-extraction check skips extraction entirely. The derived grounding signal
+  // is computed after extraction. See ./fit.ts and docs/schema-guide.md.
+  const fitCfg = parseFitConfig(schemaDef);
+  const fitPreChecks: Array<FitCheck | null> = [];
+  if (fitCfg && hasPreGate(fitCfg)) {
+    const excerpt = chunks.slice(0, 4).map((c) => c.content).join("\n");
+    fitPreChecks.push(checkKeywords(markdown, fitCfg));
+    if (fitCfg.requires) {
+      fitPreChecks.push(await checkAssertion(excerpt, fitCfg, provider));
+    }
+    const preReport = assembleFit(fitPreChecks, fitCfg, schemaName);
+    if (!preReport.ok && fitCfg.onMisfit === "reject") {
+      const rejected = assembleFit(fitPreChecks, fitCfg, schemaName, true);
+      console.log(`[koji-extract] Fit gate rejected document (${rejected.reason}); skipping extraction`);
+      return {
+        ...emptyResult(model, schemaName, fieldNames, start),
+        document_map_summary: { total_chunks: chunks.length },
+        fit: rejected,
+      };
+    }
+  }
+
   // Phase 2: Classifier (optional — splits multi-doc packets into sections)
   const classifyConfig = schemaDef.classify as Record<string, unknown> | undefined;
 
@@ -305,6 +340,7 @@ export async function intelligentExtract(
     return classifierPath(
       chunks, classifyConfig, schemaDef, schemaName, fields,
       fieldNames, provider, model, markdown, textMap, start,
+      fitCfg, fitPreChecks,
     );
   }
 
@@ -341,6 +377,16 @@ export async function intelligentExtract(
     `(${chunks.length} chunks, ${sectionResult.groups.length} groups, ${sectionResult.gap_filled.length} gap-filled)`,
   );
 
+  // Combine the pre-extraction gate with the derived grounding signal into a
+  // single `fit` verdict the caller can act on.
+  const fit = fitCfg
+    ? assembleFit(
+        [...fitPreChecks, checkDerived(sectionResult.confidence_scores, fitCfg, schemaDef)],
+        fitCfg,
+        schemaName,
+      )
+    : undefined;
+
   return {
     model,
     strategy: "intelligent",
@@ -354,6 +400,7 @@ export async function intelligentExtract(
     document_map_summary: { total_chunks: chunks.length },
     routing_plan: {},
     groups: sectionResult.groups,
+    ...(fit ? { fit } : {}),
     ...(Object.keys(sectionResult.source_texts).length > 0
       ? { source_texts: sectionResult.source_texts }
       : {}),
@@ -374,9 +421,17 @@ async function classifierPath(
   markdown: string,
   textMap: TextMap | undefined,
   start: number,
+  fitCfg: FitConfig | null,
+  fitPreChecks: Array<FitCheck | null>,
 ): Promise<ExtractionResult> {
   const types = (classifyConfig.types ?? []) as Array<{ id?: string; description?: string }>;
   const applyTo = schemaDef.apply_to as string[] | undefined;
+
+  // When the classifier is on, per-section relevance is `apply_to`'s job, so
+  // the derived grounding signal is a classifier-off feature. The document-level
+  // pre-extraction gate (keywords / requires) still applies and rides at the top.
+  const fit =
+    fitCfg && hasPreGate(fitCfg) ? assembleFit(fitPreChecks, fitCfg, schemaName) : undefined;
 
   // If schema declares apply_to, force classifier even on short docs
   const classifyOptions: Record<string, unknown> = {};
@@ -429,6 +484,7 @@ async function classifierPath(
       ...emptyResult(model, schemaName, fieldNames, start),
       elapsed_ms: elapsedMs,
       document_map_summary: { total_chunks: chunks.length },
+      ...(fit ? { fit } : {}),
     };
   }
 
@@ -448,6 +504,7 @@ async function classifierPath(
     document_map_summary: { total_chunks: chunks.length },
     routing_plan: {},
     groups: first.groups,
+    ...(fit ? { fit } : {}),
     ...(Object.keys(first.source_texts).length > 0
       ? { source_texts: first.source_texts }
       : {}),
