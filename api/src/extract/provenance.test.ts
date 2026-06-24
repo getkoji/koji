@@ -298,6 +298,37 @@ describe("word-level bbox matching", () => {
     expect(result.note!.words).toBeUndefined();
   });
 
+  it("does not match a multi-word value against a run of bare punctuation segments", () => {
+    // Regression: Cincinnati page-8 premium summary has a column of standalone
+    // "$" text items next to empty premium rows. The matcher used to strip
+    // those to "" and then accept them as a match for any needle word via
+    // `needleWord.includes("")` (always true). A 4+-word value like the
+    // carrier name would land on the dollar-sign column instead of the page-
+    // header where it actually appears.
+    const carrierHeaderTextMap: TextMap = [
+      { text: "The Cincinnati", page: 1, bbox: { x: 0.1, y: 0.05, w: 0.3, h: 0.02 } },
+      { text: "Insurance", page: 1, bbox: { x: 0.4, y: 0.05, w: 0.1, h: 0.02 } },
+      { text: "Companies", page: 1, bbox: { x: 0.5, y: 0.05, w: 0.1, h: 0.02 } },
+      // …intervening pages…
+      { text: "$", page: 8, bbox: { x: 0.6, y: 0.10, w: 0.01, h: 0.02 } },
+      { text: "$", page: 8, bbox: { x: 0.6, y: 0.12, w: 0.01, h: 0.02 } },
+      { text: "$", page: 8, bbox: { x: 0.6, y: 0.14, w: 0.01, h: 0.02 } },
+      { text: "$", page: 8, bbox: { x: 0.6, y: 0.16, w: 0.01, h: 0.02 } },
+      { text: "$", page: 8, bbox: { x: 0.6, y: 0.18, w: 0.01, h: 0.02 } },
+    ];
+    const markdown = "The Cincinnati Insurance Companies\nlater text…\n$ $ $ $ $";
+
+    const result = resolveProvenance(
+      { carrier: "The Cincinnati Insurance Companies" },
+      markdown,
+      carrierHeaderTextMap,
+    );
+
+    expect(result.carrier).not.toBeNull();
+    // The carrier should land on page 1 (real text), never page 8 (dollar column)
+    expect(result.carrier!.page).toBe(1);
+  });
+
   it("works without textMap (backward compat)", () => {
     const markdown = "Invoice Number: INV-2024-001";
     const result = resolveProvenance({ invoice_number: "INV-2024-001" }, markdown);
