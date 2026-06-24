@@ -570,6 +570,11 @@ function locateWords(
       for (let j = 0; j < needleWords.length; j++) {
         const segText = textMap[i + j]!.text.toLowerCase().replace(/[,.$()]/g, "");
         const needleWord = needleWords[j]!.replace(/[,.$()]/g, "");
+        // Empty-after-strip segments — typically standalone punctuation like
+        // bare "$" in a premium-summary column — would otherwise pass the
+        // containment check (every string includes ""), so a run of them
+        // matches any multi-word needle. Skip.
+        if (segText === "") { matched = false; break; }
         // For digit-only words, require exact match to avoid "1000" matching "1000000".
         // For words with digits + separators (e.g. "2025-12-04"), don't allow
         // substring containment — it false-matches any component like "2025" or "04".
