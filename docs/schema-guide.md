@@ -393,6 +393,74 @@ Every extraction response now includes a `validation` block alongside `extracted
 
 Validation never raises on malformed rule entries: a bad rule definition surfaces as an issue in the report so your pipeline keeps running and you can see exactly which rule is broken.
 
+## Document fit — "is this even the right document?"
+
+`intake` guards on file properties and `validation` guards on extracted values. The `fit` block guards on something in between: **does this document belong to this schema at all?**
+
+The motivating case: a user uploads into a slot in their portal that is bound to one schema, and sometimes drops in the wrong document — an invoice where a policy was expected. Without `fit`, the pipeline extracts anyway and hands back a payload full of nulls, leaving the user to squint at a bad result and guess what went wrong. With `fit`, Koji returns a clear signal — *"this doesn't look like a policy"* — that your portal can render directly.
+
+`fit` combines two independent mechanisms. Declare either, both, or neither:
+
+```yaml
+name: insurance_policy
+
+fit:
+  # ── Asserted pre-extraction gate (cheap; can skip extraction) ──
+  keywords: [policy, insured, premium]        # zero-cost text scan
+  min_keywords: 2                              # how many must appear (default 1)
+  requires: "a commercial insurance policy"    # one yes/no LLM call
+
+  # ── Derived post-extraction signal (free; reuses provenance) ──
+  anchor_fields: [policy_number, effective_date]  # default: the required fields
+  min_score: 0.4                               # misfit below this mean anchor score
+
+  # ── Action ──
+  on_misfit: warn                              # warn (default) | reject
+
+fields:
+  policy_number: { type: string, required: true }
+  effective_date: { type: date, required: true }
+```
+
+**The asserted gate runs *before* extraction.** The `keywords` check is pure string matching and free — it asks whether at least `min_keywords` of the listed terms appear anywhere in the document. The `requires` check is a single yes/no LLM call that asks the model whether the document matches your plain-language description. Because both run up front, a misfit can skip extraction entirely and save the cost.
+
+**The derived signal runs *after* extraction and costs nothing.** It reuses the per-field grounding Koji already computes for [confidence scoring](#response-shape): for each anchor field, how strongly was the extracted value found in the source text? `anchor_fields` defaults to your schema's `required` fields — the fields that must exist in a genuine instance of this document. The mean anchor grounding is the **fit score**; a document whose anchors are all ungrounded (everything came back null) is, by that fact, the wrong document.
+
+### `on_misfit`: warn vs. reject
+
+- **`warn`** (default) never blocks. The document is always extracted and the `fit` verdict rides along in the response, so your application decides what to do — accept, flag for review, or discard.
+- **`reject`** short-circuits the pre-extraction gate: if a keyword or `requires` check fails, extraction is skipped, the extracted fields come back as `null`, and `fit.extraction_skipped` is `true`. (The derived signal can't skip extraction — it's computed from the extraction itself — so under `reject` it still flags the response but the work has already run.)
+
+Unlike `intake`, a fit misfit is **not** an HTTP 400. A well-formed PDF that happens to be the wrong *kind* of document is a legitimate request that simply doesn't belong in this slot — so the caller gets a normal `200` response with `fit.ok = false` and a human-readable `message`, not an error.
+
+### Response shape
+
+Every response from a schema with a `fit` block carries a `fit` object alongside `extracted` and `validation`:
+
+```json
+{
+  "extracted": { "policy_number": null, "effective_date": null },
+  "fit": {
+    "ok": false,
+    "action": "warn",
+    "reason": "low_field_grounding",
+    "message": "This does not look like a 'insurance_policy' document: only 0 of 2 anchor field(s) ([\"policy_number\",\"effective_date\"]) were found in the source.",
+    "score": 0.0,
+    "extraction_skipped": false,
+    "checks": [
+      {"name": "keywords", "ok": false, "detail": {"required": 2, "matched": 0, "matched_keywords": [], "keywords": ["policy", "insured", "premium"]}},
+      {"name": "derived",  "ok": false, "detail": {"score": 0.0, "min_score": 0.4, "anchors_found": 0, "anchors_total": 2, "anchor_fields": ["policy_number", "effective_date"]}}
+    ]
+  }
+}
+```
+
+`fit.ok` is `true` only when every declared check passes. When it's `false`, `reason` is one of `insufficient_keywords`, `failed_assertion`, or `low_field_grounding`, and `message` is a ready-to-display explanation. `checks` lists every check that ran so you can see exactly which one tripped.
+
+The `requires` assertion **fails open**: if the model call errors or returns unparseable JSON, the check passes rather than blocking a legitimate upload on a transient model hiccup.
+
+**With the classifier enabled** ([`apply_to`](#targeting-specific-document-types-with-apply_to)), the derived grounding signal is a no-op — per-section relevance is already `apply_to`'s job — but the document-level `keywords`/`requires` gate still runs and rides at the top level of the response.
+
 ## Targeting specific document types with `apply_to`
 
 When you run Koji against a **packet** — a single upload containing multiple stapled-together documents (an invoice + a certificate of insurance + a policy declaration, say) — you usually want each schema to extract only from the section that contains its type of data. The classifier stage in the pipeline can split a packet into typed sections, and the `apply_to` schema key tells the router which of those sections this schema should run against.
