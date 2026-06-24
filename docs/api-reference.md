@@ -23,7 +23,7 @@ Liveness check for the API server.
 {
   "status": "healthy",
   "service": "koji-server",
-  "version": "0.9.1"
+  "version": "0.10.0"
 }
 ```
 
@@ -328,6 +328,25 @@ Extract structured data from markdown using a schema. No file upload -- operates
 ```
 
 The `trace` object is the locked pipeline-observability envelope. See [Trace Format](trace-format.md) for the full schema, stage catalog, and per-stage `summary_json` contents.
+
+When the schema declares a [`fit` block](schema-guide.md#document-fit-is-this-even-the-right-document), the response also carries a `fit` object reporting whether the document belongs to this schema:
+
+```json
+{
+  "extracted": { /* ... */ },
+  "fit": {
+    "ok": false,
+    "action": "warn",
+    "reason": "low_field_grounding",
+    "message": "This does not look like a 'invoice' document: only 0 of 2 anchor field(s) ([...]) were found in the source.",
+    "score": 0.0,
+    "extraction_skipped": false,
+    "checks": [ /* per-check detail */ ]
+  }
+}
+```
+
+`fit.ok` is `true` only when every declared check passes. Under `on_misfit: reject`, a failed pre-extraction check skips extraction entirely — `extracted` is `null` and `fit.extraction_skipped` is `true`. A misfit is reported as a normal `200` (not a `400`); see the [schema guide](schema-guide.md#document-fit-is-this-even-the-right-document) for the full contract.
 
 #### Async response `202 Accepted`
 

@@ -9,6 +9,7 @@ import re
 import time
 
 from .document_map import Chunk, build_document_map, summarize_map
+from .fit import FitConfig, assemble, check_assertion, check_derived, check_keywords
 from .packet_splitter import Section, classify_chunks_to_sections
 from .providers import ModelProvider, build_provider, create_provider
 from .router import group_routes, route_fields, summarize_routing
@@ -1041,6 +1042,47 @@ async def intelligent_extract(
     doc_summary = summarize_map(chunks)
     print(f"[koji-extract] Map: {doc_summary['total_chunks']} chunks, categories: {doc_summary['by_category']}")
 
+    # Document-fit pre-extraction gate. The schema's `fit` block can declare a
+    # keyword check (free) and a `requires` assertion (one yes/no LLM call) that
+    # run before extraction. When `on_misfit: reject` and a pre-extraction check
+    # fails, extraction is skipped entirely and the response reports the misfit.
+    # The derived grounding signal is computed later, after extraction. See
+    # services/extract/fit.py and docs/schema-guide.md.
+    fit_cfg = FitConfig.from_schema(schema_def)
+    fit_pre_checks: list = []
+    if fit_cfg and fit_cfg.has_pre_gate:
+        fit_excerpt = "\n".join(c.content for c in chunks[:4])
+        fit_pre_checks.append(check_keywords(markdown, fit_cfg))
+        if fit_cfg.requires:
+            fit_pre_checks.append(await check_assertion(fit_excerpt, fit_cfg, provider))
+        pre_report = assemble(fit_pre_checks, fit_cfg, schema_name)
+        if not pre_report.ok and fit_cfg.on_misfit == "reject":
+            rejected = assemble(fit_pre_checks, fit_cfg, schema_name, extraction_skipped=True)
+            elapsed_ms = int((time.time() - start) * 1000)
+            print(f"[koji-extract] Fit gate rejected document ({rejected.reason}); skipping extraction")
+            if not classify_config:
+                return {
+                    "extracted": None,
+                    "confidence": {},
+                    "confidence_scores": {},
+                    "chunks_total": doc_summary["total_chunks"],
+                    "extraction_groups": 0,
+                    "elapsed_ms": elapsed_ms,
+                    "gap_filled": [],
+                    "document_map_summary": doc_summary,
+                    "routing_plan": {},
+                    "groups": [],
+                    "fit": rejected.to_dict(),
+                }
+            return {
+                "sections": [],
+                "chunks_total": doc_summary["total_chunks"],
+                "elapsed_ms": elapsed_ms,
+                "document_map_summary": doc_summary,
+                "classifier": {"reason": "fit_rejected", "sections_matched": 0},
+                "fit": rejected.to_dict(),
+            }
+
     async def _extract_one_section(section_chunks: list[Chunk]) -> dict:
         """Run the wave + gap-fill extraction pipeline against a chunk slice.
 
@@ -1296,7 +1338,7 @@ async def intelligent_extract(
     if not classify_config:
         section_result = await _extract_one_section(chunks)
         elapsed_ms = int((time.time() - start) * 1000)
-        return {
+        response = {
             "extracted": section_result["extracted"],
             "confidence": section_result["confidence"],
             "confidence_scores": section_result["confidence_scores"],
@@ -1308,6 +1350,12 @@ async def intelligent_extract(
             "routing_plan": section_result["routing_plan"],
             "groups": section_result["groups"],
         }
+        # Combine the pre-extraction gate with the derived grounding signal into
+        # a single `fit` verdict the caller can act on.
+        if fit_cfg:
+            derived = check_derived(section_result["confidence_scores"], fit_cfg, schema_def)
+            response["fit"] = assemble([*fit_pre_checks, derived], fit_cfg, schema_name).to_dict()
+        return response
 
     # ── Classifier ON: classify, filter by apply_to, extract per-section ──
     require_apply_to = bool(classify_config.get("require_apply_to", False))
@@ -1384,10 +1432,16 @@ async def intelligent_extract(
         classifier_meta["reason"] = "no_matching_section"
 
     elapsed_ms = int((time.time() - start) * 1000)
-    return {
+    response = {
         "sections": section_results,
         "chunks_total": doc_summary["total_chunks"],
         "elapsed_ms": elapsed_ms,
         "document_map_summary": doc_summary,
         "classifier": classifier_meta,
     }
+    # When the classifier is on, per-section relevance is `apply_to`'s job, so
+    # the derived grounding signal is a classifier-off feature. The document-level
+    # pre-extraction gate (keywords / requires) still applies and rides at the top.
+    if fit_cfg and fit_cfg.has_pre_gate:
+        response["fit"] = assemble(fit_pre_checks, fit_cfg, schema_name).to_dict()
+    return response

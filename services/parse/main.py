@@ -24,7 +24,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.9.1")
+app = FastAPI(title="Koji Parse Service", version="0.10.0")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -300,7 +300,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.9.1"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.10.0"}
 
 
 @app.post("/parse")

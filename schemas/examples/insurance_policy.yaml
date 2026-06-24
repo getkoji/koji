@@ -27,6 +27,18 @@ headings:
     - "^ENDORSEMENT\\s*[A-Z0-9-]*$"
     - "^FORM\\s+[A-Z]{2,}\\s+\\d+"
 
+# Document fit — optional. Catches the "wrong document in this slot" case so a
+# misfiled upload returns a clear signal instead of a wall of nulls. The
+# keyword check is free; the derived signal reuses extraction grounding and
+# defaults its anchors to the required fields below. `on_misfit: warn` always
+# extracts and reports — switch to `reject` to skip extraction on a misfit.
+# See docs/schema-guide.md#document-fit for the full contract.
+fit:
+  keywords: ["policy", "insured", "premium", "coverage"]
+  min_keywords: 2
+  min_score: 0.4
+  on_misfit: warn
+
 fields:
   policy_number:
     type: string

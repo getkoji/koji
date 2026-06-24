@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from .normalize import normalize_extracted
 from .validate import validate_extracted
 
-app = FastAPI(title="Koji Extract Service", version="0.9.1")
+app = FastAPI(title="Koji Extract Service", version="0.10.0")
 
 
 def _apply_post_extract(result: dict, schema_def: dict) -> dict:
@@ -38,6 +38,13 @@ def _apply_post_extract(result: dict, schema_def: dict) -> dict:
 
 
 def _apply_one(payload: dict, schema_def: dict) -> None:
+    # A fit gate with `on_misfit: reject` short-circuits extraction and leaves
+    # `extracted` as None — there is nothing to normalize or validate. The
+    # `fit` block already explains why. Leave neutral reports.
+    if payload.get("extracted") is None:
+        payload["normalization"] = {"applied": [], "warnings": []}
+        payload["validation"] = {"ok": True, "issues": []}
+        return
     normalized, norm_report = normalize_extracted(payload.get("extracted"), schema_def)
     validation_report = validate_extracted(normalized, schema_def)
     payload["extracted"] = normalized
@@ -107,7 +114,7 @@ class ExtractionRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-extract", "version": "0.9.1"}
+    return {"status": "healthy", "service": "koji-extract", "version": "0.10.0"}
 
 
 @app.post("/extract")
