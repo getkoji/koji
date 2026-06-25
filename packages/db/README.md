@@ -48,7 +48,7 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/koji \
   pnpm --filter @koji/db migrate
 ```
 
-`migrate.ts` first runs every entry in `drizzle/meta/_journal.json` via Drizzle's migrator (just `0000_initial.sql` today), then executes `drizzle/0001_rls.sql` to apply the hand-written RLS policies. Drizzle Kit does not emit `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` statements, so RLS lives in a parallel SQL file that the runner concatenates on top.
+`migrate.ts` runs every entry in `drizzle/meta/_journal.json` in order via Drizzle's migrator, then executes `drizzle/0001_rls.sql` to apply the hand-written RLS policies. Drizzle Kit does not emit `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` statements, so RLS lives in a parallel SQL file that the runner applies on top. Note `0001_rls.sql` is applied **out-of-band** — it is intentionally not a journal entry (see the numbering caveat below).
 
 ### Generating a new migration
 
@@ -56,12 +56,15 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/koji \
 pnpm --filter @koji/db generate
 ```
 
-This runs `drizzle-kit generate` against the live schema in `src/schema/` and emits a new `drizzle/NNNN_{name}.sql` plus a journal entry. After generating:
+This runs `drizzle-kit generate` against the live schema in `src/schema/` and emits a new `drizzle/NNNN_{name}.sql` plus a journal entry and an updated `meta/NNNN_snapshot.json` baseline. After generating:
 
-1. Diff the SQL for anything surprising (unnecessary column renames, bad defaults).
-2. If the new migration touches a tenant-scoped table, add a matching `ALTER TABLE ... ENABLE RLS` + `CREATE POLICY` block to a new `drizzle/NNNN_rls.sql` file and update the runner to apply it.
-3. Add the new table name to `RLS_POLICIES` in `src/index.ts` and to the coverage assertion in `src/rls.test.ts`. The test is the safety net — it fails the build if a tenant-scoped table is missing a policy.
-4. Run `pnpm --filter @koji/db test` to confirm the round-trip still holds.
+1. **Fix the file number if it collides.** Because `0001_rls.sql` is applied out-of-band (not in the journal), drizzle-kit's sequential numbering runs one behind the filename convention, so `generate` names the new file/tag one number low (e.g. it emits `0019_*` when the next free number is `0020`). If the emitted number collides with an existing migration, rename the SQL file **and** its `tag` in `meta/_journal.json` to the next free number. The SQL contents are correct — only the number needs bumping.
+2. Diff the SQL for anything surprising (unnecessary column renames, bad defaults).
+3. If the new migration touches a tenant-scoped table, add a matching `ALTER TABLE ... ENABLE RLS` + `CREATE POLICY` block to a new `drizzle/NNNN_rls.sql` file and update the runner to apply it.
+4. Add the new table name to `RLS_POLICIES` in `src/index.ts` and to the coverage assertion in `src/rls.test.ts`. The test is the safety net — it fails the build if a tenant-scoped table is missing a policy.
+5. Run `pnpm --filter @koji/db test` to confirm migrations apply cleanly (the Testcontainers RLS suite applies the **full** migration stream to a fresh Postgres) and the round-trip still holds.
+
+> **Migration meta history.** `drizzle-kit generate` diffs the live schema against the latest snapshot in `meta/`. That baseline was accidentally deleted once (`0011_snapshot.json`, in a "remove accidentally committed files" commit), which silently broke `generate` — it began emitting bogus "re-create everything" migrations, and migrations `0011`–`0019` were hand-written as a workaround. The baseline was rebuilt (`meta/0019_snapshot.json`), so `generate` produces correct incremental diffs again. **Do not delete files under `meta/`** — those snapshots are how `generate` knows the current state. They are dev-time only; the production migrator never reads them, so a broken/missing snapshot is a codegen bug, not a data risk.
 
 ### Applying migrations in production
 
