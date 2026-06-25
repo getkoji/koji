@@ -34,12 +34,21 @@ export async function classifyDocument(
     return "other";
   }
 
-  // Check text layer using pdf-parse
+  // Check text layer using pdfjs
   // Same heuristic as services/parse/main.py get_pdf_info():
   // average < 50 chars/page over first 3 pages → scanned
   try {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer) }).promise;
+    // `verbosity: 0` suppresses pdfjs's console.warn output. In some
+    // serverless runtimes (Vercel functions, certain Node builds) those
+    // warnings are bridged through `console.error` and a downstream
+    // handler can turn them into a thrown exception — which would land
+    // us in the catch block below and silently return "digital_pdf" for
+    // a scan. Matches the same option DigitalPdfProvider uses.
+    const doc = await pdfjsLib.getDocument({
+      data: new Uint8Array(fileBuffer),
+      verbosity: 0,
+    }).promise;
     const pageCount = doc.numPages;
     const sampled = Math.min(pageCount, 3);
 
@@ -49,14 +58,19 @@ export async function classifyDocument(
       const content = await page.getTextContent();
       const text = content.items.map((item: any) => item.str ?? "").join("");
       totalChars += text.trim().length;
+      page.cleanup();
     }
-    doc.destroy();
+    await doc.destroy();
 
     const charsPerPage = totalChars / sampled;
     return charsPerPage < 50 ? "scanned_pdf" : "digital_pdf";
   } catch {
     // If we can't parse the PDF header, assume digital (safe fallback —
-    // pdfjs will try and the SmartParseProvider falls back to heavy on error)
+    // pdfjs will try and the SmartParseProvider falls back to heavy on
+    // error). NOTE: this default is wrong for OCR overlay decisions —
+    // see the re-probe in platform's OCR overlay Inngest function
+    // (platform-127). Don't change this default without auditing every
+    // caller of classifyDocument.
     return "digital_pdf";
   }
 }
