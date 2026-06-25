@@ -41,12 +41,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Run the green packages explicitly. @koji/api (the extraction engine),
-      # @koji/dashboard, @koji/types, and @koji/db all pass; @koji/db's RLS suite
+      # `pnpm -r test` runs vitest across every package (api — the extraction
+      # engine, dashboard, pipeline, types, db). @koji/db's RLS suite
       # self-provisions Postgres via Testcontainers (Docker is available on the
       # runner), so no DB service needs wiring here.
-      #
-      # @koji/pipeline is intentionally excluded: it has a pre-existing failing
-      # test (compiler.test.ts "detects unreachable step") that predates this
-      # workflow. Tracked in oss-217 — fold @koji/pipeline back in once it's green.
-      - run: pnpm --filter @koji/api --filter @koji/dashboard --filter @koji/db --filter @koji/types test
+      - run: pnpm -r test

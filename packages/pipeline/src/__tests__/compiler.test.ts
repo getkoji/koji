@@ -124,22 +124,31 @@ edges:
   });
 
   it('detects unreachable step', () => {
+    // `entry` is the sole entry (in-degree 0). `a` and `b` form a cycle that is
+    // disconnected from it, so neither is reachable from `entry`. (A bare
+    // dangling step can't be used here: a step with in-degree 0 is itself an
+    // entry, which would trip MULTIPLE_ENTRY_POINTS instead — an unreachable
+    // step necessarily sits behind a disconnected cycle.)
     const yaml = `
 pipeline: unreachable
 steps:
   - id: entry
     type: extract
-  - id: orphan
+  - id: a
+    type: tag
+  - id: b
     type: tag
 edges:
-  - from: orphan
-    to: entry
+  - from: a
+    to: b
+  - from: b
+    to: a
 `;
     const result = compilePipeline(yaml);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    // Either MULTIPLE_ENTRY_POINTS or UNREACHABLE_STEP or CYCLE_DETECTED
-    expect(result.errors.length).toBeGreaterThan(0);
+    const codes = result.errors.map((e) => e.code);
+    expect(codes).toContain('UNREACHABLE_STEP');
   });
 
   it('detects missing edge target', () => {
