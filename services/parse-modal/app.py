@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import re
 
 import modal
 
@@ -119,9 +120,8 @@ app = modal.App("koji-parse", image=image)
 # ``force_full_page_ocr=True`` is required for fully scanned docs or
 # Docling only OCRs the small bitmap regions it tags as "image content"
 # and returns near-empty markdown).
-_converter_full_ocr = None
-_converter_no_ocr = None
-_converter_pypdfium_ocr = None
+# Converters are cached by (ocr, backend) — see _get_converter.
+_converters: dict[tuple[bool, str], object] = {}
 
 
 def _get_converter(ocr: bool, backend: str = "default"):
@@ -143,56 +143,55 @@ def _get_converter(ocr: bool, backend: str = "default"):
       rejects, at the cost of slightly lower-quality layout detection on
       clean PDFs.
 
-    Three combinations are wired up — see ``_parse_endpoint`` for the
-    fallback chain.
+    Converters are cached per ``(ocr, backend)``. The ``pypdfium`` backend is
+    used both as a tolerance fallback for malformed PDFs (see
+    ``_parse_endpoint``) and as the glyph-garble fallback (see
+    ``_has_glyph_garble`` + ``_convert_bytes``).
     """
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    global _converter_full_ocr, _converter_no_ocr, _converter_pypdfium_ocr
+    global _converters
 
-    if backend == "pypdfium":
-        if _converter_pypdfium_ocr is None:
-            from docling.backend.pypdfium2_backend import (
-                PyPdfiumDocumentBackend,
-            )
-
-            opts = PdfPipelineOptions(
-                do_ocr=True,
-                ocr_options=EasyOcrOptions(force_full_page_ocr=True),
-            )
-            _converter_pypdfium_ocr = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(
-                        pipeline_options=opts,
-                        backend=PyPdfiumDocumentBackend,
-                    ),
-                },
-            )
-        return _converter_pypdfium_ocr
+    key = (ocr, backend)
+    conv = _converters.get(key)
+    if conv is not None:
+        return conv
 
     if ocr:
-        if _converter_full_ocr is None:
-            opts = PdfPipelineOptions(
-                do_ocr=True,
-                ocr_options=EasyOcrOptions(force_full_page_ocr=True),
-            )
-            _converter_full_ocr = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                },
-            )
-        return _converter_full_ocr
-
-    if _converter_no_ocr is None:
-        opts = PdfPipelineOptions(do_ocr=False)
-        _converter_no_ocr = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-            },
+        opts = PdfPipelineOptions(
+            do_ocr=True,
+            ocr_options=EasyOcrOptions(force_full_page_ocr=True),
         )
-    return _converter_no_ocr
+    else:
+        opts = PdfPipelineOptions(do_ocr=False)
+
+    fmt_kwargs: dict = {"pipeline_options": opts}
+    if backend == "pypdfium":
+        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+
+        fmt_kwargs["backend"] = PyPdfiumDocumentBackend
+
+    conv = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(**fmt_kwargs)},
+    )
+    _converters[key] = conv
+    return conv
+
+
+_GLYPH_ESCAPE_RE = re.compile(r"/uni[0-9A-Fa-f]{4}")
+
+
+def _has_glyph_garble(text: str) -> bool:
+    """True if `text` contains unresolved `/uniXXXX` glyph-name escapes.
+
+    DoclingParseV2 emits these for custom-encoded fonts whose ToUnicode CMap it
+    fails to resolve, so "BALLANMOOR" becomes "BALLANM/uni004F/uni004F R". Real
+    text never contains `/uniXXXX`, so this is a zero-false-positive signal to
+    re-parse with the pypdfium backend. Mirrors services/parse/main.py (oss-221).
+    """
+    return bool(_GLYPH_ESCAPE_RE.search(text or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +582,18 @@ def _convert_bytes(
         conv = _get_converter(ocr=not skip_ocr, backend=backend)
         result = conv.convert(tmp_path)
         markdown = result.document.export_to_markdown()
+
+        # The default backend (DoclingParseV2) mangles some custom-encoded fonts
+        # into `/uniXXXX` glyph escapes; the pypdfium backend resolves their
+        # ToUnicode CMap correctly. Re-parse with it when garble is detected,
+        # keeping the full pipeline (layout + word bboxes). See oss-221.
+        if backend == "default" and _has_glyph_garble(markdown):
+            print("[koji-parse-modal] glyph-name garble detected — re-parsing with pypdfium backend")
+            result = _get_converter(ocr=not skip_ocr, backend="pypdfium").convert(tmp_path)
+            markdown = result.document.export_to_markdown()
+            if _has_glyph_garble(markdown):
+                print("[koji-parse-modal] WARNING: glyph garble persists after pypdfium fallback")
+
         pages = result.document.num_pages()
         text_map = _build_text_map(result.document)
         # L3 provenance: annotate each segment with its markdown character

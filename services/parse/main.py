@@ -11,6 +11,7 @@ import base64
 import functools
 import io
 import json
+import re
 import tempfile
 import time
 import traceback
@@ -24,7 +25,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.13.0")
+app = FastAPI(title="Koji Parse Service", version="0.13.1")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -35,35 +36,55 @@ app = FastAPI(title="Koji Parse Service", version="0.13.0")
 #                      (which produced near-empty markdown for fully
 #                      scanned docs and made downstream extraction
 #                      return all-null fields).
-_converter_full_ocr: DocumentConverter | None = None
-_converter_no_ocr: DocumentConverter | None = None
+# Converters are cached by (ocr, backend). `backend="default"` is
+# DoclingParseV2 (fast, best layout). `backend="pypdfium"` routes text
+# extraction through pypdfium2, which resolves font ToUnicode CMaps that
+# DoclingParseV2 mangles into `/uniXXXX` glyph escapes — see _has_glyph_garble
+# and the fallback in _convert_sync (oss-221).
+_converters: dict[tuple[bool, str], DocumentConverter] = {}
 
 
-def get_converter(ocr: bool = True) -> DocumentConverter:
-    """Lazy-load converters on first use."""
-    global _converter_full_ocr, _converter_no_ocr
+def get_converter(ocr: bool = True, backend: str = "default") -> DocumentConverter:
+    """Lazy-load + cache a DocumentConverter for the given (ocr, backend)."""
+    key = (ocr, backend)
+    conv = _converters.get(key)
+    if conv is not None:
+        return conv
 
     if ocr:
-        if _converter_full_ocr is None:
-            opts = PdfPipelineOptions(
-                do_ocr=True,
-                ocr_options=EasyOcrOptions(force_full_page_ocr=True),
-            )
-            _converter_full_ocr = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                },
-            )
-        return _converter_full_ocr
+        opts = PdfPipelineOptions(
+            do_ocr=True,
+            ocr_options=EasyOcrOptions(force_full_page_ocr=True),
+        )
     else:
-        if _converter_no_ocr is None:
-            opts = PdfPipelineOptions(do_ocr=False)
-            _converter_no_ocr = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
-                },
-            )
-        return _converter_no_ocr
+        opts = PdfPipelineOptions(do_ocr=False)
+
+    fmt_kwargs: dict = {"pipeline_options": opts}
+    if backend == "pypdfium":
+        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+
+        fmt_kwargs["backend"] = PyPdfiumDocumentBackend
+
+    conv = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(**fmt_kwargs)},
+    )
+    _converters[key] = conv
+    return conv
+
+
+_GLYPH_ESCAPE_RE = re.compile(r"/uni[0-9A-Fa-f]{4}")
+
+
+def _has_glyph_garble(text: str) -> bool:
+    """True if `text` contains unresolved `/uniXXXX` glyph-name escapes.
+
+    DoclingParseV2 emits these for custom-encoded fonts whose ToUnicode CMap it
+    fails to resolve (e.g. the Consolas/Arial Type1 subsets in some carrier
+    templates), so "BALLANMOOR" becomes "BALLANM/uni004F/uni004F R". Real text
+    never contains `/uniXXXX`, so this is a zero-false-positive signal that the
+    character content was mangled — trigger a pypdfium re-parse.
+    """
+    return bool(_GLYPH_ESCAPE_RE.search(text or ""))
 
 
 # ── Detection helpers ────────────────────────────────────────────────────
@@ -276,9 +297,21 @@ def _annotate_md_offsets(markdown: str, text_map: list[dict]) -> None:
 
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
-    conv = get_converter(ocr=not skip_ocr)
-    result = conv.convert(file_path)
+    ocr = not skip_ocr
+    result = get_converter(ocr=ocr).convert(file_path)
     markdown = result.document.export_to_markdown()
+
+    # The default backend (DoclingParseV2) mangles some custom-encoded fonts
+    # into `/uniXXXX` glyph escapes because it doesn't resolve their ToUnicode
+    # CMap. The pypdfium backend does, so re-parse with it when garble is
+    # detected. This keeps the full docling pipeline (layout + word bboxes),
+    # just with the backend that decodes the font correctly. See oss-221.
+    if _has_glyph_garble(markdown):
+        print("[koji-parse] glyph-name garble detected — re-parsing with pypdfium backend")
+        result = get_converter(ocr=ocr, backend="pypdfium").convert(file_path)
+        markdown = result.document.export_to_markdown()
+        if _has_glyph_garble(markdown):
+            print("[koji-parse] WARNING: glyph garble persists after pypdfium fallback")
 
     # Generate searchable PDF for scanned documents
     searchable_pdf = None
@@ -334,7 +367,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.13.0"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.13.1"}
 
 
 @app.post("/parse")
