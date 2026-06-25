@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
-import io
 import json
 import re
 import tempfile
@@ -215,55 +214,6 @@ def _build_text_map(document) -> list[dict]:
         return []
 
 
-def _generate_searchable_pdf(file_path: str) -> bytes | None:
-    """Generate a searchable PDF by overlaying OCR text on the scanned image.
-
-    Uses pytesseract to produce a PDF with an invisible text layer.
-    Returns the PDF bytes, or None if generation fails.
-    """
-    try:
-        import pytesseract
-        from PIL import Image
-
-        ext = Path(file_path).suffix.lower()
-        if ext == ".pdf":
-            # Convert PDF pages to images, OCR each, combine into searchable PDF
-            doc = pdfium.PdfDocument(file_path)
-            pdf_pages = []
-            for i in range(len(doc)):
-                page = doc[i]
-                bitmap = page.render(scale=2)  # 2x for better OCR
-                pil_image = bitmap.to_pil()
-                pdf_bytes = pytesseract.image_to_pdf_or_hocr(pil_image, extension="pdf")
-                pdf_pages.append(pdf_bytes)
-            doc.close()
-
-            if not pdf_pages:
-                return None
-
-            # Merge pages using pypdfium2
-            if len(pdf_pages) == 1:
-                return pdf_pages[0]
-
-            merged = pdfium.PdfDocument.new()
-            for page_bytes in pdf_pages:
-                src = pdfium.PdfDocument(page_bytes)
-                merged.import_pages(src)
-            buf = io.BytesIO()
-            merged.save(buf)
-            return buf.getvalue()
-        else:
-            # Single image
-            img = Image.open(file_path)
-            return pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
-    except Exception as e:
-        import traceback as _tb
-
-        print(f"[koji-parse] Warning: searchable PDF generation failed: {e}")
-        _tb.print_exc()
-        return None
-
-
 def _annotate_md_offsets(markdown: str, text_map: list[dict]) -> None:
     """Annotate each text_map segment with md_offset and md_length.
 
@@ -313,22 +263,14 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
         if _has_glyph_garble(markdown):
             print("[koji-parse] WARNING: glyph garble persists after pypdfium fallback")
 
-    # Generate searchable PDF for scanned documents
-    searchable_pdf = None
-    if not skip_ocr:
-        searchable_pdf = _generate_searchable_pdf(file_path)
-
     text_map = _build_text_map(result.document)
     _annotate_md_offsets(markdown, text_map)
 
-    out: dict = {
+    return {
         "markdown": markdown,
         "pages": result.document.num_pages(),
         "text_map": text_map,
     }
-    if searchable_pdf:
-        out["searchable_pdf_base64"] = base64.b64encode(searchable_pdf).decode("ascii")
-    return out
 
 
 def image_to_base64(file_path: str) -> list[str]:
@@ -416,8 +358,6 @@ async def parse(file: UploadFile = File(...)):
             "ocr_skipped": skip_ocr,
             "text_map": result.get("text_map", []),
         }
-        if result.get("searchable_pdf_base64"):
-            resp["searchable_pdf_base64"] = result["searchable_pdf_base64"]
         return JSONResponse(resp)
     except Exception as e:
         tb = traceback.format_exc()

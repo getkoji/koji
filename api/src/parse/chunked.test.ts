@@ -225,20 +225,9 @@ describe("ChunkedParseProvider", () => {
     expect(result.pages).toBe(150);
   });
 
-  // 10. searchable_pdf_base64 omitted
-  it("sets searchable_pdf_base64 to undefined for chunked parses", async () => {
-    __pageCount = 100;
-    const inner = makeMockProvider({
-      parseResponses: [
-        makeParseResponse(),
-        makeParseResponse(),
-      ],
-    });
-    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
-
-    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
-    expect(result.searchable_pdf_base64).toBeUndefined();
-  });
+  // (searchable_pdf_base64 was removed in oss-224 — searchable PDFs are now
+  // generated asynchronously by the platform OCRmyPDF Modal job, never inline
+  // by the parse providers.)
 
   // 11. Encrypted-PDF handling — owner-password / no-print restrictions
   //     are common in customer documents. pdf-lib refuses to load them

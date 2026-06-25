@@ -314,16 +314,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         });
         docText = parseResult.markdown;
         pageCount = parseResult.pages ?? undefined;
-        // Store searchable PDF if available
-        if (parseResult.searchable_pdf_base64) {
-          const searchableKey = `${doc.storageKey}.searchable.pdf`;
-          try {
-            const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
-            await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
-          } catch (err) {
-            console.warn(`[dag-runner] searchable PDF write failed:`, (err as Error).message);
-          }
-        }
+        // Searchable PDFs are no longer written here — see process.ts.
         // Chunk the parsed markdown and persist
         chunks = chunkMarkdown(docText);
         await withRLS(db, tenantId, (tx) =>
