@@ -275,6 +275,20 @@ describe("per-table isolation", () => {
              ('${randomUUID()}', '${tenantB}', 'ep-b', 'EP-B', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userB}')
     `));
 
+    // Provider credentials + tenant models (credential→model split, oss-232)
+    const credAId = randomUUID();
+    const credBId = randomUUID();
+    await rootDb.execute(sql.raw(`
+      INSERT INTO provider_credentials (id, tenant_id, slug, display_name, provider, config_json, created_by)
+      VALUES ('${credAId}', '${tenantA}', 'cred-a', 'Cred A', 'openai', '{}', '${userA}'),
+             ('${credBId}', '${tenantB}', 'cred-b', 'Cred B', 'openai', '{}', '${userB}')
+    `));
+    await rootDb.execute(sql.raw(`
+      INSERT INTO tenant_models (id, tenant_id, credential_id, model, capability)
+      VALUES ('${randomUUID()}', '${tenantA}', '${credAId}', 'gpt-4o-mini', 'chat'),
+             ('${randomUUID()}', '${tenantB}', '${credBId}', 'gpt-4o-mini', 'chat')
+    `));
+
     // Jobs
     await rootDb.execute(sql.raw(`
       INSERT INTO jobs (id, tenant_id, slug, pipeline_id, status, trigger_type)
@@ -299,6 +313,8 @@ describe("per-table isolation", () => {
     "pipelines",
     "jobs",
     "model_endpoints",
+    "provider_credentials",
+    "tenant_models",
   ];
 
   for (const table of tablesToTest) {
@@ -391,5 +407,76 @@ describe("structural RLS guarantees", () => {
       .filter(t => !covered.has(t) && !intentionallyGlobal.has(t));
 
     expect(missing).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credential→model split backfill (0020_credential_model_backfill_rls)
+// ---------------------------------------------------------------------------
+// The migration's backfill runs once at container start against an empty
+// model_endpoints. This re-runs its (idempotent) inserts against a seeded
+// endpoint to exercise the mapping: one credential + one tenant_model that
+// REUSES the endpoint id, with ON CONFLICT making re-runs a no-op.
+
+describe("credential→model backfill", () => {
+  // Mirrors the two INSERT...SELECT statements in
+  // packages/db/drizzle/0020_credential_model_backfill_rls.sql.
+  async function runBackfill(endpointId: string) {
+    await rootDb.execute(sql.raw(`
+      INSERT INTO provider_credentials (
+        id, tenant_id, slug, display_name, provider, config_json, auth_json, status,
+        last_health_check_at, consecutive_failures, last_success_at, last_failure_at,
+        last_failure_reason, health_state, created_by, created_at, updated_at, deleted_at
+      )
+      SELECT md5('cred:' || id::text)::uuid, tenant_id, slug, display_name, provider, config_json, auth_json, status,
+        last_health_check_at, consecutive_failures, last_success_at, last_failure_at,
+        last_failure_reason, health_state, created_by, created_at, updated_at, deleted_at
+      FROM model_endpoints WHERE id = '${endpointId}'
+      ON CONFLICT (id) DO NOTHING
+    `));
+    await rootDb.execute(sql.raw(`
+      INSERT INTO tenant_models (
+        id, tenant_id, credential_id, model, capability, slug, display_name,
+        pricing_mode, pricing_override_json, status, created_at, updated_at, deleted_at
+      )
+      SELECT id, tenant_id, md5('cred:' || id::text)::uuid, model, 'chat', slug, display_name,
+        pricing_mode, pricing_override_json, status, created_at, updated_at, deleted_at
+      FROM model_endpoints WHERE id = '${endpointId}'
+      ON CONFLICT (id) DO NOTHING
+    `));
+  }
+
+  test("an endpoint backfills to a credential + a reused-id model, idempotently", async () => {
+    const endpointId = randomUUID();
+    await rootDb.execute(sql.raw(`
+      INSERT INTO model_endpoints (id, tenant_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
+      VALUES ('${endpointId}', '${tenantA}', 'bf-ep', 'Backfill EP', 'mistral', 'pixtral-large', 'active',
+              '{"key_hint":"sk-xyz"}', '{"base_url":"https://api.mistral.ai/v1"}', '${userA}')
+    `));
+
+    await runBackfill(endpointId);
+
+    // The model row REUSES the endpoint id, so existing FKs stay valid by value.
+    const models = await rootDb.execute<{
+      id: string; credential_id: string; model: string; capability: string;
+    }>(sql.raw(`SELECT id, credential_id, model, capability FROM tenant_models WHERE id = '${endpointId}'`));
+    expect(models.length).toBe(1);
+    expect(models[0]!.model).toBe("pixtral-large");
+    expect(models[0]!.capability).toBe("chat");
+
+    // The credential exists, carries the encrypted key, and is the one the model points at.
+    const creds = await rootDb.execute<{
+      id: string; provider: string; auth_json: { key_hint: string } | null;
+    }>(sql.raw(`SELECT id, provider, auth_json FROM provider_credentials WHERE id = '${models[0]!.credential_id}'`));
+    expect(creds.length).toBe(1);
+    expect(creds[0]!.provider).toBe("mistral");
+    expect(creds[0]!.auth_json).toEqual({ key_hint: "sk-xyz" });
+
+    // Idempotent: re-running produces no duplicates.
+    await runBackfill(endpointId);
+    const dupModels = await rootDb.execute(sql.raw(`SELECT id FROM tenant_models WHERE id = '${endpointId}'`));
+    const dupCreds = await rootDb.execute(sql.raw(`SELECT id FROM provider_credentials WHERE id = '${creds[0]!.id}'`));
+    expect(dupModels.length).toBe(1);
+    expect(dupCreds.length).toBe(1);
   });
 });
