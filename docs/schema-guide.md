@@ -286,6 +286,9 @@ line_items:
 | `iso8601` | Parse common date formats (ISO, `MM/DD/YYYY`, `MM-DD-YY`, etc.) to `YYYY-MM-DD` |
 | `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
 | `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
+| `collapse_spaces` | Collapse runs of spaces/tabs to a single space. Preserves newlines (multi-line addresses keep their breaks). `"ACME   Corp"` → `"ACME Corp"` |
+| `fix_punctuation_spacing` | Apply English-typographic spacing: remove space before `, . ; : ! ? )`; insert single space after `, ; :` when followed by a letter. Preserves initials (`J. R. R. Tolkien`) and decimals (`$1,234.56`). `"Smith , Jones"` → `"Smith, Jones"` |
+| `prose` | Convenience preset for human-readable fields = `trim` + `collapse_spaces` + `fix_punctuation_spacing`. Use for names, addresses, descriptions — any field where readers expect standard English spacing. Codes and identifiers that may legitimately contain runs of whitespace should use `trim` alone instead. |
 
 Transforms are deterministic and fault-tolerant: if a value can't be parsed (e.g. `"next Tuesday"` through `iso8601`), the original value is passed through unchanged. Unknown transform names are recorded as warnings in the response's `normalization.warnings` list rather than raising.
 
