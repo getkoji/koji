@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeMimeType, mimeTypeFor } from "./process";
+import { normalizeMimeType, normalizeMimeTypeWithWarning, mimeTypeFor } from "./process";
 
 describe("normalizeMimeType", () => {
   it("passes through a valid MIME type unchanged", () => {
@@ -43,6 +43,41 @@ describe("normalizeMimeType", () => {
 
   it("trims surrounding whitespace before validating", () => {
     expect(normalizeMimeType("  application/pdf  ", "doc.pdf")).toBe("application/pdf");
+  });
+});
+
+describe("normalizeMimeTypeWithWarning", () => {
+  it("returns no warning when the claimed mime is structurally valid", () => {
+    const r = normalizeMimeTypeWithWarning("application/pdf", "doc.pdf");
+    expect(r.value).toBe("application/pdf");
+    expect(r.warning).toBeNull();
+  });
+
+  it("warns when the claimed mime is a bare extension", () => {
+    const r = normalizeMimeTypeWithWarning("pdf", "policy.pdf");
+    expect(r.value).toBe("application/pdf");
+    expect(r.warning).toMatch(/"pdf" is not a valid MIME type/);
+    expect(r.warning).toMatch(/Coerced to "application\/pdf"/);
+    expect(r.warning).toMatch(/"policy\.pdf"/);
+  });
+
+  it("warns differently when no Content-Type was supplied", () => {
+    const r = normalizeMimeTypeWithWarning(null, "policy.pdf");
+    expect(r.value).toBe("application/pdf");
+    expect(r.warning).toMatch(/No Content-Type was provided/);
+  });
+
+  it("warns even when filename can't help (octet-stream fallback)", () => {
+    const r = normalizeMimeTypeWithWarning("pdf", null);
+    expect(r.value).toBe("application/octet-stream");
+    expect(r.warning).toMatch(/Coerced to "application\/octet-stream"/);
+    expect(r.warning).toMatch(/\(no filename\)/);
+  });
+
+  it("never warns when whitespace surrounds a valid mime", () => {
+    const r = normalizeMimeTypeWithWarning("  application/pdf  ", "doc.pdf");
+    expect(r.value).toBe("application/pdf");
+    expect(r.warning).toBeNull();
   });
 });
 

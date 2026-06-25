@@ -212,6 +212,38 @@ The `trace` object describes the pipeline run — its shape is locked and docume
 
 ---
 
+## Content-Type and Ingestion Warnings
+
+Every ingestion endpoint expects an RFC-compliant `Content-Type` (`type/subtype`) — for example `application/pdf`, `image/png`, `text/csv`. The server uses it as the canonical document type for downstream parsing and rendering.
+
+When the server can't trust the supplied value, it coerces it from the filename extension and surfaces a warning rather than rejecting the request:
+
+| Supplied `Content-Type` | What happens |
+|-------------------------|--------------|
+| Valid (`application/pdf`) | Used as-is. |
+| Bare extension (`pdf`) | Coerced from filename. **Warning emitted.** |
+| Missing / empty | Coerced from filename. **Warning emitted.** |
+| Valid but mismatched (`application/zip` on a `.pdf`) | Used as-is — the server does not second-guess valid MIME types. |
+| No usable signal at all | Falls back to `application/octet-stream`. **Warning emitted.** |
+
+When a warning is emitted, the JSON response includes a `warnings` array. The document is still accepted and processed.
+
+```json
+{
+  "jobId": "abc...",
+  "documentId": "doc_...",
+  "warnings": [
+    "Content-Type \"pdf\" is not a valid MIME type (must be in the form \"type/subtype\"). Coerced to \"application/pdf\" based on filename \"policy.pdf\". Send an RFC-compliant Content-Type header on upload."
+  ]
+}
+```
+
+Bare-extension headers (`Content-Type: pdf`) are the most common cause and typically come from a misconfigured presigned-upload client. Fix the client header and the warning goes away.
+
+The same warning is also written to the server logs as `[mime-normalize] ...` for operators triaging integration issues.
+
+---
+
 ## Upload (Presigned)
 
 For files larger than 4.5 MB on Koji Cloud, use the presigned upload flow.
