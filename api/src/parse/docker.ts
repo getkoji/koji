@@ -56,4 +56,23 @@ export class DockerParseProvider implements ParseProvider {
       text_map: result.text_map,
     };
   }
+
+  async pageImages(input: {
+    fileBuffer: Buffer;
+    filename: string;
+    mimeType: string;
+    maxPages?: number;
+  }): Promise<{ images: string[]; pages: number }> {
+    const part = Uint8Array.from(input.fileBuffer);
+    const form = new FormData();
+    form.append("file", new Blob([part], { type: input.mimeType }), input.filename);
+    if (input.maxPages != null) form.append("max_pages", String(input.maxPages));
+    const resp = await fetch(`${this.url}/page-images`, { method: "POST", body: form });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`page-images ${resp.status}: ${body.slice(0, 300)}`);
+    }
+    const result = (await resp.json()) as { images?: string[]; pages?: number };
+    return { images: result.images ?? [], pages: result.pages ?? 0 };
+  }
 }

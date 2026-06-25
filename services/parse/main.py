@@ -20,11 +20,11 @@ import pypdfium2 as pdfium
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.13.2")
+app = FastAPI(title="Koji Parse Service", version="0.14.0")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -309,7 +309,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.13.2"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.14.0"}
 
 
 @app.post("/parse")
@@ -362,6 +362,44 @@ async def parse(file: UploadFile = File(...)):
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[koji-parse] Error processing {file.filename}:\n{tb}")
+        return JSONResponse(
+            {"error": str(e), "filename": file.filename},
+            status_code=422,
+        )
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+# Cap how many pages a single page-images request will rasterize. The vision-OCR
+# fallback fires only on a bad scan, but each page is one vision call, so bound
+# the cost for very long documents.
+_MAX_PAGE_IMAGES = 50
+
+
+@app.post("/page-images")
+async def page_images(file: UploadFile = File(...), max_pages: int = Form(20)):
+    """Render document pages to base64 PNGs for the vision-OCR parse fallback.
+
+    PDFs are rasterized at 150 DPI (via fitz); image inputs pass through as-is.
+    The escalation path renders a bad scan's pages and sends each to a vision
+    model that reads it far better than the default OCR (see ingestion/process).
+    """
+    suffix = Path(file.filename or "doc").suffix or ".pdf"
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        capped = max(1, min(max_pages, _MAX_PAGE_IMAGES))
+        if _is_image(file.filename or "doc", file.content_type):
+            images = image_to_base64(tmp_path)
+        else:
+            images = pdf_pages_to_images(tmp_path, max_pages=capped)
+        return JSONResponse({"filename": file.filename, "images": images, "pages": len(images)})
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[koji-parse] page-images error for {file.filename}:\n{tb}")
         return JSONResponse(
             {"error": str(e), "filename": file.filename},
             status_code=422,

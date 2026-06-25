@@ -86,6 +86,16 @@ export interface ParseProvider {
     scale?: number;
   }): Promise<{ image_base64: string; width: number; height: number }>;
 
+  /** Render whole pages as base64 PNGs. Used by the vision-OCR parse fallback
+   *  for bad scans (see parse/vision-ocr.ts). Optional — not all providers
+   *  support it. */
+  pageImages?(input: {
+    fileBuffer: Buffer;
+    filename: string;
+    mimeType: string;
+    maxPages?: number;
+  }): Promise<{ images: string[]; pages: number }>;
+
   /** Extract the first ~200 chars from each page. Used for split boundary detection. */
   pageHeaders?(input: {
     fileBuffer: Buffer;
