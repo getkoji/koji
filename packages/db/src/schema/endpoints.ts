@@ -74,6 +74,91 @@ export const modelEndpoints = pgTable(
   }),
 );
 
+/**
+ * Provider credentials — a single connection (provider + base_url + encrypted
+ * key), decoupled from the model. One credential can serve MANY models via
+ * `tenant_models`, so a user no longer duplicates their key per model.
+ *
+ * Expand phase (oss-232): this table is populated by backfill but nothing reads
+ * or writes it yet — `model_endpoints` remains the source of truth. The resolver
+ * + write-path cutover lands in a follow-up PR.
+ */
+export const providerCredentials = pgTable(
+  "provider_credentials",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 64 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    configJson: jsonb("config_json").notNull(),
+    authJson: jsonb("auth_json"),
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    // Health is a property of the connection (key + base_url), not the model.
+    lastHealthCheckAt: timestamp("last_health_check_at", { withTimezone: true, mode: "date" }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true, mode: "date" }),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true, mode: "date" }),
+    lastFailureReason: text("last_failure_reason"),
+    healthState: varchar("health_state", { length: 16 }).notNull().default("healthy"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    tenantSlugIdx: uniqueIndex("provider_credentials_tenant_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    tenantIdx: index("provider_credentials_tenant_idx")
+      .on(t.tenantId)
+      .where(sql`deleted_at IS NULL`),
+  }),
+);
+
+/**
+ * Tenant models — "this credential is allowed to use this model." A credential
+ * has many. `capability` (chat | vision | ocr) drives downstream routing: the
+ * bad-scan escalation picks a vision/ocr-capable model, and the OCR path can
+ * hand a dedicated OCR engine the whole document instead of page images.
+ *
+ * On backfill, each old `model_endpoints` row becomes one credential + one
+ * tenant_model that REUSES the old endpoint id — so every existing reference
+ * (`pipelines.model_provider_id`, runs, usage rollups, the legibility
+ * `fallback_model_id`) stays valid by value with no FK rewrite.
+ */
+export const tenantModels = pgTable(
+  "tenant_models",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    credentialId: uuid("credential_id")
+      .notNull()
+      .references(() => providerCredentials.id, { onDelete: "cascade" }),
+    model: varchar("model", { length: 64 }).notNull(),
+    capability: varchar("capability", { length: 16 }).notNull().default("chat"),
+    slug: varchar("slug", { length: 64 }),
+    displayName: varchar("display_name", { length: 255 }),
+    pricingMode: varchar("pricing_mode", { length: 16 }).notNull().default("default"),
+    pricingOverrideJson: jsonb("pricing_override_json"),
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    credentialModelIdx: uniqueIndex("tenant_models_credential_model_idx")
+      .on(t.credentialId, t.model)
+      .where(sql`deleted_at IS NULL`),
+    tenantIdx: index("tenant_models_tenant_idx")
+      .on(t.tenantId)
+      .where(sql`deleted_at IS NULL`),
+    credentialIdx: index("tenant_models_credential_idx").on(t.credentialId),
+  }),
+);
+
 export const endpointUsageRollups = pgTable(
   "endpoint_usage_rollups",
   {

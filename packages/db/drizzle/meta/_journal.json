@@ -134,6 +134,20 @@
       "when": 1780012800000,
       "tag": "0019_document_fit",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1782428612257,
+      "tag": "0019_careless_invisible_woman",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1782428697186,
+      "tag": "0020_credential_model_backfill_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -59,6 +59,8 @@ export const RLS_POLICIES: readonly string[] = [
   "trace_stages",
   "review_items",
   "model_endpoints",
+  "provider_credentials",
+  "tenant_models",
   "endpoint_usage_rollups",
   "agent_sessions",
   "agent_messages",
