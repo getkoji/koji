@@ -549,6 +549,15 @@ function DocumentRow({
             routed to review — {formatReviewReason(reviewReason)}
           </span>
         )}
+        {doc.fitJson && !doc.fitJson.ok && (
+          <span
+            className={`font-mono text-[10px] truncate ${
+              doc.fitJson.action === "reject" ? "text-vermillion-2" : "text-[#B6861A]"
+            }`}
+          >
+            {doc.fitJson.action === "reject" ? "wrong document — rejected" : "possible wrong document"}
+          </span>
+        )}
       </div>
       <DocStatusBadge status={status} />
       <span className="text-right font-mono text-[11px] tabular-nums text-ink-2">
