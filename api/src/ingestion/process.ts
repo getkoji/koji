@@ -493,6 +493,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           extractionJson: docExtraction,
           confidenceScoresJson: fieldScores,
           provenanceJson: extractResult.provenance ?? null,
+          fitJson: extractResult.fit ?? null,
           confidence: docConfidence,
           durationMs: extractDurationMs,
           completedAt: now,
@@ -539,6 +540,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           extractionJson: docExtraction,
           confidenceScoresJson: fieldScores,
           provenanceJson: extractResult.provenance ?? null,
+          fitJson: extractResult.fit ?? null,
           confidence: docConfidence,
           durationMs: extractDurationMs,
           completedAt: now,
@@ -761,6 +763,8 @@ interface ExtractResult {
   model?: string;
   elapsed_ms?: number;
   provenance?: Record<string, unknown> | null;
+  /** Document-fit verdict (FitReport) when the schema declares a `fit` block. */
+  fit?: unknown;
 }
 
 /**

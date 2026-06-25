@@ -80,6 +80,8 @@ export const documents = pgTable(
     provenanceJson: jsonb("provenance_json"),
     confidence: decimal("confidence", { precision: 6, scale: 4 }),
     validationJson: jsonb("validation_json"),
+    /** Document-fit verdict (FitReport) when the schema declares a `fit` block. */
+    fitJson: jsonb("fit_json"),
     durationMs: integer("duration_ms"),
     costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
     startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),

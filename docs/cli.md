@@ -223,7 +223,7 @@ Print the installed Koji version.
 
 ```bash
 koji version
-# koji 0.12.0
+# koji 0.13.0
 ```
 
 ---

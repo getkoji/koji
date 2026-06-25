@@ -200,6 +200,17 @@ export interface JobDetail extends JobRow {
   schemaSlug: string | null;
 }
 
+/** Document-fit verdict, present when the schema declares a `fit` block. */
+export interface FitReport {
+  ok: boolean;
+  action: "warn" | "reject";
+  reason: string | null;
+  message: string | null;
+  score: number | null;
+  extraction_skipped: boolean;
+  checks: Array<{ name: string; ok: boolean; detail?: Record<string, unknown> }>;
+}
+
 export interface JobDocument {
   id: string;
   filename: string;
@@ -210,6 +221,7 @@ export interface JobDocument {
   pageCount: number | null;
   extractionJson: unknown;
   validationJson: unknown;
+  fitJson: FitReport | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -258,6 +270,7 @@ export interface DocumentDetail {
     reasoning?: string;
   } | null> | null;
   validationJson: unknown;
+  fitJson: FitReport | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

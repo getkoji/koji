@@ -494,6 +494,30 @@ export default function TraceViewPage() {
             </div>
           )}
 
+          {/* Document-fit warning — the schema's `fit` block flagged this as a
+              likely wrong document. Surfaced on the processed document so a
+              misfiled upload is obvious here, not just in the build/test flow. */}
+          {data.fitJson && !data.fitJson.ok && (
+            <div
+              className={`flex items-start gap-2 px-4 py-2 rounded-sm mb-2 shrink-0 border ${
+                data.fitJson.action === "reject"
+                  ? "bg-vermillion-3/[0.15] border-vermillion-2/30"
+                  : "bg-[#B6861A]/[0.10] border-[#B6861A]/25"
+              }`}
+            >
+              <span
+                className={`font-mono text-[10px] font-medium uppercase tracking-[0.1em] mt-px shrink-0 ${
+                  data.fitJson.action === "reject" ? "text-vermillion-2" : "text-[#B6861A]"
+                }`}
+              >
+                {data.fitJson.action === "reject" ? "Wrong document — rejected" : "Possible wrong document"}
+              </span>
+              <span className="text-[11px] text-ink leading-snug">
+                {data.fitJson.message ?? `Document fit check failed (${data.fitJson.reason ?? "unknown"}).`}
+              </span>
+            </div>
+          )}
+
           {/* Extraction results — click a field to highlight in PDF */}
           <div className={`flex-1 min-h-0 border border-border rounded-sm flex flex-col ${isProcessing && !liveExtraction ? "opacity-60" : ""}`}>
             <TraceResults
