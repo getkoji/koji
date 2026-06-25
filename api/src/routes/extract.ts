@@ -174,6 +174,7 @@ extract.post("/process", requires("job:run"), async (c) => {
     extracted: extractResult.extracted,
     confidence: extractResult.confidence,
     confidence_scores: extractResult.confidence_scores,
+    fit: extractResult.fit,
   });
 });
 
@@ -372,6 +373,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           extracted: extractResult.extracted,
           confidence: extractResult.confidence,
           confidence_scores: extractResult.confidence_scores,
+          fit: extractResult.fit,
           provenance: extractResult.provenance,
           markdown: parseResult.markdown,
         }),
@@ -538,6 +540,7 @@ async function handleExtractRunJSON(
         extracted: extractResult.extracted,
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
+        fit: extractResult.fit,
         provenance: extractResult.provenance,
         markdown: parseResult.markdown,
       });
@@ -555,6 +558,7 @@ async function handleExtractRunJSON(
         extracted: extractResult.extracted,
         confidence: extractResult.confidence,
         confidence_scores: extractResult.confidence_scores,
+        fit: extractResult.fit,
         provenance: extractResult.provenance,
         markdown: parseResult.markdown,
       });
