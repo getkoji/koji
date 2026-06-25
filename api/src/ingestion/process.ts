@@ -23,6 +23,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
+import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
 import {
@@ -810,8 +811,16 @@ async function getOrParse(
       const cacheBlob = await storage.getBuffer(cached.storageKey);
       if (cacheBlob) {
         try {
-          const payload = JSON.parse(cacheBlob.data.toString()) as { markdown?: string; text_map?: any[]; engine?: string };
-          if (payload.markdown) {
+          const payload = JSON.parse(cacheBlob.data.toString()) as {
+            markdown?: string;
+            text_map?: any[];
+            engine?: string;
+            parser_version?: number;
+          };
+          // Stale parser version → treat as a miss and re-parse (the live-parse
+          // path below overwrites the cache with the current version). Lets a
+          // parse-code change (PARSE_VERSION bump) apply to already-cached docs.
+          if (payload.markdown && isParseCacheFresh(payload)) {
             console.log(`[ingestion.process] parse cache hit for ${fileHash.slice(0, 12)}…`);
             // Copy cached searchable PDF to this document's storage key if available
             const cachedSearchableKey = `${cached.storageKey}.searchable.pdf`;
@@ -882,6 +891,7 @@ async function getOrParse(
         ocr_skipped: parseResult.ocr_skipped,
         engine: parseResult.engine,
         text_map: parseResult.text_map ?? [],
+        parser_version: PARSE_VERSION,
       }),
     );
     try {
