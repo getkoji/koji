@@ -3,15 +3,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, FileText, Eye, Sparkles, ChevronRight, Loader2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2 } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
-
-const PdfViewer = dynamic(() => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer), { ssr: false });
+import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import { AgentPanel } from "./AgentPanel";
 
 // ── Types ──
@@ -189,27 +187,6 @@ export default function BuildPage() {
   } | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
-  const [docViewMode, setDocViewMode] = useState<"pdf" | "parsed">("pdf");
-
-  // Auto-scroll parsed view to highlighted field.
-  // For nested keys like "coverages[0].limit", fall back to parent keys
-  // since the parsed view only marks top-level field provenance spans.
-  useEffect(() => {
-    if (docViewMode !== "parsed" || !highlightedField) return;
-    setTimeout(() => {
-      let key = highlightedField;
-      while (key) {
-        const el = document.querySelector(`[data-provenance-field="${key}"]`);
-        if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
-        // Strip last segment: "a[0].b" → "a[0]" → "a"
-        const dotIdx = key.lastIndexOf(".");
-        const bracketIdx = key.lastIndexOf("[");
-        const cutAt = Math.max(dotIdx, bracketIdx);
-        if (cutAt <= 0) break;
-        key = key.slice(0, cutAt);
-      }
-    }, 50);
-  }, [highlightedField, docViewMode]);
   const bboxHighlights = useMemo(() => {
     const prov = extractionResult?.provenance ?? {};
     const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string }> = [];
@@ -1167,156 +1144,18 @@ export default function BuildPage() {
                 </div>
               ) : (
                 /* Document selected — full-height preview */
-                <div className="h-full flex flex-col">
-                  {/* View mode toggle */}
-                  {extractionResult?.markdown && (
-                    <div className="flex items-center gap-1 px-2 pt-2 pb-1 shrink-0">
-                      <button
-                        onClick={() => setDocViewMode("pdf")}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono transition-colors ${
-                          docViewMode === "pdf" ? "bg-ink text-cream" : "text-ink-4 hover:text-ink hover:bg-cream-2"
-                        }`}
-                      >
-                        <Eye className="w-3 h-3" />
-                        PDF
-                      </button>
-                      <button
-                        onClick={() => setDocViewMode("parsed")}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono transition-colors ${
-                          docViewMode === "parsed" ? "bg-ink text-cream" : "text-ink-4 hover:text-ink hover:bg-cream-2"
-                        }`}
-                      >
-                        <FileText className="w-3 h-3" />
-                        Parsed
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="flex-1 min-h-0 p-2 pt-0">
-                    {docViewMode === "pdf" ? (
-                      /* PDF view */
-                      docPreviewUrl ? (
-                        selectedDoc.mimeType === "application/pdf" ? (
-                          <div className="border border-border rounded-sm h-full overflow-hidden">
-                            <PdfViewer
-                              url={docPreviewUrl}
-                              highlights={bboxHighlights}
-                              activeField={highlightedField}
-                            />
-                          </div>
-                        ) : (
-                          <img
-                            src={docPreviewUrl}
-                            alt={selectedDoc.filename}
-                            className="w-full h-full border border-border rounded-sm object-contain"
-                          />
-                        )
-                      ) : (
-                        <div className="border border-border rounded-sm h-full flex items-center justify-center">
-                          <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview...</span>
-                        </div>
-                      )
-                    ) : (
-                      /* Parsed markdown view with provenance highlights */
-                      <div
-                        data-provenance-preview
-                        className="border border-border rounded-sm bg-cream h-full overflow-y-auto"
-                      >
-                        {extractionResult?.markdown ? (() => {
-                          const md = extractionResult.markdown!;
-                          const prov = extractionResult.provenance ?? {};
-
-                          // Flatten all provenance spans including per-item and per-property
-                          const allSpans: Array<{ field: string; offset: number; length: number }> = [];
-                          for (const [field, v] of Object.entries(prov)) {
-                            if (!v) continue;
-                            // Per-item + per-property spans (most specific)
-                            if (v.items && Array.isArray(v.items)) {
-                              for (let i = 0; i < v.items.length; i++) {
-                                const item = v.items[i] as any;
-                                if (!item) continue;
-                                if (item.properties && typeof item.properties === "object") {
-                                  for (const [prop, pSpan] of Object.entries(item.properties as Record<string, any>)) {
-                                    if (pSpan && pSpan.offset >= 0 && pSpan.length > 0) {
-                                      allSpans.push({ field: `${field}[${i}].${prop}`, offset: pSpan.offset, length: pSpan.length });
-                                    }
-                                  }
-                                }
-                                // Item-level span (for items without per-property provenance)
-                                if (item.offset >= 0 && item.length > 0) {
-                                  allSpans.push({ field: `${field}[${i}]`, offset: item.offset, length: item.length });
-                                }
-                              }
-                            }
-                            // Top-level field span
-                            if (v.offset >= 0 && v.length > 0) {
-                              allSpans.push({ field, offset: v.offset, length: v.length });
-                            }
-                          }
-
-                          // Sort by offset, then prefer more specific (longer field key) spans
-                          allSpans.sort((a, b) => a.offset - b.offset || b.field.length - a.field.length);
-
-                          // Deduplicate overlapping spans: keep the most specific one
-                          const spans: typeof allSpans = [];
-                          for (const span of allSpans) {
-                            const last = spans[spans.length - 1];
-                            if (last && span.offset < last.offset + last.length) {
-                              // Overlapping — keep whichever has the longer (more specific) field key
-                              if (span.field.length > last.field.length) {
-                                spans[spans.length - 1] = span;
-                              }
-                              continue;
-                            }
-                            spans.push(span);
-                          }
-
-                          const fragments: Array<{ text: string; field?: string }> = [];
-                          let cursor = 0;
-                          for (const span of spans) {
-                            if (span.offset > cursor) {
-                              fragments.push({ text: md.slice(cursor, span.offset) });
-                            }
-                            if (span.offset >= cursor) {
-                              fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field });
-                              cursor = span.offset + span.length;
-                            }
-                          }
-                          if (cursor < md.length) {
-                            fragments.push({ text: md.slice(cursor) });
-                          }
-
-                          return (
-                            <pre className="p-3 font-mono text-[11px] text-ink-3 whitespace-pre-wrap break-words leading-relaxed">
-                              {fragments.map((frag, i) =>
-                                frag.field ? (
-                                  <mark
-                                    key={i}
-                                    data-provenance-field={frag.field}
-                                    className={`rounded-sm px-0.5 cursor-pointer ${
-                                      frag.field === highlightedField
-                                        ? "bg-vermillion-3/50 text-vermillion-2 ring-1 ring-vermillion-2/40"
-                                        : "bg-cream-2 text-ink-3 hover:bg-cream-3"
-                                    }`}
-                                    onClick={() => setHighlightedField(frag.field === highlightedField ? null : frag.field!)}
-                                  >
-                                    {frag.text}
-                                  </mark>
-                                ) : (
-                                  <span key={i}>{frag.text}</span>
-                                )
-                              )}
-                            </pre>
-                          );
-                        })() : (
-                          <div className="h-full flex items-center justify-center">
-                            <span className="font-mono text-[11px] text-ink-4">Run extraction to see parsed text</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <DocumentViewer
+                  url={docPreviewUrl ?? null}
+                  mimeType={selectedDoc.mimeType}
+                  filename={selectedDoc.filename}
+                  highlights={bboxHighlights}
+                  activeField={highlightedField}
+                  onActiveFieldChange={setHighlightedField}
+                  lazy={false}
+                  markdown={extractionResult?.markdown ?? null}
+                  provenance={extractionResult?.provenance}
+                  className="border border-border rounded-sm h-full overflow-hidden"
+                />
               )}
             </div>
           </div>

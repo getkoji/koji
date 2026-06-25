@@ -21,9 +21,10 @@
  */
 
 import dynamic from "next/dynamic";
-import { FileText } from "lucide-react";
+import { Eye, FileText } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { BBoxHighlight } from "./PdfViewer";
+import { ParsedMarkdownView } from "./ParsedMarkdownView";
 
 export type DocumentRenderer = "pdf" | "image" | "unsupported";
 
@@ -120,6 +121,23 @@ export interface DocumentViewerProps {
    * IntersectionObserver might lie about visibility).
    */
   lazy?: boolean;
+
+  // ── Parsed-text mode (optional) ──────────────────────────────────────
+  // Provide `markdown` (or `onRequestParsed` for lazy fetch) to enable a
+  // PDF ⇄ Parsed toggle. Parsed view shows the document text the parser
+  // produced — the same view the schema build page exposes — with
+  // provenance highlights kept in sync with the PDF.
+
+  /** Parsed document markdown. Presence (or `onRequestParsed`) enables the toggle. */
+  markdown?: string | null;
+  /** Show a loading state in the Parsed view while `markdown` is being fetched. */
+  markdownLoading?: boolean;
+  /** Per-field provenance map (offsets into `markdown`) for parsed highlights. */
+  provenance?: Record<string, unknown> | null;
+  /** Called when a highlighted span is clicked in the Parsed view (toggles the field). */
+  onActiveFieldChange?: (field: string | null) => void;
+  /** Called the first time the user switches to Parsed — lazily fetch `markdown` here. */
+  onRequestParsed?: () => void;
 }
 
 export function DocumentViewer({
@@ -132,8 +150,14 @@ export function DocumentViewer({
   mode = "paginated",
   className,
   lazy = true,
+  markdown,
+  markdownLoading,
+  provenance,
+  onActiveFieldChange,
+  onRequestParsed,
 }: DocumentViewerProps) {
   const [errored, setErrored] = useState(false);
+  const [viewMode, setViewMode] = useState<"pdf" | "parsed">("pdf");
   const containerRef = useRef<HTMLDivElement>(null);
   // Once the renderer has been mounted, stay mounted — re-mounting on
   // each viewport intersection would force pdf.js to refetch + reparse
@@ -172,88 +196,143 @@ export function DocumentViewer({
     className ??
     "border border-border rounded-sm bg-cream-2/40 overflow-hidden h-full";
 
-  if (!url) {
+  // Parsed-text mode is enabled when the caller opts in by providing markdown
+  // (eager) or onRequestParsed (lazy fetch on first toggle).
+  const parsedEnabled = markdown != null || markdownLoading === true || onRequestParsed != null;
+
+  // Render the document body (PDF / image / fallback) — the original behaviour,
+  // factored out so the parsed-mode wrapper can swap it for the parsed view.
+  const renderDocBody = () => {
+    if (!url) {
+      return (
+        <Unavailable
+          wrapperClass={wrapperClass}
+          title="Document preview unavailable."
+          detail="The source file isn't in storage yet. Previews appear once the pipeline finishes ingesting the document."
+        />
+      );
+    }
+    if (errored) {
+      return (
+        <Unavailable
+          wrapperClass={wrapperClass}
+          title="Preview failed to load."
+          detail="The signed URL may have expired or the object is missing from storage."
+        />
+      );
+    }
+
+    const renderer = pickDocumentRenderer(mimeType, url);
+
+    // Visibility-gated mount. Until the wrapper has been visible at least
+    // once, render the skeleton (which still claims the same box so layout
+    // doesn't jump when the renderer mounts). After it's been visible, the
+    // renderer stays mounted permanently.
+    if (!hasBeenVisible) {
+      return (
+        <div
+          ref={containerRef}
+          className={`${wrapperClass} flex items-center justify-center`}
+          data-testid="document-viewer-skeleton"
+        >
+          <span className="animate-pulse font-mono text-[11px] text-ink-4">
+            Loading preview…
+          </span>
+        </div>
+      );
+    }
+
+    if (renderer === "image") {
+      return (
+        <div ref={containerRef} className={wrapperClass}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt={filename ?? "Document preview"}
+            className="w-full h-full object-contain"
+            onError={() => setErrored(true)}
+          />
+        </div>
+      );
+    }
+
+    if (renderer === "pdf") {
+      return (
+        <div
+          ref={containerRef}
+          className={wrapperClass}
+          data-testid="document-viewer-pdf"
+        >
+          <PdfViewer
+            url={url}
+            highlights={highlights}
+            activeField={activeField ?? null}
+            overflow={overflow}
+            mode={mode}
+          />
+        </div>
+      );
+    }
+
+    // Unknown MIME type — render the unsupported fallback. We deliberately do
+    // NOT fall through to an `<iframe>` here: iframes for unknown content
+    // types frequently trigger downloads instead of inline rendering, which is
+    // exactly the bug DocumentViewer exists to prevent.
     return (
       <Unavailable
         wrapperClass={wrapperClass}
-        title="Document preview unavailable."
-        detail="The source file isn't in storage yet. Previews appear once the pipeline finishes ingesting the document."
+        title="Preview not supported for this file type."
+        detail={`MIME type: ${mimeType ?? "unknown"}. Download the file from the job page to inspect.`}
       />
     );
+  };
+
+  if (!parsedEnabled) {
+    return renderDocBody();
   }
 
-  if (errored) {
-    return (
-      <Unavailable
-        wrapperClass={wrapperClass}
-        title="Preview failed to load."
-        detail="The signed URL may have expired or the object is missing from storage."
-      />
-    );
-  }
+  const selectParsed = () => {
+    setViewMode("parsed");
+    if (markdown == null && onRequestParsed) onRequestParsed();
+  };
 
-  const renderer = pickDocumentRenderer(mimeType, url);
+  const toggleBtn = (active: boolean) =>
+    `flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono transition-colors ${
+      active ? "bg-ink text-cream" : "text-ink-4 hover:text-ink hover:bg-cream-2"
+    }`;
 
-  // Visibility-gated mount. Until the wrapper has been visible at least
-  // once, render the skeleton (which still claims the same box so layout
-  // doesn't jump when the renderer mounts). After it's been visible, the
-  // renderer stays mounted permanently.
-  if (!hasBeenVisible) {
-    return (
-      <div
-        ref={containerRef}
-        className={`${wrapperClass} flex items-center justify-center`}
-        data-testid="document-viewer-skeleton"
-      >
-        <span className="animate-pulse font-mono text-[11px] text-ink-4">
-          Loading preview…
-        </span>
-      </div>
-    );
-  }
-
-  if (renderer === "image") {
-    return (
-      <div ref={containerRef} className={wrapperClass}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={url}
-          alt={filename ?? "Document preview"}
-          className="w-full h-full object-contain"
-          onError={() => setErrored(true)}
-        />
-      </div>
-    );
-  }
-
-  if (renderer === "pdf") {
-    return (
-      <div
-        ref={containerRef}
-        className={wrapperClass}
-        data-testid="document-viewer-pdf"
-      >
-        <PdfViewer
-          url={url}
-          highlights={highlights}
-          activeField={activeField ?? null}
-          overflow={overflow}
-          mode={mode}
-        />
-      </div>
-    );
-  }
-
-  // Unknown MIME type — render the unsupported fallback. We deliberately do
-  // NOT fall through to an `<iframe>` here: iframes for unknown content
-  // types frequently trigger downloads instead of inline rendering, which is
-  // exactly the bug DocumentViewer exists to prevent.
   return (
-    <Unavailable
-      wrapperClass={wrapperClass}
-      title="Preview not supported for this file type."
-      detail={`MIME type: ${mimeType ?? "unknown"}. Download the file from the job page to inspect.`}
-    />
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center gap-1 px-2 pt-2 pb-1 shrink-0">
+        <button type="button" onClick={() => setViewMode("pdf")} className={toggleBtn(viewMode === "pdf")}>
+          <Eye className="w-3 h-3" />
+          PDF
+        </button>
+        <button type="button" onClick={selectParsed} className={toggleBtn(viewMode === "parsed")}>
+          <FileText className="w-3 h-3" />
+          Parsed
+        </button>
+      </div>
+      <div className="flex-1 min-h-0">
+        {viewMode === "pdf" ? (
+          renderDocBody()
+        ) : markdown != null ? (
+          <ParsedMarkdownView
+            markdown={markdown}
+            provenance={provenance}
+            activeField={activeField ?? null}
+            onFieldClick={onActiveFieldChange}
+            className="h-full"
+          />
+        ) : (
+          <div className={`${wrapperClass} flex items-center justify-center`}>
+            <span className="animate-pulse font-mono text-[11px] text-ink-4">
+              {markdownLoading ? "Loading parsed text…" : "Parsed text unavailable."}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
