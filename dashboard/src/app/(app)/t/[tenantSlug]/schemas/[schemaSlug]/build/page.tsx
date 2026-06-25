@@ -176,6 +176,15 @@ export default function BuildPage() {
     elapsed_ms?: number;
     parse_seconds?: number;
     ocr_skipped?: boolean;
+    fit?: {
+      ok: boolean;
+      action: "warn" | "reject";
+      reason: string | null;
+      message: string | null;
+      score: number | null;
+      extraction_skipped: boolean;
+      checks: Array<{ name: string; ok: boolean; detail?: Record<string, unknown> }>;
+    };
     error?: string;
   } | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
@@ -901,6 +910,28 @@ export default function BuildPage() {
                             </span>
                           )}
                         </div>
+
+                        {/* Document-fit verdict — shown when the schema declares a `fit`
+                            block and the document doesn't look like a match. Warns the
+                            user they may have uploaded the wrong document instead of
+                            leaving them to guess at a wall of nulls. */}
+                        {extractionResult.fit && !extractionResult.fit.ok && (
+                          <div className="mb-2 border-l-[3px] border-vermillion-2 bg-vermillion-2/[0.04] rounded-r-sm px-3 py-2.5">
+                            <div className="font-mono text-[10px] font-medium text-vermillion-2 uppercase tracking-[0.1em] mb-1">
+                              {extractionResult.fit.action === "reject"
+                                ? "Wrong document — rejected"
+                                : "Possible wrong document"}
+                            </div>
+                            {extractionResult.fit.message && (
+                              <p className="text-[12px] text-ink leading-snug">{extractionResult.fit.message}</p>
+                            )}
+                            {extractionResult.fit.extraction_skipped && (
+                              <p className="text-[11px] text-ink-4 mt-1 font-mono">
+                                Extraction was skipped for this document.
+                              </p>
+                            )}
+                          </div>
+                        )}
 
                         {/* Results table */}
                         <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
