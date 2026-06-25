@@ -1,0 +1,52 @@
+name: TS CI
+
+# Unit tests for the TypeScript workspace (api, dashboard, packages). The
+# extraction engine now lives in api/src/extract — these vitest suites are the
+# real gate for it. The Python ci.yml only covers the CLI + remaining Python
+# services, and e2e.yml only runs Playwright; without this job the TS unit tests
+# (1000+ of them) ran nowhere in CI.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "dashboard/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/ts-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "dashboard/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/ts-ci.yml"
+
+jobs:
+  test:
+    name: TS Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Run the green packages explicitly. @koji/api (the extraction engine),
+      # @koji/dashboard, @koji/types, and @koji/db all pass; @koji/db's RLS suite
+      # self-provisions Postgres via Testcontainers (Docker is available on the
+      # runner), so no DB service needs wiring here.
+      #
+      # @koji/pipeline is intentionally excluded: it has a pre-existing failing
+      # test (compiler.test.ts "detects unreachable step") that predates this
+      # workflow. Tracked in oss-217 — fold @koji/pipeline back in once it's green.
+      - run: pnpm --filter @koji/api --filter @koji/dashboard --filter @koji/db --filter @koji/types test
