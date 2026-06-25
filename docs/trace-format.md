@@ -234,12 +234,16 @@ When skipped: `{ "reason": "no_missing_fields" }`.
 ```json
 {
   "applied": [
-    { "field": "date", "transform": "date_yyyymmdd" },
-    { "field": "total_amount", "transform": "currency_to_number" }
+    { "field": "invoice_date", "transform": "iso8601" },
+    { "field": "total_amount", "transform": "minor_units" },
+    { "field": "insured_name", "transform": "prose" }
   ],
   "warnings": []
 }
 ```
+
+`transform` values match the names accepted in the schema YAML's `normalize:`
+directive. See `docs/schema-guide.md` for the full built-in transform list.
 
 ### `validate`
 
