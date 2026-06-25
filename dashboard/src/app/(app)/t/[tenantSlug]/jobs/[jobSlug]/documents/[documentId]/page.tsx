@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import dynamic from "next/dynamic";
+import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import type { TraceStage, TraceField } from "@/lib/types";
 import { Timeline } from "@/components/surfaces/trace/Timeline";
 import { StageDetail } from "@/components/surfaces/trace/StageDetail";
@@ -13,11 +13,6 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { jobs as jobsApi, type DocumentDetail, type TraceStageRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { prettyStageName } from "./format";
-
-const PdfViewer = dynamic(
-  () => import("@/components/shared/PdfViewer").then((m) => m.PdfViewer),
-  { ssr: false },
-);
 
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
@@ -133,6 +128,20 @@ export default function TraceViewPage() {
 
   // ── Side-by-side state ──
   const [activeField, setActiveField] = useState<string | null>(null);
+
+  // Parsed-text view — fetched lazily the first time the user toggles to it
+  // (the parsed markdown isn't part of the document-detail payload).
+  const [parsedMarkdown, setParsedMarkdown] = useState<string | null>(null);
+  const [markdownLoading, setMarkdownLoading] = useState(false);
+  const requestParsed = useCallback(() => {
+    if (parsedMarkdown !== null || markdownLoading) return;
+    setMarkdownLoading(true);
+    jobsApi
+      .documentMarkdown(jobSlug, documentId)
+      .then((res) => setParsedMarkdown(res.markdown ?? ""))
+      .catch(() => setParsedMarkdown(""))
+      .finally(() => setMarkdownLoading(false));
+  }, [parsedMarkdown, markdownLoading, jobSlug, documentId]);
 
   // Stash the last known extraction results so a rerun doesn't flash to the
   // empty/fallback layout while the document is reprocessing. The stash is
@@ -461,27 +470,23 @@ export default function TraceViewPage() {
         header={header}
         metricsStrip={metricsStrip}
         sidebar={
-          pdfUrl && data.mimeType?.startsWith("image/") ? (
-            <img
-              src={pdfUrl}
-              alt={data.filename}
-              className="w-full h-full border border-border rounded-sm object-contain"
+          <div className="h-full" data-testid="trace-pdf-viewer">
+            <DocumentViewer
+              url={pdfUrl}
+              mimeType={data.mimeType}
+              filename={data.filename}
+              highlights={highlights}
+              activeField={activeField}
+              onActiveFieldChange={setActiveField}
+              overflow="scroll"
+              mode="scroll"
+              lazy={false}
+              markdown={parsedMarkdown}
+              markdownLoading={markdownLoading}
+              provenance={data.provenanceJson}
+              onRequestParsed={requestParsed}
             />
-          ) : pdfUrl ? (
-            <div className="border border-border rounded-sm h-full" data-testid="trace-pdf-viewer">
-              <PdfViewer
-                url={pdfUrl}
-                highlights={highlights}
-                activeField={activeField}
-                overflow="scroll"
-                mode="scroll"
-              />
-            </div>
-          ) : (
-            <div className="border border-border rounded-sm h-full flex items-center justify-center">
-              <span className="font-mono text-[11px] text-ink-4">No preview available</span>
-            </div>
-          )
+          </div>
         }
         sidebarWidth="1fr"
       >
