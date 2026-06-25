@@ -6,7 +6,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, keyHint } from "../crypto/envelope";
-import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
+import { createExtractionJob, normalizeMimeType } from "../ingestion/process";
 
 export const sources = new Hono<Env>();
 
@@ -430,7 +430,7 @@ sources.post("/:id/webhook", async (c) => {
       storageKey,
       filename: file.name,
       fileSize: file.size,
-      mimeType: file.type || mimeTypeFor(file.name),
+      mimeType: normalizeMimeType(file.type, file.name),
       contentHash,
       ingestionId: ingestion!.id,
       groupKey,
