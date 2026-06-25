@@ -7,6 +7,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
+import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
 import type { PlanId } from "../billing/adapter";
 
@@ -247,10 +248,14 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
     // Cache hit — load parsed result from S3
     const cacheResult = await storage.getBuffer(cached.storageKey);
     if (cacheResult) {
-      parseResult = JSON.parse(cacheResult.data.toString());
-      (parseResult as any).cached = true;
-      (parseResult as any).pages = cached.pages;
-      (parseResult as any).ocr_skipped = cached.ocrSkipped === "true";
+      const payload = JSON.parse(cacheResult.data.toString()) as Record<string, unknown>;
+      // Stale parser version → ignore (re-parse below with the current pipeline).
+      if (isParseCacheFresh(payload)) {
+        parseResult = payload;
+        (parseResult as any).cached = true;
+        (parseResult as any).pages = cached.pages;
+        (parseResult as any).ocr_skipped = cached.ocrSkipped === "true";
+      }
     }
   }
 
@@ -442,6 +447,7 @@ async function handleExtractRunJSON(
         elapsed_seconds: parseResult.elapsed_seconds,
         ocr_skipped: parseResult.ocr_skipped,
         text_map: parseResult.text_map ?? [],
+        parser_version: PARSE_VERSION,
       }));
       await storage.put(cacheKey, cacheData, { contentType: "application/json" });
 
