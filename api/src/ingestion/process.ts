@@ -1287,6 +1287,31 @@ export function mimeTypeFor(filename: string | null): string {
   }
 }
 
+/**
+ * Normalize a claimed mime type string before we persist it on a
+ * document row. Some API clients send `Content-Type: pdf` (the bare
+ * extension) on presigned uploads — R2 stores that verbatim, we read
+ * it back via `storage.getBuffer()`, and a wrong value lands in
+ * `documents.mimeType`. The dashboard's `pickDocumentRenderer` then
+ * can't match it against `"application/pdf"` and falls through to the
+ * "Preview not supported" branch.
+ *
+ * Rule: if the claimed value doesn't look like a real MIME type
+ * (must contain a slash, e.g. `type/subtype`), derive one from the
+ * filename instead. The MIME spec requires the slash, so this is a
+ * conservative validity check that lets through anything genuinely
+ * RFC-shaped (including custom vendor types like
+ * `application/vnd.openxmlformats-officedocument.wordprocessingml.document`).
+ */
+export function normalizeMimeType(
+  claimed: string | null | undefined,
+  filename: string | null,
+): string {
+  const trimmed = typeof claimed === "string" ? claimed.trim() : "";
+  if (trimmed.includes("/")) return trimmed;
+  return mimeTypeFor(filename);
+}
+
 function makeJobSlug(): string {
   const d = new Date();
   const pad = (n: number) => n.toString().padStart(2, "0");

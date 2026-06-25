@@ -12,7 +12,7 @@ import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createNotification } from "../notifications/emit";
-import { createExtractionJob, addDocumentToJob, mimeTypeFor } from "../ingestion/process";
+import { createExtractionJob, addDocumentToJob, mimeTypeFor, normalizeMimeType } from "../ingestion/process";
 
 /**
  * Narrow an unknown body into a {@link RetryPolicy}. Returns the validated
@@ -892,11 +892,14 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     const stored = await storage.getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     buffer = stored.data;
-    mimeType = stored.contentType;
     // Derive filename from the storage key (last segment after timestamp prefix)
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    // Normalize R2's stored Content-Type — presigned-upload clients
+    // sometimes set it to the bare extension ("pdf") instead of a real
+    // MIME, which breaks the dashboard preview renderer.
+    mimeType = normalizeMimeType(stored.contentType, filename);
     fileSize = buffer.length;
     storageKey = storageKeyField;
   } else {
@@ -908,7 +911,7 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     const fileBytes = await file.arrayBuffer();
     buffer = Buffer.from(fileBytes);
     filename = file.name;
-    mimeType = file.type || mimeTypeFor(file.name);
+    mimeType = normalizeMimeType(file.type, file.name);
     fileSize = file.size;
     storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
 
@@ -1010,10 +1013,10 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     const stored = await storage.getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     buffer = stored.data;
-    mimeType = stored.contentType;
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    mimeType = normalizeMimeType(stored.contentType, filename);
     fileSize = buffer.length;
     storageKey = storageKeyField;
   } else {
@@ -1024,7 +1027,7 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     const fileBytes = await file.arrayBuffer();
     buffer = Buffer.from(fileBytes);
     filename = file.name;
-    mimeType = file.type || mimeTypeFor(file.name);
+    mimeType = normalizeMimeType(file.type, file.name);
     fileSize = file.size;
     storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
     await storage.put(storageKey, buffer, { contentType: mimeType });
@@ -1491,18 +1494,18 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     const stored = await c.get("storage").getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     fileBytes = new Uint8Array(stored.data).buffer as ArrayBuffer;
-    mimeType = stored.contentType;
     // Derive filename from the storage key (last segment after timestamp prefix)
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    mimeType = normalizeMimeType(stored.contentType, filename);
   } else {
     // Direct file upload path (backward compat)
     const file = body.file;
     if (!(file instanceof File)) return c.json({ error: "Missing file or storageKey" }, 400);
     fileBytes = await file.arrayBuffer();
-    mimeType = file.type || "application/octet-stream";
     filename = file.name;
+    mimeType = normalizeMimeType(file.type, file.name);
   }
 
   // ── Implicit parse step: extract text from document ──
