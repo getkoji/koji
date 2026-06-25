@@ -41,6 +41,7 @@ import { createProvider, extractFields } from "../extract";
 import { formExtractToResult } from "../extract/form-extract";
 import { matchFormMapping } from "../extract/form-match";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
+import { checkLegibility, isBadScan, DEFAULT_LEGIBILITY_THRESHOLD } from "../parse/legibility";
 import {
   computeFieldConfidences,
   aggregateDocConfidence,
@@ -129,6 +130,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           schemaId: schema.pipelines.schemaId,
           activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
           modelProviderId: schema.pipelines.modelProviderId,
+          configJson: schema.pipelines.configJson,
         },
         schemaVersion: {
           id: schema.schemaVersions.id,
@@ -217,6 +219,37 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     );
     const markdown = parseOutput.markdown;
     const textMap = parseOutput.textMap;
+
+    // ── Legibility check (opt-in) ────────────────────────────────────────
+    // When enabled on the pipeline, judge whether the parsed text is coherent
+    // or garbled by a bad scan (low-res / skewed / noisy) and record a
+    // `legibility` trace stage. Escalating a bad scan to a fallback (vision)
+    // parse model is the follow-up step (oss-226).
+    const legibilityCfg = readLegibilityConfig(pipeline.configJson);
+    if (legibilityCfg.enabled) {
+      await recorder.run("legibility", async () => {
+        const { provider } = await resolveTenantProvider(db, tenantId);
+        const verdict = await checkLegibility(markdown, provider);
+        const badScan = isBadScan(verdict, legibilityCfg.threshold);
+        if (badScan) {
+          console.warn(
+            `[ingestion] bad scan detected for ${documentId} ` +
+            `(legible=${verdict.legible}, confidence=${verdict.confidence})`,
+          );
+        }
+        return {
+          value: verdict,
+          summary: {
+            legible: verdict.legible,
+            confidence: verdict.confidence,
+            bad_scan: badScan,
+            threshold: legibilityCfg.threshold,
+            ...(verdict.reason ? { reason: verdict.reason } : {}),
+          },
+        };
+      });
+    }
+
     // ── Form-mapping early exit ──────────────────────────────────────────
     // Check if this document matches an active form mapping. If so, use
     // coordinate extraction (+ optional LLM interpret) instead of the
@@ -766,6 +799,23 @@ interface ExtractResult {
   provenance?: Record<string, unknown> | null;
   /** Document-fit verdict (FitReport) when the schema declares a `fit` block. */
   fit?: unknown;
+}
+
+/**
+ * Read the legibility-check config from a pipeline's `configJson.legibility`
+ * block: `{ enabled?: boolean, threshold?: number }`. Opt-in (default off) so
+ * normal parses don't pay for the extra LLM call. The fallback parse model
+ * (for escalation) is read separately in the follow-up step.
+ */
+function readLegibilityConfig(configJson: unknown): { enabled: boolean; threshold: number } {
+  const root = configJson && typeof configJson === "object" ? (configJson as Record<string, unknown>) : null;
+  const cfg = root && typeof root.legibility === "object" ? (root.legibility as Record<string, unknown>) : null;
+  const enabled = cfg?.enabled === true;
+  const threshold =
+    typeof cfg?.threshold === "number" && cfg.threshold >= 0 && cfg.threshold <= 1
+      ? cfg.threshold
+      : DEFAULT_LEGIBILITY_THRESHOLD;
+  return { enabled, threshold };
 }
 
 /**
