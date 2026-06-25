@@ -25,6 +25,7 @@ import { classifyDocument } from "./classify";
 export class SmartParseProvider implements ParseProvider {
   extractCoordinates?: ParseProvider["extractCoordinates"];
   renderRegion?: ParseProvider["renderRegion"];
+  pageImages?: ParseProvider["pageImages"];
   pageHeaders?: ParseProvider["pageHeaders"];
   analyzePages?: ParseProvider["analyzePages"];
   slicePdf?: ParseProvider["slicePdf"];
@@ -38,6 +39,9 @@ export class SmartParseProvider implements ParseProvider {
     }
     if (heavy.renderRegion) {
       this.renderRegion = heavy.renderRegion.bind(heavy);
+    }
+    if (heavy.pageImages) {
+      this.pageImages = heavy.pageImages.bind(heavy);
     }
     if (heavy.pageHeaders) {
       this.pageHeaders = heavy.pageHeaders.bind(heavy);

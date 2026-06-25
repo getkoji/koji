@@ -1558,6 +1558,73 @@ async def render_region(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Page images — render whole pages to PNGs for the vision-OCR parse fallback
+# ---------------------------------------------------------------------------
+
+
+# Hard cap matching services/parse/main.py — one vision call per page.
+_MAX_PAGE_IMAGES = 50
+
+
+@app.function(
+    image=image,
+    timeout=120,
+    memory=2048,
+    cpu=2.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def page_images(request: Request):
+    """Render document pages as base64 PNGs for the vision-OCR parse fallback.
+
+    Accepts a multipart form with:
+    - ``file`` — the document bytes
+    - ``max_pages`` — optional page cap (default 20, hard cap 50)
+
+    Returns ``{images: [base64 png, ...], pages}``. Mirrors the docker
+    service's ``/page-images`` endpoint (services/parse/main.py).
+    """
+    import base64
+    import tempfile
+    from pathlib import Path
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    try:
+        max_pages = int(form.get("max_pages", "20"))
+    except (ValueError, TypeError):
+        max_pages = 20
+    max_pages = max(1, min(max_pages, _MAX_PAGE_IMAGES))
+
+    file_bytes = await upload.read()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = Path(tmp.name)
+
+    try:
+        doc = pymupdf.open(str(tmp_path))
+        images: list[str] = []
+        for i in range(min(len(doc), max_pages)):
+            pix = doc[i].get_pixmap(dpi=150)
+            images.append(base64.b64encode(pix.tobytes("png")).decode("ascii"))
+        doc.close()
+        return JSONResponse({"images": images, "pages": len(images)})
+    except Exception as e:
+        return JSONResponse({"error": f"page-images failed: {e}"}, status_code=500)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Slice PDF — extract a page range into a new PDF
 # ---------------------------------------------------------------------------
 

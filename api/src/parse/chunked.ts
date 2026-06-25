@@ -47,9 +47,12 @@ export interface ChunkedParseConfig {
 export class ChunkedParseProvider implements ParseProvider {
   extractCoordinates?: ParseProvider["extractCoordinates"];
   renderRegion?: ParseProvider["renderRegion"];
+  pageImages?: ParseProvider["pageImages"];
   pageHeaders?: ParseProvider["pageHeaders"];
   analyzePages?: ParseProvider["analyzePages"];
   slicePdf?: ParseProvider["slicePdf"];
+  dispatchParse?: ParseProvider["dispatchParse"];
+  pollParse?: ParseProvider["pollParse"];
 
   private chunkPages: number;
   private threshold: number;
@@ -69,6 +72,9 @@ export class ChunkedParseProvider implements ParseProvider {
     }
     if (inner.renderRegion) {
       this.renderRegion = inner.renderRegion.bind(inner);
+    }
+    if (inner.pageImages) {
+      this.pageImages = inner.pageImages.bind(inner);
     }
     if (inner.pageHeaders) {
       this.pageHeaders = inner.pageHeaders.bind(inner);

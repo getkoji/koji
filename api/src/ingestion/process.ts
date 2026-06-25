@@ -42,6 +42,7 @@ import { formExtractToResult } from "../extract/form-extract";
 import { matchFormMapping } from "../extract/form-match";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { checkLegibility, isBadScan, DEFAULT_LEGIBILITY_THRESHOLD } from "../parse/legibility";
+import { visionOcrPages } from "../parse/vision-ocr";
 import {
   computeFieldConfidences,
   aggregateDocConfidence,
@@ -217,37 +218,85 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         return { value: result, summary };
       },
     );
-    const markdown = parseOutput.markdown;
+    let markdown = parseOutput.markdown;
     const textMap = parseOutput.textMap;
 
-    // ── Legibility check (opt-in) ────────────────────────────────────────
+    // ── Legibility check + bad-scan escalation (opt-in) ──────────────────
     // When enabled on the pipeline, judge whether the parsed text is coherent
-    // or garbled by a bad scan (low-res / skewed / noisy) and record a
-    // `legibility` trace stage. Escalating a bad scan to a fallback (vision)
-    // parse model is the follow-up step (oss-226).
+    // or garbled by a bad scan (low-res / skewed / noisy). When it's a bad scan
+    // AND a vision-capable fallback model is configured, re-parse the pages with
+    // that model — a vision LLM reads faded/skewed scans far better than OCR.
     const legibilityCfg = readLegibilityConfig(pipeline.configJson);
     if (legibilityCfg.enabled) {
-      await recorder.run("legibility", async () => {
+      const verdict = await recorder.run("legibility", async () => {
         const { provider } = await resolveTenantProvider(db, tenantId);
-        const verdict = await checkLegibility(markdown, provider);
-        const badScan = isBadScan(verdict, legibilityCfg.threshold);
+        const v = await checkLegibility(markdown, provider);
+        const badScan = isBadScan(v, legibilityCfg.threshold);
         if (badScan) {
           console.warn(
             `[ingestion] bad scan detected for ${documentId} ` +
-            `(legible=${verdict.legible}, confidence=${verdict.confidence})`,
+            `(legible=${v.legible}, confidence=${v.confidence})`,
           );
         }
         return {
-          value: verdict,
+          value: v,
           summary: {
-            legible: verdict.legible,
-            confidence: verdict.confidence,
+            legible: v.legible,
+            confidence: v.confidence,
             bad_scan: badScan,
             threshold: legibilityCfg.threshold,
-            ...(verdict.reason ? { reason: verdict.reason } : {}),
+            ...(v.reason ? { reason: v.reason } : {}),
           },
         };
       });
+
+      // Escalate a bad scan to the configured vision parse model.
+      if (isBadScan(verdict, legibilityCfg.threshold) && legibilityCfg.fallbackModelId) {
+        try {
+          const escalated = await recorder.run("parse_escalation", async () => {
+            if (!parseProvider.pageImages) {
+              throw new Error("parse provider does not support page images");
+            }
+            const { provider: visionProvider, model: visionModel } = await resolveTenantProvider(
+              db,
+              tenantId,
+              { modelProviderId: legibilityCfg.fallbackModelId },
+            );
+            const blob = await storage.getBuffer(document.storageKey);
+            if (!blob) throw new Error("file not found in storage for escalation");
+            const mimeType = document.mimeType || mimeTypeFor(document.filename);
+            const { images } = await parseProvider.pageImages({
+              fileBuffer: blob.data,
+              filename: document.filename,
+              mimeType,
+              maxPages: 50,
+            });
+            const result = await visionOcrPages(images, visionProvider);
+            console.log(`[ingestion] vision-OCR escalation: ${documentId} re-parsed ${result.pages} pages via ${visionModel}`);
+            return {
+              value: result,
+              summary: {
+                engine: "vision-ocr",
+                model: visionModel,
+                pages: result.pages,
+                markdown_chars: result.markdown.length,
+              },
+            };
+          });
+
+          if (escalated.markdown.trim().length > 0) {
+            markdown = escalated.markdown;
+            // Re-cache the vision text so a reprocess of this file doesn't
+            // re-escalate (and re-pay the per-page vision cost).
+            await overwriteParseCache(storage, tenantId, document.contentHash, markdown, escalated.pages);
+          }
+        } catch (err) {
+          console.warn(
+            `[ingestion] parse escalation failed for ${documentId}, keeping original parse:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
     }
 
     // ── Form-mapping early exit ──────────────────────────────────────────
@@ -803,11 +852,16 @@ interface ExtractResult {
 
 /**
  * Read the legibility-check config from a pipeline's `configJson.legibility`
- * block: `{ enabled?: boolean, threshold?: number }`. Opt-in (default off) so
- * normal parses don't pay for the extra LLM call. The fallback parse model
- * (for escalation) is read separately in the follow-up step.
+ * block: `{ enabled?: boolean, threshold?: number, fallback_model_id?: string }`.
+ * Opt-in (default off) so normal parses don't pay for the extra LLM call.
+ * `fallback_model_id` points at a vision-capable model_endpoint; when a bad scan
+ * is detected and it's set, ingestion re-parses with that model.
  */
-function readLegibilityConfig(configJson: unknown): { enabled: boolean; threshold: number } {
+function readLegibilityConfig(configJson: unknown): {
+  enabled: boolean;
+  threshold: number;
+  fallbackModelId: string | null;
+} {
   const root = configJson && typeof configJson === "object" ? (configJson as Record<string, unknown>) : null;
   const cfg = root && typeof root.legibility === "object" ? (root.legibility as Record<string, unknown>) : null;
   const enabled = cfg?.enabled === true;
@@ -815,7 +869,45 @@ function readLegibilityConfig(configJson: unknown): { enabled: boolean; threshol
     typeof cfg?.threshold === "number" && cfg.threshold >= 0 && cfg.threshold <= 1
       ? cfg.threshold
       : DEFAULT_LEGIBILITY_THRESHOLD;
-  return { enabled, threshold };
+  const fallbackModelId =
+    typeof cfg?.fallback_model_id === "string" && cfg.fallback_model_id.length > 0
+      ? cfg.fallback_model_id
+      : null;
+  return { enabled, threshold, fallbackModelId };
+}
+
+/**
+ * Overwrite the parse-cache S3 object for a file with new markdown (used after a
+ * bad-scan vision-OCR escalation, so a reprocess reuses the better text instead
+ * of re-escalating). Best-effort. The DB cache row already exists from the
+ * original parse; only the S3 payload changes. No text_map — vision-OCR doesn't
+ * produce per-word bboxes — so escalated docs lose provenance highlighting,
+ * which is an acceptable trade for legible text.
+ */
+async function overwriteParseCache(
+  storage: StorageProvider,
+  tenantId: string,
+  fileHash: string,
+  markdown: string,
+  pages: number,
+): Promise<void> {
+  if (!fileHash) return;
+  try {
+    const cacheKey = `cache/${tenantId}/${fileHash}.json`;
+    const payload = Buffer.from(
+      JSON.stringify({
+        markdown,
+        pages,
+        ocr_skipped: false,
+        engine: "vision-ocr",
+        text_map: [],
+        parser_version: PARSE_VERSION,
+      }),
+    );
+    await storage.put(cacheKey, payload, { contentType: "application/json" });
+  } catch (err) {
+    console.warn("[ingestion] failed to re-cache escalated parse:", err instanceof Error ? err.message : err);
+  }
 }
 
 /**

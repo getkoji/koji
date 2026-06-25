@@ -380,6 +380,38 @@ export class ModalParseProvider implements ParseProvider {
     return await resp.json() as import("./provider").CoordinateExtractionResult;
   }
 
+  async pageImages(input: {
+    fileBuffer: Buffer;
+    filename: string;
+    mimeType: string;
+    maxPages?: number;
+  }): Promise<{ images: string[]; pages: number }> {
+    const imagesUrl = this.url.replace("parse-http", "page-images");
+
+    const fd = new FormData();
+    fd.append("file", new Blob([Uint8Array.from(input.fileBuffer)], { type: input.mimeType }), input.filename);
+    fd.append("filename", input.filename);
+    if (input.maxPages != null) fd.append("max_pages", String(input.maxPages));
+
+    const resp = await fetch(imagesUrl, {
+      method: "POST",
+      body: fd,
+      headers: {
+        "Modal-Key": this.tokenId,
+        "Modal-Secret": this.tokenSecret,
+      },
+      redirect: "follow",
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => "Unknown error");
+      throw new Error(`page-images (modal) failed: ${err.slice(0, 300)}`);
+    }
+
+    const result = (await resp.json()) as { images?: string[]; pages?: number };
+    return { images: result.images ?? [], pages: result.pages ?? 0 };
+  }
+
   async renderRegion(input: {
     fileBuffer: Buffer;
     page: number;
