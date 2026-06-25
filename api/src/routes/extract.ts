@@ -290,7 +290,6 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           pages: parsed.pages,
           ocr_skipped: parsed.ocr_skipped,
           text_map: parsed.text_map ?? [],
-          searchable_pdf_base64: parsed.searchable_pdf_base64,
         };
         await stream.writeSSE({
           event: "parse_complete",
@@ -429,7 +428,6 @@ async function handleExtractRunJSON(
         pages: parsed.pages,
         ocr_skipped: parsed.ocr_skipped,
         text_map: parsed.text_map ?? [],
-        searchable_pdf_base64: parsed.searchable_pdf_base64,
       };
     } catch (err: unknown) {
       return c.json({

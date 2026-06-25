@@ -35,7 +35,6 @@ const scannedResponse: ParseResponse = {
   pages: 5,
   ocr_skipped: false,
   engine: "docling",
-  searchable_pdf_base64: "base64data",
 };
 
 describe("SmartParseProvider", () => {

@@ -37,8 +37,6 @@ export interface ParseResponse {
   ocr_skipped: boolean;
   /** Which parser produced this response. */
   engine: ParseEngine;
-  /** Base64-encoded PDF with OCR text layer overlaid. Present when OCR ran. */
-  searchable_pdf_base64?: string;
   /** Per-word spatial positions — used by provenance to resolve bounding boxes. */
   text_map?: TextMapSegment[];
 }

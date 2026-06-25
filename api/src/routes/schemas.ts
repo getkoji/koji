@@ -805,15 +805,6 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         });
         markdown = parseResult.markdown;
         textMap = parseResult.text_map;
-
-        // Store searchable PDF alongside corpus entry (best-effort)
-        if (parseResult.searchable_pdf_base64) {
-          const searchableKey = `${entry.storageKey}.searchable.pdf`;
-          try {
-            const pdfBuf = Buffer.from(parseResult.searchable_pdf_base64, "base64");
-            await storage.put(searchableKey, pdfBuf, { contentType: "application/pdf" });
-          } catch { /* best-effort */ }
-        }
       }
 
       if (!markdown) continue;

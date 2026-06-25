@@ -256,7 +256,6 @@ export class ChunkedParseProvider implements ParseProvider {
       ocr_skipped,
       engine,
       text_map,
-      // searchable_pdf_base64 is not mergeable — skip for chunked parses
     };
   }
 }
