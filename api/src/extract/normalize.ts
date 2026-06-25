@@ -48,6 +48,40 @@ function slugify(value: unknown): unknown {
   return slug.replace(/^_|_$/g, "");
 }
 
+// ── Prose whitespace + punctuation normalization ─────────────────────────
+// For human-readable fields where OCR / source formatting introduces
+// non-standard spacing. Opt-in per field — codes and identifiers can
+// legitimately contain runs of whitespace and shouldn't be touched.
+
+/** Collapse runs of spaces and tabs to a single space. Preserves newlines —
+ *  multi-line fields (addresses, descriptions) keep their line breaks. */
+function collapseSpaces(value: unknown): unknown {
+  return typeof value === "string" ? value.replace(/[ \t]+/g, " ") : value;
+}
+
+/** Apply English-typographic punctuation spacing:
+ *  - Remove space *before* `, . ; : ! ? )` (e.g. `Smith , Jones` → `Smith, Jones`)
+ *  - Insert single space *after* `, ; :` when followed by a letter and not
+ *    already spaced (e.g. `Smith,Jones` → `Smith, Jones`)
+ *
+ *  Deliberately does NOT touch `.` after-spacing — that would split initials
+ *  like `J. R. R. Tolkien` and decimal numbers, and it isn't the failure
+ *  mode this transform exists to solve. */
+function fixPunctuationSpacing(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  let s = value.replace(/[ \t]+([,.;:!?)])/g, "$1");
+  s = s.replace(/([,;:])(?=[A-Za-z])/g, "$1 ");
+  return s;
+}
+
+/** Convenience preset for human-prose fields: trim + collapse_spaces +
+ *  fix_punctuation_spacing. Use for names, addresses, descriptions — any
+ *  field where readers expect standard English spacing conventions. */
+function prose(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return fixPunctuationSpacing(collapseSpaces(value.trim()));
+}
+
 // ── Date normalization ────────────────────────────────────────────────────
 
 const ISO_DATE_RE = /(\d{4})-(\d{1,2})-(\d{1,2})/;
@@ -310,6 +344,9 @@ const TRANSFORMS: Record<string, TransformFn> = {
   iso8601: iso8601 as TransformFn,
   minor_units: minorUnits,
   e164,
+  collapse_spaces: collapseSpaces,
+  fix_punctuation_spacing: fixPunctuationSpacing,
+  prose,
 };
 
 const DERIVATION_METHODS: Record<string, (text: string, ...args: unknown[]) => string | null> = {

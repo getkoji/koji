@@ -738,3 +738,123 @@ describe("rename directive", () => {
     expect(result.name).toBe("Frank");
   });
 });
+
+// ---------------------------------------------------------------------------
+// collapse_spaces
+// ---------------------------------------------------------------------------
+
+describe("collapse_spaces transform", () => {
+  it("collapses runs of spaces to one", () => {
+    const { value } = normField("ACME   Corp", { normalize: "collapse_spaces" });
+    expect(value).toBe("ACME Corp");
+  });
+
+  it("collapses mixed spaces and tabs", () => {
+    const { value } = normField("foo \t\t bar", { normalize: "collapse_spaces" });
+    expect(value).toBe("foo bar");
+  });
+
+  it("preserves newlines (multi-line addresses)", () => {
+    const { value } = normField("123 Main St\n  Apt  4", {
+      normalize: "collapse_spaces",
+    });
+    expect(value).toBe("123 Main St\n Apt 4");
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "collapse_spaces" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix_punctuation_spacing
+// ---------------------------------------------------------------------------
+
+describe("fix_punctuation_spacing transform", () => {
+  it("removes space before comma", () => {
+    const { value } = normField("Smith , Jones", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Smith, Jones");
+  });
+
+  it("removes space before period, semicolon, colon, paren-close", () => {
+    const { value } = normField("end . next ; then : and )", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("end. next; then: and)");
+  });
+
+  it("adds space after comma/semicolon/colon when missing before a letter", () => {
+    const { value } = normField("Smith,Jones;extra:more", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Smith, Jones; extra: more");
+  });
+
+  it("preserves initials with periods (does not space . before letter)", () => {
+    const { value } = normField("J. R. R. Tolkien", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("J. R. R. Tolkien");
+  });
+
+  it("preserves decimal numbers (period without surrounding space)", () => {
+    const { value } = normField("Total: $1,234.56", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Total: $1,234.56");
+  });
+
+  it("does not break already-correct text", () => {
+    const { value, report } = normField("ACME Corp, Inc.", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("ACME Corp, Inc.");
+    expect(
+      report.applied.filter((a) => a.transform === "fix_punctuation_spacing"),
+    ).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "fix_punctuation_spacing" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prose preset (trim + collapse_spaces + fix_punctuation_spacing)
+// ---------------------------------------------------------------------------
+
+describe("prose transform", () => {
+  it("fixes the common OCR spacing failure modes in one pass", () => {
+    const { value } = normField("  ACME   Corp , Inc.  ", { normalize: "prose" });
+    expect(value).toBe("ACME Corp, Inc.");
+  });
+
+  it("handles legal-name OCR output (space before comma, no space after)", () => {
+    const { value } = normField("Robert M. Critz , P.A.", { normalize: "prose" });
+    expect(value).toBe("Robert M. Critz, P.A.");
+  });
+
+  it("normalizes a multi-issue address", () => {
+    const { value } = normField("200 QUEENS  OFFICE  CONDOMINIUM   ASSOCIATION INC", {
+      normalize: "prose",
+    });
+    expect(value).toBe("200 QUEENS OFFICE CONDOMINIUM ASSOCIATION INC");
+  });
+
+  it("leaves a clean string unchanged", () => {
+    const { value, report } = normField("The Cincinnati Insurance Companies", {
+      normalize: "prose",
+    });
+    expect(value).toBe("The Cincinnati Insurance Companies");
+    expect(report.applied.filter((a) => a.transform === "prose")).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "prose" });
+    expect(value).toBe(42);
+  });
+});
