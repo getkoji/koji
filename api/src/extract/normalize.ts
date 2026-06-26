@@ -90,6 +90,117 @@ function prose(value: unknown): unknown {
   return fixPunctuationSpacing(collapseSpaces(value.trim()));
 }
 
+// ── Numeric coercions ────────────────────────────────────────────────────
+// Forgiving parsers for human-written numbers. All return the original
+// value unchanged on parse failure so downstream validation can surface it.
+
+/** Strip every non-digit character. For account numbers, IDs, anything
+ *  where formatting is presentational: `"(555) 123-4567"` → `"5551234567"`. */
+function digitsOnly(value: unknown): unknown {
+  return typeof value === "string" ? value.replace(/\D/g, "") : value;
+}
+
+/** Parse a human-formatted integer to a Number, dropping grouping commas /
+ *  spaces / underscores. `"1,234"` → `1234`. Bails on values that aren't
+ *  cleanly integer (decimals, garbage). */
+function integer(value: unknown): unknown {
+  if (typeof value === "number") return Number.isInteger(value) ? value : value;
+  if (typeof value !== "string") return value;
+  const s = value.trim().replace(/[,\s_]/g, "");
+  if (!/^-?\d+$/.test(s)) return value;
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) ? value : n;
+}
+
+/** Parse a human-formatted decimal to a Number. Strips currency symbols,
+ *  grouping commas / spaces, and recognises accounting parentheses for
+ *  negatives. `"$1,234.56"` → `1234.56`, `"(50.00)"` → `-50`. */
+function decimalAmount(value: unknown): unknown {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return value;
+  let s = value.trim();
+  let negative = false;
+  if (s.startsWith("(") && s.endsWith(")")) {
+    negative = true;
+    s = s.slice(1, -1);
+  }
+  const cleaned = s.replace(/[^\d.\-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return value;
+  const n = parseFloat(cleaned);
+  if (Number.isNaN(n)) return value;
+  return negative ? -n : n;
+}
+
+/** Strip a trailing `%` and parse as a number. Does NOT divide by 100 —
+ *  `"12%"` → `12`, preserving the human-written magnitude. Schema authors
+ *  who want the 0–1 fraction can compose with a downstream transform. */
+function percent(value: unknown): unknown {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return value;
+  const s = value.trim().replace(/%\s*$/, "").trim();
+  return decimalAmount(s);
+}
+
+// ── Booleans ─────────────────────────────────────────────────────────────
+
+const TRUTHY = new Set(["true", "yes", "y", "1", "on", "t"]);
+const FALSY = new Set(["false", "no", "n", "0", "off", "f"]);
+
+/** Coerce common truthy / falsy strings to a real Boolean. Case-insensitive.
+ *  `"yes"`, `"Y"`, `"true"`, `"1"`, `"on"` → `true`; the negative variants
+ *  → `false`. Unrecognised strings are passed through unchanged. */
+function boolean(value: unknown): unknown {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return value;
+  const s = value.trim().toLowerCase();
+  if (TRUTHY.has(s)) return true;
+  if (FALSY.has(s)) return false;
+  return value;
+}
+
+// ── Identifiers ──────────────────────────────────────────────────────────
+
+/** Normalize an email: trim + lowercase. Emails are case-insensitive in
+ *  practice everywhere; lowering avoids accidental duplicates downstream. */
+function email(value: unknown): unknown {
+  return typeof value === "string" ? value.trim().toLowerCase() : value;
+}
+
+/** Normalize a URL: trim, lowercase the scheme + host, and drop a trailing
+ *  slash from the path root. Preserves path case (path components ARE
+ *  case-sensitive). Invalid URLs are passed through unchanged. */
+function url(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    const u = new URL(trimmed);
+    u.protocol = u.protocol.toLowerCase();
+    u.hostname = u.hostname.toLowerCase();
+    let result = u.toString();
+    if (result.endsWith("/") && u.pathname === "/" && !u.search && !u.hash) {
+      result = result.slice(0, -1);
+    }
+    return result;
+  } catch {
+    return value;
+  }
+}
+
+// ── Casing presets ───────────────────────────────────────────────────────
+
+/** Capitalize the first letter of each word; lowercase the rest. Tokens
+ *  that are already entirely uppercase (≥2 letters) are preserved as
+ *  acronyms — `"ACME corp"` → `"ACME Corp"`, but `"acme corp"` →
+ *  `"Acme Corp"`. Splits on whitespace; handles hyphens. */
+function titleCase(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return value.replace(/[A-Za-zÀ-ɏ]+/g, (token) => {
+    if (token.length >= 2 && token === token.toUpperCase()) return token;
+    return token[0]!.toUpperCase() + token.slice(1).toLowerCase();
+  });
+}
+
 // ── Date normalization ────────────────────────────────────────────────────
 
 const ISO_DATE_RE = /(\d{4})-(\d{1,2})-(\d{1,2})/;
@@ -352,10 +463,18 @@ const TRANSFORMS: Record<string, TransformFn> = {
   iso8601: iso8601 as TransformFn,
   minor_units: minorUnits,
   e164,
+  title_case: titleCase,
   collapse_spaces: collapseSpaces,
   remove_spaces: removeSpaces,
   fix_punctuation_spacing: fixPunctuationSpacing,
   prose,
+  digits_only: digitsOnly,
+  integer,
+  decimal_amount: decimalAmount,
+  percent,
+  boolean,
+  email,
+  url,
 };
 
 const DERIVATION_METHODS: Record<string, (text: string, ...args: unknown[]) => string | null> = {

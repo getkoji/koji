@@ -279,17 +279,31 @@ line_items:
 
 | Name | Effect |
 |------|--------|
+| **Strings & casing** | |
 | `trim` | Strip leading/trailing whitespace |
 | `lowercase` | ASCII-insensitive lowercasing |
 | `uppercase` | ASCII-insensitive uppercasing |
+| `title_case` | Capitalize the first letter of each word, lowercase the rest. Preserves already-uppercase tokens as acronyms. `"acme corp"` → `"Acme Corp"`; `"ACME corp"` → `"ACME Corp"` |
 | `slugify` | Lowercase + replace non-alphanumerics with `_` + strip underscores at edges |
-| `iso8601` | Parse common date formats (ISO, `MM/DD/YYYY`, `MM-DD-YY`, etc.) to `YYYY-MM-DD` |
-| `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
-| `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
+| **Whitespace & punctuation** | |
 | `collapse_spaces` | Collapse runs of spaces/tabs to a single space. Preserves newlines (multi-line addresses keep their breaks). `"ACME   Corp"` → `"ACME Corp"` |
 | `remove_spaces` | Strip every whitespace character — spaces, tabs, newlines, non-breaking spaces. For codes and identifiers where any embedded whitespace is noise. `"ABC 123"` → `"ABC123"`, `"555 123 4567"` → `"5551234567"` |
 | `fix_punctuation_spacing` | Apply English-typographic spacing: remove space before `, . ; : ! ? )`; insert single space after `, ; :` when followed by a letter. Preserves initials (`J. R. R. Tolkien`) and decimals (`$1,234.56`). `"Smith , Jones"` → `"Smith, Jones"` |
 | `prose` | Convenience preset for human-readable fields = `trim` + `collapse_spaces` + `fix_punctuation_spacing`. Use for names, addresses, descriptions — any field where readers expect standard English spacing. Codes and identifiers that may legitimately contain runs of whitespace should use `trim` alone instead. |
+| **Dates** | |
+| `iso8601` | Parse common date formats (ISO, `MM/DD/YYYY`, `MM-DD-YY`, etc.) to `YYYY-MM-DD` |
+| **Numbers & money** | |
+| `integer` | Parse a human-formatted integer to a Number; drops grouping commas, spaces, and underscores. `"1,234"` → `1234` |
+| `decimal_amount` | Parse a human-formatted decimal to a Number; strips currency symbols and grouping, recognises accounting parentheses for negatives. `"$1,234.56"` → `1234.56`; `"(50.00)"` → `-50` |
+| `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
+| `percent` | Strip a trailing `%` and parse as a number. Does NOT divide by 100 — `"12%"` → `12`, preserving the human-written magnitude |
+| `digits_only` | Strip every non-digit character. For account numbers, IDs, anything where formatting is presentational. `"(555) 123-4567"` → `"5551234567"` |
+| **Booleans** | |
+| `boolean` | Coerce common truthy/falsy strings to a real Boolean. Case-insensitive. `"yes"`, `"Y"`, `"true"`, `"1"`, `"on"` → `true`; the negative variants → `false` |
+| **Identifiers** | |
+| `email` | Trim + lowercase. Emails are case-insensitive in practice; lowering avoids accidental duplicates downstream |
+| `url` | Trim, lowercase the scheme and host, drop a trailing `/` on path-root URLs. Preserves path case (path components are case-sensitive). Invalid URLs pass through unchanged |
+| `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
 
 Transforms are deterministic and fault-tolerant: if a value can't be parsed (e.g. `"next Tuesday"` through `iso8601`), the original value is passed through unchanged. Unknown transform names are recorded as warnings in the response's `normalization.warnings` list rather than raising.
 
