@@ -34,7 +34,7 @@ Top-level keys: name (required), description, fields (required)
 - nullable: true/false
 - description: human-readable description
 - extraction_guidance: hint for the LLM extractor
-- normalize: iso8601 | minor_units | uppercase | lowercase | trim | us_phone | email | url | collapse_spaces | fix_punctuation_spacing | prose
+- normalize: iso8601 | minor_units | uppercase | lowercase | trim | us_phone | email | url | collapse_spaces | remove_spaces | fix_punctuation_spacing | prose
 - validate:
     regex: pattern
     min / max: numeric bounds

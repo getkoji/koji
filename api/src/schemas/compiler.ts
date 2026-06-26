@@ -32,7 +32,7 @@ const VALID_FIELD_PROPS = new Set([
 const VALID_NORMALIZE = new Set([
   "iso8601", "minor_units", "uppercase", "lowercase", "trim",
   "us_phone", "email", "url",
-  "collapse_spaces", "fix_punctuation_spacing", "prose",
+  "collapse_spaces", "remove_spaces", "fix_punctuation_spacing", "prose",
 ]);
 
 const VALID_VALIDATE_PROPS = new Set([
