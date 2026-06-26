@@ -40,16 +40,40 @@ export interface BBoxHighlight {
   reasoning?: string;
 }
 
+/** Highlight colors, overridable by the embedding host (query param / koji:setTheme). */
+export interface HighlightTheme {
+  /** CSS color for the active/selected highlight box. Pass rgba()/hsla() for translucency. */
+  activeColor?: string;
+  /** CSS color for all other (inactive) highlight boxes. */
+  inactiveColor?: string;
+}
+
+/** Messages the embed viewer accepts from its parent frame (inbound). */
 export type EmbedMessage =
   | { type: "koji:setActiveField"; field: string | null }
   | { type: "koji:setHighlights"; highlights: BBoxHighlight[] }
-  | { type: "koji:goToPage"; page: number };
+  | { type: "koji:goToPage"; page: number }
+  | { type: "koji:setToken"; token: string }
+  | { type: "koji:setTheme"; theme: HighlightTheme };
+
+/** Messages the embed viewer emits to its parent frame (outbound). */
+export type EmbedOutboundMessage =
+  | { type: "koji:ready"; pageCount: number }
+  | { type: "koji:fieldClicked"; field: string; page: number };
 
 interface PdfViewerProps {
   url: string;
   highlights?: BBoxHighlight[];
   activeField?: string | null;
   onPageChange?: (page: number) => void;
+  /** Imperative page navigation — set/bump to jump to a page (wires koji:goToPage). */
+  targetPage?: number | null;
+  /** Fired when the user clicks a highlight box in the PDF. */
+  onFieldClick?: (field: string, page: number) => void;
+  /** Fired once the PDF document has loaded, with its page count. */
+  onLoad?: (info: { pageCount: number }) => void;
+  /** Highlight colors — overrides the default vermillion/cream styling. */
+  theme?: HighlightTheme;
   /** Control scrollbar behavior: "auto" (default, may flash), "scroll" (always visible), "hidden" (no scrollbars) */
   overflow?: "auto" | "scroll" | "hidden";
   /** Display mode: "paginated" shows one page at a time with arrows, "scroll" renders all pages in a scrollable container */
@@ -71,7 +95,7 @@ const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, overflow = "auto", mode = "paginated" }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, theme, overflow = "auto", mode = "paginated" }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -157,6 +181,22 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
     }, 150);
   }, [activeField]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Imperative page navigation (koji:goToPage). The parent passes a target
+  // page; clamp it to the document bounds once known and navigate.
+  useEffect(() => {
+    if (targetPage == null) return;
+    const clamped = totalPages > 0 ? Math.min(Math.max(1, targetPage), totalPages) : Math.max(1, targetPage);
+    if (mode === "paginated") {
+      setCurrentPage((prev) => {
+        if (prev !== clamped) onPageChange?.(clamped);
+        return clamped;
+      });
+    } else {
+      const el = containerRef.current?.querySelector(`[data-page-number="${clamped}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [targetPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Memoize file object — react-pdf uses === equality check and re-loads
   // the PDF on every render if the object reference changes.
   const file = useMemo(() => ({ url }), [url]);
@@ -222,6 +262,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
           file={file}
           onLoadSuccess={(pdf) => {
             setTotalPages(pdf.numPages);
+            onLoad?.({ pageCount: pdf.numPages });
             // Setup page observer after pages render in scroll mode
             if (mode === "scroll") {
               setTimeout(setupPageObserver, 300);
@@ -250,6 +291,8 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
                   highlights={pageHighlights}
                   activeField={activeField ?? null}
                   currentPage={currentPage}
+                  onFieldClick={onFieldClick}
+                  theme={theme}
                 />
               )}
             </ReactPdfPage>
@@ -271,6 +314,8 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, ove
                       highlights={highlights.filter((h) => h.page === pageNum)}
                       activeField={activeField ?? null}
                       currentPage={pageNum}
+                      onFieldClick={onFieldClick}
+                      theme={theme}
                     />
                   )}
                 </ReactPdfPage>
@@ -375,10 +420,14 @@ function HighlightOverlay({
   highlights,
   activeField,
   currentPage,
+  onFieldClick,
+  theme,
 }: {
   highlights: BBoxHighlight[];
   activeField: string | null;
   currentPage: number;
+  onFieldClick?: (field: string, page: number) => void;
+  theme?: HighlightTheme;
 }) {
   return (
     <div
@@ -399,6 +448,13 @@ function HighlightOverlay({
             ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
             : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
         }`;
+        // Host-supplied theme overrides the default vermillion/cream colors.
+        // Inline styles win over the Tailwind utilities above (background +
+        // box-shadow ring). Pass rgba()/hsla() for translucent fills.
+        const themeColor = isActive ? theme?.activeColor : theme?.inactiveColor;
+        const themeStyle: React.CSSProperties = themeColor
+          ? { backgroundColor: themeColor, boxShadow: `0 0 0 ${isActive ? 2 : 1}px ${themeColor}` }
+          : {};
 
         // Per-word boxes (precise highlights) — use percentage positioning
         if (h.words && h.words.length > 0) {
@@ -414,10 +470,13 @@ function HighlightOverlay({
                   width: `${w.w * 100}%`,
                   height: `${w.h * 100}%`,
                   pointerEvents: "auto",
+                  ...themeStyle,
                 }}
                 field={h.field}
+                page={currentPage}
                 reasoning={h.reasoning}
                 isActive={isActive}
+                onFieldClick={onFieldClick}
               />
             ));
         }
@@ -434,10 +493,13 @@ function HighlightOverlay({
               width: `${h.bbox.w * 100}%`,
               height: `${h.bbox.h * 100}%`,
               pointerEvents: "auto",
+              ...themeStyle,
             }}
             field={h.field}
+            page={currentPage}
             reasoning={h.reasoning}
             isActive={isActive}
+            onFieldClick={onFieldClick}
           />
         );
       })}
@@ -453,14 +515,18 @@ function HoverBox({
   className,
   style,
   field,
+  page,
   reasoning,
   isActive,
+  onFieldClick,
 }: {
   className: string;
   style: React.CSSProperties;
   field: string;
+  page: number;
   reasoning?: string;
   isActive?: boolean;
+  onFieldClick?: (field: string, page: number) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -473,6 +539,7 @@ function HoverBox({
       style={style}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={onFieldClick ? () => onFieldClick(field, page) : undefined}
     >
       {hovered && (
         <div

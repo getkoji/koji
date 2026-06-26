@@ -529,55 +529,123 @@ const encoded = btoa(JSON.stringify(highlights));
 // → use as ?highlights=<encoded>
 ```
 
-### Controlling the viewer from your app
+### Messaging schema (postMessage)
 
-The embed viewer listens for `postMessage` events from the parent frame. All messages use a `koji:` prefix:
+Control runs over `window.postMessage`. Every message is a plain object with a
+`type` string prefixed `koji:`. The viewer ignores anything without that prefix.
+
+**Inbound** — parent → viewer (`iframe.contentWindow.postMessage(msg, viewerOrigin)`):
+
+| `type` | Payload | Effect |
+|--------|---------|--------|
+| `koji:setActiveField` | `{ field: string \| null }` | Highlight a field and scroll/page to it. `null` clears the selection. |
+| `koji:setHighlights` | `{ highlights: BBoxHighlight[] }` | Replace all highlights (e.g. after re-extraction). |
+| `koji:goToPage` | `{ page: number }` | Jump to a 1-based page (clamped to the document). |
+| `koji:setToken` | `{ token: string }` | Swap in a fresh `documentToken` without reloading the iframe — see [Token refresh](#token-refresh-for-long-sessions). |
+| `koji:setTheme` | `{ theme: { activeColor?: string; inactiveColor?: string } }` | Recolor the highlight boxes (any CSS color; pass `rgba()`/`hsla()` for translucency). |
+
+**Outbound** — viewer → parent (your `window.addEventListener("message", …)`):
+
+| `type` | Payload | When |
+|--------|---------|------|
+| `koji:ready` | `{ pageCount: number }` | The PDF has loaded and the viewer is ready to accept commands. |
+| `koji:fieldClicked` | `{ field: string; page: number }` | The user clicked a highlight box in the PDF. |
+
+> **Always pass a real `targetOrigin` — never `"*"`.** When you post *to* the
+> viewer, the second arg is the **viewer's** origin (e.g.
+> `https://console.getkoji.dev`). For the viewer to post *back* to you, tell it
+> your origin with `?parentOrigin=https://your-app.com` on the iframe `src`. If
+> you omit it, the viewer falls back to the embedding page's origin
+> (`document.referrer`) and only posts to `"*"` as a last resort (with a console
+> warning). Outbound payloads contain no document bytes, but scoping the origin
+> is still the correct posture.
 
 ```typescript
 const iframe = document.getElementById("viewer") as HTMLIFrameElement;
+const VIEWER_ORIGIN = "https://console.getkoji.dev";
 
-// Highlight a specific extracted field
-iframe.contentWindow.postMessage(
-  { type: "koji:setActiveField", field: "vendor_name" },
-  "*"
-);
+// Listen for outbound events from the viewer
+window.addEventListener("message", (e) => {
+  if (e.origin !== VIEWER_ORIGIN) return;          // verify the sender
+  const msg = e.data;
+  if (msg?.type === "koji:ready") {
+    console.log(`viewer ready, ${msg.pageCount} pages`);
+  }
+  if (msg?.type === "koji:fieldClicked") {
+    // sync selection back into your own UI
+    selectFieldInMyApp(msg.field);
+  }
+});
 
-// Replace all highlights (e.g. after re-extraction)
-iframe.contentWindow.postMessage(
-  { type: "koji:setHighlights", highlights: [
-    { field: "vendor", page: 1, bbox: { x: 100, y: 200, w: 300, h: 20 } },
-  ]},
-  "*"
-);
-
-// Navigate to a specific page
-iframe.contentWindow.postMessage(
-  { type: "koji:goToPage", page: 3 },
-  "*"
-);
-```
-
-**Typical integration pattern** — link extracted fields to the document:
-
-```typescript
-// When a user clicks on an extracted field in your UI,
-// tell the viewer to highlight it in the PDF
+// Drive the viewer from your UI
 function onFieldClick(fieldName: string) {
-  iframe.contentWindow.postMessage(
+  iframe.contentWindow!.postMessage(
     { type: "koji:setActiveField", field: fieldName },
-    "*"
+    VIEWER_ORIGIN,                                   // not "*"
   );
 }
+
+// Navigate, recolor
+iframe.contentWindow!.postMessage({ type: "koji:goToPage", page: 3 }, VIEWER_ORIGIN);
+iframe.contentWindow!.postMessage(
+  { type: "koji:setTheme", theme: { activeColor: "rgba(220,38,38,0.4)", inactiveColor: "rgba(0,0,0,0.12)" } },
+  VIEWER_ORIGIN,
+);
 ```
 
-### Authentication
+### Theming
 
-The embed viewer uses HMAC-signed tokens — not session cookies. This means:
+Match the highlight colors to your host UI either at load time via query params
+or at runtime via `koji:setTheme`:
 
-- **Tokens are time-limited** (1 hour). Generate a fresh one when loading the viewer.
-- **Tokens are path-scoped** — signed against `/api/jobs/{slug}/documents/{docId}`, so a token for one document cannot access another.
-- **No CORS configuration needed** — the iframe loads the viewer page directly, and the viewer fetches the PDF from the same origin.
-- **`X-Frame-Options` is removed** for `/embed/*` routes, so the viewer can be iframed from any domain.
+```html
+<iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&activeColor=rgba(220,38,38,0.4)&inactiveColor=rgba(0,0,0,0.12)"></iframe>
+```
+
+`activeColor` styles the selected highlight; `inactiveColor` styles the rest.
+Both accept any CSS color — use `rgba()`/`hsla()` for translucent fills so the
+underlying text stays readable.
+
+### Authentication & static assets
+
+The embed viewer is **cookieless and cross-origin by design** — it never relies
+on a session cookie, so it works with third-party cookies fully blocked (Safari
+ITP, Chrome). Document-mode auth is the HMAC `documentToken`:
+
+- **Tokens are time-limited** (1 hour) and **path-scoped** — signed against
+  `/api/jobs/{slug}/documents/{docId}`, so a token for one document cannot
+  access another, and the document PDF + provenance are inaccessible without a
+  valid, unexpired, correctly-scoped token.
+- **The viewer's own static assets are served unauthenticated.** The PDF.js
+  worker (`/pdf.worker.mjs`), JS/wasm chunks, fonts, and source maps are
+  generic and non-sensitive, so they return `200` to an unauthenticated,
+  cookieless request and never redirect to `/sign-in`. Only the document bytes
+  stay gated by the token. (Previously the worker was auth-gated and 302'd to
+  sign-in, so the PDF never rendered in a cross-origin iframe — that's fixed.)
+- **`X-Frame-Options` is removed and `Content-Security-Policy: frame-ancestors`
+  permits external origins** for `/embed/*`. By default any origin may embed
+  (`frame-ancestors *`); self-hosters can restrict it to an allowlist via the
+  `KOJI_EMBED_FRAME_ANCESTORS` env var (a space-separated CSP source list, e.g.
+  `https://app.acme.com https://*.acme.com`).
+- **No CORS configuration needed** — the iframe loads the viewer page directly,
+  and the viewer fetches the PDF from its own (same) origin.
+
+#### Token refresh for long sessions
+
+The `documentToken` expires after 1 hour. For multi-hour review sessions, mint a
+fresh token server-side (re-`GET /api/jobs/{slug}/documents/{docId}`) and push it
+in with `koji:setToken` — **do not reload the iframe**. The viewer swaps the
+token on its preview URL so subsequent fetches stay authorized, while the current
+page and selection are preserved:
+
+```typescript
+// Every ~50 minutes, before the current token expires:
+const { documentToken } = await fetchFreshTokenFromYourServer(jobSlug, docId);
+iframe.contentWindow!.postMessage(
+  { type: "koji:setToken", token: documentToken },
+  VIEWER_ORIGIN,
+);
+```
 
 ### Self-hosted
 

@@ -18,6 +18,13 @@ const API_TARGET =
   process.env.KOJI_API_URL ??
   "http://localhost:9401";
 
+// Who is allowed to iframe the embed viewer. Defaults to "*" (any origin).
+// Set KOJI_EMBED_FRAME_ANCESTORS to a space-separated CSP source list
+// (e.g. "https://app.acme.com https://*.acme.com") to restrict embedding.
+// Note: removing X-Frame-Options is not enough on its own — a restrictive
+// frame-ancestors would still block external embedding.
+const EMBED_FRAME_ANCESTORS = process.env.KOJI_EMBED_FRAME_ANCESTORS ?? "*";
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -25,7 +32,10 @@ export function middleware(request: NextRequest) {
   if (pathname.startsWith("/embed/")) {
     const response = NextResponse.next();
     response.headers.delete("X-Frame-Options");
-    response.headers.set("Content-Security-Policy", "frame-ancestors *");
+    response.headers.set(
+      "Content-Security-Policy",
+      `frame-ancestors ${EMBED_FRAME_ANCESTORS}`,
+    );
     return response;
   }
 
