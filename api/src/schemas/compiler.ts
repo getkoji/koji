@@ -30,8 +30,12 @@ const VALID_FIELD_PROPS = new Set([
 ]);
 
 const VALID_NORMALIZE = new Set([
-  "iso8601", "minor_units", "uppercase", "lowercase", "trim",
-  "us_phone", "email", "url",
+  "trim", "lowercase", "uppercase", "title_case", "slugify",
+  "collapse_spaces", "remove_spaces", "fix_punctuation_spacing", "prose",
+  "iso8601",
+  "minor_units", "integer", "decimal_amount", "percent",
+  "digits_only", "boolean",
+  "email", "url", "e164",
 ]);
 
 const VALID_VALIDATE_PROPS = new Set([

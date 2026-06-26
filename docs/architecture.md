@@ -204,6 +204,7 @@ Each extracted value is validated and normalized against its field spec:
 
 - **Dates** are normalized to ISO 8601 (`YYYY-MM-DD`)
 - **Numbers** are cleaned of currency symbols and commas, converted to numeric types
+- **Text** (when the field opts in via `normalize: prose`) gets standard English spacing — trim, collapse whitespace runs, remove space before punctuation. Use on names, addresses, descriptions where OCR or source formatting introduces non-standard spacing; leave off for identifiers and codes that may legitimately contain whitespace runs.
 - **Enums** are fuzzy-matched against allowed options (case-insensitive, substring matching)
 - **Mappings** resolve aliases to canonical values (e.g., "NY" and "New York" both resolve to "New York")
 - **Required fields** are flagged if null

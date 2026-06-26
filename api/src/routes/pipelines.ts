@@ -12,7 +12,30 @@ import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createNotification } from "../notifications/emit";
-import { createExtractionJob, addDocumentToJob, mimeTypeFor } from "../ingestion/process";
+import { createExtractionJob, addDocumentToJob, normalizeMimeTypeWithWarning } from "../ingestion/process";
+
+/**
+ * Helper for ingestion endpoints — runs mime normalization, logs a
+ * server warning when a correction happens, and returns both the
+ * normalized value and the (nullable) warning string. Endpoints
+ * accumulate the warning into a `warnings: string[]` array on their
+ * JSON response so callers can fix their upload code.
+ */
+function resolveMimeWithWarning(
+  claimed: string | null | undefined,
+  filename: string | null,
+  context: { tenantId: string; endpoint: string },
+): { value: string; warning: string | null } {
+  const result = normalizeMimeTypeWithWarning(claimed, filename);
+  if (result.warning) {
+    console.warn(
+      `[mime-normalize] tenant=${context.tenantId} endpoint=${context.endpoint} ` +
+        `filename=${JSON.stringify(filename)} claimed=${JSON.stringify(claimed ?? null)} ` +
+        `normalized=${JSON.stringify(result.value)}`,
+    );
+  }
+  return result;
+}
 
 /**
  * Narrow an unknown body into a {@link RetryPolicy}. Returns the validated
@@ -882,6 +905,7 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
   let filename: string;
   let mimeType: string;
   let fileSize: number;
+  const warnings: string[] = [];
 
   const storageKeyField = typeof body.storageKey === "string" ? body.storageKey : null;
   if (storageKeyField) {
@@ -892,11 +916,18 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     const stored = await storage.getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     buffer = stored.data;
-    mimeType = stored.contentType;
     // Derive filename from the storage key (last segment after timestamp prefix)
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    // Normalize R2's stored Content-Type — presigned-upload clients
+    // sometimes set it to the bare extension ("pdf") instead of a real
+    // MIME, which breaks the dashboard preview renderer.
+    const r = resolveMimeWithWarning(stored.contentType, filename, {
+      tenantId, endpoint: "pipelines.run",
+    });
+    mimeType = r.value;
+    if (r.warning) warnings.push(r.warning);
     fileSize = buffer.length;
     storageKey = storageKeyField;
   } else {
@@ -908,7 +939,11 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
     const fileBytes = await file.arrayBuffer();
     buffer = Buffer.from(fileBytes);
     filename = file.name;
-    mimeType = file.type || mimeTypeFor(file.name);
+    const r = resolveMimeWithWarning(file.type, file.name, {
+      tenantId, endpoint: "pipelines.run",
+    });
+    mimeType = r.value;
+    if (r.warning) warnings.push(r.warning);
     fileSize = file.size;
     storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
 
@@ -948,7 +983,12 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
   }
 
   return c.json(
-    { jobId: created.jobId, jobSlug: created.jobSlug, documentId: created.documentId },
+    {
+      jobId: created.jobId,
+      jobSlug: created.jobSlug,
+      documentId: created.documentId,
+      ...(warnings.length ? { warnings } : {}),
+    },
     202,
   );
 });
@@ -1001,6 +1041,7 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
   let filename: string;
   let mimeType: string;
   let fileSize: number;
+  const warnings: string[] = [];
 
   const storageKeyField = typeof body.storageKey === "string" ? body.storageKey : null;
   if (storageKeyField) {
@@ -1010,10 +1051,14 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     const stored = await storage.getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     buffer = stored.data;
-    mimeType = stored.contentType;
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    const r = resolveMimeWithWarning(stored.contentType, filename, {
+      tenantId, endpoint: "pipelines.addDoc",
+    });
+    mimeType = r.value;
+    if (r.warning) warnings.push(r.warning);
     fileSize = buffer.length;
     storageKey = storageKeyField;
   } else {
@@ -1024,7 +1069,11 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     const fileBytes = await file.arrayBuffer();
     buffer = Buffer.from(fileBytes);
     filename = file.name;
-    mimeType = file.type || mimeTypeFor(file.name);
+    const r = resolveMimeWithWarning(file.type, file.name, {
+      tenantId, endpoint: "pipelines.addDoc",
+    });
+    mimeType = r.value;
+    if (r.warning) warnings.push(r.warning);
     fileSize = file.size;
     storageKey = `pipeline-runs/${pipelineId}/${Date.now()}-${file.name}`;
     await storage.put(storageKey, buffer, { contentType: mimeType });
@@ -1052,7 +1101,13 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     { tenantId },
   );
 
-  return c.json({ documentId: created.documentId }, 202);
+  return c.json(
+    {
+      documentId: created.documentId,
+      ...(warnings.length ? { warnings } : {}),
+    },
+    202,
+  );
 });
 
 // ── Pipeline test mode (dry-run) ──
@@ -1491,18 +1546,22 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
     const stored = await c.get("storage").getBuffer(storageKeyField);
     if (!stored) return c.json({ error: "File not found in storage" }, 404);
     fileBytes = new Uint8Array(stored.data).buffer as ArrayBuffer;
-    mimeType = stored.contentType;
     // Derive filename from the storage key (last segment after timestamp prefix)
     const keyParts = storageKeyField.split("/");
     const lastPart = keyParts[keyParts.length - 1] ?? "document";
     filename = lastPart.replace(/^\d+-/, "");
+    mimeType = resolveMimeWithWarning(stored.contentType, filename, {
+      tenantId, endpoint: "pipelines.test",
+    }).value;
   } else {
     // Direct file upload path (backward compat)
     const file = body.file;
     if (!(file instanceof File)) return c.json({ error: "Missing file or storageKey" }, 400);
     fileBytes = await file.arrayBuffer();
-    mimeType = file.type || "application/octet-stream";
     filename = file.name;
+    mimeType = resolveMimeWithWarning(file.type, file.name, {
+      tenantId, endpoint: "pipelines.test",
+    }).value;
   }
 
   // ── Implicit parse step: extract text from document ──
