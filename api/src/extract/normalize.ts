@@ -59,6 +59,14 @@ function collapseSpaces(value: unknown): unknown {
   return typeof value === "string" ? value.replace(/[ \t]+/g, " ") : value;
 }
 
+/** Strip every whitespace character — spaces, tabs, newlines, and Unicode
+ *  whitespace (including U+00A0 non-breaking space). For codes and identifiers
+ *  where any embedded whitespace is noise: "ABC 123" → "ABC123",
+ *  "555 123 4567" → "5551234567". */
+function removeSpaces(value: unknown): unknown {
+  return typeof value === "string" ? value.replace(/\s+/g, "") : value;
+}
+
 /** Apply English-typographic punctuation spacing:
  *  - Remove space *before* `, . ; : ! ? )` (e.g. `Smith , Jones` → `Smith, Jones`)
  *  - Insert single space *after* `, ; :` when followed by a letter and not
@@ -345,6 +353,7 @@ const TRANSFORMS: Record<string, TransformFn> = {
   minor_units: minorUnits,
   e164,
   collapse_spaces: collapseSpaces,
+  remove_spaces: removeSpaces,
   fix_punctuation_spacing: fixPunctuationSpacing,
   prose,
 };

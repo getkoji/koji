@@ -768,6 +768,51 @@ describe("collapse_spaces transform", () => {
 });
 
 // ---------------------------------------------------------------------------
+// remove_spaces
+// ---------------------------------------------------------------------------
+
+describe("remove_spaces transform", () => {
+  it("strips spaces from codes and identifiers", () => {
+    const { value } = normField("ABC 123", { normalize: "remove_spaces" });
+    expect(value).toBe("ABC123");
+  });
+
+  it("strips runs of spaces", () => {
+    const { value } = normField("555   123   4567", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("5551234567");
+  });
+
+  it("strips tabs and newlines too (any whitespace is noise here)", () => {
+    const { value } = normField("ABC\t123\n456", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("ABC123456");
+  });
+
+  it("strips Unicode non-breaking spaces (U+00A0)", () => {
+    const { value } = normField("ABC 123", { normalize: "remove_spaces" });
+    expect(value).toBe("ABC123");
+  });
+
+  it("leaves a string with no whitespace unchanged", () => {
+    const { value, report } = normField("ABC123", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("ABC123");
+    expect(
+      report.applied.filter((a) => a.transform === "remove_spaces"),
+    ).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "remove_spaces" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // fix_punctuation_spacing
 // ---------------------------------------------------------------------------
 

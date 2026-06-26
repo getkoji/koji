@@ -287,6 +287,7 @@ line_items:
 | `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
 | `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
 | `collapse_spaces` | Collapse runs of spaces/tabs to a single space. Preserves newlines (multi-line addresses keep their breaks). `"ACME   Corp"` → `"ACME Corp"` |
+| `remove_spaces` | Strip every whitespace character — spaces, tabs, newlines, non-breaking spaces. For codes and identifiers where any embedded whitespace is noise. `"ABC 123"` → `"ABC123"`, `"555 123 4567"` → `"5551234567"` |
 | `fix_punctuation_spacing` | Apply English-typographic spacing: remove space before `, . ; : ! ? )`; insert single space after `, ; :` when followed by a letter. Preserves initials (`J. R. R. Tolkien`) and decimals (`$1,234.56`). `"Smith , Jones"` → `"Smith, Jones"` |
 | `prose` | Convenience preset for human-readable fields = `trim` + `collapse_spaces` + `fix_punctuation_spacing`. Use for names, addresses, descriptions — any field where readers expect standard English spacing. Codes and identifiers that may legitimately contain runs of whitespace should use `trim` alone instead. |
 
