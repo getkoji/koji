@@ -29,23 +29,28 @@ export function arrayItemProperties(
   if (!spec || typeof spec !== "object") return null;
   const items = spec.items;
   if (!items || typeof items !== "object" || Array.isArray(items)) return null;
-  const props = (items as FieldSpec).properties;
-  if (props && typeof props === "object" && !Array.isArray(props)) {
-    return props as Record<string, FieldSpec>;
-  }
-  return null;
+  return childProperties(items as FieldSpec);
 }
 
 /**
- * If `spec` is a nested object (`type: object`) carrying a `properties` map,
- * return it. Otherwise null.
+ * If `spec` is a nested object (`type: object`) carrying a property map, return
+ * it. Otherwise null.
  */
 export function objectProperties(
   spec: FieldSpec | null | undefined,
 ): Record<string, FieldSpec> | null {
   if (!spec || typeof spec !== "object") return null;
   if (spec.type !== "object") return null;
-  const props = spec.properties;
+  return childProperties(spec);
+}
+
+/**
+ * The child field map of an object-shaped spec. Accepts both `properties` (the
+ * canonical key, matching array items) and `fields` (the key the compiler
+ * historically required for standalone `type: object`) so the two never drift.
+ */
+function childProperties(spec: FieldSpec): Record<string, FieldSpec> | null {
+  const props = spec.properties ?? spec.fields;
   if (props && typeof props === "object" && !Array.isArray(props)) {
     return props as Record<string, FieldSpec>;
   }

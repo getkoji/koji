@@ -157,10 +157,12 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       }
     }
 
-    // Object must have fields
+    // Object must declare its child fields. `properties` is canonical (matches
+    // array items); `fields` is accepted as an alias so the two never diverge.
     if (def.type === "object") {
-      if (!def.fields || typeof def.fields !== "object") {
-        errors.push({ field: name, message: `Field '${name}': object type requires 'fields' definition` });
+      const childProps = def.properties ?? def.fields;
+      if (!childProps || typeof childProps !== "object" || Array.isArray(childProps)) {
+        errors.push({ field: name, message: `Field '${name}': object type requires a 'properties' (or 'fields') definition` });
       }
     }
 

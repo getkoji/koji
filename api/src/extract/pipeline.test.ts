@@ -482,6 +482,17 @@ describe("validateFields (nested depth)", () => {
 
     expect(extracted.totals.amount).toBe(42);
   });
+
+  it("coerces inside a nested object declared with the 'fields' alias", () => {
+    const extracted = { totals: { amount: "$42" } };
+    const fields = {
+      totals: { type: "object", fields: { amount: { type: "number" } } },
+    };
+
+    validateFields(extracted, fields as Record<string, Record<string, unknown>>);
+
+    expect(extracted.totals.amount).toBe(42);
+  });
 });
 
 // ---------------------------------------------------------------------------
