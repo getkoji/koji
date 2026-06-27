@@ -114,6 +114,19 @@ describe("describeProperty", () => {
   it("falls back to string for non-dict spec", () => {
     expect(describeProperty("foo", "not a dict")).toBe("foo: string");
   });
+
+  it("carries a mapping vocabulary hint for a nested scalar field", () => {
+    const result = describeProperty("applies_to", {
+      type: "mapping",
+      mappings: { each_occurrence: ["Each Occ"], general_aggregate: [] },
+    });
+    expect(result).toBe("applies_to: mapping [pick from: each_occurrence (Each Occ), general_aggregate]");
+  });
+
+  it("carries an enum vocabulary hint for a nested scalar field", () => {
+    const result = describeProperty("status", { type: "enum", options: ["open", "closed"] });
+    expect(result).toBe("status: enum [pick from: open, closed]");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -252,6 +265,29 @@ describe("buildGroupPrompt", () => {
     expect(prompt).toContain("[pick from:");
     expect(prompt).toContain("invoice (inv, bill)");
     expect(prompt).toContain("receipt (rcpt)");
+  });
+
+  it("renders a nested array-item field's vocabulary hint (depth)", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        coverages: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              applies_to: {
+                type: "mapping",
+                mappings: { each_occurrence: ["Each Occ"], general_aggregate: [] },
+              },
+            },
+          },
+        },
+      },
+      chunks: [makeChunk({ index: 0, title: "C", content: "Each Occ 1,000,000" })],
+    });
+    const prompt = buildGroupPrompt(group, "coi");
+    // The controlled vocabulary must reach the model for nested fields, not just top-level.
+    expect(prompt).toContain("applies_to: mapping [pick from: each_occurrence (Each Occ), general_aggregate]");
   });
 
   it("includes extraction notes section when hints exist", () => {

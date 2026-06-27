@@ -397,6 +397,25 @@ describe("array item normalization", () => {
     expect(items[1]!.name).toBe("Gadget");
     expect(items[1]!.price).toBe(2000);
   });
+
+  it("applies normalization inside a nested object field", () => {
+    const extracted = { totals: { label: "  NET  ", amount: "$15.00" } };
+    const schema = {
+      fields: {
+        totals: {
+          type: "object",
+          properties: {
+            label: { normalize: ["trim", "lowercase"] },
+            amount: { normalize: "minor_units" },
+          },
+        },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    const totals = result.totals as Record<string, unknown>;
+    expect(totals.label).toBe("net");
+    expect(totals.amount).toBe(1500);
+  });
 });
 
 // ---------------------------------------------------------------------------

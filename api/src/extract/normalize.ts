@@ -6,6 +6,8 @@
  * recorded as warnings and the value is passed through unchanged.
  */
 
+import { arrayItemProperties, objectProperties } from "./schema-tree";
+
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
@@ -556,14 +558,10 @@ export function normalizeExtracted(
 
     let value = result[fieldName];
 
-    // Array of objects: apply item-level normalization
-    const itemSpec = typeof spec.items === "object" ? (spec.items as Record<string, unknown>) : null;
-    if (
-      Array.isArray(value) &&
-      itemSpec &&
-      typeof (itemSpec as any)?.properties === "object"
-    ) {
-      const itemSchema = { fields: (itemSpec as any).properties };
+    // Array of objects: apply item-level normalization (recurse per row).
+    const itemProps = arrayItemProperties(spec);
+    if (Array.isArray(value) && itemProps) {
+      const itemSchema = { fields: itemProps };
       value = value.map((row) => {
         if (row && typeof row === "object" && !Array.isArray(row)) {
           const [newRow] = normalizeExtracted(row, itemSchema);
@@ -571,6 +569,13 @@ export function normalizeExtracted(
         }
         return row;
       });
+    }
+
+    // Nested object: recurse into its properties.
+    const objProps = objectProperties(spec);
+    if (objProps && value && typeof value === "object" && !Array.isArray(value)) {
+      const [newObj] = normalizeExtracted(value as Record<string, unknown>, { fields: objProps });
+      value = newObj;
     }
 
     if (transforms.length > 0) {

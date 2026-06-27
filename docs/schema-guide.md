@@ -886,6 +886,34 @@ coverages:
 
 The extraction model identifies rows in tables, bulleted lists, or repeated structures and returns them as an array of objects.
 
+### Field types and rules apply inside items
+
+An item property is a full field spec, not just a type label. Everything you can declare on a top-level field works identically on a field nested inside an array item (or a nested object):
+
+- **Type coercion** — `type: number` strips currency/grouping and parses to a number, `type: date` normalizes to `YYYY-MM-DD`, `type: boolean` coerces yes/no/checkbox text — the same at depth as at the top level.
+- **Controlled vocabularies** — `type: enum` (`options:`) and `type: mapping` (`mappings:` with aliases) are shown to the model in the prompt *and* resolved to their canonical value for nested fields, so an `applies_to` code or carrier label inside `coverages[]` lands on the canonical form.
+- **Normalization** — per-item `normalize:` transforms (see [Normalization](#normalization)).
+- **Per-item validation** — declare a `validation:` block on the `items` schema to run rules against each row; failures are reported with a `field[i].subfield` path.
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      applies_to:
+        type: mapping            # resolved per row, vocabulary shown to the model
+        mappings:
+          each_occurrence: ["Each Occurrence", "Per Occurrence"]
+          general_aggregate: ["Aggregate", "Gen Agg"]
+      limit:
+        type: number             # "$1,000,000" -> 1000000, per row
+    validation:
+      - required: [applies_to]    # checked on every row
+```
+
+Nesting can go two levels deep — an item property can itself be an `array` of objects (e.g. `coverages[] -> limits[] -> {applies_to, limit}`), and type coercion, vocabularies, normalization, and validation all apply at the deeper level too.
+
 ### Arrays with hints
 
 Hints on array fields route to chunks containing the tabular/repeated data. The `has_tables` signal is particularly useful -- it fires on any chunk with pipe-delimited markdown tables.

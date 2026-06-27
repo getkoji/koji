@@ -14,6 +14,7 @@
 import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
+import { arrayItemProperties, objectProperties } from "./schema-tree";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
 import type { FitReport } from "./fit";
 
@@ -510,6 +511,44 @@ export function validateField(
   return [result, issues == null, issues];
 }
 
+/**
+ * Apply {@link validateField} (type coercion, mapping/enum resolution) across an
+ * extracted object, recursing into array-of-objects items and nested objects so
+ * the same per-field logic runs at every depth. Mutates `extracted` in place.
+ *
+ * Descent decisions come from the shared {@link arrayItemProperties} /
+ * {@link objectProperties} primitives, so this stays in lockstep with how
+ * normalize, prompt rendering, and post-extract validation walk the tree.
+ */
+export function validateFields(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+): void {
+  for (const [fieldName, spec] of Object.entries(fields)) {
+    if (!spec || typeof spec !== "object") continue;
+    const value = extracted[fieldName];
+
+    const itemProps = arrayItemProperties(spec);
+    if (itemProps && Array.isArray(value)) {
+      for (const row of value) {
+        if (row && typeof row === "object" && !Array.isArray(row)) {
+          validateFields(row as Record<string, unknown>, itemProps);
+        }
+      }
+      continue;
+    }
+
+    const objProps = objectProperties(spec);
+    if (objProps && value && typeof value === "object" && !Array.isArray(value)) {
+      validateFields(value as Record<string, unknown>, objProps);
+      continue;
+    }
+
+    const [validated] = validateField(fieldName, value ?? null, spec);
+    extracted[fieldName] = validated;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -549,13 +588,11 @@ export async function extractFields(
     result.kv_pairs = extractKVPairs(markdown).map(({ label, value }) => ({ label, value }));
   }
 
-  // Field validation + type normalization (mapping resolution, enum snapping, etc.)
+  // Field validation + type normalization (mapping resolution, enum snapping,
+  // etc.) — recurses into array-of-objects items and nested objects so a
+  // `type: mapping` or `number` field works at any depth, not just top level.
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
-  for (const [fieldName, spec] of Object.entries(fields)) {
-    const rawValue = result.extracted[fieldName] ?? null;
-    const [validated] = validateField(fieldName, rawValue, spec);
-    result.extracted[fieldName] = validated;
-  }
+  validateFields(result.extracted, fields);
 
   // Post-extraction normalization (derived fields, etc.)
   const [normalized, normReport] = normalizeExtracted(result.extracted, schemaDef);
