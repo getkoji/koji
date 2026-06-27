@@ -297,6 +297,9 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     aws_access_key_id?: string;
     aws_secret_access_key?: string;
     aws_session_token?: string;
+    // Optional: which capabilities the first model should be registered
+    // for. Defaults to ["chat"] when omitted (single-row dual-write).
+    capabilities?: string[];
   }>();
 
   if (!body.name || !body.slug || !body.provider) {
@@ -305,6 +308,19 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
 
   if (!body.model || body.model.trim() === "") {
     return c.json({ error: "model is required — specify a model ID (e.g. gpt-4o-mini, claude-sonnet-4-20250514)" }, 400);
+  }
+
+  const VALID_CAPS = new Set(["chat", "vision", "ocr"]);
+  const firstModelCaps = Array.isArray(body.capabilities) && body.capabilities.length > 0
+    ? Array.from(new Set(body.capabilities.map((c) => String(c).toLowerCase())))
+    : ["chat"];
+  for (const cap of firstModelCaps) {
+    if (!VALID_CAPS.has(cap)) {
+      return c.json(
+        { error: `capability must be one of: ${[...VALID_CAPS].join(", ")}` },
+        400,
+      );
+    }
   }
 
   // Reject bare provider names used as model IDs — must be a specific model.
@@ -364,6 +380,11 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
         createdBy: principal.userId,
       })
       .onConflictDoNothing();
+    // First-model rows. The legacy model_endpoints row id is reused as
+    // tenant_models.id for the FIRST capability so existing FKs
+    // (pipelines.model_provider_id) keep resolving. Additional capability
+    // rows get fresh ids — they're only addressed via the picker UIs.
+    const [first, ...extra] = firstModelCaps;
     await tx
       .insert(schema.tenantModels)
       .values({
@@ -371,11 +392,25 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
         tenantId,
         credentialId,
         model: body.model,
-        capability: "chat",
+        capability: first!,
         slug: body.slug,
         displayName: body.name,
       })
       .onConflictDoNothing();
+    if (extra.length > 0) {
+      await tx
+        .insert(schema.tenantModels)
+        .values(
+          extra.map((capability) => ({
+            tenantId,
+            credentialId,
+            model: body.model,
+            capability,
+            displayName: body.name,
+          })),
+        )
+        .onConflictDoNothing();
+    }
   });
   const pub = publicConfig(row.provider, configJson);
   return c.json({

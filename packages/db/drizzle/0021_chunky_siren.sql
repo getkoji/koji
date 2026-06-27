@@ -1,0 +1,2 @@
+DROP INDEX "tenant_models_credential_model_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "tenant_models_credential_model_capability_idx" ON "tenant_models" USING btree ("credential_id","model","capability") WHERE deleted_at IS NULL;
