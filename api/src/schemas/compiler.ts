@@ -27,6 +27,7 @@ const VALID_FIELD_PROPS = new Set([
   "method", "values", "items", "fields", "merge", "description",
   "format", "default", "hints", "options", "signals", "resolve",
   "verbatim", "mappings", "properties", "enum",
+  "vocab_by", "vocab_default",
 ]);
 
 const VALID_NORMALIZE = new Set([
@@ -101,19 +102,51 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       errors.push({ field: name, message: `Field '${name}': unknown type '${def.type}'. Valid: ${[...VALID_TYPES].join(", ")}` });
     }
 
-    // Enum must have values, options, or mappings
+    // Conditional vocabulary supplies values per branch, so it satisfies the
+    // "enum/mapping needs a vocabulary" requirement on its own.
+    const hasVocabBy = def.vocab_by && typeof def.vocab_by === "object" && !Array.isArray(def.vocab_by);
+
+    // Enum must have values, options, mappings, or vocab_by
     if (def.type === "enum") {
       const enumValues = def.values ?? def.options;
       const hasMappings = def.mappings && typeof def.mappings === "object" && Object.keys(def.mappings as object).length > 0;
-      if (!hasMappings && (!enumValues || !Array.isArray(enumValues))) {
-        errors.push({ field: name, message: `Field '${name}': enum type requires 'values', 'options', or 'mappings'` });
+      if (!hasVocabBy && !hasMappings && (!enumValues || !Array.isArray(enumValues))) {
+        errors.push({ field: name, message: `Field '${name}': enum type requires 'values', 'options', 'mappings', or 'vocab_by'` });
       }
     }
 
-    // Mapping type requires mappings property
+    // Mapping type requires mappings property (or vocab_by)
     if (def.type === "mapping") {
-      if (!def.mappings || typeof def.mappings !== "object" || Object.keys(def.mappings as object).length === 0) {
-        errors.push({ field: name, message: `Field '${name}': mapping type requires 'mappings' object` });
+      const hasMappings = def.mappings && typeof def.mappings === "object" && Object.keys(def.mappings as object).length > 0;
+      if (!hasVocabBy && !hasMappings) {
+        errors.push({ field: name, message: `Field '${name}': mapping type requires a 'mappings' object or 'vocab_by'` });
+      }
+    }
+
+    // vocab_by shape: { siblingField: { siblingValue: { mappings|options|values } } }
+    if (def.vocab_by !== undefined) {
+      if (!hasVocabBy) {
+        errors.push({ field: name, message: `Field '${name}': vocab_by must be a mapping of sibling field → value → vocabulary` });
+      } else {
+        for (const [sibling, cases] of Object.entries(def.vocab_by as Record<string, unknown>)) {
+          if (!cases || typeof cases !== "object" || Array.isArray(cases)) {
+            errors.push({ field: name, message: `Field '${name}': vocab_by.${sibling} must be a mapping of sibling value → vocabulary` });
+            continue;
+          }
+          // Sibling must exist as a field in the same scope (top-level only —
+          // nested item siblings are validated leniently for now).
+          if (!fieldNames.has(sibling)) {
+            errors.push({ field: name, message: `Field '${name}': vocab_by references sibling '${sibling}' which is not a top-level field` });
+          }
+          for (const [value, vocab] of Object.entries(cases as Record<string, unknown>)) {
+            if (!isVocab(vocab)) {
+              errors.push({ field: name, message: `Field '${name}': vocab_by.${sibling}.${value} must declare 'mappings', 'options', or 'values'` });
+            }
+          }
+        }
+      }
+      if (def.vocab_default !== undefined && !isVocab(def.vocab_default)) {
+        errors.push({ field: name, message: `Field '${name}': vocab_default must declare 'mappings', 'options', or 'values'` });
       }
     }
 
@@ -180,6 +213,15 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
   }
 
   return { ok: true, parsed: doc };
+}
+
+/** True when a value looks like a vocabulary block (declares mappings/options/values). */
+function isVocab(v: unknown): boolean {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  const hasMappings = o.mappings && typeof o.mappings === "object" && !Array.isArray(o.mappings);
+  const hasOptions = Array.isArray(o.options) || Array.isArray(o.values) || Array.isArray(o.enum);
+  return Boolean(hasMappings || hasOptions);
 }
 
 /** Find the closest match from a set (Levenshtein distance ≤ 3). */

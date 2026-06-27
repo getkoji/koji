@@ -3,6 +3,8 @@
  * fields into extraction waves. Ported from services/extract/pipeline.py.
  */
 
+import { resolveVocab } from "./schema-tree";
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface SchemaDef {
@@ -127,9 +129,22 @@ export function resolveConditionalHints(
     return fieldSpec;
   }
 
-  const byParent = fieldSpec.extraction_hint_by;
+  let spec = fieldSpec;
+
+  // Conditional vocabulary (`vocab_by`): once the sibling this field depends on
+  // has been extracted (an earlier wave — order it with `depends_on`), narrow
+  // the prompt to the selected branch. If the sibling isn't known yet, leave
+  // `vocab_by` in place so the prompt renders the full decision table.
+  if (spec.vocab_by) {
+    const rv = resolveVocab(spec, extractedSoFar);
+    if (rv.status === "matched" || rv.status === "default") {
+      spec = rv.spec as FieldSpec;
+    }
+  }
+
+  const byParent = spec.extraction_hint_by;
   if (byParent === null || typeof byParent !== "object" || Object.keys(byParent).length === 0) {
-    return fieldSpec;
+    return spec;
   }
 
   for (const [parentName, valueMap] of Object.entries(byParent)) {
@@ -149,11 +164,11 @@ export function resolveConditionalHints(
     }
 
     if (typeof matched === "string" && matched.trim()) {
-      return { ...fieldSpec, extraction_hint: matched };
+      return { ...spec, extraction_hint: matched };
     }
   }
 
-  return fieldSpec;
+  return spec;
 }
 
 // ── shouldSkipField ────────────────────────────────────────────────

@@ -64,6 +64,21 @@ export function objectProperties(
  */
 export function vocabHint(spec: FieldSpec | null | undefined): string {
   if (!spec || typeof spec !== "object") return "";
+
+  // Conditional vocabulary: the allowed values depend on a sibling field. The
+  // per-row sibling value isn't known at prompt-build time (an array's rows all
+  // come from one call), so render the whole decision table as guidance and let
+  // resolveVocab enforce the right branch deterministically after extraction.
+  const condHint = conditionalVocabHint(spec);
+  if (condHint) return condHint;
+
+  const bare = bareVocab(spec);
+  return bare ? ` [pick from: ${bare}]` : "";
+}
+
+/** The inner text of a vocabulary hint (no brackets/prefix): "a (alias), b" or
+ *  "x, y, z". Empty string when the spec declares no static vocabulary. */
+function bareVocab(spec: FieldSpec): string {
   const mappings = spec.mappings as Record<string, unknown[]> | undefined;
   if (mappings && typeof mappings === "object" && Object.keys(mappings).length > 0) {
     const parts: string[] = [];
@@ -74,11 +89,113 @@ export function vocabHint(spec: FieldSpec | null | undefined): string {
         .join(", ");
       parts.push(aliasList ? `${canonical} (${aliasList})` : String(canonical));
     }
-    return ` [pick from: ${parts.join(", ")}]`;
+    return parts.join(", ");
   }
   const options = (spec.options ?? spec.enum) as unknown[] | undefined;
   if (Array.isArray(options) && options.length > 0) {
-    return ` [pick from: ${options.map(String).join(", ")}]`;
+    return options.map(String).join(", ");
   }
   return "";
+}
+
+/** Render a `vocab_by` decision table as a prompt hint, or "" if absent/empty. */
+function conditionalVocabHint(spec: FieldSpec): string {
+  const byField = spec.vocab_by;
+  if (!byField || typeof byField !== "object" || Array.isArray(byField)) return "";
+  const groups: string[] = [];
+  for (const [sibling, cases] of Object.entries(byField as Record<string, unknown>)) {
+    if (!cases || typeof cases !== "object" || Array.isArray(cases)) continue;
+    const branches: string[] = [];
+    for (const [value, vocab] of Object.entries(cases as Record<string, unknown>)) {
+      const inner = bareVocab((vocab ?? {}) as FieldSpec);
+      if (inner) branches.push(`${value} → ${inner}`);
+    }
+    if (branches.length) groups.push(`pick by ${sibling}: ${branches.join("; ")}`);
+  }
+  if (!groups.length) return "";
+  const def = bareVocab((spec.vocab_default ?? {}) as FieldSpec);
+  const tail = def ? `; otherwise: ${def}` : "";
+  return ` [${groups.join(" | ")}${tail}]`;
+}
+
+/**
+ * The outcome of resolving a field's effective vocabulary against its siblings.
+ * - `static`: the field has no `vocab_by`; its own spec is returned unchanged.
+ * - `matched`: a `vocab_by` branch matched a sibling value.
+ * - `default`: no branch matched, but a `vocab_default` was applied.
+ * - `unmatched`: `vocab_by` is present, nothing matched, and there is no default.
+ */
+export type VocabStatus = "static" | "matched" | "default" | "unmatched";
+
+export interface ResolvedVocab {
+  spec: FieldSpec;
+  status: VocabStatus;
+  /** For matched/unmatched: the sibling field and value that drove the choice. */
+  sibling?: { field: string; value: unknown };
+}
+
+/**
+ * Select a field's effective vocabulary from `vocab_by` based on the values of
+ * its sibling fields (the enclosing object/row). Returns a spec whose
+ * `mappings`/`options` reflect the chosen branch, ready for the normal
+ * mapping/enum resolution in {@link validateField}.
+ *
+ * Mirrors `extraction_hint_by` semantics: iterate the declared sibling fields,
+ * first one whose current value matches a declared branch wins. Falls back to
+ * `vocab_default`, then to the field's own static vocabulary.
+ */
+export function resolveVocab(
+  spec: FieldSpec | null | undefined,
+  siblings: Record<string, unknown>,
+): ResolvedVocab {
+  if (!spec || typeof spec !== "object" || !spec.vocab_by) {
+    return { spec: (spec ?? {}) as FieldSpec, status: "static" };
+  }
+  const byField = spec.vocab_by as Record<string, unknown>;
+  for (const [sibling, cases] of Object.entries(byField)) {
+    if (!cases || typeof cases !== "object" || Array.isArray(cases)) continue;
+    const value = siblings?.[sibling];
+    if (value === null || value === undefined) continue;
+    const caseMap = cases as Record<string, unknown>;
+    const branch = (caseMap[value as string] ?? caseMap[String(value)]) as FieldSpec | undefined;
+    if (branch && typeof branch === "object") {
+      return { spec: mergeVocab(spec, branch), status: "matched", sibling: { field: sibling, value } };
+    }
+  }
+  const def = spec.vocab_default as FieldSpec | undefined;
+  if (def && typeof def === "object") {
+    return { spec: mergeVocab(spec, def), status: "default" };
+  }
+  // Nothing matched and no default: strip any stale vocabulary so the value is
+  // left as-is, and signal so the caller can flag it.
+  const sibling = Object.keys(byField)[0];
+  return {
+    spec: stripVocab(spec),
+    status: "unmatched",
+    sibling: sibling ? { field: sibling, value: siblings?.[sibling] } : undefined,
+  };
+}
+
+/**
+ * Overlay a branch's vocabulary (`mappings`/`options`/`values`/`enum`) onto a
+ * spec. The conditional keys are removed so the result renders and resolves as a
+ * plain field with a concrete vocabulary.
+ */
+function mergeVocab(spec: FieldSpec, branch: FieldSpec): FieldSpec {
+  const out = stripVocab(spec);
+  if (branch.mappings) out.mappings = branch.mappings;
+  const opts = branch.options ?? branch.values ?? branch.enum;
+  if (opts) out.options = opts;
+  return out;
+}
+
+/** Remove all static and conditional vocabulary keys from a spec. */
+function stripVocab(spec: FieldSpec): FieldSpec {
+  const out: FieldSpec = { ...spec };
+  delete out.mappings;
+  delete out.options;
+  delete out.enum;
+  delete out.vocab_by;
+  delete out.vocab_default;
+  return out;
 }
