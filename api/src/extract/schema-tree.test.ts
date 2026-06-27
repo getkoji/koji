@@ -37,6 +37,18 @@ describe("objectProperties", () => {
     expect(objectProperties({ type: "object" })).toBeNull();
     expect(objectProperties(null)).toBeNull();
   });
+
+  it("accepts 'fields' as an alias for 'properties'", () => {
+    const spec = { type: "object", fields: { city: { type: "string" } } };
+    expect(objectProperties(spec)).toEqual({ city: { type: "string" } });
+  });
+});
+
+describe("arrayItemProperties — fields alias", () => {
+  it("accepts items.fields as an alias for items.properties", () => {
+    const spec = { type: "array", items: { type: "object", fields: { a: { type: "number" } } } };
+    expect(arrayItemProperties(spec)).toEqual({ a: { type: "number" } });
+  });
 });
 
 describe("vocabHint", () => {

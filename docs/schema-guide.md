@@ -193,6 +193,27 @@ Output: `"gl_claims_made": true`
 
 Booleans are especially useful with [form mappings](forms-guide.md) -- checkbox mapping types detect whether a checkbox is marked and return the boolean value directly.
 
+### object
+
+A single nested object — a group of related fields under one key. Declare the child fields under `properties` (the same key array items use):
+
+```yaml
+insured:
+  type: object
+  properties:
+    name:
+      type: string
+    state:
+      type: enum
+      options: [CA, NY, TX]
+```
+
+Output: `"insured": { "name": "Acme Corp", "state": "CA" }`
+
+Child fields are full field specs, so type coercion, `enum`/`mapping` vocabularies, `normalize`, and `vocab_by` all apply inside an object exactly as they do at the top level (and as they do inside [array items](#field-types-and-rules-apply-inside-items)). Use `object` for a *single* nested group; use [`array`](#array) of objects for a *repeated* group.
+
+> `fields` is accepted as an alias for `properties` on object types, but `properties` is canonical — prefer it for consistency with array items.
+
 ## Reusing definitions (DRY schemas)
 
 Large schemas tend to repeat the same things — the same `mappings` vocabulary in several fields, the same `items` shape across multiple arrays, the same number/date setup over and over. You don't have to copy-paste. Schemas are YAML, so you can use **YAML anchors** — a native YAML feature, no special Koji syntax — to define a block once and reuse it everywhere.

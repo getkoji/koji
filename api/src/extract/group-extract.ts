@@ -31,7 +31,7 @@ export function describeArrayItem(spec: Record<string, unknown>): string {
 
   const itemType = item.type as string | undefined;
   if (itemType === "object") {
-    const properties = item.properties as Record<string, unknown> | undefined;
+    const properties = (item.properties ?? item.fields) as Record<string, unknown> | undefined;
     if (!properties || Object.keys(properties).length === 0) return " of objects";
     const parts: string[] = [];
     for (const [propName, propSpec] of Object.entries(properties)) {
@@ -63,16 +63,24 @@ export function describeProperty(propName: string, propSpec: unknown): string {
     return `${propName}: array${describeArrayItem(s)}`;
   }
   if (propType === "object") {
-    const nestedProps = s.properties as Record<string, unknown> | undefined;
-    if (!nestedProps || Object.keys(nestedProps).length === 0) {
-      return `${propName}: object`;
-    }
-    const nestedParts = Object.entries(nestedProps).map(([n, sp]) => describeProperty(n, sp));
-    return `${propName}: object with properties {${nestedParts.join(", ")}}`;
+    return `${propName}: object${describeObjectShape(s)}`;
   }
   // Scalar leaf: carry the controlled-vocabulary hint (mapping/enum) so the
   // model is told the allowed values at depth, exactly as for top-level fields.
   return `${propName}: ${propType}${vocabHint(s)}`;
+}
+
+/**
+ * Render an object spec's child shape for the prompt: ` with properties {…}`,
+ * or "" when it declares none. Accepts both `properties` (canonical) and
+ * `fields` (alias). Used for nested object properties and top-level object
+ * fields alike, so the model sees the full structure at any level.
+ */
+export function describeObjectShape(spec: Record<string, unknown>): string {
+  const props = (spec.properties ?? spec.fields) as Record<string, unknown> | undefined;
+  if (!props || Object.keys(props).length === 0) return "";
+  const parts = Object.entries(props).map(([n, sp]) => describeProperty(n, sp));
+  return ` with properties {${parts.join(", ")}}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,8 @@ export function buildGroupPrompt(
     let typeLabel = fieldType;
     if (fieldType === "array") {
       typeLabel = "array" + describeArrayItem(spec);
+    } else if (fieldType === "object") {
+      typeLabel = "object" + describeObjectShape(spec);
     }
 
     descLabel += vocabHint(spec);
@@ -262,6 +272,8 @@ export function buildGapFillPrompt(
   let typeLabel = fieldType;
   if (fieldType === "array") {
     typeLabel = "array" + describeArrayItem(fieldSpec);
+  } else if (fieldType === "object") {
+    typeLabel = "object" + describeObjectShape(fieldSpec);
   }
 
   descLabel += vocabHint(fieldSpec);

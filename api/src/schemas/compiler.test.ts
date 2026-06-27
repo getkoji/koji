@@ -180,7 +180,7 @@ fields:
     }
   });
 
-  it("rejects object without fields", () => {
+  it("rejects object with neither properties nor fields", () => {
     const result = compileSchema(`
 name: test
 fields:
@@ -188,7 +188,7 @@ fields:
 `);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("requires 'fields'"))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes("requires a 'properties' (or 'fields') definition"))).toBe(true);
     }
   });
 
@@ -396,6 +396,33 @@ fields:
         crime: { options: [employee_theft] }
     vocab_default:
       options: [other]
+`);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("schema compiler — standalone object fields", () => {
+  it("accepts type: object with properties (canonical, matching array items)", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  address:
+    type: object
+    properties:
+      city: { type: string }
+      zip: { type: string }
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts type: object with fields (legacy alias)", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  address:
+    type: object
+    fields:
+      city: { type: string }
 `);
     expect(result.ok).toBe(true);
   });

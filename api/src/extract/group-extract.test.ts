@@ -237,6 +237,22 @@ describe("buildGroupPrompt", () => {
     expect(prompt).toContain("qty: number");
   });
 
+  it("renders standalone object shape in field descriptions", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        address: {
+          type: "object",
+          properties: { city: { type: "string" }, zip: { type: "string" } },
+        },
+      },
+      chunks: [makeChunk({ index: 0, title: "Addr", content: "Springfield 00000" })],
+    });
+    const prompt = buildGroupPrompt(group, "person");
+    expect(prompt).toContain("address: object with properties");
+    expect(prompt).toContain("city: string");
+    expect(prompt).toContain("zip: string");
+  });
+
   it("renders options as pick-from list", () => {
     const group = makeGroup({
       fieldSpecs: {
