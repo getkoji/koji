@@ -452,6 +452,131 @@ Get the status and result of a specific job.
 
 ---
 
+## Documents
+
+Cloud-only, tenant-scoped endpoints for a processed document and its rendered
+preview. Unlike the in-memory `/api/jobs` endpoints above, these address a
+document by its job **slug** and document **id**, and require a tenant-scoped
+API key:
+
+```
+Authorization: Bearer koji_yourkey
+x-koji-tenant: your-tenant-slug
+```
+
+They are the data source behind the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer). If you only want to render the viewer, you usually don't call `/preview` or `/embed-data` yourself — fetch the document detail for the `documentToken` and hand it to the iframe. Call them directly when you need the signed PDF URL (or the highlights) outside the viewer.
+
+### `GET /api/jobs/{slug}/documents/{docId}`
+
+The full document record — extraction, provenance, validation, and the trace
+with its stages — plus the fields needed to render the document:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `documentPreviewUrl` | string \| null | App-relative URL that streams the original file inline (see `/preview` below). Includes a signed `?token=` when a master key is configured. `null` if the document has no stored file. |
+| `documentToken` | string \| null | HMAC preview token, scoped to `/api/jobs/{slug}/documents/{docId}` and valid for **1 hour**. Authorizes `/preview` and `/embed-data` without a session cookie. `null` if no master key is configured (self-hosted dev). |
+| `embedUrl` | string \| null | Ready-made `/embed/viewer?job=…&doc=…&token=…` URL for the iframe. `null` when `documentToken` is `null`. |
+
+**Path parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `slug` | string | The job slug. |
+| `docId` | string | The document UUID. |
+
+**Response** `200 OK` (preview-relevant fields shown; the full body also
+includes `filename`, `mimeType`, `pageCount`, `status`, `extractionJson`,
+`provenanceJson`, `trace`, `stages`, …)
+
+```json
+{
+  "documentId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "filename": "invoice-0042.pdf",
+  "pageCount": 2,
+  "status": "completed",
+  "documentPreviewUrl": "/api/jobs/acme-invoices/documents/6ba7b810-9dad-11d1-80b4-00c04fd430c8/preview?token=68a1c3f0.9f2b…",
+  "documentToken": "68a1c3f0.9f2b…",
+  "embedUrl": "/embed/viewer?job=acme-invoices&doc=6ba7b810-9dad-11d1-80b4-00c04fd430c8&token=68a1c3f0.9f2b…"
+}
+```
+
+URLs are app-relative — resolve them against your dashboard origin (e.g.
+`https://console.getkoji.dev`).
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `401` | Missing or invalid API key / tenant. |
+| `404` | Document not found in this tenant. |
+
+### `GET /api/jobs/{slug}/documents/{docId}/preview`
+
+Streams the original document bytes for inline rendering. Auth is the HMAC
+`documentToken` (`?token=…`) **or** a session/API-key — so it works from a
+cookieless cross-origin iframe.
+
+- `Content-Disposition: inline` and the real `Content-Type` (e.g.
+  `application/pdf`), so browsers render rather than download.
+- `Accept-Ranges: bytes` — honours `Range:` requests (and `HEAD`) so PDF.js
+  streams the file in chunks instead of downloading it whole. A range request
+  returns `206 Partial Content` with `Content-Range`; a plain GET returns the
+  full body.
+
+```bash
+# Full body
+curl -L "https://console.getkoji.dev/api/jobs/acme-invoices/documents/DOC_ID/preview?token=TOKEN" -o invoice.pdf
+
+# First 64 KB only (range)
+curl -H "Range: bytes=0-65535" \
+  "https://console.getkoji.dev/api/jobs/acme-invoices/documents/DOC_ID/preview?token=TOKEN"
+```
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `403` | Missing, invalid, or expired preview token (and no session). |
+| `404` | Document or stored file not found. |
+
+### `GET /api/jobs/{slug}/documents/{docId}/embed-data`
+
+Everything the embed viewer needs in one call — the signed preview URL plus the
+provenance highlights. Same token auth as `/preview`.
+
+**Response** `200 OK`
+
+```json
+{
+  "previewUrl": "/api/jobs/acme-invoices/documents/DOC_ID/preview?token=TOKEN",
+  "highlights": [
+    {
+      "field": "total_amount",
+      "page": 1,
+      "bbox": { "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 },
+      "words": [ { "text": "$6,000.00", "page": 1, "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 } ],
+      "reasoning": "labeled 'Total Due'"
+    }
+  ],
+  "filename": "invoice-0042.pdf",
+  "pageCount": 2
+}
+```
+
+`highlights` is derived from the document's provenance (see
+[Provenance](#provenance)). `bbox`/`words` coordinates are normalized fractions
+of the page (0–1). The embed viewer consumes this shape directly; you can also
+use it to drive your own renderer.
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `403` | Missing, invalid, or expired preview token (and no session). |
+| `404` | Document not found. |
+
+---
+
 ## Schemas
 
 CRUD endpoints for managing extraction schemas. Schemas are stored as YAML files in the `KOJI_SCHEMAS_DIR` directory (default `./schemas/`).
