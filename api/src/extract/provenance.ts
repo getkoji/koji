@@ -1109,6 +1109,48 @@ function resolveArray(
 }
 
 /**
+ * Resolve provenance for a standalone object value (not inside an array) by
+ * resolving each property and exposing them under `properties`, mirroring how
+ * object items inside arrays are handled. The object span's own
+ * offset/chunk/bbox anchor on the first resolvable property.
+ */
+function resolveObjectField(
+  obj: Record<string, unknown>,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  const properties: Record<string, ProvenanceSpan | null> = {};
+  let anchor: ProvenanceSpan | null = null;
+  for (const [propName, propValue] of Object.entries(obj)) {
+    const span = resolveValue(propValue, markdown, textMap);
+    properties[propName] = span;
+    if (!anchor && span) anchor = span;
+  }
+  if (!anchor) return null;
+  return {
+    offset: anchor.offset,
+    length: anchor.length,
+    chunk: anchor.chunk,
+    page: anchor.page,
+    bbox: anchor.bbox,
+    words: anchor.words,
+    properties,
+  };
+}
+
+/** Dispatch provenance resolution by value shape (scalar / array / object). */
+function resolveValue(
+  value: unknown,
+  markdown: string,
+  textMap?: TextMap,
+): ProvenanceSpan | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return resolveArray(value, markdown, textMap);
+  if (typeof value === "object") return resolveObjectField(value as Record<string, unknown>, markdown, textMap);
+  return resolveScalar(value, markdown, textMap);
+}
+
+/**
  * For enum/mapping fields, search for the mapping's aliases in the markdown
  * when the canonical value can't be found directly.
  * E.g. extracted "directors_and_officers" → search for "D&O", "Directors and Officers", etc.
@@ -1256,6 +1298,12 @@ export function resolveProvenance(
 
     if (Array.isArray(value)) {
       provenance[field] = resolveArray(value, markdown, textMap, sourceTexts?.[field]);
+      continue;
+    }
+
+    // Standalone object: resolve per-property provenance.
+    if (typeof value === "object") {
+      provenance[field] = resolveObjectField(value as Record<string, unknown>, markdown, textMap);
       continue;
     }
 

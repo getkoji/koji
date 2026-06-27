@@ -395,6 +395,34 @@ If `gl_insurer_letter` extracts as `"A"`, the template resolves to `"insurer_a"`
 
 Resolve runs after all other normalization. It only fills fields that are null or empty -- it won't overwrite a value that was already extracted. This makes it safe to use alongside [form mappings](forms-guide.md) where some fields come from coordinates and others from LLM interpretation.
 
+### Keeping the original value (`keep_raw`)
+
+When `mapping`, `enum`, or `normalize` canonicalizes a value, the original is replaced — `"Each Occurrence"` becomes `each_occurrence`, `"$1,000,000"` becomes `1000000`. If you need **both** the canonical value *and* the document's printed text, set `keep_raw: true`. Koji emits a companion `<field>_raw` holding the exact verbatim text from the document:
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      applies_to:
+        type: mapping
+        keep_raw: true
+        mappings:
+          each_occurrence: ["Each Occurrence", "Per Occurrence"]
+          general_aggregate: ["Aggregate", "Gen Agg"]
+```
+
+Output:
+
+```json
+{ "applies_to": "each_occurrence", "applies_to_raw": "Each Occurrence" }
+```
+
+Works at any depth — top-level fields, array items, and nested objects all get their `_raw` companion. The verbatim comes from provenance (where the value was found on the page), so `<field>_raw` is the text as printed, before any mapping or normalization. The companion is a plain field: it lands in the extracted JSON, webhooks, and exports like any other.
+
+> `keep_raw` only adds the companion when the value was located in the source. If you also need bounding boxes / highlight regions for the raw text, those live in the field's [provenance](trace-format.md) (`chunk` is the same verbatim string).
+
 ## Validation rules
 
 Validation runs immediately after normalization. It evaluates a list of schema-declared rules against the extracted output and returns a report indicating which rules passed and which failed. Think of it as "turn extracted JSON into extracted and verified JSON" — the schema is the contract, and validation is the enforcement point before the data leaves Koji for downstream systems.
