@@ -7,6 +7,7 @@
  */
 
 import { parse as parseYaml } from "yaml";
+import { arrayItemProperties, objectProperties } from "../extract/schema-tree";
 
 export interface CompileResult {
   ok: true;
@@ -123,32 +124,9 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       }
     }
 
-    // vocab_by shape: { siblingField: { siblingValue: { mappings|options|values } } }
-    if (def.vocab_by !== undefined) {
-      if (!hasVocabBy) {
-        errors.push({ field: name, message: `Field '${name}': vocab_by must be a mapping of sibling field → value → vocabulary` });
-      } else {
-        for (const [sibling, cases] of Object.entries(def.vocab_by as Record<string, unknown>)) {
-          if (!cases || typeof cases !== "object" || Array.isArray(cases)) {
-            errors.push({ field: name, message: `Field '${name}': vocab_by.${sibling} must be a mapping of sibling value → vocabulary` });
-            continue;
-          }
-          // Sibling must exist as a field in the same scope (top-level only —
-          // nested item siblings are validated leniently for now).
-          if (!fieldNames.has(sibling)) {
-            errors.push({ field: name, message: `Field '${name}': vocab_by references sibling '${sibling}' which is not a top-level field` });
-          }
-          for (const [value, vocab] of Object.entries(cases as Record<string, unknown>)) {
-            if (!isVocab(vocab)) {
-              errors.push({ field: name, message: `Field '${name}': vocab_by.${sibling}.${value} must declare 'mappings', 'options', or 'values'` });
-            }
-          }
-        }
-      }
-      if (def.vocab_default !== undefined && !isVocab(def.vocab_default)) {
-        errors.push({ field: name, message: `Field '${name}': vocab_default must declare 'mappings', 'options', or 'values'` });
-      }
-    }
+    // vocab_by shape + sibling-existence is validated recursively after this
+    // loop by validateVocabTree, so it covers nested array-item / object fields
+    // with each level's own field names as the sibling scope.
 
     // Array must have items
     if (def.type === "array") {
@@ -210,11 +188,65 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
     }
   }
 
+  // Validate vocab_by shape + sibling-existence at every depth. Each level's
+  // own field names are the sibling scope, so a vocab_by inside an array item
+  // must reference another property of the same item.
+  validateVocabTree(fields, errors, "");
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
 
   return { ok: true, parsed: doc };
+}
+
+/**
+ * Recursively validate every field's `vocab_by` / `vocab_default`, descending
+ * into array-item properties and nested object properties. `siblings` for a
+ * field are the other fields in its own scope (the same object/item), so a
+ * typo'd sibling reference is caught at any depth.
+ */
+function validateVocabTree(
+  fields: Record<string, unknown>,
+  errors: Array<{ field?: string; message: string }>,
+  pathPrefix: string,
+): void {
+  const scopeNames = new Set(Object.keys(fields));
+  for (const [name, rawDef] of Object.entries(fields)) {
+    if (!rawDef || typeof rawDef !== "object") continue;
+    const def = rawDef as Record<string, unknown>;
+    const label = pathPrefix ? `${pathPrefix}.${name}` : name;
+
+    if (def.vocab_by !== undefined) {
+      const ok = def.vocab_by && typeof def.vocab_by === "object" && !Array.isArray(def.vocab_by);
+      if (!ok) {
+        errors.push({ field: label, message: `Field '${label}': vocab_by must be a mapping of sibling field → value → vocabulary` });
+      } else {
+        for (const [sibling, cases] of Object.entries(def.vocab_by as Record<string, unknown>)) {
+          if (!cases || typeof cases !== "object" || Array.isArray(cases)) {
+            errors.push({ field: label, message: `Field '${label}': vocab_by.${sibling} must be a mapping of sibling value → vocabulary` });
+            continue;
+          }
+          if (!scopeNames.has(sibling)) {
+            errors.push({ field: label, message: `Field '${label}': vocab_by references sibling '${sibling}' which is not a field in the same scope` });
+          }
+          for (const [value, vocab] of Object.entries(cases as Record<string, unknown>)) {
+            if (!isVocab(vocab)) {
+              errors.push({ field: label, message: `Field '${label}': vocab_by.${sibling}.${value} must declare 'mappings', 'options', or 'values'` });
+            }
+          }
+        }
+      }
+      if (def.vocab_default !== undefined && !isVocab(def.vocab_default)) {
+        errors.push({ field: label, message: `Field '${label}': vocab_default must declare 'mappings', 'options', or 'values'` });
+      }
+    }
+
+    const itemProps = arrayItemProperties(def);
+    if (itemProps) validateVocabTree(itemProps, errors, label);
+    const objProps = objectProperties(def);
+    if (objProps) validateVocabTree(objProps, errors, label);
+  }
 }
 
 /** True when a value looks like a vocabulary block (declares mappings/options/values). */

@@ -295,7 +295,7 @@ function CredentialCard({
   );
 }
 
-// ── Model row (inline edit for capability) ───────────────────────────────
+// ── Model row (one row per capability — capability is the row's identity) ──
 
 function ModelRow({
   credentialId,
@@ -308,24 +308,9 @@ function ModelRow({
   canWrite: boolean;
   onChanged: () => void;
 }) {
-  const [updating, setUpdating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  async function changeCapability(capability: TenantModel["capability"]) {
-    if (capability === model.capability) return;
-    setUpdating(true);
-    setError(null);
-    try {
-      await api.patch(`/api/credentials/${credentialId}/models/${model.id}`, { capability });
-      onChanged();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to update capability");
-    } finally {
-      setUpdating(false);
-    }
-  }
 
   async function handleDelete() {
     setDeleting(true);
@@ -340,6 +325,12 @@ function ModelRow({
     }
   }
 
+  // Capability shown as a static badge — each row IS one capability
+  // (the (credential, model, capability) unique constraint means an
+  // inline swap would 409 against a sibling row). To change a model's
+  // capabilities, delete and re-add via the Add model dialog.
+  const capabilityHint = CAPABILITIES.find((c) => c.value === model.capability)?.hint;
+
   return (
     <div className="px-4 py-2.5 flex items-center justify-between gap-4">
       <div className="flex items-center gap-3 min-w-0">
@@ -349,23 +340,9 @@ function ModelRow({
         )}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
-        {canWrite ? (
-          <select
-            value={model.capability}
-            onChange={(e) => changeCapability(e.target.value as TenantModel["capability"])}
-            disabled={updating}
-            className="h-[24px] rounded-sm border border-input bg-white px-1.5 text-[11px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
-            title={CAPABILITIES.find((c) => c.value === model.capability)?.hint}
-          >
-            {CAPABILITIES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        ) : (
+        <span title={capabilityHint}>
           <Badge>{model.capability}</Badge>
-        )}
+        </span>
         <Badge variant={model.status === "active" ? "active" : "neutral"}>{model.status}</Badge>
         {canWrite &&
           (confirmDelete ? (
@@ -552,7 +529,7 @@ function AddCredentialDialog({
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">First model *</label>
               <input
                 required
@@ -566,8 +543,10 @@ function AddCredentialDialog({
                 placeholder="Search models..."
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
+              {/* Inline — see AddModelDialog comment. Absolute positioning
+                  inside an overflow-y-auto modal clips the dropdown. */}
               {showModelDropdown && filteredModels.length > 0 && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[200px] overflow-y-auto">
+                <div className="bg-white border border-border rounded-sm shadow-sm max-h-[200px] overflow-y-auto">
                   {filteredModels.map((m) => (
                     <button
                       key={m.modelId}
@@ -842,7 +821,7 @@ function AddModelDialog({
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           {!customMode ? (
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Model *</label>
               <input
                 required
@@ -857,8 +836,13 @@ function AddModelDialog({
                 autoFocus
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
+              {/* Inline (not absolute) — the parent modal has overflow-y-auto
+                  for tall variants like Bedrock, and an absolutely positioned
+                  dropdown gets clipped at the modal edge. Inline pushes the
+                  rest of the form down and keeps the dropdown fully visible
+                  inside the scroll region. */}
               {showDropdown && filteredModels.length > 0 && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[220px] overflow-y-auto">
+                <div className="bg-white border border-border rounded-sm shadow-sm max-h-[220px] overflow-y-auto">
                   {filteredModels.map((m) => {
                     const caps = inferModelCapabilities(m.modelId);
                     return (

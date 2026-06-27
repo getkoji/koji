@@ -442,3 +442,65 @@ fields:
     expect(result.ok).toBe(true);
   });
 });
+
+describe("schema compiler — vocab_by sibling validation at depth", () => {
+  it("accepts a vocab_by inside array items referencing a valid item sibling", () => {
+    const result = compileSchema(`
+name: coi
+fields:
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        coverage: { type: string }
+        applies_to:
+          type: mapping
+          vocab_by:
+            coverage:
+              crime: { mappings: { employee_theft: ["EE Theft"] } }
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a vocab_by inside array items referencing a non-existent sibling", () => {
+    const result = compileSchema(`
+name: coi
+fields:
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        applies_to:
+          type: mapping
+          vocab_by:
+            kind:
+              crime: { mappings: { employee_theft: ["EE Theft"] } }
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => /coverages\.applies_to/.test(e.field ?? "") && /sibling 'kind'/.test(e.message))).toBe(true);
+    }
+  });
+
+  it("rejects a malformed branch inside a nested object", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  insured:
+    type: object
+    properties:
+      kind: { type: string }
+      code:
+        type: mapping
+        vocab_by:
+          kind:
+            corp: { description: "no vocab here" }
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => /insured\.code/.test(e.field ?? "") && /must declare 'mappings'/.test(e.message))).toBe(true);
+    }
+  });
+});

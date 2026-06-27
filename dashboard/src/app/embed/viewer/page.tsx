@@ -243,7 +243,12 @@ function EmbedViewerInner() {
       setPdfUrl(url);
       if (highlightsParam) {
         try {
-          const decoded = JSON.parse(atob(highlightsParam));
+          // UTF-8-safe base64 decode: atob() yields a binary string, so reading
+          // it back through TextDecoder restores multi-byte chars (labels /
+          // values like "Coverage — Crime" or accented names). For pure-ASCII
+          // payloads this is identical to JSON.parse(atob(...)).
+          const bytes = Uint8Array.from(atob(highlightsParam), (c) => c.charCodeAt(0));
+          const decoded = JSON.parse(new TextDecoder().decode(bytes));
           setHighlights(decoded);
         } catch {
           console.warn("[embed] Invalid highlights param");
@@ -353,11 +358,17 @@ function EmbedViewerInner() {
         className="w-full max-w-full truncate rounded border border-neutral-300 bg-white px-1.5 py-0.5 font-mono text-[11px] text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
       >
         <option value="">Jump to field…</option>
-        {highlights.map((h) => (
-          <option key={h.field} value={h.field}>
-            {h.value ? `${h.field}: ${h.value}` : h.field}
-          </option>
-        ))}
+        {highlights.map((h) => {
+          // The option's value is the stable match key (field); the visible
+          // text prefers an explicit label so opaque keys (record ids) don't
+          // leak into the UI.
+          const display = h.label ?? h.field;
+          return (
+            <option key={h.field} value={h.field}>
+              {h.value ? `${display}: ${h.value}` : display}
+            </option>
+          );
+        })}
       </select>
     ) : undefined;
 
