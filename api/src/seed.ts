@@ -156,32 +156,68 @@ fields:
   console.log("  3 schema versions created");
 
   // ── Model endpoints (pipelines reference these via model_provider_id) ──
+  // Dual-writes to the split tables (provider_credentials + tenant_models)
+  // so the new resolve path sees these endpoints on a fresh seed. IDs follow
+  // the same md5 derivation as the 0020 backfill migration.
+  const seedEndpoints = [
+    {
+      tenantId: TENANT,
+      slug: "openai-primary",
+      displayName: "OpenAI primary",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      configJson: { api_base: "https://api.openai.com/v1" } as Record<string, unknown>,
+      status: "active",
+      createdBy: USER,
+    },
+    {
+      tenantId: TENANT,
+      slug: "anthropic-fallback",
+      displayName: "Anthropic fallback",
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
+      configJson: {} as Record<string, unknown>,
+      status: "active",
+      createdBy: USER,
+    },
+  ];
   const [openaiEndpoint, anthropicEndpoint] = await db
     .insert(schema.modelEndpoints)
-    .values([
-      {
-        tenantId: TENANT,
-        slug: "openai-primary",
-        displayName: "OpenAI primary",
-        provider: "openai",
-        model: "gpt-4o-mini",
-        configJson: { api_base: "https://api.openai.com/v1" },
-        status: "active",
-        createdBy: USER,
-      },
-      {
-        tenantId: TENANT,
-        slug: "anthropic-fallback",
-        displayName: "Anthropic fallback",
-        provider: "anthropic",
-        model: "claude-haiku-4-5",
-        configJson: {},
-        status: "active",
-        createdBy: USER,
-      },
-    ])
+    .values(seedEndpoints)
     .returning();
-  console.log("  2 model endpoints created");
+
+  // Mirror to the new split tables. Same md5 derivation as the migration so
+  // the IDs line up if the backfill is re-applied.
+  const credentialsSeed = [openaiEndpoint!, anthropicEndpoint!].map((ep, i) => {
+    const h = crypto.createHash("md5").update(`cred:${ep.id}`).digest("hex");
+    const credId = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+    return { ep, credId, src: seedEndpoints[i]! };
+  });
+  await db.insert(schema.providerCredentials).values(
+    credentialsSeed.map(({ ep, credId, src }) => ({
+      id: credId,
+      tenantId: TENANT,
+      slug: src.slug,
+      displayName: src.displayName,
+      provider: src.provider,
+      configJson: src.configJson,
+      status: "active",
+      createdBy: USER,
+    })),
+  ).onConflictDoNothing();
+  await db.insert(schema.tenantModels).values(
+    credentialsSeed.map(({ ep, credId, src }) => ({
+      id: ep.id,
+      tenantId: TENANT,
+      credentialId: credId,
+      model: src.model,
+      capability: "chat",
+      slug: src.slug,
+      displayName: src.displayName,
+      status: "active",
+    })),
+  ).onConflictDoNothing();
+  console.log("  2 model endpoints created (mirrored to credential→model split)");
 
   // ── Pipelines (each wired to a schema + its deployed version + a model) ──
   const [claimsPipeline, invoicePipeline, receiptPipeline] = await db

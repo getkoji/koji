@@ -6,7 +6,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, keyHint } from "../crypto/envelope";
-import { createExtractionJob, mimeTypeFor } from "../ingestion/process";
+import { createExtractionJob, normalizeMimeTypeWithWarning } from "../ingestion/process";
 
 export const sources = new Hono<Env>();
 
@@ -420,6 +420,14 @@ sources.post("/:id/webhook", async (c) => {
     if (failureReason) continue;
 
     // Create the job + document and hand the document id to the worker.
+    const mimeResult = normalizeMimeTypeWithWarning(file.type, file.name);
+    if (mimeResult.warning) {
+      console.warn(
+        `[mime-normalize] tenant=${source.tenantId} endpoint=sources.ingest ` +
+          `source=${source.slug} filename=${JSON.stringify(file.name)} ` +
+          `claimed=${JSON.stringify(file.type ?? null)} normalized=${JSON.stringify(mimeResult.value)}`,
+      );
+    }
     const created = await createExtractionJob({
       db,
       tenantId: source.tenantId,
@@ -430,7 +438,7 @@ sources.post("/:id/webhook", async (c) => {
       storageKey,
       filename: file.name,
       fileSize: file.size,
-      mimeType: file.type || mimeTypeFor(file.name),
+      mimeType: mimeResult.value,
       contentHash,
       ingestionId: ingestion!.id,
       groupKey,

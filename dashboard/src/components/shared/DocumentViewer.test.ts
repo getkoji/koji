@@ -88,4 +88,42 @@ describe("pickDocumentRenderer", () => {
       expect(pickDocumentRenderer(null, null)).toBe("unsupported");
     });
   });
+
+  describe("bare-extension MIME tolerance (the regression this PR fixes)", () => {
+    // Some API clients send `Content-Type: pdf` (literally the extension)
+    // on presigned uploads. R2 persists it; ingestion stored it (until
+    // normalizeMimeType on the API side started normalizing). Existing
+    // rows still carry these values — this renderer must cope.
+
+    it("renders bare 'pdf' as pdf", () => {
+      expect(pickDocumentRenderer("pdf", URL)).toBe("pdf");
+    });
+
+    it("renders bare 'png' / 'jpg' / 'jpeg' as image", () => {
+      expect(pickDocumentRenderer("png", URL)).toBe("image");
+      expect(pickDocumentRenderer("jpg", URL)).toBe("image");
+      expect(pickDocumentRenderer("jpeg", URL)).toBe("image");
+    });
+
+    it("is case- and whitespace-insensitive on bare extensions", () => {
+      expect(pickDocumentRenderer(" PDF ", URL)).toBe("pdf");
+      expect(pickDocumentRenderer("PNG", URL)).toBe("image");
+    });
+  });
+
+  describe("filename fallback when MIME is unrecognized", () => {
+    it("infers PDF from a .pdf filename when MIME is garbage", () => {
+      expect(pickDocumentRenderer("garbage", URL, "policy.pdf")).toBe("pdf");
+    });
+
+    it("infers image from a .png filename when MIME is garbage", () => {
+      expect(pickDocumentRenderer("garbage", URL, "screenshot.png")).toBe("image");
+    });
+
+    it("returns unsupported when both MIME and filename are unhelpful", () => {
+      expect(pickDocumentRenderer("text/csv", URL, "data.csv")).toBe("unsupported");
+      expect(pickDocumentRenderer("garbage", URL, "no-extension")).toBe("unsupported");
+      expect(pickDocumentRenderer("garbage", URL, null)).toBe("unsupported");
+    });
+  });
 });

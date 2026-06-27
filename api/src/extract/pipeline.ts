@@ -14,6 +14,7 @@
 import type { ModelProvider } from "./providers";
 import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
+import { arrayItemProperties, objectProperties, resolveVocab } from "./schema-tree";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
 import type { FitReport } from "./fit";
 
@@ -510,6 +511,85 @@ export function validateField(
   return [result, issues == null, issues];
 }
 
+/** A field-level issue surfaced by {@link validateFields} (e.g. a conditional
+ *  vocabulary that resolved to the wrong branch). `field` is a path like
+ *  `items[1].category`. */
+export interface FieldIssue {
+  field: string;
+  message: string;
+}
+
+/**
+ * Apply {@link validateField} (type coercion, mapping/enum resolution) across an
+ * extracted object, recursing into array-of-objects items and nested objects so
+ * the same per-field logic runs at every depth. Mutates `extracted` in place and
+ * returns any field-level issues (currently: conditional-vocabulary failures).
+ *
+ * Two passes per scope: fields WITHOUT `vocab_by` first (so the sibling a
+ * conditional field depends on is already coerced), then `vocab_by` fields,
+ * whose effective vocabulary is selected from the now-resolved siblings via
+ * {@link resolveVocab}. Descent decisions come from the shared
+ * {@link arrayItemProperties} / {@link objectProperties} primitives, so this
+ * stays in lockstep with how normalize, prompt rendering, and post-extract
+ * validation walk the tree.
+ */
+export function validateFields(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+  pathPrefix = "",
+): FieldIssue[] {
+  const issues: FieldIssue[] = [];
+
+  // Pass 1 — everything except conditional (`vocab_by`) fields. Recurse into
+  // containers here so each nested scope runs its own two passes.
+  for (const [fieldName, spec] of Object.entries(fields)) {
+    if (!spec || typeof spec !== "object") continue;
+    if (spec.vocab_by) continue;
+    const value = extracted[fieldName];
+    const path = pathPrefix ? `${pathPrefix}.${fieldName}` : fieldName;
+
+    const itemProps = arrayItemProperties(spec);
+    if (itemProps && Array.isArray(value)) {
+      value.forEach((row, i) => {
+        if (row && typeof row === "object" && !Array.isArray(row)) {
+          issues.push(...validateFields(row as Record<string, unknown>, itemProps, `${path}[${i}]`));
+        }
+      });
+      continue;
+    }
+
+    const objProps = objectProperties(spec);
+    if (objProps && value && typeof value === "object" && !Array.isArray(value)) {
+      issues.push(...validateFields(value as Record<string, unknown>, objProps, path));
+      continue;
+    }
+
+    const [validated] = validateField(fieldName, value ?? null, spec);
+    extracted[fieldName] = validated;
+  }
+
+  // Pass 2 — conditional fields. Siblings are resolved now, so pick the branch.
+  for (const [fieldName, spec] of Object.entries(fields)) {
+    if (!spec || typeof spec !== "object" || !spec.vocab_by) continue;
+    const path = pathPrefix ? `${pathPrefix}.${fieldName}` : fieldName;
+    const value = extracted[fieldName] ?? null;
+    const { spec: resolved, status, sibling } = resolveVocab(spec, extracted);
+
+    const [validated, ok, msg] = validateField(fieldName, value, resolved);
+    extracted[fieldName] = validated;
+
+    if (status === "unmatched" && value != null) {
+      const sv = sibling ? `${sibling.field}=${JSON.stringify(sibling.value)}` : "its condition";
+      issues.push({ field: path, message: `no conditional vocabulary branch for ${sv}` });
+    } else if (status === "matched" && !ok && msg) {
+      const sv = sibling ? `${sibling.field}=${JSON.stringify(sibling.value)}` : "the selected branch";
+      issues.push({ field: path, message: `value not valid for ${sv}: ${msg}` });
+    }
+  }
+
+  return issues;
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -549,13 +629,11 @@ export async function extractFields(
     result.kv_pairs = extractKVPairs(markdown).map(({ label, value }) => ({ label, value }));
   }
 
-  // Field validation + type normalization (mapping resolution, enum snapping, etc.)
+  // Field validation + type normalization (mapping resolution, enum snapping,
+  // etc.) — recurses into array-of-objects items and nested objects so a
+  // `type: mapping` or `number` field works at any depth, not just top level.
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
-  for (const [fieldName, spec] of Object.entries(fields)) {
-    const rawValue = result.extracted[fieldName] ?? null;
-    const [validated] = validateField(fieldName, rawValue, spec);
-    result.extracted[fieldName] = validated;
-  }
+  const vocabIssues = validateFields(result.extracted, fields);
 
   // Post-extraction normalization (derived fields, etc.)
   const [normalized, normReport] = normalizeExtracted(result.extracted, schemaDef);
@@ -565,11 +643,16 @@ export async function extractFields(
     warnings: normReport.warnings,
   };
 
-  // Post-extraction validation
+  // Post-extraction validation. Conditional-vocabulary failures from field
+  // resolution are merged into the same report so a wrong sibling↔value pairing
+  // surfaces in review like any other validation issue.
   const validationReport = validateExtracted(normalized, schemaDef);
   result.validation = {
-    ok: validationReport.ok,
-    issues: validationReport.issues,
+    ok: validationReport.ok && vocabIssues.length === 0,
+    issues: [
+      ...validationReport.issues,
+      ...vocabIssues.map((i) => ({ rule: "conditional_vocab", field: i.field, message: i.message })),
+    ],
   };
 
   return result;

@@ -6,6 +6,8 @@
  * issues to a report. Passing rules emit nothing.
  */
 
+import { arrayItemProperties } from "./schema-tree";
+
 // ---------------------------------------------------------------------------
 // Report types
 // ---------------------------------------------------------------------------
@@ -268,25 +270,50 @@ export function validateExtracted(
   const data = extracted as Record<string, unknown>;
 
   const rules = schemaDef?.validation;
-  if (!Array.isArray(rules)) return report;
+  if (Array.isArray(rules)) {
+    for (const ruleEntry of rules) {
+      if (!ruleEntry || typeof ruleEntry !== "object" || Array.isArray(ruleEntry)) {
+        fail(report, "malformed", null, "validation rule must be a single-key dict");
+        continue;
+      }
+      const entries = Object.entries(ruleEntry as Record<string, unknown>);
+      if (entries.length !== 1) {
+        fail(report, "malformed", null, "validation rule must be a single-key dict");
+        continue;
+      }
+      const [ruleName, params] = entries[0]!;
+      const handler = RULES[ruleName];
+      if (!handler) {
+        fail(report, "unknown", null, `unknown validation rule '${ruleName}'`);
+        continue;
+      }
+      handler(params, data, report);
+    }
+  }
 
-  for (const ruleEntry of rules) {
-    if (!ruleEntry || typeof ruleEntry !== "object" || Array.isArray(ruleEntry)) {
-      fail(report, "malformed", null, "validation rule must be a single-key dict");
-      continue;
-    }
-    const entries = Object.entries(ruleEntry as Record<string, unknown>);
-    if (entries.length !== 1) {
-      fail(report, "malformed", null, "validation rule must be a single-key dict");
-      continue;
-    }
-    const [ruleName, params] = entries[0]!;
-    const handler = RULES[ruleName];
-    if (!handler) {
-      fail(report, "unknown", null, `unknown validation rule '${ruleName}'`);
-      continue;
-    }
-    handler(params, data, report);
+  // Per-item rules: an array-of-objects field whose item schema declares its
+  // own `validation:` block runs those rules against each row, so validation is
+  // consistent at depth. Issue fields are prefixed `field[i].subfield`.
+  const fields = (schemaDef?.fields ?? {}) as Record<string, Record<string, unknown>>;
+  for (const [fieldName, spec] of Object.entries(fields)) {
+    const itemProps = arrayItemProperties(spec);
+    if (!itemProps) continue;
+    const itemValidation = (spec.items as Record<string, unknown> | undefined)?.validation;
+    if (!Array.isArray(itemValidation)) continue;
+    const value = data[fieldName];
+    if (!Array.isArray(value)) continue;
+    const itemSchema = { fields: itemProps, validation: itemValidation };
+    value.forEach((row, i) => {
+      if (!row || typeof row !== "object" || Array.isArray(row)) return;
+      const sub = validateExtracted(row as Record<string, unknown>, itemSchema);
+      if (!sub.ok) report.ok = false;
+      for (const issue of sub.issues) {
+        report.issues.push({
+          ...issue,
+          field: issue.field ? `${fieldName}[${i}].${issue.field}` : `${fieldName}[${i}]`,
+        });
+      }
+    });
   }
 
   return report;

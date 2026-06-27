@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { normalizeMimeTypeWithWarning } from "../ingestion/process";
 
 export const upload = new Hono<Env>();
 
@@ -118,6 +119,16 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
     return c.json(existing, 200);
   }
 
+  const mimeResult = normalizeMimeTypeWithWarning(fileResult.contentType, body.filename);
+  if (mimeResult.warning) {
+    console.warn(
+      `[mime-normalize] tenant=${tenantId} endpoint=upload.complete ` +
+        `filename=${JSON.stringify(body.filename)} ` +
+        `claimed=${JSON.stringify(fileResult.contentType ?? null)} ` +
+        `normalized=${JSON.stringify(mimeResult.value)}`,
+    );
+  }
+
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
@@ -125,7 +136,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
       filename: body.filename,
       storageKey: body.storageKey,
       fileSize: fileResult.data.length,
-      mimeType: fileResult.contentType,
+      mimeType: mimeResult.value,
       contentHash,
       source: "upload",
       groundTruthJson: {},
@@ -133,5 +144,8 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
     }).returning(),
   );
 
-  return c.json(row, 201);
+  return c.json(
+    mimeResult.warning ? { ...row, warnings: [mimeResult.warning] } : row,
+    201,
+  );
 });

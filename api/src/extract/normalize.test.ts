@@ -397,6 +397,25 @@ describe("array item normalization", () => {
     expect(items[1]!.name).toBe("Gadget");
     expect(items[1]!.price).toBe(2000);
   });
+
+  it("applies normalization inside a nested object field", () => {
+    const extracted = { totals: { label: "  NET  ", amount: "$15.00" } };
+    const schema = {
+      fields: {
+        totals: {
+          type: "object",
+          properties: {
+            label: { normalize: ["trim", "lowercase"] },
+            amount: { normalize: "minor_units" },
+          },
+        },
+      },
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    const totals = result.totals as Record<string, unknown>;
+    expect(totals.label).toBe("net");
+    expect(totals.amount).toBe(1500);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -736,5 +755,410 @@ describe("rename directive", () => {
     };
     const [result] = normalizeExtracted(extracted, schema);
     expect(result.name).toBe("Frank");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collapse_spaces
+// ---------------------------------------------------------------------------
+
+describe("collapse_spaces transform", () => {
+  it("collapses runs of spaces to one", () => {
+    const { value } = normField("ACME   Corp", { normalize: "collapse_spaces" });
+    expect(value).toBe("ACME Corp");
+  });
+
+  it("collapses mixed spaces and tabs", () => {
+    const { value } = normField("foo \t\t bar", { normalize: "collapse_spaces" });
+    expect(value).toBe("foo bar");
+  });
+
+  it("preserves newlines (multi-line addresses)", () => {
+    const { value } = normField("123 Main St\n  Apt  4", {
+      normalize: "collapse_spaces",
+    });
+    expect(value).toBe("123 Main St\n Apt 4");
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "collapse_spaces" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// remove_spaces
+// ---------------------------------------------------------------------------
+
+describe("remove_spaces transform", () => {
+  it("strips spaces from codes and identifiers", () => {
+    const { value } = normField("ABC 123", { normalize: "remove_spaces" });
+    expect(value).toBe("ABC123");
+  });
+
+  it("strips runs of spaces", () => {
+    const { value } = normField("555   123   4567", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("5551234567");
+  });
+
+  it("strips tabs and newlines too (any whitespace is noise here)", () => {
+    const { value } = normField("ABC\t123\n456", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("ABC123456");
+  });
+
+  it("strips Unicode non-breaking spaces (U+00A0)", () => {
+    const { value } = normField("ABC 123", { normalize: "remove_spaces" });
+    expect(value).toBe("ABC123");
+  });
+
+  it("leaves a string with no whitespace unchanged", () => {
+    const { value, report } = normField("ABC123", {
+      normalize: "remove_spaces",
+    });
+    expect(value).toBe("ABC123");
+    expect(
+      report.applied.filter((a) => a.transform === "remove_spaces"),
+    ).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "remove_spaces" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix_punctuation_spacing
+// ---------------------------------------------------------------------------
+
+describe("fix_punctuation_spacing transform", () => {
+  it("removes space before comma", () => {
+    const { value } = normField("Smith , Jones", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Smith, Jones");
+  });
+
+  it("removes space before period, semicolon, colon, paren-close", () => {
+    const { value } = normField("end . next ; then : and )", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("end. next; then: and)");
+  });
+
+  it("adds space after comma/semicolon/colon when missing before a letter", () => {
+    const { value } = normField("Smith,Jones;extra:more", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Smith, Jones; extra: more");
+  });
+
+  it("preserves initials with periods (does not space . before letter)", () => {
+    const { value } = normField("J. R. R. Tolkien", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("J. R. R. Tolkien");
+  });
+
+  it("preserves decimal numbers (period without surrounding space)", () => {
+    const { value } = normField("Total: $1,234.56", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("Total: $1,234.56");
+  });
+
+  it("does not break already-correct text", () => {
+    const { value, report } = normField("ACME Corp, Inc.", {
+      normalize: "fix_punctuation_spacing",
+    });
+    expect(value).toBe("ACME Corp, Inc.");
+    expect(
+      report.applied.filter((a) => a.transform === "fix_punctuation_spacing"),
+    ).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "fix_punctuation_spacing" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prose preset (trim + collapse_spaces + fix_punctuation_spacing)
+// ---------------------------------------------------------------------------
+
+describe("prose transform", () => {
+  it("fixes the common OCR spacing failure modes in one pass", () => {
+    const { value } = normField("  ACME   Corp , Inc.  ", { normalize: "prose" });
+    expect(value).toBe("ACME Corp, Inc.");
+  });
+
+  it("handles legal-name OCR output (space before comma, no space after)", () => {
+    const { value } = normField("Robert M. Critz , P.A.", { normalize: "prose" });
+    expect(value).toBe("Robert M. Critz, P.A.");
+  });
+
+  it("normalizes a multi-issue address", () => {
+    const { value } = normField("200 QUEENS  OFFICE  CONDOMINIUM   ASSOCIATION INC", {
+      normalize: "prose",
+    });
+    expect(value).toBe("200 QUEENS OFFICE CONDOMINIUM ASSOCIATION INC");
+  });
+
+  it("leaves a clean string unchanged", () => {
+    const { value, report } = normField("The Cincinnati Insurance Companies", {
+      normalize: "prose",
+    });
+    expect(value).toBe("The Cincinnati Insurance Companies");
+    expect(report.applied.filter((a) => a.transform === "prose")).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "prose" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// digits_only
+// ---------------------------------------------------------------------------
+
+describe("digits_only transform", () => {
+  it("strips formatting from a phone-like string", () => {
+    const { value } = normField("(555) 123-4567", { normalize: "digits_only" });
+    expect(value).toBe("5551234567");
+  });
+
+  it("strips letters too", () => {
+    const { value } = normField("ABC-123-DEF", { normalize: "digits_only" });
+    expect(value).toBe("123");
+  });
+
+  it("returns empty string when there are no digits", () => {
+    const { value } = normField("hello", { normalize: "digits_only" });
+    expect(value).toBe("");
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "digits_only" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// integer
+// ---------------------------------------------------------------------------
+
+describe("integer transform", () => {
+  it("parses a human-formatted integer", () => {
+    const { value } = normField("1,234", { normalize: "integer" });
+    expect(value).toBe(1234);
+  });
+
+  it("handles negatives", () => {
+    const { value } = normField("-1,234", { normalize: "integer" });
+    expect(value).toBe(-1234);
+  });
+
+  it("strips underscores and spaces (common separators)", () => {
+    const { value } = normField("1_000_000", { normalize: "integer" });
+    expect(value).toBe(1000000);
+  });
+
+  it("bails on decimals (does not silently truncate)", () => {
+    const { value } = normField("1.5", { normalize: "integer" });
+    expect(value).toBe("1.5");
+  });
+
+  it("bails on garbage", () => {
+    const { value } = normField("not a number", { normalize: "integer" });
+    expect(value).toBe("not a number");
+  });
+
+  it("passes through numbers unchanged", () => {
+    const { value } = normField(42, { normalize: "integer" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decimal_amount
+// ---------------------------------------------------------------------------
+
+describe("decimal_amount transform", () => {
+  it("parses a dollar string", () => {
+    const { value } = normField("$1,234.56", { normalize: "decimal_amount" });
+    expect(value).toBe(1234.56);
+  });
+
+  it("recognises accounting parentheses as negatives", () => {
+    const { value } = normField("(50.00)", { normalize: "decimal_amount" });
+    expect(value).toBe(-50);
+  });
+
+  it("parses a bare decimal", () => {
+    const { value } = normField("0.42", { normalize: "decimal_amount" });
+    expect(value).toBe(0.42);
+  });
+
+  it("passes through numbers unchanged", () => {
+    const { value } = normField(99.5, { normalize: "decimal_amount" });
+    expect(value).toBe(99.5);
+  });
+
+  it("bails on garbage", () => {
+    const { value } = normField("not a number", { normalize: "decimal_amount" });
+    expect(value).toBe("not a number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// percent
+// ---------------------------------------------------------------------------
+
+describe("percent transform", () => {
+  it("strips the percent sign and parses as number", () => {
+    const { value } = normField("12%", { normalize: "percent" });
+    expect(value).toBe(12);
+  });
+
+  it("preserves magnitude (does NOT divide by 100)", () => {
+    const { value } = normField("12.5%", { normalize: "percent" });
+    expect(value).toBe(12.5);
+  });
+
+  it("handles a value with no percent sign", () => {
+    const { value } = normField("12", { normalize: "percent" });
+    expect(value).toBe(12);
+  });
+
+  it("passes through numbers unchanged", () => {
+    const { value } = normField(12, { normalize: "percent" });
+    expect(value).toBe(12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// boolean
+// ---------------------------------------------------------------------------
+
+describe("boolean transform", () => {
+  it("coerces common truthy strings", () => {
+    for (const s of ["true", "TRUE", "yes", "Y", "1", "on"]) {
+      const { value } = normField(s, { normalize: "boolean" });
+      expect(value).toBe(true);
+    }
+  });
+
+  it("coerces common falsy strings", () => {
+    for (const s of ["false", "FALSE", "no", "N", "0", "off"]) {
+      const { value } = normField(s, { normalize: "boolean" });
+      expect(value).toBe(false);
+    }
+  });
+
+  it("passes through actual booleans unchanged", () => {
+    expect(normField(true, { normalize: "boolean" }).value).toBe(true);
+    expect(normField(false, { normalize: "boolean" }).value).toBe(false);
+  });
+
+  it("passes through unrecognised strings unchanged", () => {
+    const { value } = normField("maybe", { normalize: "boolean" });
+    expect(value).toBe("maybe");
+  });
+
+  it("trims whitespace before checking", () => {
+    const { value } = normField("  yes  ", { normalize: "boolean" });
+    expect(value).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// email
+// ---------------------------------------------------------------------------
+
+describe("email transform", () => {
+  it("trims and lowercases", () => {
+    const { value } = normField("  Foo@Bar.COM ", { normalize: "email" });
+    expect(value).toBe("foo@bar.com");
+  });
+
+  it("leaves a clean email unchanged", () => {
+    const { value, report } = normField("foo@bar.com", { normalize: "email" });
+    expect(value).toBe("foo@bar.com");
+    expect(report.applied.filter((a) => a.transform === "email")).toHaveLength(0);
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "email" });
+    expect(value).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// url
+// ---------------------------------------------------------------------------
+
+describe("url transform", () => {
+  it("lowercases scheme and host", () => {
+    const { value } = normField("HTTPS://Example.COM/Foo", { normalize: "url" });
+    expect(value).toBe("https://example.com/Foo");
+  });
+
+  it("drops trailing slash on path-root URLs", () => {
+    const { value } = normField("https://example.com/", { normalize: "url" });
+    expect(value).toBe("https://example.com");
+  });
+
+  it("preserves trailing slash on non-root paths", () => {
+    const { value } = normField("https://example.com/foo/", { normalize: "url" });
+    expect(value).toBe("https://example.com/foo/");
+  });
+
+  it("preserves query and hash", () => {
+    const { value } = normField("https://example.com/?q=1#frag", {
+      normalize: "url",
+    });
+    expect(value).toBe("https://example.com/?q=1#frag");
+  });
+
+  it("passes through invalid URLs unchanged", () => {
+    const { value } = normField("not a url", { normalize: "url" });
+    expect(value).toBe("not a url");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// title_case
+// ---------------------------------------------------------------------------
+
+describe("title_case transform", () => {
+  it("capitalizes each word", () => {
+    const { value } = normField("acme corp", { normalize: "title_case" });
+    expect(value).toBe("Acme Corp");
+  });
+
+  it("preserves already-uppercase tokens as acronyms", () => {
+    const { value } = normField("ACME corp", { normalize: "title_case" });
+    expect(value).toBe("ACME Corp");
+  });
+
+  it("lowercases mixed-case non-acronyms", () => {
+    const { value } = normField("aCMe CoRp", { normalize: "title_case" });
+    expect(value).toBe("Acme Corp");
+  });
+
+  it("handles hyphenated names", () => {
+    const { value } = normField("smith-jones", { normalize: "title_case" });
+    expect(value).toBe("Smith-Jones");
+  });
+
+  it("passes through non-string values", () => {
+    const { value } = normField(42, { normalize: "title_case" });
+    expect(value).toBe(42);
   });
 });

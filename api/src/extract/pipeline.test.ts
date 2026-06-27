@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, validateFields, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -403,6 +403,202 @@ describe("field validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// validateFields — recursion into nested array/object fields
+// ---------------------------------------------------------------------------
+
+describe("validateFields (nested depth)", () => {
+  it("coerces numbers and resolves mappings inside array-of-objects items", () => {
+    const extracted = {
+      coverages: [
+        { kind: "GL", limit: "$1,000,000", applies_to: "EE Theft" },
+        { kind: "Property", limit: "2,500", applies_to: "forgery" },
+      ],
+    };
+    const fields = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            kind: { type: "string" },
+            limit: { type: "number" },
+            applies_to: {
+              type: "mapping",
+              mappings: { employee_theft: ["EE Theft", "employee theft"], forgery: [] },
+            },
+          },
+        },
+      },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.coverages[0]!.limit).toBe(1000000);
+    expect(extracted.coverages[0]!.applies_to).toBe("employee_theft");
+    expect(extracted.coverages[1]!.limit).toBe(2500);
+    expect(extracted.coverages[1]!.applies_to).toBe("forgery");
+  });
+
+  it("recurses two levels deep (coverages[] -> limits[])", () => {
+    const extracted = {
+      coverages: [
+        { limits: [{ applies_to: "Each Occ", premium: "1,000" }] },
+      ],
+    };
+    const fields = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            limits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  applies_to: { type: "mapping", mappings: { each_occurrence: ["Each Occ"] } },
+                  premium: { type: "number" },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.coverages[0]!.limits[0]!.applies_to).toBe("each_occurrence");
+    expect(extracted.coverages[0]!.limits[0]!.premium).toBe(1000);
+  });
+
+  it("coerces fields inside a nested object", () => {
+    const extracted = { totals: { amount: "$42" } };
+    const fields = {
+      totals: { type: "object", properties: { amount: { type: "number" } } },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.totals.amount).toBe(42);
+  });
+
+  it("coerces inside a nested object declared with the 'fields' alias", () => {
+    const extracted = { totals: { amount: "$42" } };
+    const fields = {
+      totals: { type: "object", fields: { amount: { type: "number" } } },
+    };
+
+    validateFields(extracted, fields as Record<string, Record<string, unknown>>);
+
+    expect(extracted.totals.amount).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateFields — conditional vocabulary (vocab_by)
+// ---------------------------------------------------------------------------
+
+describe("validateFields (conditional vocab)", () => {
+  // applies_to's allowed codes depend on the row's `coverage`.
+  const itemProps = {
+    coverage: { type: "enum", options: ["crime", "general_liability"] },
+    applies_to: {
+      type: "mapping",
+      vocab_by: {
+        coverage: {
+          crime: { mappings: { employee_theft: ["EE Theft"], forgery: [] } },
+          general_liability: { mappings: { each_occurrence: ["Each Occ"], general_aggregate: [] } },
+        },
+      },
+    },
+  };
+  const fields = {
+    coverages: { type: "array", items: { type: "object", properties: itemProps } },
+  };
+
+  it("resolves each row against its own sibling value", () => {
+    const extracted = {
+      coverages: [
+        { coverage: "crime", applies_to: "EE Theft" },
+        { coverage: "general_liability", applies_to: "Each Occ" },
+      ],
+    };
+    const issues = validateFields(extracted, fields);
+    expect(issues).toEqual([]);
+    expect(extracted.coverages[0]!.applies_to).toBe("employee_theft");
+    expect(extracted.coverages[1]!.applies_to).toBe("each_occurrence");
+  });
+
+  it("flags a cross-branch pairing (crime row with a GL code)", () => {
+    const extracted = {
+      coverages: [{ coverage: "crime", applies_to: "Each Occ" }],
+    };
+    const issues = validateFields(extracted, fields);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.field).toBe("coverages[0].applies_to");
+    expect(issues[0]!.message).toContain("coverage=\"crime\"");
+  });
+
+  it("flags when the sibling value matches no branch and there is no default", () => {
+    const extracted = {
+      coverages: [{ coverage: "general_liability", applies_to: "whatever" }],
+    };
+    // narrow the schema to a vocab_by with only a crime branch
+    const narrow = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            coverage: { type: "string" },
+            applies_to: { type: "mapping", vocab_by: { coverage: { crime: { mappings: { employee_theft: [] } } } } },
+          },
+        },
+      },
+    };
+    const issues = validateFields(extracted, narrow);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.message).toContain("no conditional vocabulary branch");
+    expect(extracted.coverages[0]!.applies_to).toBe("whatever"); // left as-is
+  });
+
+  it("uses vocab_default when no branch matches", () => {
+    const extracted = { coverages: [{ coverage: "surety", applies_to: "MISC" }] };
+    const withDefault = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            coverage: { type: "string" },
+            applies_to: {
+              type: "mapping",
+              vocab_by: { coverage: { crime: { mappings: { employee_theft: [] } } } },
+              vocab_default: { mappings: { misc: ["MISC"] } },
+            },
+          },
+        },
+      },
+    };
+    const issues = validateFields(extracted, withDefault);
+    expect(issues).toEqual([]);
+    expect(extracted.coverages[0]!.applies_to).toBe("misc");
+  });
+
+  it("works on top-level sibling fields too", () => {
+    const extracted = { coverage: "crime", applies_to: "EE Theft" };
+    const topFields = {
+      coverage: { type: "string" },
+      applies_to: { type: "mapping", vocab_by: { coverage: { crime: { mappings: { employee_theft: ["EE Theft"] } } } } },
+    };
+    const issues = validateFields(extracted, topFields);
+    expect(issues).toEqual([]);
+    expect(extracted.applies_to).toBe("employee_theft");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Normalization integration
 // ---------------------------------------------------------------------------
 
@@ -483,6 +679,41 @@ describe("validation integration", () => {
     const result = await extractFields("doc", schema, provider, "m");
     expect(result.validation!.ok).toBe(true);
     expect(result.validation!.issues).toHaveLength(0);
+  });
+
+  it("surfaces a conditional-vocabulary mismatch in the validation report", async () => {
+    // crime row carrying a GL-only code → resolution against the crime branch
+    // fails and the issue is reported.
+    const provider = mockProvider(
+      JSON.stringify({ coverages: [{ coverage: "crime", applies_to: "Each Occ" }] }),
+    );
+    const schema = {
+      name: "coi",
+      fields: {
+        coverages: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              coverage: { type: "string" },
+              applies_to: {
+                type: "mapping",
+                vocab_by: {
+                  coverage: {
+                    crime: { mappings: { employee_theft: ["EE Theft"] } },
+                    general_liability: { mappings: { each_occurrence: ["Each Occ"] } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = await extractFields("doc", schema, provider, "m");
+    expect(result.validation!.ok).toBe(false);
+    expect(result.validation!.issues.some((i) => i.rule === "conditional_vocab")).toBe(true);
   });
 });
 

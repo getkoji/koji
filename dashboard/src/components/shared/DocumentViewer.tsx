@@ -31,24 +31,44 @@ export type DocumentRenderer = "pdf" | "image" | "unsupported";
 /**
  * Decide how to render a document given its MIME type.
  *
- * Real-world wrinkle: a meaningful fraction of customer documents land in
- * the database with `application/octet-stream` because the upload client
- * (browser drag-drop, CLI, certain integrations) never set a Content-Type
- * header and storage backends preserve that as-is. Those documents are
- * overwhelmingly PDFs in practice — the rest of the pipeline assumes PDF
- * or image input — so we route octet-stream to the PDF renderer
- * optimistically. PdfViewer surfaces a visible error if the bytes aren't
- * actually a PDF, which is the worst case here. The previous behaviour
- * rendered an "unsupported" screen for octet-stream and made the review
- * queue unusable for any tenant whose upload path didn't sniff MIME.
+ * Real-world wrinkles this function compensates for:
  *
- * Real fix is to sniff MIME at upload time and stop persisting
- * `application/octet-stream` — tracked separately. This function is the
- * forgiving client-side fallback until that lands.
+ * 1. `application/octet-stream` — many upload clients (browser drag-drop,
+ *    CLIs, certain integrations) never set a Content-Type header and
+ *    storage backends preserve that as-is. Those documents are
+ *    overwhelmingly PDFs in practice, so octet-stream routes to the PDF
+ *    renderer optimistically. PdfViewer surfaces a visible error if the
+ *    bytes aren't actually a PDF.
+ *
+ * 2. Bare-extension MIME strings — some API clients send `Content-Type: pdf`
+ *    (literally the extension) on presigned uploads. R2 stores that
+ *    verbatim, ingestion persists it, and a non-MIME string ends up on the
+ *    document row. The API-side fix (`normalizeMimeType` in
+ *    `api/src/ingestion/process.ts`) catches this at ingestion time going
+ *    forward, but existing rows still carry bad values and re-uploading
+ *    every doc isn't feasible. This function tolerates bare `pdf`, `png`,
+ *    `jpg`, etc. as a defence in depth.
+ *
+ * 3. Anything else unrecognised — fall back to the `filename`'s extension
+ *    (when known) before declaring "unsupported". The filename is far more
+ *    reliable than the Content-Type header for customer-uploaded files.
+ *
+ * Production rule: prefer to fix bad data at ingestion. This function is
+ * the safety net that keeps the UI usable when bad data has already landed.
  */
+const PDF_EXTENSIONS = new Set(["pdf"]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "svg"]);
+
+function extensionFromFilename(filename: string | null | undefined): string | null {
+  if (!filename) return null;
+  const ext = filename.toLowerCase().split(".").pop();
+  return ext && ext !== filename.toLowerCase() ? ext : null;
+}
+
 export function pickDocumentRenderer(
   mimeType: string | null,
   url: string | null,
+  filename?: string | null,
 ): DocumentRenderer {
   if (!url) return "unsupported";
   if (mimeType?.startsWith("image/")) return "image";
@@ -61,9 +81,19 @@ export function pickDocumentRenderer(
   ) {
     return "pdf";
   }
-  // Other text-ish MIMEs the PDF viewer can't handle — explicit unsupported
-  // rather than guess. Customer-facing docs in Koji are overwhelmingly PDF
-  // or image, so the long tail isn't worth a renderer.
+  // Defence in depth — bare extension strings (`"pdf"`, `"png"`, …) and
+  // any other unrecognised value fall through to filename-extension
+  // inference. If the filename doesn't tell us either, then it's
+  // genuinely unsupported.
+  const normalized = mimeType.toLowerCase().trim();
+  if (PDF_EXTENSIONS.has(normalized)) return "pdf";
+  if (IMAGE_EXTENSIONS.has(normalized)) return "image";
+
+  const ext = extensionFromFilename(filename);
+  if (ext) {
+    if (PDF_EXTENSIONS.has(ext)) return "pdf";
+    if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  }
   return "unsupported";
 }
 
@@ -222,7 +252,7 @@ export function DocumentViewer({
       );
     }
 
-    const renderer = pickDocumentRenderer(mimeType, url);
+    const renderer = pickDocumentRenderer(mimeType, url, filename);
 
     // Visibility-gated mount. Until the wrapper has been visible at least
     // once, render the skeleton (which still claims the same box so layout

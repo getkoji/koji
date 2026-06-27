@@ -140,7 +140,7 @@ fields:
 `);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("requires 'values', 'options', or 'mappings'"))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes("requires 'values', 'options', 'mappings', or 'vocab_by'"))).toBe(true);
     }
   });
 
@@ -180,7 +180,7 @@ fields:
     }
   });
 
-  it("rejects object without fields", () => {
+  it("rejects object with neither properties nor fields", () => {
     const result = compileSchema(`
 name: test
 fields:
@@ -188,7 +188,7 @@ fields:
 `);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("requires 'fields'"))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes("requires a 'properties' (or 'fields') definition"))).toBe(true);
     }
   });
 
@@ -313,5 +313,117 @@ fields:
     if (!result.ok) {
       expect(result.errors.length).toBeGreaterThanOrEqual(3);
     }
+  });
+});
+
+describe("schema compiler — conditional vocabulary (vocab_by)", () => {
+  it("accepts a mapping field that supplies its vocabulary via vocab_by", () => {
+    const result = compileSchema(`
+name: coi
+fields:
+  coverage:
+    type: enum
+    values: [crime, general_liability]
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime:
+          mappings:
+            employee_theft: ["EE Theft"]
+        general_liability:
+          options: [each_occurrence, general_aggregate]
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("does NOT require a static mappings block when vocab_by is present", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  coverage: { type: string }
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime: { options: [employee_theft] }
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects vocab_by referencing a non-existent sibling", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  applies_to:
+    type: mapping
+    vocab_by:
+      nope:
+        x: { options: [a] }
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => /sibling 'nope'/.test(e.message))).toBe(true);
+    }
+  });
+
+  it("rejects a branch that declares no vocabulary", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  coverage: { type: string }
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime: { description: "oops, no vocab" }
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => /must declare 'mappings'/.test(e.message))).toBe(true);
+    }
+  });
+
+  it("accepts vocab_default", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  coverage: { type: string }
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime: { options: [employee_theft] }
+    vocab_default:
+      options: [other]
+`);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("schema compiler — standalone object fields", () => {
+  it("accepts type: object with properties (canonical, matching array items)", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  address:
+    type: object
+    properties:
+      city: { type: string }
+      zip: { type: string }
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts type: object with fields (legacy alias)", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  address:
+    type: object
+    fields:
+      city: { type: string }
+`);
+    expect(result.ok).toBe(true);
   });
 });

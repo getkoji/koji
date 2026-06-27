@@ -5,6 +5,12 @@
  * envelope, and returns a ready-to-use LLM provider instance. Used by the
  * in-process extraction pipeline to route LLM calls to the correct endpoint.
  *
+ * Reads from the credential→model split: `tenant_models` holds the model
+ * name and `provider_credentials` holds the encrypted key + connection
+ * config. The backfill migration (0020) gave each old `model_endpoints`
+ * row a `tenant_models` row with the **same id**, so existing
+ * `pipeline.modelProviderId` references resolve unchanged.
+ *
  * Returns null when:
  *   - The pipeline has no modelProviderId set (fall through to env-var
  *     default on the extract side — used by seed data, early adopters
@@ -25,9 +31,10 @@ import { wrapProviderWithHealthTracking } from "./endpoint-health";
 
 export interface ExtractEndpointPayload {
   /**
-   * UUID of the source `model_endpoints` row, when this payload originated
-   * from a tenant-configured endpoint. Health tracking attaches to this
-   * id; the env-var fallback path leaves it undefined.
+   * UUID of the source `tenant_models` row (== legacy `model_endpoints.id`),
+   * when this payload originated from a tenant-configured model. Health
+   * tracking attaches to the underlying credential; the env-var fallback
+   * path leaves this undefined.
    */
   endpoint_id?: string;
   provider: string;
@@ -44,6 +51,38 @@ export interface ExtractEndpointPayload {
   aws_session_token?: string;
 }
 
+/**
+ * Pick the first active tenant model whose credential is also active.
+ * Optional `preferModel` narrows by model name (e.g. "gpt-4o-mini"). Returns
+ * the `tenant_models.id` or null when nothing matches. Used by extract.ts
+ * fallback paths that need an endpoint id without a pipeline context.
+ */
+export async function pickActiveTenantModel(
+  db: Db,
+  tenantId: string,
+  preferModel: string | null,
+): Promise<string | null> {
+  const conditions = [
+    eq(schema.tenantModels.status, "active"),
+    eq(schema.providerCredentials.status, "active"),
+  ];
+  if (preferModel) {
+    conditions.push(eq(schema.tenantModels.model, preferModel));
+  }
+  const [row] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.tenantModels.id })
+      .from(schema.tenantModels)
+      .innerJoin(
+        schema.providerCredentials,
+        eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
+      )
+      .where(and(...conditions))
+      .limit(1),
+  );
+  return row?.id ?? null;
+}
+
 export async function resolveExtractEndpoint(
   db: Db,
   tenantId: string,
@@ -54,14 +93,18 @@ export async function resolveExtractEndpoint(
   const [endpoint] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
-        id: schema.modelEndpoints.id,
-        provider: schema.modelEndpoints.provider,
-        model: schema.modelEndpoints.model,
-        configJson: schema.modelEndpoints.configJson,
-        authJson: schema.modelEndpoints.authJson,
+        id: schema.tenantModels.id,
+        provider: schema.providerCredentials.provider,
+        model: schema.tenantModels.model,
+        configJson: schema.providerCredentials.configJson,
+        authJson: schema.providerCredentials.authJson,
       })
-      .from(schema.modelEndpoints)
-      .where(eq(schema.modelEndpoints.id, modelProviderId))
+      .from(schema.tenantModels)
+      .innerJoin(
+        schema.providerCredentials,
+        eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
+      )
+      .where(eq(schema.tenantModels.id, modelProviderId))
       .limit(1),
   );
 
@@ -174,17 +217,8 @@ export async function resolveTenantProvider(
     if (opts?.modelProviderId) {
       endpointPayload = await resolveExtractEndpoint(db, tenantId, opts.modelProviderId);
     } else {
-      const conditions = [eq(schema.modelEndpoints.status, "active")];
-      if (opts?.preferModel) {
-        conditions.push(eq(schema.modelEndpoints.model, opts.preferModel));
-      }
-      const [ep] = await withRLS(db, tenantId, (tx) =>
-        tx.select({ id: schema.modelEndpoints.id })
-          .from(schema.modelEndpoints)
-          .where(and(...conditions))
-          .limit(1),
-      );
-      if (ep) endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
+      const found = await pickActiveTenantModel(db, tenantId, opts?.preferModel ?? null);
+      if (found) endpointPayload = await resolveExtractEndpoint(db, tenantId, found);
     }
   } catch {}
 

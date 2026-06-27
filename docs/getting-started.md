@@ -29,7 +29,7 @@ Verify it worked:
 
 ```bash
 koji version
-# koji 0.15.0
+# koji 0.19.0
 ```
 
 > **Updating?** `uv tool upgrade koji` pulls the latest.
@@ -225,7 +225,7 @@ fields:
           type: number
 ```
 
-Field types: `string`, `number`, `date`, `enum`, `mapping`, `array`. Arrays can hold nested objects with their own properties — see the [Schema Authoring Guide](schema-guide.md) for the full reference.
+Field types: `string`, `number`, `date`, `boolean`, `enum`, `mapping`, `array`. Arrays can hold nested objects with their own properties — see the [Schema Authoring Guide](schema-guide.md) for the full reference.
 
 The `description` on each field matters -- it guides the extraction model. Be specific about what the field represents and where it typically appears in the document.
 

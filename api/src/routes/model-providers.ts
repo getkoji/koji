@@ -1,10 +1,22 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
+import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
+
+/**
+ * Derive the provider_credentials.id for a given model_endpoints.id, matching
+ * the deterministic md5 formula used by the 0020 backfill migration. Mirrors
+ * the SQL `md5('cred:' || id::text)::uuid` so writes that originate from this
+ * route stay consistent with rows the migration created.
+ */
+function deriveCredentialId(endpointId: string): string {
+  const h = crypto.createHash("md5").update(`cred:${endpointId}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
 
 function requireMasterKey(c: Context<Env>): string {
   const key = c.get("masterKey");
@@ -332,6 +344,39 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   );
 
   const row = rows[0]!;
+
+  // Dual-write into the split tables so the new resolve path (tenant_models
+  // → provider_credentials) sees this endpoint. IDs are derived to match
+  // the 0020 backfill convention so a row created here looks identical to
+  // one the migration would have produced.
+  const credentialId = deriveCredentialId(row.id);
+  await withRLS(db, tenantId, async (tx) => {
+    await tx
+      .insert(schema.providerCredentials)
+      .values({
+        id: credentialId,
+        tenantId,
+        slug: body.slug,
+        displayName: body.name,
+        provider: body.provider,
+        configJson,
+        authJson,
+        createdBy: principal.userId,
+      })
+      .onConflictDoNothing();
+    await tx
+      .insert(schema.tenantModels)
+      .values({
+        id: row.id,
+        tenantId,
+        credentialId,
+        model: body.model,
+        capability: "chat",
+        slug: body.slug,
+        displayName: body.name,
+      })
+      .onConflictDoNothing();
+  });
   const pub = publicConfig(row.provider, configJson);
   return c.json({
     id: row.id,
@@ -454,6 +499,33 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   );
 
   if (rows.length === 0) return c.json({ error: "Model provider not found" }, 404);
+
+  // Mirror to the split tables. Connection-shaped fields go to the
+  // credential; model-shaped fields go to the tenant_model.
+  const credentialId = deriveCredentialId(endpointId);
+  const credentialUpdates: Record<string, unknown> = { updatedAt: new Date() };
+  if (body.name) credentialUpdates.displayName = body.name;
+  if (configTouched) credentialUpdates.configJson = cfg;
+  if (updates.authJson) credentialUpdates.authJson = updates.authJson;
+  const modelUpdates: Record<string, unknown> = { updatedAt: new Date() };
+  if (body.name) modelUpdates.displayName = body.name;
+  if (body.model) modelUpdates.model = body.model;
+
+  await withRLS(db, tenantId, async (tx) => {
+    if (Object.keys(credentialUpdates).length > 1) {
+      await tx
+        .update(schema.providerCredentials)
+        .set(credentialUpdates)
+        .where(eq(schema.providerCredentials.id, credentialId));
+    }
+    if (Object.keys(modelUpdates).length > 1) {
+      await tx
+        .update(schema.tenantModels)
+        .set(modelUpdates)
+        .where(eq(schema.tenantModels.id, endpointId));
+    }
+  });
+
   return c.json(rows[0]);
 });
 
@@ -464,13 +536,23 @@ modelProviders.delete("/:id", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
+  const now = new Date();
+  const credentialId = deriveCredentialId(endpointId);
 
-  await withRLS(db, tenantId, (tx) =>
-    tx
+  await withRLS(db, tenantId, async (tx) => {
+    await tx
       .update(schema.modelEndpoints)
-      .set({ deletedAt: new Date() })
-      .where(eq(schema.modelEndpoints.id, endpointId))
-  );
+      .set({ deletedAt: now })
+      .where(eq(schema.modelEndpoints.id, endpointId));
+    await tx
+      .update(schema.tenantModels)
+      .set({ deletedAt: now })
+      .where(eq(schema.tenantModels.id, endpointId));
+    await tx
+      .update(schema.providerCredentials)
+      .set({ deletedAt: now })
+      .where(eq(schema.providerCredentials.id, credentialId));
+  });
 
   return c.body(null, 204);
 });
@@ -527,15 +609,26 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
     return c.json({ error: "Could not build credentials" }, 400);
   }
 
+  const now = new Date();
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.modelEndpoints)
-      .set({ authJson, updatedAt: new Date() })
+      .set({ authJson, updatedAt: now })
       .where(eq(schema.modelEndpoints.id, endpointId))
       .returning({ id: schema.modelEndpoints.id })
   );
 
   if (rows.length === 0) return c.json({ error: "Model provider not found" }, 404);
+
+  // Mirror to the credential — auth lives there in the split shape.
+  const credentialId = deriveCredentialId(endpointId);
+  await withRLS(db, tenantId, (tx) =>
+    tx
+      .update(schema.providerCredentials)
+      .set({ authJson, updatedAt: now })
+      .where(eq(schema.providerCredentials.id, credentialId)),
+  );
+
   return c.json({ ok: true, keyHint: authJson.key_hint ?? null });
 });
 

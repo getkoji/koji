@@ -193,6 +193,72 @@ Output: `"gl_claims_made": true`
 
 Booleans are especially useful with [form mappings](forms-guide.md) -- checkbox mapping types detect whether a checkbox is marked and return the boolean value directly.
 
+### object
+
+A single nested object — a group of related fields under one key. Declare the child fields under `properties` (the same key array items use):
+
+```yaml
+insured:
+  type: object
+  properties:
+    name:
+      type: string
+    state:
+      type: enum
+      options: [CA, NY, TX]
+```
+
+Output: `"insured": { "name": "Acme Corp", "state": "CA" }`
+
+Child fields are full field specs, so type coercion, `enum`/`mapping` vocabularies, `normalize`, and `vocab_by` all apply inside an object exactly as they do at the top level (and as they do inside [array items](#field-types-and-rules-apply-inside-items)). Use `object` for a *single* nested group; use [`array`](#array) of objects for a *repeated* group.
+
+> `fields` is accepted as an alias for `properties` on object types, but `properties` is canonical — prefer it for consistency with array items.
+
+## Reusing definitions (DRY schemas)
+
+Large schemas tend to repeat the same things — the same `mappings` vocabulary in several fields, the same `items` shape across multiple arrays, the same number/date setup over and over. You don't have to copy-paste. Schemas are YAML, so you can use **YAML anchors** — a native YAML feature, no special Koji syntax — to define a block once and reuse it everywhere.
+
+Mark a block with an anchor (`&name`), then reuse it with an alias (`*name`):
+
+```yaml
+name: insurance_certificate
+fields:
+  gl_applies_to: &applies_to        # define once, name it "applies_to"
+    type: mapping
+    mappings:
+      each_occurrence: ["Each Occurrence", "Per Occurrence"]
+      general_aggregate: ["Aggregate", "Gen Agg"]
+  umbrella_applies_to: *applies_to  # reuse the exact same definition
+  excess_applies_to: *applies_to
+```
+
+All three fields end up with identical definitions, but you maintain only one.
+
+### A definitions block with `_defs`
+
+For bigger schemas, keep every reusable piece in one place. Koji ignores unknown top-level keys, so a top-level `_defs` block is a safe home for definitions you only reference through aliases — it never becomes a field itself:
+
+```yaml
+name: insurance_certificate
+_defs:
+  applies_to: &applies_to
+    type: mapping
+    mappings:
+      each_occurrence: ["Each Occurrence", "Per Occurrence"]
+      general_aggregate: ["Aggregate", "Gen Agg"]
+  money: &money
+    type: number
+fields:
+  gl_applies_to:       *applies_to
+  gl_limit:            *money
+  umbrella_applies_to: *applies_to
+  umbrella_limit:      *money
+```
+
+You can anchor anything that repeats — a whole field definition, a nested `items` structure, a `mappings` vocabulary, a `hints` block.
+
+> **Anchors are a copy mechanism.** An alias expands to a full copy of the anchored block at parse time. Editing the anchored definition updates every field that references it — that's the point. There's no runtime cost; by the time extraction runs, the schema looks exactly as if you'd written each block out by hand.
+
 ## Required fields
 
 Mark fields as `required: true` when the extraction is incomplete without them:
@@ -279,12 +345,30 @@ line_items:
 
 | Name | Effect |
 |------|--------|
+| **Strings & casing** | |
 | `trim` | Strip leading/trailing whitespace |
 | `lowercase` | ASCII-insensitive lowercasing |
 | `uppercase` | ASCII-insensitive uppercasing |
+| `title_case` | Capitalize the first letter of each word, lowercase the rest. Preserves already-uppercase tokens as acronyms. `"acme corp"` → `"Acme Corp"`; `"ACME corp"` → `"ACME Corp"` |
 | `slugify` | Lowercase + replace non-alphanumerics with `_` + strip underscores at edges |
+| **Whitespace & punctuation** | |
+| `collapse_spaces` | Collapse runs of spaces/tabs to a single space. Preserves newlines (multi-line addresses keep their breaks). `"ACME   Corp"` → `"ACME Corp"` |
+| `remove_spaces` | Strip every whitespace character — spaces, tabs, newlines, non-breaking spaces. For codes and identifiers where any embedded whitespace is noise. `"ABC 123"` → `"ABC123"`, `"555 123 4567"` → `"5551234567"` |
+| `fix_punctuation_spacing` | Apply English-typographic spacing: remove space before `, . ; : ! ? )`; insert single space after `, ; :` when followed by a letter. Preserves initials (`J. R. R. Tolkien`) and decimals (`$1,234.56`). `"Smith , Jones"` → `"Smith, Jones"` |
+| `prose` | Convenience preset for human-readable fields = `trim` + `collapse_spaces` + `fix_punctuation_spacing`. Use for names, addresses, descriptions — any field where readers expect standard English spacing. Codes and identifiers that may legitimately contain runs of whitespace should use `trim` alone instead. |
+| **Dates** | |
 | `iso8601` | Parse common date formats (ISO, `MM/DD/YYYY`, `MM-DD-YY`, etc.) to `YYYY-MM-DD` |
+| **Numbers & money** | |
+| `integer` | Parse a human-formatted integer to a Number; drops grouping commas, spaces, and underscores. `"1,234"` → `1234` |
+| `decimal_amount` | Parse a human-formatted decimal to a Number; strips currency symbols and grouping, recognises accounting parentheses for negatives. `"$1,234.56"` → `1234.56`; `"(50.00)"` → `-50` |
 | `minor_units` | Parse currency strings or numbers to integer minor units (cents). `($50.00)` → `-5000` |
+| `percent` | Strip a trailing `%` and parse as a number. Does NOT divide by 100 — `"12%"` → `12`, preserving the human-written magnitude |
+| `digits_only` | Strip every non-digit character. For account numbers, IDs, anything where formatting is presentational. `"(555) 123-4567"` → `"5551234567"` |
+| **Booleans** | |
+| `boolean` | Coerce common truthy/falsy strings to a real Boolean. Case-insensitive. `"yes"`, `"Y"`, `"true"`, `"1"`, `"on"` → `true`; the negative variants → `false` |
+| **Identifiers** | |
+| `email` | Trim + lowercase. Emails are case-insensitive in practice; lowering avoids accidental duplicates downstream |
+| `url` | Trim, lowercase the scheme and host, drop a trailing `/` on path-root URLs. Preserves path case (path components are case-sensitive). Invalid URLs pass through unchanged |
 | `e164` | Strip phone formatting; prefix `+1` for bare 10-digit US numbers |
 
 Transforms are deterministic and fault-tolerant: if a value can't be parsed (e.g. `"next Tuesday"` through `iso8601`), the original value is passed through unchanged. Unknown transform names are recorded as warnings in the response's `normalization.warnings` list rather than raising.
@@ -785,6 +869,79 @@ Under the hood, Koji topologically sorts fields into **extraction waves**. `form
 
 If `depends_on` becomes too heavy for your schema, the alternative is to split the polymorphic field into form-specific fields (`period_fiscal_year_end`, `period_quarter_end`, `period_date_of_report`, `period_meeting_date`) with narrow hints each, and normalize them at a later layer. Both approaches are supported.
 
+### Conditional vocabularies based on other fields
+
+`extraction_hint_by` changes the *guidance* based on a sibling field. `vocab_by` goes a step further and changes the *allowed values* (a `mapping` or `enum` vocabulary) based on a sibling field's value.
+
+The classic case: a coverage row's valid `applies_to` codes depend on the row's `coverage`. Declare the per-value vocabularies under `vocab_by`, keyed by the sibling field and then by its value:
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      coverage:
+        type: enum
+        options: [crime, general_liability]
+      applies_to:
+        type: mapping
+        vocab_by:
+          coverage:                         # the sibling field, in the same row
+            crime:
+              mappings:
+                employee_theft: ["Employee Theft", "EE Theft"]
+                forgery: ["Forgery or Alteration"]
+            general_liability:
+              mappings:
+                each_occurrence: ["Each Occurrence", "Per Occurrence"]
+                general_aggregate: ["Aggregate", "Gen Agg"]
+        vocab_default:                       # optional: used when no branch matches
+          mappings:
+            other: []
+```
+
+How it resolves, per row:
+
+1. Koji picks the branch whose key matches the row's `coverage` value (e.g. `crime`).
+2. The row's `applies_to` is resolved against *only that branch* — so `"EE Theft"` on a crime row becomes `employee_theft`, but a general-liability code on a crime row will not match and is flagged as a validation issue (`rule: conditional_vocab`).
+3. If no branch matches and a `vocab_default` is declared, the default vocabulary is used. If no branch matches and there's no default, the value is left as-is and a validation issue is reported so it surfaces in review.
+
+For **array items** (above), all rows come back from a single extraction call, so Koji can't pre-pick a per-row vocabulary in the prompt. Instead it shows the model the whole decision table as guidance and then enforces the correct branch deterministically after extraction. Correctness comes from that post-extraction step — as long as the row's `coverage` is extracted, the `applies_to` is resolved against the right vocabulary regardless of what the model guessed.
+
+For **top-level scalar fields**, add `depends_on` so the sibling extracts first (same wave mechanics as `extraction_hint_by`); once its value is known, the dependent field's prompt is narrowed to just the selected branch:
+
+```yaml
+fields:
+  coverage:
+    type: enum
+    options: [crime, general_liability]
+  applies_to:
+    type: mapping
+    depends_on: [coverage]
+    vocab_by:
+      coverage:
+        crime: { mappings: { employee_theft: ["EE Theft"] } }
+        general_liability: { mappings: { each_occurrence: ["Each Occ"] } }
+```
+
+Each branch is an ordinary vocabulary block (`mappings`, `options`, or `values`), so it composes with [anchors and `_defs`](#reusing-definitions-dry-schemas) — define a vocabulary once and reference it from multiple branches:
+
+```yaml
+_defs:
+  crime_codes: &crime_codes
+    mappings:
+      employee_theft: ["EE Theft"]
+      forgery: []
+fields:
+  # ...
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime: *crime_codes
+```
+
 ## Heading inference
 
 The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.
@@ -867,6 +1024,34 @@ coverages:
 ```
 
 The extraction model identifies rows in tables, bulleted lists, or repeated structures and returns them as an array of objects.
+
+### Field types and rules apply inside items
+
+An item property is a full field spec, not just a type label. Everything you can declare on a top-level field works identically on a field nested inside an array item (or a nested object):
+
+- **Type coercion** — `type: number` strips currency/grouping and parses to a number, `type: date` normalizes to `YYYY-MM-DD`, `type: boolean` coerces yes/no/checkbox text — the same at depth as at the top level.
+- **Controlled vocabularies** — `type: enum` (`options:`) and `type: mapping` (`mappings:` with aliases) are shown to the model in the prompt *and* resolved to their canonical value for nested fields, so an `applies_to` code or carrier label inside `coverages[]` lands on the canonical form.
+- **Normalization** — per-item `normalize:` transforms (see [Normalization](#normalization)).
+- **Per-item validation** — declare a `validation:` block on the `items` schema to run rules against each row; failures are reported with a `field[i].subfield` path.
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      applies_to:
+        type: mapping            # resolved per row, vocabulary shown to the model
+        mappings:
+          each_occurrence: ["Each Occurrence", "Per Occurrence"]
+          general_aggregate: ["Aggregate", "Gen Agg"]
+      limit:
+        type: number             # "$1,000,000" -> 1000000, per row
+    validation:
+      - required: [applies_to]    # checked on every row
+```
+
+Nesting can go two levels deep — an item property can itself be an `array` of objects (e.g. `coverages[] -> limits[] -> {applies_to, limit}`), and type coercion, vocabularies, normalization, and validation all apply at the deeper level too.
 
 ### Arrays with hints
 
