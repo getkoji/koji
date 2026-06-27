@@ -543,6 +543,7 @@ Control runs over `window.postMessage`. Every message is a plain object with a
 | `koji:goToPage` | `{ page: number }` | Jump to a 1-based page (clamped to the document). |
 | `koji:setToken` | `{ token: string }` | Swap in a fresh `documentToken` without reloading the iframe — see [Token refresh](#token-refresh-for-long-sessions). |
 | `koji:setTheme` | `{ theme: { activeColor?: string; inactiveColor?: string } }` | Recolor the highlight boxes (any CSS color; pass `rgba()`/`hsla()` for translucency). |
+| `koji:setViewMode` | `{ mode?: "paginated" \| "scroll"; overflow?: "auto" \| "scroll" \| "hidden" }` | Switch the layout at runtime — see [Layout](#layout-scroll-vs-paginated). Both fields optional; unknown values are ignored. |
 
 **Outbound** — viewer → parent (your `window.addEventListener("message", …)`):
 
@@ -605,6 +606,35 @@ or at runtime via `koji:setTheme`:
 `activeColor` styles the selected highlight; `inactiveColor` styles the rest.
 Both accept any CSS color — use `rgba()`/`hsla()` for translucent fills so the
 underlying text stays readable.
+
+### Layout: scroll vs paginated
+
+The viewer defaults to **paginated** layout — one page at a time with `‹` / `›`
+arrow navigation. To render every page stacked in a continuous scrollable
+column instead, set `mode=scroll`. Control the scrollbar with `overflow`
+(`auto` default, `scroll` always-visible, `hidden` none). Set them at load time:
+
+```html
+<iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&mode=scroll&overflow=auto"></iframe>
+```
+
+…or switch at runtime (both fields optional):
+
+```typescript
+iframe.contentWindow!.postMessage(
+  { type: "koji:setViewMode", mode: "scroll" },
+  VIEWER_ORIGIN,
+);
+```
+
+| Param | Values | Default | Meaning |
+|-------|--------|---------|---------|
+| `mode` | `paginated`, `scroll` | `paginated` | Arrow-paged single page vs. all pages stacked. |
+| `overflow` | `auto`, `scroll`, `hidden` | `auto` | Scrollbar behavior of the viewer container. |
+
+`koji:goToPage` works in both layouts — it flips the page in paginated mode and
+scrolls the page into view in scroll mode. Unknown values fall back to the
+defaults.
 
 ### Authentication & static assets
 
