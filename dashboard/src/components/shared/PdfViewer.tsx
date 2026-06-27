@@ -86,6 +86,8 @@ interface PdfViewerProps {
   overflow?: ViewOverflow;
   /** Display mode: "paginated" shows one page at a time with arrows, "scroll" renders all pages in a scrollable container */
   mode?: ViewMode;
+  /** Optional element rendered at the start of the toolbar (e.g. a field picker). Constrained so it can't crowd out the page nav. */
+  toolbarSlot?: React.ReactNode;
 }
 
 // Tailwind only ships classes it can see as literal strings. Mapping the
@@ -103,7 +105,7 @@ const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, theme, overflow = "auto", mode = "paginated" }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, theme, overflow = "auto", mode = "paginated", toolbarSlot }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -221,10 +223,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar: page navigation + highlight toggle */}
-      {(totalPages > 1 || highlights.length > 0) && (
-        <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
-          {totalPages > 1 && mode === "paginated" ? (
+      {/* Toolbar: optional slot (e.g. field picker) + page navigation + highlight toggle */}
+      {(totalPages > 1 || highlights.length > 0 || toolbarSlot) && (() => {
+        const prevBtn =
+          totalPages > 1 && mode === "paginated" ? (
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage <= 1}
@@ -232,24 +234,9 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
             >
               <ChevronLeft className="w-3.5 h-3.5 text-ink-3" />
             </button>
-          ) : <span />}
-          <div className="flex items-center gap-2">
-            {totalPages > 1 && (
-              <span className="font-mono text-[10px] text-ink-4">
-                {currentPage} / {totalPages}
-              </span>
-            )}
-            {highlights.length > 0 && (
-              <button
-                onClick={() => setShowHighlights((v) => !v)}
-                className={`p-0.5 rounded transition-colors ${showHighlights ? "bg-vermillion-3/30 text-vermillion-2" : "text-ink-4 hover:bg-cream-2"}`}
-                title={showHighlights ? "Hide highlights" : "Show highlights"}
-              >
-                <Highlighter className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-          {totalPages > 1 && mode === "paginated" ? (
+          ) : null;
+        const nextBtn =
+          totalPages > 1 && mode === "paginated" ? (
             <button
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage >= totalPages}
@@ -257,9 +244,49 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
             >
               <ChevronRight className="w-3.5 h-3.5 text-ink-3" />
             </button>
-          ) : <span />}
-        </div>
-      )}
+          ) : null;
+        const pageLabel =
+          totalPages > 1 ? (
+            <span className="font-mono text-[10px] text-ink-4 whitespace-nowrap">
+              {currentPage} / {totalPages}
+            </span>
+          ) : null;
+        const highlightToggle =
+          highlights.length > 0 ? (
+            <button
+              onClick={() => setShowHighlights((v) => !v)}
+              className={`p-0.5 rounded transition-colors ${showHighlights ? "bg-vermillion-3/30 text-vermillion-2" : "text-ink-4 hover:bg-cream-2"}`}
+              title={showHighlights ? "Hide highlights" : "Show highlights"}
+            >
+              <Highlighter className="w-3.5 h-3.5" />
+            </button>
+          ) : null;
+
+        // With a toolbar slot (the embed field picker), give the slot the
+        // flexible space on the left and pin the page nav + toggle to the
+        // right so the slot can never crowd them out. Without a slot, keep the
+        // original prev | center | next layout used by the dashboard surfaces.
+        return toolbarSlot ? (
+          <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0">
+            <div className="min-w-0 flex-1">{toolbarSlot}</div>
+            <div className="flex items-center gap-1 shrink-0">
+              {prevBtn}
+              {pageLabel}
+              {nextBtn}
+              {highlightToggle}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
+            {prevBtn ?? <span />}
+            <div className="flex items-center gap-2">
+              {pageLabel}
+              {highlightToggle}
+            </div>
+            {nextBtn ?? <span />}
+          </div>
+        );
+      })()}
 
       {/* PDF document. Tailwind class names MUST be literal strings — a
           template like `overflow-${overflow}` does not get picked up by the
