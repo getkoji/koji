@@ -149,8 +149,15 @@ export const tenantModels = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    credentialModelIdx: uniqueIndex("tenant_models_credential_model_idx")
-      .on(t.credentialId, t.model)
+    // (credential_id, model, capability) — same model can serve multiple
+    // capabilities on the same credential as separate rows (gpt-4o → one
+    // chat row + one vision row). The earlier (credential_id, model)
+    // unique was relaxed in 0021 so the picker can capability-filter
+    // without ambiguity.
+    credentialModelCapabilityIdx: uniqueIndex(
+      "tenant_models_credential_model_capability_idx",
+    )
+      .on(t.credentialId, t.model, t.capability)
       .where(sql`deleted_at IS NULL`),
     tenantIdx: index("tenant_models_tenant_idx")
       .on(t.tenantId)

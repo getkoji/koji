@@ -6,6 +6,7 @@ import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { inferModelCapabilities, type ModelCapability } from "@/lib/model-capabilities";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -480,6 +481,11 @@ function AddCredentialDialog({
         slug,
         provider: providerType,
         model,
+        // Derive capabilities from the chosen model so vision-capable
+        // models (gpt-4o, claude-sonnet-4, etc.) get both chat and vision
+        // tenant_models rows up-front. Ollama/custom models that don't
+        // match the heuristic just get chat.
+        capabilities: inferModelCapabilities(model),
       };
       if (providerType === "bedrock") {
         payload.aws_region = awsRegion || undefined;
@@ -749,19 +755,73 @@ function AddModelDialog({
   onAdded: () => void;
 }) {
   const [model, setModel] = useState("");
-  const [capability, setCapability] = useState<TenantModel["capability"]>("chat");
+  const [modelSearch, setModelSearch] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
   const [label, setLabel] = useState("");
+  const [customMode, setCustomMode] = useState(false);
+  const [customCapabilities, setCustomCapabilities] = useState<ModelCapability[]>(["chat"]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const { data: registryModels } = useApi(
+    useCallback(
+      () =>
+        api
+          .get<{ data: RegistryModel[] }>("/api/model-registry")
+          .then((r) => r.data)
+          .catch(() => []),
+      [],
+    ),
+  );
+
+  // Only show models for this credential's provider. Filter out models
+  // already attached to this credential (collapsed across capabilities)
+  // so the dropdown doesn't show duplicates.
+  const existingModels = new Set(credential.models.map((m) => m.model));
+  const providerRegistryModels = (registryModels ?? []).filter(
+    (m) => m.provider === credential.provider && !existingModels.has(m.modelId),
+  );
+  const fallback = (FALLBACK_SUGGESTIONS[credential.provider] ?? [])
+    .filter((id) => !existingModels.has(id))
+    .map((id) => ({
+      provider: credential.provider,
+      modelId: id,
+      displayName: id,
+      isRecommended: false,
+    }));
+  const availableModels = providerRegistryModels.length > 0 ? providerRegistryModels : fallback;
+  const filteredModels = modelSearch
+    ? availableModels.filter(
+        (m) =>
+          m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) ||
+          m.displayName.toLowerCase().includes(modelSearch.toLowerCase()),
+      )
+    : availableModels;
+
+  // Capabilities surfaced to the user (and submitted). In catalog mode
+  // they're derived from the chosen model id; in custom mode the user
+  // toggles them via checkboxes.
+  const derivedCaps = model ? inferModelCapabilities(model) : [];
+  const submitCaps = customMode ? customCapabilities : derivedCaps;
+
+  function toggleCustomCap(cap: ModelCapability) {
+    setCustomCapabilities((curr) =>
+      curr.includes(cap) ? curr.filter((c) => c !== cap) : [...curr, cap],
+    );
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (submitCaps.length === 0) {
+      setError("Pick at least one capability.");
+      return;
+    }
     setCreating(true);
     try {
       await api.post(`/api/credentials/${credential.id}/models`, {
         model: model.trim(),
-        capability,
+        capabilities: submitCaps,
         label: label.trim() || undefined,
       });
       onAdded();
@@ -774,38 +834,145 @@ function AddModelDialog({
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[460px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add model</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
           Attach another model to{" "}
           <strong className="text-ink">{credential.displayName}</strong>. Uses the same API key.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">Model *</label>
-            <input
-              required
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={credential.provider === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"}
-              autoFocus
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">Capability</label>
-            <select
-              value={capability}
-              onChange={(e) => setCapability(e.target.value as TenantModel["capability"])}
-              className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
-            >
-              {CAPABILITIES.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label} — {c.hint}
-                </option>
-              ))}
-            </select>
-          </div>
+          {!customMode ? (
+            <div className="space-y-1.5 relative">
+              <label className="text-[12.5px] font-medium text-ink">Model *</label>
+              <input
+                required
+                value={model || modelSearch}
+                onChange={(e) => {
+                  setModelSearch(e.target.value);
+                  setModel("");
+                  setShowDropdown(true);
+                }}
+                onFocus={() => setShowDropdown(true)}
+                placeholder="Search models..."
+                autoFocus
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              />
+              {showDropdown && filteredModels.length > 0 && (
+                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[220px] overflow-y-auto">
+                  {filteredModels.map((m) => {
+                    const caps = inferModelCapabilities(m.modelId);
+                    return (
+                      <button
+                        key={m.modelId}
+                        type="button"
+                        onClick={() => {
+                          setModel(m.modelId);
+                          setModelSearch("");
+                          setShowDropdown(false);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-cream-2 transition-colors flex items-center justify-between gap-3 ${m.isRecommended ? "font-medium" : ""}`}
+                      >
+                        <span className="truncate">{m.modelId}</span>
+                        <span className="flex items-center gap-1 flex-shrink-0">
+                          {caps.map((c) => (
+                            <span
+                              key={c}
+                              className="text-[9px] uppercase tracking-wider text-ink-3 bg-cream-2 px-1 py-0.5 rounded"
+                            >
+                              {c}
+                            </span>
+                          ))}
+                          {m.isRecommended && (
+                            <span className="text-[9px] text-vermillion-2 uppercase tracking-wider ml-1">
+                              recommended
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {model && (
+                <div className="flex items-center justify-between pt-1">
+                  <p className="text-[10px] text-ink-4">
+                    Selected: <span className="font-mono">{model}</span>
+                  </p>
+                  <div className="flex items-center gap-1">
+                    {derivedCaps.map((c) => (
+                      <span
+                        key={c}
+                        className="text-[9px] uppercase tracking-wider text-ink-3 bg-cream-2 px-1.5 py-0.5 rounded"
+                      >
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomMode(true);
+                  setModel("");
+                  setModelSearch("");
+                }}
+                className="text-[11px] text-ink-3 hover:text-ink underline underline-offset-2"
+              >
+                Use a custom model id
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12.5px] font-medium text-ink">Custom model id *</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomMode(false);
+                      setModel("");
+                    }}
+                    className="text-[11px] text-ink-3 hover:text-ink underline underline-offset-2"
+                  >
+                    Back to dropdown
+                  </button>
+                </div>
+                <input
+                  required
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={
+                    credential.provider === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"
+                  }
+                  autoFocus
+                  className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+                />
+                <p className="text-[11px] text-ink-4">
+                  For self-hosted, Ollama, or models the registry doesn&apos;t know about.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">Capabilities *</label>
+                <div className="flex items-center gap-3">
+                  {(["chat", "vision", "ocr"] as ModelCapability[]).map((cap) => (
+                    <label
+                      key={cap}
+                      className="flex items-center gap-1.5 text-[12px] cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={customCapabilities.includes(cap)}
+                        onChange={() => toggleCustomCap(cap)}
+                      />
+                      <span className="font-mono">{cap}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Label (optional)</label>
             <input
@@ -830,10 +997,14 @@ function AddModelDialog({
             </button>
             <button
               type="submit"
-              disabled={creating || !model.trim()}
+              disabled={creating || !model.trim() || submitCaps.length === 0}
               className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50"
             >
-              {creating ? "Adding..." : "Add model"}
+              {creating
+                ? "Adding..."
+                : submitCaps.length > 1
+                  ? `Add model (${submitCaps.length} capabilities)`
+                  : "Add model"}
             </button>
           </div>
         </form>

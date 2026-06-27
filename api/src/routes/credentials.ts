@@ -108,11 +108,22 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
 });
 
 /**
- * POST /api/credentials/:credentialId/models — attach an additional model
+ * POST /api/credentials/:credentialId/models — attach a model (or models)
  * to an existing credential. The credential must already exist (created
  * via POST /api/model-providers).
  *
- * Body: { model: string, capability?: "chat"|"vision"|"ocr", label?: string }
+ * Body: {
+ *   model: string,
+ *   capabilities?: ("chat"|"vision"|"ocr")[],   // one row per capability
+ *   capability?: "chat"|"vision"|"ocr",         // legacy single-value form
+ *   label?: string
+ * }
+ *
+ * `capabilities` is preferred. A model that supports both chat and vision
+ * creates two rows so the picker UIs can capability-filter without
+ * per-tenant judgment ("is this model in the vision pool? yes / no").
+ * Already-existing (model, capability) pairs are skipped via
+ * `ON CONFLICT DO NOTHING` — sending the same payload twice is idempotent.
  */
 credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
@@ -122,18 +133,25 @@ credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) 
   const body = await c.req.json<{
     model?: string;
     capability?: string;
+    capabilities?: string[];
     label?: string;
   }>();
 
   if (!body.model || typeof body.model !== "string" || !body.model.trim()) {
     return c.json({ error: "model is required" }, 400);
   }
-  const capability = (body.capability ?? "chat").toLowerCase();
-  if (!CAPABILITIES.has(capability)) {
-    return c.json(
-      { error: `capability must be one of: ${[...CAPABILITIES].join(", ")}` },
-      400,
-    );
+
+  const requested = Array.isArray(body.capabilities) && body.capabilities.length > 0
+    ? body.capabilities
+    : [body.capability ?? "chat"];
+  const caps = Array.from(new Set(requested.map((c) => String(c).toLowerCase())));
+  for (const cap of caps) {
+    if (!CAPABILITIES.has(cap)) {
+      return c.json(
+        { error: `capability must be one of: ${[...CAPABILITIES].join(", ")}` },
+        400,
+      );
+    }
   }
 
   // Confirm the credential exists for this tenant before inserting.
@@ -151,16 +169,22 @@ credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) 
   );
   if (!cred) return c.json({ error: "Credential not found" }, 404);
 
+  const modelName = body.model.trim();
+  const label = body.label?.trim() || modelName;
+
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .insert(schema.tenantModels)
-      .values({
-        tenantId,
-        credentialId,
-        model: body.model!.trim(),
-        capability,
-        displayName: body.label?.trim() || body.model!.trim(),
-      })
+      .values(
+        caps.map((capability) => ({
+          tenantId,
+          credentialId,
+          model: modelName,
+          capability,
+          displayName: label,
+        })),
+      )
+      .onConflictDoNothing()
       .returning({
         id: schema.tenantModels.id,
         model: schema.tenantModels.model,
@@ -171,7 +195,7 @@ credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) 
       }),
   );
 
-  return c.json(rows[0], 201);
+  return c.json({ data: rows }, 201);
 });
 
 /**
