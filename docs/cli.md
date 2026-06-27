@@ -215,6 +215,88 @@ The corpus format is the convention used by [getkoji/corpus](https://github.com/
 
 ---
 
+## The schema loop (connected platform)
+
+These commands drive the **Build → Validate → Corpus** workflow from the dashboard, but from the terminal. They talk to a running Koji platform (the same API the dashboard uses), so they need credentials: run `koji login` first, or set `KOJI_API_URL` + `KOJI_API_KEY`. Pass `--profile` to target a specific saved profile.
+
+Every command below accepts `--json` to emit raw machine-readable output instead of a table — handy for scripting and for driving the loop from an agent.
+
+The inner loop is: edit the schema YAML → `koji validate` to backtest it against ground truth → drill into a failing doc with `koji corpus diff` → repeat.
+
+### `koji validate`
+
+Backtest a schema against its corpus ground truth. Pushes the local schema (so your edits take effect), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs.
+
+```bash
+koji validate insurance_policy                       # push schemas/insurance_policy.yaml, then validate
+koji validate ./schemas/insurance_policy.yaml        # explicit path
+koji validate insurance_policy --no-push             # validate the version already on the server
+koji validate insurance_policy --watch               # re-run whenever the local file changes
+koji validate insurance_policy --check               # exit non-zero if any field regressed (CI / loops)
+koji validate insurance_policy --json                # raw result for an agent to read
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model` | Override the extraction model (e.g. `openai/gpt-4o-mini`). |
+| `--no-push` | Validate the version already on the server; don't push local edits. |
+| `--message`, `-m` | Commit message when pushing the schema. |
+| `--watch`, `-w` | Re-run whenever the local schema file changes. |
+| `--check` | Exit non-zero if any field regressed (for CI / loops). |
+| `--json` | Emit raw JSON instead of a table. |
+| `--profile`, `-p` | CLI profile to use. |
+
+The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found and pushed automatically) or a path to a YAML file. The slug is taken from the file's `name:` field.
+
+### `koji run`
+
+Run one corpus document through a schema and show the extraction — the Build tab's **Run** button. Uses your local schema YAML if a file is found (so you can iterate without committing a version), otherwise the server's latest version.
+
+```bash
+koji run insurance_policy "10th street townes.pdf"   # match a doc by filename
+koji run insurance_policy 561c6e69                    # …or by id (prefix is fine)
+koji run insurance_policy 561c6e69 --provenance       # show the source snippet per value
+koji run insurance_policy 561c6e69 --json             # raw extraction for an agent
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model` | Override the extraction model. |
+| `--provenance` | Show the source snippet each value came from. |
+| `--json` | Emit raw JSON. |
+| `--profile`, `-p` | CLI profile to use. |
+
+### `koji corpus`
+
+Manage a schema's validation corpus — documents and their ground-truth annotations.
+
+```bash
+koji corpus ls insurance_policy                      # list docs (id, filename, ground-truth?, source, tags)
+koji corpus ls insurance_policy --no-gt              # only docs missing ground truth
+koji corpus ls insurance_policy --tag edge-case      # filter by tag
+
+koji corpus diff insurance_policy 561c6e69           # extracted vs ground truth, field by field
+koji corpus diff insurance_policy 561c6e69 --run     # extract fresh first, then diff
+
+koji corpus get insurance_policy 561c6e69 -o doc.pdf # download the source file to read it
+koji corpus get insurance_policy 561c6e69 --markdown # …or the parsed markdown text
+
+koji corpus add insurance_policy ./new-doc.pdf       # upload a doc into the corpus
+koji corpus tag insurance_policy 561c6e69 --add edge-case --remove synthetic
+
+koji corpus gt show insurance_policy 561c6e69        # show current ground truth
+koji corpus gt accept insurance_policy 561c6e69      # promote the latest extraction to ground truth
+koji corpus gt set insurance_policy 561c6e69 --from truth.json
+```
+
+A document is addressed by corpus-entry id (a unique prefix is enough — the id shown by `corpus ls` is truncated) or by filename (exact, or a unique substring). All `corpus` subcommands accept `--json` and `--profile`.
+
+`koji corpus get` downloads the document so you can read it directly — the source file by default (PDFs, images, etc.), or the parsed markdown with `--markdown`. This is how you settle a disagreement between an extraction and ground truth: pull the document, read what it actually says, and correct ground truth with `koji corpus gt set`.
+
+`koji corpus gt accept` reads the document's latest extraction (run `koji run` first) and saves those values as ground truth — the fast path for "this extraction is correct." `koji corpus gt set --from <file>` sets ground truth from a JSON file of `{field: value}`.
+
+---
+
 ## Misc
 
 ### `koji version`
@@ -223,7 +305,7 @@ Print the installed Koji version.
 
 ```bash
 koji version
-# koji 0.13.0
+# koji 0.19.0
 ```
 
 ---

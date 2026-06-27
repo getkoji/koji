@@ -21,7 +21,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.18.2"
+KOJI_VERSION = "0.19.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -793,9 +793,9 @@ def whoami():
 
     ok, msg = verify_profile_connectivity(p)
     if ok:
-        console.print("  Status:  [green]connected[/green]")
+        console.print(f"  Status:  [green]✓ {msg}[/green]")
     else:
-        console.print(f"  Status:  [red]unreachable[/red] — {msg}")
+        console.print(f"  Status:  [red]✗ {msg}[/red]")
 
     console.print()
 
@@ -1123,6 +1123,16 @@ def pull(
 def version():
     """Show Koji version."""
     console.print(f"koji {KOJI_VERSION}")
+
+
+# ── Remote platform loop: validate / run / corpus ─────────────────────
+# These talk to a running Koji platform (the same API the dashboard's Build,
+# Validate, and Corpus tabs use). Implementations live in cli/remote.py.
+from .remote import corpus_app, run_doc, validate  # noqa: E402
+
+app.command(name="validate")(validate)
+app.command(name="run")(run_doc)
+app.add_typer(corpus_app, name="corpus")
 
 
 if __name__ == "__main__":
