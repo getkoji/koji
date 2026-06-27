@@ -1364,3 +1364,15 @@ describe("L3 offset-based provenance resolution", () => {
     expect(result.renewal_date!.page).toBeDefined();
   });
 });
+
+describe("resolveProvenance — standalone object fields", () => {
+  it("resolves per-property provenance for a non-array object value", () => {
+    const markdown = "Insured: Acme Corporation, State: California";
+    const extracted = { insured: { name: "Acme Corporation", state: "California" } };
+    const result = resolveProvenance(extracted, markdown);
+    expect(result.insured).not.toBeNull();
+    expect(result.insured!.properties).toBeDefined();
+    expect(result.insured!.properties!.name!.chunk).toBe("Acme Corporation");
+    expect(result.insured!.properties!.state!.chunk).toBe("California");
+  });
+});

@@ -27,7 +27,7 @@ const VALID_FIELD_PROPS = new Set([
   "method", "values", "items", "fields", "merge", "description",
   "format", "default", "hints", "options", "signals", "resolve",
   "verbatim", "mappings", "properties", "enum",
-  "vocab_by", "vocab_default",
+  "vocab_by", "vocab_default", "keep_raw",
 ]);
 
 const VALID_NORMALIZE = new Set([

@@ -40,6 +40,7 @@ import type { ModelProvider } from "./providers";
 import type { ExtractionResult } from "./pipeline";
 import type { TextMap } from "./provenance";
 import { resolveProvenance } from "./provenance";
+import { applyKeepRaw, schemaHasKeepRaw } from "./keep-raw";
 
 export type { Chunk };
 
@@ -361,7 +362,10 @@ export async function intelligentExtract(
 
   const sectionResult = await extractOneSection(chunks, chunks, schemaDef, schemaName, provider, fields, routeAll);
 
-  const provenance = textMap
+  // Resolve provenance when a textMap is present (for bbox highlighting) OR when
+  // any field opts into keep_raw (the verbatim `chunk` doesn't need a textMap).
+  const needsRaw = schemaHasKeepRaw(fields);
+  const resolvedProvenance = (textMap || needsRaw)
     ? resolveProvenance(
         sectionResult.extracted, markdown, textMap,
         sectionResult.source_texts,
@@ -370,6 +374,11 @@ export async function intelligentExtract(
         sectionResult.source_contexts,
       )
     : undefined;
+  if (needsRaw) {
+    applyKeepRaw(sectionResult.extracted, fields, resolvedProvenance);
+  }
+  // Only expose provenance to the caller when a textMap backed it (unchanged output).
+  const provenance = textMap ? resolvedProvenance : undefined;
 
   const elapsedMs = Date.now() - start;
   console.log(

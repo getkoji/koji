@@ -681,6 +681,36 @@ describe("validation integration", () => {
     expect(result.validation!.issues).toHaveLength(0);
   });
 
+  it("emits a keep_raw companion with the verbatim alongside the canonical value", async () => {
+    const markdown = "Coverage schedule: Each Occurrence limit 1,000,000";
+    const provider = mockProvider(
+      JSON.stringify({ coverages: [{ applies_to: "Each Occurrence" }] }),
+    );
+    const schema = {
+      name: "coi",
+      fields: {
+        coverages: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              applies_to: {
+                type: "mapping",
+                keep_raw: true,
+                mappings: { each_occurrence: ["Each Occurrence"] },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = await extractFields(markdown, schema, provider, "m");
+    const row = (result.extracted.coverages as Array<Record<string, unknown>>)[0]!;
+    expect(row.applies_to).toBe("each_occurrence");       // canonical
+    expect(row.applies_to_raw).toBe("Each Occurrence");   // verbatim companion
+  });
+
   it("surfaces a conditional-vocabulary mismatch in the validation report", async () => {
     // crime row carrying a GL-only code → resolution against the crime branch
     // fails and the issue is reported.

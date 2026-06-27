@@ -427,3 +427,18 @@ fields:
     expect(result.ok).toBe(true);
   });
 });
+
+describe("schema compiler — keep_raw", () => {
+  it("accepts keep_raw on a field", () => {
+    const result = compileSchema(`
+name: t
+fields:
+  applies_to:
+    type: mapping
+    keep_raw: true
+    mappings:
+      each_occurrence: ["Each Occurrence"]
+`);
+    expect(result.ok).toBe(true);
+  });
+});
