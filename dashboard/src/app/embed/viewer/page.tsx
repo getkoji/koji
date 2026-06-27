@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   PdfViewer,
@@ -52,9 +52,16 @@ import {
  *   { type: "koji:setTheme", theme: { activeColor, inactiveColor } }
  *   { type: "koji:setViewMode", mode: "scroll", overflow: "auto" }  // both optional
  *
- * Outbound postMessage (viewer → parent):
- *   { type: "koji:ready", pageCount: 5 }                         // PDF loaded, controllable
- *   { type: "koji:fieldClicked", field: "carrier", page: 2 }    // user clicked a highlight
+ * Outbound postMessage (viewer → parent), posted to parentOrigin (never "*"):
+ *   { type: "koji:ready", pageCount: 5 }                          // PDF loaded, controllable
+ *   { type: "koji:fieldClicked", field: "carrier", page: 2 }     // user clicked a highlight
+ *   { type: "koji:pageChanged", page: 3 }                        // most-visible page changed
+ *   { type: "koji:visibleField", field: "carrier" | null, page: 3 }  // most-visible field changed
+ *
+ * The koji:pageChanged / koji:visibleField events fire on scroll (mode=scroll)
+ * and on page navigation (mode=paginated), for both user and programmatic
+ * scroll. They are debounced (~120ms) and deduped (only on actual change), and
+ * only emit after koji:ready.
  */
 export default function EmbedViewerPage() {
   return (
@@ -162,6 +169,54 @@ function EmbedViewerInner() {
       if (hit) setTargetPage(hit.page);
     },
     [highlights],
+  );
+
+  // Outbound scroll-position events (koji:pageChanged / koji:visibleField).
+  // The parent can't observe our scroll across the origin boundary, so we
+  // broadcast the page + most-visible field the viewer already tracks.
+  // Rules: only after koji:ready, only on actual change (deduped), debounced
+  // (~120ms) so fast scrolling can't flood the channel, and — honoring the
+  // never-"*" rule — skipped entirely when no parentOrigin is known. Both
+  // user scroll and programmatic navigation (koji:goToPage / koji:setActiveField)
+  // emit; the dedupe makes that safe for the parent.
+  const hasReadyRef = useRef(false);
+  const lastPageRef = useRef<number>(1);
+  const lastVisibleFieldRef = useRef<string | null | undefined>(undefined);
+  const pageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fieldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handlePageChange = useCallback(
+    (page: number) => {
+      if (pageTimerRef.current) clearTimeout(pageTimerRef.current);
+      pageTimerRef.current = setTimeout(() => {
+        if (!hasReadyRef.current || !parentOrigin) return;
+        if (page === lastPageRef.current) return;
+        lastPageRef.current = page;
+        postToParent({ type: "koji:pageChanged", page });
+      }, 120);
+    },
+    [parentOrigin, postToParent],
+  );
+
+  const handleVisibleFieldChange = useCallback(
+    (field: string | null, page: number) => {
+      if (fieldTimerRef.current) clearTimeout(fieldTimerRef.current);
+      fieldTimerRef.current = setTimeout(() => {
+        if (!hasReadyRef.current || !parentOrigin) return;
+        if (field === lastVisibleFieldRef.current) return;
+        lastVisibleFieldRef.current = field;
+        postToParent({ type: "koji:visibleField", field, page });
+      }, 120);
+    },
+    [parentOrigin, postToParent],
+  );
+
+  useEffect(
+    () => () => {
+      if (pageTimerRef.current) clearTimeout(pageTimerRef.current);
+      if (fieldTimerRef.current) clearTimeout(fieldTimerRef.current);
+    },
+    [],
   );
 
   // Parse query params and load data
@@ -317,7 +372,12 @@ function EmbedViewerInner() {
         mode={viewMode}
         overflow={overflow}
         toolbarSlot={fieldPicker}
-        onLoad={({ pageCount }) => postToParent({ type: "koji:ready", pageCount })}
+        onPageChange={handlePageChange}
+        onVisibleFieldChange={handleVisibleFieldChange}
+        onLoad={({ pageCount }) => {
+          hasReadyRef.current = true;
+          postToParent({ type: "koji:ready", pageCount });
+        }}
         onFieldClick={(field, page) => {
           setActiveField(field);
           postToParent({ type: "koji:fieldClicked", field, page });
