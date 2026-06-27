@@ -1,5 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { nextJobStatusAfterDocFinalize, parseRangeHeader } from "./jobs";
+import {
+  nextJobStatusAfterDocFinalize,
+  parseRangeHeader,
+  highlightValue,
+} from "./jobs";
+
+describe("highlightValue (embed-data field → display value)", () => {
+  it("uses the scalar extracted value (string/number/boolean)", () => {
+    expect(highlightValue("Acme Corp")).toBe("Acme Corp");
+    expect(highlightValue(6000)).toBe("6000");
+    expect(highlightValue(0)).toBe("0");
+    expect(highlightValue(false)).toBe("false");
+  });
+
+  it("falls back to joined word text when the value is not scalar", () => {
+    const words = [{ text: "$6,000.00" }];
+    expect(highlightValue({ nested: true }, words)).toBe("$6,000.00");
+    expect(highlightValue(undefined, words)).toBe("$6,000.00");
+    expect(
+      highlightValue(null, [{ text: "John" }, { text: "Doe" }]),
+    ).toBe("John Doe");
+  });
+
+  it("returns undefined when there is no scalar value and no words", () => {
+    expect(highlightValue(undefined)).toBeUndefined();
+    expect(highlightValue({ a: 1 })).toBeUndefined();
+    expect(highlightValue("", [])).toBeUndefined();
+  });
+});
 
 describe("embed-data highlights from provenanceJson", () => {
   /** Mirrors the provenance → highlights transform in the embed-data endpoint. */

@@ -1086,6 +1086,25 @@ jobs.get("/:slug/documents/:docId/preview", async (c) => {
 });
 
 /**
+ * Best-effort display value for a highlighted field. Prefers the scalar value
+ * from extractionJson (string/number/boolean); for fields whose value is an
+ * object/array (or missing), falls back to the highlighted words' text so the
+ * picker still shows something meaningful. Returns undefined when neither is
+ * available.
+ */
+export function highlightValue(
+  extracted: unknown,
+  words?: Array<{ text: string }>,
+): string | undefined {
+  if (typeof extracted === "string") return extracted || undefined;
+  if (typeof extracted === "number" || typeof extracted === "boolean") {
+    return String(extracted);
+  }
+  const text = words?.map((w) => w.text).join(" ").trim();
+  return text || undefined;
+}
+
+/**
  * GET /api/jobs/:slug/documents/:docId/embed-data — everything the embeddable
  * viewer needs in one call: preview URL + provenance highlights.
  *
@@ -1103,6 +1122,7 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
       filename: schema.documents.filename,
       pageCount: schema.documents.pageCount,
       provenanceJson: schema.documents.provenanceJson,
+      extractionJson: schema.documents.extractionJson,
       storageKey: schema.documents.storageKey,
     })
     .from(schema.documents)
@@ -1131,6 +1151,7 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
     string,
     { offset?: number; length?: number; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string } | null
   >;
+  const extraction = (doc.extractionJson ?? {}) as Record<string, unknown>;
 
   const highlights = Object.entries(provenance)
     .filter(([, v]) => v && (v.words?.length || (v.bbox && v.page)))
@@ -1140,6 +1161,10 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
       bbox: v!.bbox,
       words: v!.words,
       reasoning: v!.reasoning,
+      // The extracted value, so the embed's field picker can show
+      // "field → value". Prefer the scalar from extractionJson; fall back to
+      // the highlighted words' text for fields without a scalar value.
+      value: highlightValue(extraction[field], v!.words),
     }));
 
   return c.json({

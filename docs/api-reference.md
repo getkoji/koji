@@ -584,6 +584,7 @@ provenance highlights. Same token auth as `/preview`.
   "highlights": [
     {
       "field": "total_amount",
+      "value": "6000",
       "page": 1,
       "bbox": { "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 },
       "words": [ { "text": "$6,000.00", "page": 1, "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 } ],
@@ -597,8 +598,10 @@ provenance highlights. Same token auth as `/preview`.
 
 `highlights` is derived from the document's provenance (see
 [Provenance](#provenance)). `bbox`/`words` coordinates are normalized fractions
-of the page (0–1). The embed viewer consumes this shape directly; you can also
-use it to drive your own renderer.
+of the page (0–1). `value` is the extracted value for the field (the scalar
+from the extraction, or the highlighted words' text when the value isn't a
+scalar) — the embed viewer's field picker shows it. The embed viewer consumes
+this shape directly; you can also use it to drive your own renderer.
 
 **Errors**
 

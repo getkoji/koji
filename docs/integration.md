@@ -636,6 +636,26 @@ iframe.contentWindow!.postMessage(
 scrolls the page into view in scroll mode. Unknown values fall back to the
 defaults.
 
+### Field picker
+
+In **Document mode**, the viewer shows a built-in dropdown (top-right) listing
+each extracted field and its value. Selecting an entry jumps to that field's
+highlight — flipping the page in paginated mode or scrolling it into view in
+scroll mode — and marks it active. The dropdown stays in sync with
+`koji:setActiveField` and with clicks on the highlights themselves
+(`koji:fieldClicked`).
+
+The values come from the [`/embed-data`](api-reference.md#get-apijobsslugdocumentsdocidembed-data)
+response (each highlight carries a `value`). Hide the dropdown when your host UI
+already provides field navigation:
+
+```html
+<iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&fieldPicker=off"></iframe>
+```
+
+> URL mode (`?url=…`) can supply the same `value` on each highlight in the
+> base64 `highlights` payload to populate the picker.
+
 ### Authentication & static assets
 
 The embed viewer is **cookieless and cross-origin by design** — it never relies

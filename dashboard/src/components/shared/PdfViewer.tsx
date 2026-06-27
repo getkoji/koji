@@ -38,6 +38,8 @@ export interface BBoxHighlight {
   bbox?: { x: number; y: number; w: number; h: number };
   words?: WordBox[];
   reasoning?: string;
+  /** Extracted value for this field (from embed-data); shown in the field picker. */
+  value?: string;
 }
 
 /** Highlight colors, overridable by the embedding host (query param / koji:setTheme). */
