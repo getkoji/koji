@@ -193,6 +193,51 @@ Output: `"gl_claims_made": true`
 
 Booleans are especially useful with [form mappings](forms-guide.md) -- checkbox mapping types detect whether a checkbox is marked and return the boolean value directly.
 
+## Reusing definitions (DRY schemas)
+
+Large schemas tend to repeat the same things — the same `mappings` vocabulary in several fields, the same `items` shape across multiple arrays, the same number/date setup over and over. You don't have to copy-paste. Schemas are YAML, so you can use **YAML anchors** — a native YAML feature, no special Koji syntax — to define a block once and reuse it everywhere.
+
+Mark a block with an anchor (`&name`), then reuse it with an alias (`*name`):
+
+```yaml
+name: insurance_certificate
+fields:
+  gl_applies_to: &applies_to        # define once, name it "applies_to"
+    type: mapping
+    mappings:
+      each_occurrence: ["Each Occurrence", "Per Occurrence"]
+      general_aggregate: ["Aggregate", "Gen Agg"]
+  umbrella_applies_to: *applies_to  # reuse the exact same definition
+  excess_applies_to: *applies_to
+```
+
+All three fields end up with identical definitions, but you maintain only one.
+
+### A definitions block with `_defs`
+
+For bigger schemas, keep every reusable piece in one place. Koji ignores unknown top-level keys, so a top-level `_defs` block is a safe home for definitions you only reference through aliases — it never becomes a field itself:
+
+```yaml
+name: insurance_certificate
+_defs:
+  applies_to: &applies_to
+    type: mapping
+    mappings:
+      each_occurrence: ["Each Occurrence", "Per Occurrence"]
+      general_aggregate: ["Aggregate", "Gen Agg"]
+  money: &money
+    type: number
+fields:
+  gl_applies_to:       *applies_to
+  gl_limit:            *money
+  umbrella_applies_to: *applies_to
+  umbrella_limit:      *money
+```
+
+You can anchor anything that repeats — a whole field definition, a nested `items` structure, a `mappings` vocabulary, a `hints` block.
+
+> **Anchors are a copy mechanism.** An alias expands to a full copy of the anchored block at parse time. Editing the anchored definition updates every field that references it — that's the point. There's no runtime cost; by the time extraction runs, the schema looks exactly as if you'd written each block out by hand.
+
 ## Required fields
 
 Mark fields as `required: true` when the extraction is incomplete without them:
