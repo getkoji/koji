@@ -36,6 +36,10 @@ import {
  *   paginated (default) = arrow nav, one page at a time; scroll = all pages
  *   stacked in a scrollable column.
  *
+ * Field picker (optional): a dropdown of extracted field → value is shown by
+ *   default when highlights exist; selecting one jumps to its highlight. Hide
+ *   it with ?fieldPicker=off (e.g. when the host drives selection itself).
+ *
  * Outbound origin (optional): ?parentOrigin=<https://host> — the targetOrigin
  * the viewer posts outbound messages to. Falls back to the embedding page's
  * origin (document.referrer). Never posts to "*" unless neither is known.
@@ -107,6 +111,12 @@ function EmbedViewerInner() {
   const [overflow, setOverflow] = useState<ViewOverflow>(
     () => asViewOverflow(searchParams.get("overflow")) ?? "auto",
   );
+  // The built-in field/value picker is shown by default; hosts that drive
+  // selection from their own UI can hide it with ?fieldPicker=off.
+  const showFieldPicker = useMemo(() => {
+    const v = searchParams.get("fieldPicker");
+    return v !== "off" && v !== "0" && v !== "false";
+  }, [searchParams]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -139,6 +149,19 @@ function EmbedViewerInner() {
       window.parent.postMessage(message, target);
     },
     [parentOrigin],
+  );
+
+  // Select a field: mark it active (drives the highlight pulse + scroll) and
+  // navigate to its page so it lands in view in both paginated and scroll
+  // layouts. Used by the built-in field picker.
+  const selectField = useCallback(
+    (field: string | null) => {
+      setActiveField(field);
+      if (!field) return;
+      const hit = highlights.find((h) => h.field === field);
+      if (hit) setTargetPage(hit.page);
+    },
+    [highlights],
   );
 
   // Parse query params and load data
@@ -264,7 +287,24 @@ function EmbedViewerInner() {
   }
 
   return (
-    <div className="h-screen w-screen bg-white">
+    <div className="relative h-screen w-screen bg-white">
+      {showFieldPicker && highlights.length > 0 && (
+        <div className="absolute top-2 right-2 z-10 max-w-[70%]">
+          <select
+            aria-label="Jump to extracted field"
+            value={activeField ?? ""}
+            onChange={(e) => selectField(e.target.value || null)}
+            className="max-w-full truncate rounded border border-neutral-300 bg-white/95 px-2 py-1 font-mono text-[11px] text-neutral-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-neutral-400"
+          >
+            <option value="">Jump to field…</option>
+            {highlights.map((h) => (
+              <option key={h.field} value={h.field}>
+                {h.value ? `${h.field}: ${h.value}` : h.field}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <PdfViewer
         url={pdfUrl}
         highlights={highlights}
