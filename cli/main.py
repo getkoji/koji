@@ -793,9 +793,9 @@ def whoami():
 
     ok, msg = verify_profile_connectivity(p)
     if ok:
-        console.print("  Status:  [green]connected[/green]")
+        console.print(f"  Status:  [green]✓ {msg}[/green]")
     else:
-        console.print(f"  Status:  [red]unreachable[/red] — {msg}")
+        console.print(f"  Status:  [red]✗ {msg}[/red]")
 
     console.print()
 

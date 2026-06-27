@@ -15,6 +15,7 @@ from cli.credentials import (  # noqa: E402
     get_api_headers,
     get_server_url,
     load_credentials,
+    verify_profile_connectivity,
 )
 
 
@@ -159,3 +160,52 @@ class TestMultipleProfiles:
 
         assert get_server_url() == "http://prod"
         assert get_api_headers() == {"Authorization": "Bearer k1"}
+
+
+class _FakeResp:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class TestVerifyProfileConnectivity:
+    """verify_profile_connectivity must actually authenticate (probe /api/me with
+    the key), not just ping the public /api/health — a dead key must not report ok."""
+
+    def test_invalid_key_reports_expired(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", lambda url, **kw: _FakeResp(401))
+        ok, msg = verify_profile_connectivity(Profile(url="https://x", api_key="bad"))
+        assert ok is False
+        assert "invalid or expired" in msg
+
+    def test_authenticated_includes_user_and_orgs(self, monkeypatch):
+        import httpx
+
+        def fake_get(url, **kw):
+            if url.endswith("/api/me"):
+                return _FakeResp(200, {"email": "f@x.com"})
+            if url.endswith("/api/tenants"):
+                return _FakeResp(200, {"data": [{"slug": "superkey"}, {"slug": "koji"}]})
+            return _FakeResp(404)
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        ok, msg = verify_profile_connectivity(Profile(url="https://x", api_key="good"))
+        assert ok is True
+        assert "f@x.com" in msg
+        assert "superkey" in msg
+
+    def test_unreachable_server(self, monkeypatch):
+        import httpx
+
+        def boom(url, **kw):
+            raise httpx.ConnectError("refused")
+
+        monkeypatch.setattr(httpx, "get", boom)
+        ok, msg = verify_profile_connectivity(Profile(url="http://localhost:1", api_key="x"))
+        assert ok is False
+        assert "cannot connect" in msg

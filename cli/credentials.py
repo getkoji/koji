@@ -107,17 +107,20 @@ def get_server_url() -> str | None:
 
 
 def verify_profile_connectivity(profile: Profile) -> tuple[bool, str]:
-    """Check if the profile's server URL is reachable.
+    """Check whether the profile's API key actually authenticates.
+
+    Probes ``GET /api/me`` *with the key* — not the public ``/api/health`` — so an
+    expired or invalid key is reported as such instead of a false "connected".
+    On success the message names the authenticated user and org(s), which is what
+    actually answers "who/where am I".
 
     Returns (ok, message).
     """
     import httpx
 
+    headers = {"Authorization": f"Bearer {profile.api_key}"}
     try:
-        resp = httpx.get(f"{profile.url}/api/health", timeout=3)
-        if resp.status_code == 200:
-            return True, "server reachable"
-        return False, f"server returned HTTP {resp.status_code}"
+        resp = httpx.get(f"{profile.url}/api/me", headers=headers, timeout=5)
     except httpx.ConnectError:
         return False, (
             f"cannot connect to {profile.url} — is the server running? "
@@ -125,3 +128,37 @@ def verify_profile_connectivity(profile: Profile) -> tuple[bool, str]:
         )
     except httpx.TimeoutException:
         return False, f"connection to {profile.url} timed out"
+
+    if resp.status_code in (401, 403):
+        return False, "API key is invalid or expired — run `koji login` to refresh it"
+    if resp.status_code != 200:
+        return False, f"server reachable but /api/me returned HTTP {resp.status_code}"
+
+    # Authenticated. Enrich with identity + org(s) so whoami is actually useful.
+    who = ""
+    try:
+        user = resp.json()
+        who = user.get("email") or user.get("name") or ""
+    except Exception:
+        pass
+
+    org = ""
+    try:
+        t = httpx.get(f"{profile.url}/api/tenants", headers=headers, timeout=5)
+        if t.status_code == 200:
+            names = [r.get("slug") or r.get("name") for r in t.json().get("data", [])]
+            names = [n for n in names if n]
+            if names:
+                org = ", ".join(names[:5])
+    except Exception:
+        pass
+
+    # Note: /api/tenants lists the user's memberships, not the single tenant the
+    # API key is bound to — so this is "member of", not "current org".
+    if who and org:
+        return True, f"authenticated as {who} · member of: {org}"
+    if who:
+        return True, f"authenticated as {who}"
+    if org:
+        return True, f"authenticated · member of: {org}"
+    return True, "authenticated"
