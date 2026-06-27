@@ -4,11 +4,13 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/lib/auth-context";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import { AgentPanel } from "./AgentPanel";
 
@@ -120,6 +122,7 @@ export default function BuildPage() {
   const params = useParams();
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+  const { hasPermission } = useAuth();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
   // Data
@@ -156,6 +159,7 @@ export default function BuildPage() {
   const [savingGT, setSavingGT] = useState(false);
   const [gtSaved, setGtSaved] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -524,6 +528,12 @@ export default function BuildPage() {
       setUploading(false);
       setUploadProgress(0);
     }
+  }
+
+  async function handleDeleteDoc(entry: CorpusEntry) {
+    await api.delete(`/api/schemas/${schemaSlug}/corpus/${entry.id}`);
+    if (selectedDocId === entry.id) setSelectedDocId(null);
+    refetchCorpus();
   }
 
   // Load signed URL when document is selected
@@ -1069,6 +1079,15 @@ export default function BuildPage() {
                     <option key={e.id} value={e.id}>{e.filename}</option>
                   ))}
                 </select>
+                {selectedDoc && hasPermission("corpus:write") && (
+                  <button
+                    onClick={() => setConfirmDeleteDoc(selectedDoc)}
+                    title="Delete document from corpus"
+                    className="text-ink-4 hover:text-vermillion-2 transition-colors p-1 rounded-sm hover:bg-cream-2 shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
@@ -1195,6 +1214,16 @@ export default function BuildPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {confirmDeleteDoc && (
+        <ConfirmDialog
+          title="Delete document"
+          description={`Remove "${confirmDeleteDoc.filename}" from the corpus? It will no longer appear in lists, validation, or performance metrics.`}
+          confirmLabel="Delete"
+          onConfirm={async () => { await handleDeleteDoc(confirmDeleteDoc); setConfirmDeleteDoc(null); }}
+          onCancel={() => setConfirmDeleteDoc(null)}
+        />
       )}
     </>
   );

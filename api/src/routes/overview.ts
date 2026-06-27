@@ -57,6 +57,7 @@ overview.get("/", requires("schema:read"), async (c) => {
                  s.slug AS schema_slug
           FROM corpus_entries ce
           JOIN schemas s ON s.id = ce.schema_id
+          WHERE ce.deleted_at IS NULL
           ORDER BY ce.created_at DESC LIMIT 5
         ),
 
@@ -81,16 +82,17 @@ overview.get("/", requires("schema:read"), async (c) => {
           SELECT count(*)::int AS count
           FROM schemas s
           WHERE s.deleted_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM corpus_entries c WHERE c.schema_id = s.id)
+            AND NOT EXISTS (SELECT 1 FROM corpus_entries c WHERE c.schema_id = s.id AND c.deleted_at IS NULL)
         ),
 
         onboarding AS (
           SELECT
             (SELECT slug FROM schemas WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1) AS first_schema_slug,
-            (SELECT count(*)::int > 0 FROM corpus_entries) AS has_corpus,
+            (SELECT count(*)::int > 0 FROM corpus_entries WHERE deleted_at IS NULL) AS has_corpus,
             (SELECT count(*)::int > 0 FROM extraction_runs) AS has_extraction,
             (SELECT count(*)::int > 0 FROM corpus_entries
-              WHERE ground_truth_json IS NOT NULL
+              WHERE deleted_at IS NULL
+                AND ground_truth_json IS NOT NULL
                 AND jsonb_typeof(ground_truth_json) = 'object'
                 AND ground_truth_json::text != '{}') AS has_ground_truth,
             (SELECT count(*)::int > 0 FROM schema_runs
