@@ -524,3 +524,62 @@ describe("validateExtracted edge cases", () => {
     expect(report.ok).toBe(true); // Early return for non-object
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-item validation (rules declared on an array's item schema)
+// ---------------------------------------------------------------------------
+
+describe("per-item validation", () => {
+  const schema = {
+    fields: {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { applies_to: { type: "string" }, limit: { type: "number" } },
+          validation: [
+            { required: ["applies_to"] },
+            { enum_in: { field: "applies_to", allowed: ["each_occurrence", "general_aggregate"] } },
+          ],
+        },
+      },
+    },
+  };
+
+  it("passes when every row satisfies its item rules", () => {
+    const report = validateExtracted(
+      { coverages: [{ applies_to: "each_occurrence", limit: 1000 }] },
+      schema,
+    );
+    expect(report.ok).toBe(true);
+    expect(report.issues).toHaveLength(0);
+  });
+
+  it("flags a failing row with a path-prefixed field", () => {
+    const report = validateExtracted(
+      {
+        coverages: [
+          { applies_to: "each_occurrence", limit: 1000 },
+          { applies_to: "bogus", limit: 2000 },
+        ],
+      },
+      schema,
+    );
+    expect(report.ok).toBe(false);
+    expect(report.issues).toHaveLength(1);
+    expect(report.issues[0]!.field).toBe("coverages[1].applies_to");
+    expect(report.issues[0]!.rule).toBe("enum_in");
+  });
+
+  it("does nothing when the item schema declares no validation", () => {
+    const report = validateExtracted(
+      { rows: [{ a: "bogus" }] },
+      {
+        fields: {
+          rows: { type: "array", items: { type: "object", properties: { a: { type: "string" } } } },
+        },
+      },
+    );
+    expect(report.ok).toBe(true);
+  });
+});

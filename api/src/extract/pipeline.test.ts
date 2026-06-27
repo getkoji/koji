@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, validateFields, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -399,6 +399,88 @@ describe("field validation", () => {
 
     const result = await extractFields("doc", schema, provider, "m");
     expect(result.extracted.missing_field).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateFields — recursion into nested array/object fields
+// ---------------------------------------------------------------------------
+
+describe("validateFields (nested depth)", () => {
+  it("coerces numbers and resolves mappings inside array-of-objects items", () => {
+    const extracted = {
+      coverages: [
+        { kind: "GL", limit: "$1,000,000", applies_to: "EE Theft" },
+        { kind: "Property", limit: "2,500", applies_to: "forgery" },
+      ],
+    };
+    const fields = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            kind: { type: "string" },
+            limit: { type: "number" },
+            applies_to: {
+              type: "mapping",
+              mappings: { employee_theft: ["EE Theft", "employee theft"], forgery: [] },
+            },
+          },
+        },
+      },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.coverages[0]!.limit).toBe(1000000);
+    expect(extracted.coverages[0]!.applies_to).toBe("employee_theft");
+    expect(extracted.coverages[1]!.limit).toBe(2500);
+    expect(extracted.coverages[1]!.applies_to).toBe("forgery");
+  });
+
+  it("recurses two levels deep (coverages[] -> limits[])", () => {
+    const extracted = {
+      coverages: [
+        { limits: [{ applies_to: "Each Occ", premium: "1,000" }] },
+      ],
+    };
+    const fields = {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            limits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  applies_to: { type: "mapping", mappings: { each_occurrence: ["Each Occ"] } },
+                  premium: { type: "number" },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.coverages[0]!.limits[0]!.applies_to).toBe("each_occurrence");
+    expect(extracted.coverages[0]!.limits[0]!.premium).toBe(1000);
+  });
+
+  it("coerces fields inside a nested object", () => {
+    const extracted = { totals: { amount: "$42" } };
+    const fields = {
+      totals: { type: "object", properties: { amount: { type: "number" } } },
+    };
+
+    validateFields(extracted, fields);
+
+    expect(extracted.totals.amount).toBe(42);
   });
 });
 

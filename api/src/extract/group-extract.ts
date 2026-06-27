@@ -14,6 +14,7 @@
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import type { ModelProvider } from "./providers";
+import { vocabHint } from "./schema-tree";
 
 // ---------------------------------------------------------------------------
 // Shape rendering — recursive array/object description for prompts
@@ -69,7 +70,9 @@ export function describeProperty(propName: string, propSpec: unknown): string {
     const nestedParts = Object.entries(nestedProps).map(([n, sp]) => describeProperty(n, sp));
     return `${propName}: object with properties {${nestedParts.join(", ")}}`;
   }
-  return `${propName}: ${propType}`;
+  // Scalar leaf: carry the controlled-vocabulary hint (mapping/enum) so the
+  // model is told the allowed values at depth, exactly as for top-level fields.
+  return `${propName}: ${propType}${vocabHint(s)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,22 +147,7 @@ export function buildGroupPrompt(
       typeLabel = "array" + describeArrayItem(spec);
     }
 
-    const mappings = spec.mappings as Record<string, unknown[]> | undefined;
-    const options = (spec.options ?? spec.enum) as unknown[] | undefined;
-
-    if (mappings && typeof mappings === "object" && Object.keys(mappings).length > 0) {
-      const parts: string[] = [];
-      for (const [canonical, aliases] of Object.entries(mappings)) {
-        const aliasList = (aliases as unknown[])
-          .filter((a) => String(a) !== String(canonical))
-          .map(String)
-          .join(", ");
-        parts.push(aliasList ? `${canonical} (${aliasList})` : String(canonical));
-      }
-      descLabel += ` [pick from: ${parts.join(", ")}]`;
-    } else if (Array.isArray(options) && options.length > 0) {
-      descLabel += ` [pick from: ${options.map(String).join(", ")}]`;
-    }
+    descLabel += vocabHint(spec);
 
     fieldDescriptions.push(`  - ${name}: ${typeLabel}${reqLabel}${descLabel}`);
   }
@@ -276,22 +264,7 @@ export function buildGapFillPrompt(
     typeLabel = "array" + describeArrayItem(fieldSpec);
   }
 
-  const mappings = fieldSpec.mappings as Record<string, unknown[]> | undefined;
-  const options = (fieldSpec.options ?? fieldSpec.enum) as unknown[] | undefined;
-
-  if (mappings && typeof mappings === "object" && Object.keys(mappings).length > 0) {
-    const parts: string[] = [];
-    for (const [canonical, aliases] of Object.entries(mappings)) {
-      const aliasList = (aliases as unknown[])
-        .filter((a) => String(a) !== String(canonical))
-        .map(String)
-        .join(", ");
-      parts.push(aliasList ? `${canonical} (${aliasList})` : String(canonical));
-    }
-    descLabel += ` [pick from: ${parts.join(", ")}]`;
-  } else if (Array.isArray(options) && options.length > 0) {
-    descLabel += ` [pick from: ${options.map(String).join(", ")}]`;
-  }
+  descLabel += vocabHint(fieldSpec);
 
   const fieldLine = `  - ${fieldName}: ${typeLabel}${reqLabel}${descLabel}`;
 
