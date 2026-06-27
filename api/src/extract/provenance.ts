@@ -12,6 +12,8 @@
  * values directly on the rendered PDF.
  */
 
+import { resolveVocab } from "./schema-tree";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -987,6 +989,7 @@ function resolveArray(
   markdown: string,
   textMap?: TextMap,
   itemSourceTexts?: string[],
+  itemFieldSpecs?: Record<string, Record<string, unknown>>,
 ): ProvenanceSpan | null {
   if (items.length === 0) return null;
 
@@ -1053,12 +1056,19 @@ function resolveArray(
                 }
               }
             } else {
-              // String value: try exact, entity-aware, case-insensitive, normalized
-              localHit =
-                findExact(region, strVal) ??
-                findWithEntities(region, strVal) ??
-                findCaseInsensitive(region, strVal) ??
-                findNormalized(region, strVal);
+              // String value: try the value, then its printed aliases (the model
+              // usually returns the canonical code, e.g. `each_occurrence`, while
+              // the document says "Each Occurrence"). Match against exact,
+              // entity-aware, case-insensitive, and normalized forms.
+              const searchTerms = [strVal, ...aliasCandidates(strVal, itemFieldSpecs?.[propName], obj)];
+              for (const term of searchTerms) {
+                localHit =
+                  findExact(region, term) ??
+                  findWithEntities(region, term) ??
+                  findCaseInsensitive(region, term) ??
+                  findNormalized(region, term);
+                if (localHit) break;
+              }
             }
             if (localHit) {
               // Translate local offset to absolute markdown offset
@@ -1081,9 +1091,13 @@ function resolveArray(
             }
           }
 
-          // Fallback: search the full markdown
+          // Fallback: search the full markdown — first the value directly,
+          // then its printed aliases for canonicalized fields.
           if (!propSpan) {
             propSpan = resolveScalar(propValue, markdown, textMap) ?? null;
+          }
+          if (!propSpan && typeof propValue === "string" && itemFieldSpecs?.[propName]) {
+            propSpan = resolveViaAliases(propValue, itemFieldSpecs[propName]!, markdown, textMap, obj);
           }
 
           properties[propName] = propSpan;
@@ -1155,21 +1169,40 @@ function resolveValue(
  * when the canonical value can't be found directly.
  * E.g. extracted "directors_and_officers" → search for "D&O", "Directors and Officers", etc.
  */
+/**
+ * Search terms for a canonicalized value's printed form: the field's aliases
+ * for that canonical key (from static `mappings` OR the `vocab_by` branch
+ * selected by `siblings`), plus an underscores→spaces variant. Used to recover
+ * the document's verbatim text when the model returned the canonical code
+ * (e.g. value `each_occurrence`, document says "Each Occurrence").
+ */
+function aliasCandidates(
+  canonicalValue: string,
+  fieldSpec: Record<string, unknown> | undefined,
+  siblings?: Record<string, unknown>,
+): string[] {
+  const out: string[] = [];
+  if (fieldSpec && typeof fieldSpec === "object") {
+    let mappings = fieldSpec.mappings as Record<string, unknown[]> | undefined;
+    if ((!mappings || Object.keys(mappings).length === 0) && fieldSpec.vocab_by) {
+      mappings = resolveVocab(fieldSpec, siblings ?? {}).spec.mappings as Record<string, unknown[]> | undefined;
+    }
+    const aliases = mappings?.[canonicalValue];
+    if (Array.isArray(aliases)) out.push(...aliases.map(String));
+  }
+  if (canonicalValue.includes("_")) out.push(canonicalValue.replace(/_/g, " "));
+  return out.filter((a) => a && a !== canonicalValue);
+}
+
 function resolveViaAliases(
   canonicalValue: string,
   fieldSpec: Record<string, unknown>,
   markdown: string,
   textMap?: TextMap,
+  siblings?: Record<string, unknown>,
 ): ProvenanceSpan | null {
-  const mappings = (fieldSpec.mappings ?? {}) as Record<string, unknown[]>;
-  const aliases = mappings[canonicalValue];
-  if (!aliases || !Array.isArray(aliases)) return null;
-
-  // Also try the canonical value itself as a search term (with spaces for underscored values)
-  const candidates = [
-    ...aliases.map(String),
-    canonicalValue.replace(/_/g, " "),
-  ];
+  const candidates = aliasCandidates(canonicalValue, fieldSpec, siblings);
+  if (candidates.length === 0) return null;
 
   for (const alias of candidates) {
     const span = resolveScalar(alias, markdown, textMap);
@@ -1297,7 +1330,10 @@ export function resolveProvenance(
     }
 
     if (Array.isArray(value)) {
-      provenance[field] = resolveArray(value, markdown, textMap, sourceTexts?.[field]);
+      const itemProps = (fieldSpecs?.[field]?.items as Record<string, unknown> | undefined)?.properties as
+        | Record<string, Record<string, unknown>>
+        | undefined;
+      provenance[field] = resolveArray(value, markdown, textMap, sourceTexts?.[field], itemProps);
       continue;
     }
 
@@ -1319,9 +1355,10 @@ export function resolveProvenance(
     if (!span) {
       span = resolveScalar(value, markdown, textMap);
     }
-    // For enum/mapping fields, try aliases when canonical value isn't found
+    // For enum/mapping/vocab_by fields, try aliases when the canonical value
+    // isn't found directly. `extracted` provides sibling values for vocab_by.
     if (!span && typeof value === "string" && fieldSpecs?.[field]) {
-      span = resolveViaAliases(value, fieldSpecs[field]!, markdown, textMap);
+      span = resolveViaAliases(value, fieldSpecs[field]!, markdown, textMap, extracted);
     }
     // For boolean fields, search for common representations
     if (!span && typeof value === "boolean") {

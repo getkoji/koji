@@ -1376,3 +1376,18 @@ describe("resolveProvenance — standalone object fields", () => {
     expect(result.insured!.properties!.state!.chunk).toBe("California");
   });
 });
+
+describe("resolveProvenance — array per-property alias fallback", () => {
+  it("resolves a nested mapping value to its printed alias chunk when the value is canonical", () => {
+    const markdown = "Schedule\nGeneral Liability — Each Occurrence: 1,000,000";
+    const extracted = { coverages: [{ applies_to: "each_occurrence" }] };
+    const sourceTexts = { coverages: ["General Liability — Each Occurrence: 1,000,000"] };
+    const fieldSpecs = {
+      coverages: { type: "array", items: { type: "object", properties: {
+        applies_to: { type: "mapping", mappings: { each_occurrence: ["Each Occurrence"] } } } } },
+    };
+    const result = resolveProvenance(extracted, markdown, undefined, sourceTexts, fieldSpecs);
+    const propSpan = result.coverages!.items![0]!.properties!.applies_to;
+    expect(propSpan!.chunk).toBe("Each Occurrence");
+  });
+});
