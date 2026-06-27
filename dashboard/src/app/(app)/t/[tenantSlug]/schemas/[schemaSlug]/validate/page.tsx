@@ -7,6 +7,7 @@ import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, Externa
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { DiffView, type FailingDoc } from "./DiffView";
 
 // ── Types ──
 
@@ -17,7 +18,7 @@ interface FieldResult {
   accuracy: number;
   prevAccuracy: number | null;
   status: "pass" | "regressed" | "failing";
-  failingDocs: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }>;
+  failingDocs: FailingDoc[];
 }
 
 interface ValidateResult {
@@ -303,13 +304,10 @@ export default function ValidatePage() {
                     <div className="space-y-1.5 mt-2">
                       {r.failingDocs.map((d) => (
                         <div key={d.id} className="flex items-start justify-between gap-3">
-                          <div className="font-mono text-[11px]">
+                          <div className="font-mono text-[11px] min-w-0">
                             <span className="text-ink-4">{d.filename}</span>
                             <div className="mt-0.5">
-                              <span className="text-ink-4">expected </span>
-                              <span className="text-green">{d.expected}</span>
-                              <span className="text-ink-4"> got </span>
-                              <span className="text-vermillion-2">{d.got}</span>
+                              <DiffView diff={d.diff} />
                             </div>
                           </div>
                           <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}
@@ -373,13 +371,14 @@ export default function ValidatePage() {
                             <td colSpan={5} className="bg-cream-2/30 px-4 py-3">
                               <div className="space-y-2">
                                 {f.failingDocs.map((d) => (
-                                  <div key={d.id} className="flex items-center justify-between gap-4 px-3 py-2 border border-border rounded-sm bg-cream">
-                                    <div>
-                                      <div className="font-mono text-[11px] text-ink">{d.filename}</div>
-                                      <div className="font-mono text-[10px] text-ink-4 mt-0.5">
-                                        Expected: <span className="text-ink">{d.expected}</span>
-                                        {" · "}Got: <span className="text-vermillion-2">{d.got}</span>
-                                        {" · "}Conf: {(d.confidence * 100).toFixed(0)}%
+                                  <div key={d.id} className="flex items-start justify-between gap-4 px-3 py-2 border border-border rounded-sm bg-cream">
+                                    <div className="min-w-0">
+                                      <div className="font-mono text-[11px] text-ink">
+                                        {d.filename}
+                                        <span className="text-ink-4"> · {(d.score * 100).toFixed(0)}% match · conf {(d.confidence * 100).toFixed(0)}%</span>
+                                      </div>
+                                      <div className="font-mono text-[10px] mt-1">
+                                        <DiffView diff={d.diff} />
                                       </div>
                                     </div>
                                     <Link href={pathname.replace("/validate", "/build") + `?doc=${d.id}`}

@@ -10,6 +10,7 @@ import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
+import { compareValues, type ValueDiff } from "../extract/value-compare";
 import { and } from "drizzle-orm";
 
 const DEFAULT_TEMPLATE = `name: my_schema
@@ -550,7 +551,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
 
     if (exRuns.length === 0) continue;
 
-    const fieldCorrect: Record<string, number> = {};
+    const fieldScore: Record<string, number> = {};
     const fieldChecked: Record<string, number> = {};
 
     for (const exRun of exRuns) {
@@ -561,16 +562,13 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
       for (const [field, expected] of Object.entries(gt)) {
         if (expected === undefined || expected === null) continue;
         fieldChecked[field] = (fieldChecked[field] ?? 0) + 1;
-        const got = extracted[field];
-        if (String(expected).trim().toLowerCase() === String(got ?? "").trim().toLowerCase()) {
-          fieldCorrect[field] = (fieldCorrect[field] ?? 0) + 1;
-        }
+        fieldScore[field] = (fieldScore[field] ?? 0) + compareValues(expected, extracted[field]).score;
       }
     }
 
     const fields: Record<string, number> = {};
     for (const f of Object.keys(fieldChecked)) {
-      fields[f] = fieldChecked[f]! > 0 ? ((fieldCorrect[f] ?? 0) / fieldChecked[f]!) * 100 : 100;
+      fields[f] = fieldChecked[f]! > 0 ? ((fieldScore[f] ?? 0) / fieldChecked[f]!) * 100 : 100;
     }
     perRunFieldAccuracy.push({ runId: run.id, fields });
   }
@@ -883,27 +881,25 @@ function computeValidateResult(
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> }> = [];
-  let totalCorrect = 0;
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> }> = [];
+  let totalScore = 0;
   let totalChecked = 0;
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
-    let correct = 0, checked = 0, prevCorrect = 0, prevChecked = 0;
-    const failing: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> = [];
+    let scoreSum = 0, checked = 0, prevScoreSum = 0, prevChecked = 0;
+    const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> = [];
 
     for (const r of results) {
       const expected = r.groundTruth[fieldName];
       if (expected === undefined || expected === null) continue;
       checked++;
-      const expectedStr = String(expected).trim().toLowerCase();
-      const got = r.extracted[fieldName];
+      const cmp = compareValues(expected, r.extracted[fieldName]);
+      scoreSum += cmp.score;
 
-      if (String(got ?? "").trim().toLowerCase() === expectedStr) {
-        correct++;
-      } else {
+      if (!cmp.match) {
         const conf = r.confidenceScores[fieldName] ?? 0;
-        failing.push({ id: r.entryId, filename: r.filename, expected: String(expected), got: String(got ?? "—"), confidence: conf });
+        failing.push({ id: r.entryId, filename: r.filename, diff: cmp.diff, score: cmp.score, confidence: conf });
         const existing = failingDocsMap.get(r.entryId);
         if (existing) { existing.failedFields.push(fieldName); existing.worstConfidence = Math.min(existing.worstConfidence, conf); }
         else { failingDocsMap.set(r.entryId, { id: r.entryId, filename: r.filename, failedFields: [fieldName], worstConfidence: conf }); }
@@ -912,20 +908,20 @@ function computeValidateResult(
       const prevExtracted = prevExtractedMap.get(r.entryId);
       if (prevExtracted) {
         prevChecked++;
-        if (String(prevExtracted[fieldName] ?? "").trim().toLowerCase() === expectedStr) prevCorrect++;
+        prevScoreSum += compareValues(expected, prevExtracted[fieldName]).score;
       }
     }
 
-    const accuracy = checked > 0 ? (correct / checked) * 100 : 100;
-    const prevAccuracy = prevChecked > 0 ? (prevCorrect / prevChecked) * 100 : null;
-    totalCorrect += correct;
+    const accuracy = checked > 0 ? (scoreSum / checked) * 100 : 100;
+    const prevAccuracy = prevChecked > 0 ? (prevScoreSum / prevChecked) * 100 : null;
+    totalScore += scoreSum;
     totalChecked += checked;
     const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
     fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, failingDocs: failing });
   }
 
   fieldResults.sort((a, b) => a.accuracy - b.accuracy);
-  const overallAccuracy = totalChecked > 0 ? (totalCorrect / totalChecked) * 100 : 100;
+  const overallAccuracy = totalChecked > 0 ? (totalScore / totalChecked) * 100 : 100;
 
   return {
     overallAccuracy,
