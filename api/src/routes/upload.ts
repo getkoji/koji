@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -109,6 +109,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
       .where(and(
         eq(schema.corpusEntries.schemaId, s.id),
         eq(schema.corpusEntries.contentHash, contentHash),
+        isNull(schema.corpusEntries.deletedAt),
       ))
       .limit(1),
   );

@@ -4,12 +4,13 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml } from "yaml";
-import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion } from "lucide-react";
+import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 
 interface CorpusEntry {
   id: string; filename: string; fileSize: number; mimeType: string;
@@ -91,6 +92,7 @@ export default function CorpusPage() {
   const [gtValues, setGtValues] = useState<Record<string, string>>({});
   const [savingGt, setSavingGt] = useState(false);
   const [gtEditing, setGtEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<CorpusEntry | null>(null);
   const [listCollapsed, setListCollapsed] = useState(() =>
     typeof window !== "undefined" && localStorage.getItem("koji:corpus:list-collapsed") === "true"
   );
@@ -164,6 +166,12 @@ export default function CorpusPage() {
   async function handleRemoveTag(tag: string) {
     if (!selected) return;
     await api.patch(`/api/schemas/${schemaSlug}/corpus/${selected.id}`, { tags: selected.tags.filter((t) => t !== tag) });
+    refetch();
+  }
+
+  async function handleDelete(entry: CorpusEntry) {
+    await api.delete(`/api/schemas/${schemaSlug}/corpus/${entry.id}`);
+    if (selectedId === entry.id) setSelectedId(null);
     refetch();
   }
 
@@ -327,10 +335,18 @@ export default function CorpusPage() {
                     <span>{timeAgo(selected.createdAt)}</span>
                   </div>
                 </div>
-                <Link href={pathname.replace("/corpus", "/build") + `?doc=${selected.id}`}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors shrink-0">
-                  Build <ExternalLink className="w-2.5 h-2.5" />
-                </Link>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Link href={pathname.replace("/corpus", "/build") + `?doc=${selected.id}`}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
+                    Build <ExternalLink className="w-2.5 h-2.5" />
+                  </Link>
+                  {hasPermission("corpus:write") && (
+                    <button onClick={() => setConfirmDelete(selected)} title="Delete document"
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] text-ink-4 border border-border hover:border-vermillion-2 hover:text-vermillion-2 transition-colors">
+                      <Trash2 className="w-2.5 h-2.5" /> Delete
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Tags */}
@@ -504,6 +520,16 @@ export default function CorpusPage() {
           )}
         </div>
       </div>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete document"
+          description={`Remove "${confirmDelete.filename}" from the corpus? It will no longer appear in lists, validation, or performance metrics.`}
+          confirmLabel="Delete"
+          onConfirm={async () => { await handleDelete(confirmDelete); setConfirmDelete(null); }}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   );
 }

@@ -11,7 +11,7 @@ import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues, type ValueDiff } from "../extract/value-compare";
-import { and } from "drizzle-orm";
+import { and, isNull } from "drizzle-orm";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -55,7 +55,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
     const [cc] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` })
         .from(schema.corpusEntries)
-        .where(eq(schema.corpusEntries.schemaId, row.id))
+        .where(and(eq(schema.corpusEntries.schemaId, row.id), isNull(schema.corpusEntries.deletedAt)))
     );
     const corpusCount = cc?.count ?? 0;
 
@@ -351,7 +351,7 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       groundTruthJson: schema.corpusEntries.groundTruthJson,
       createdAt: schema.corpusEntries.createdAt,
     }).from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
       .orderBy(desc(schema.corpusEntries.createdAt))
   );
 
@@ -405,12 +405,15 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
       .where(and(
         eq(schema.corpusEntries.schemaId, s.id),
         eq(schema.corpusEntries.contentHash, contentHash),
+        isNull(schema.corpusEntries.deletedAt),
       ))
       .limit(1)
   );
 
   if (existing) {
-    // Document already in corpus — return the existing entry
+    // Document already in corpus — return the existing entry.
+    // A previously soft-deleted entry with the same hash is ignored here,
+    // so re-uploading a deleted document creates a fresh entry.
     return c.json(existing, 200);
   }
 
@@ -445,7 +448,7 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
   const [entry] = await withRLS(db, tenantId, (tx) =>
     tx.select({ storageKey: schema.corpusEntries.storageKey })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.id, entryId))
+      .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
       .limit(1)
   );
 
@@ -468,11 +471,45 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
   if (body.tags !== undefined) updates.tags = body.tags;
 
   const rows = await withRLS(db, tenantId, (tx) =>
-    tx.update(schema.corpusEntries).set(updates).where(eq(schema.corpusEntries.id, entryId)).returning()
+    tx.update(schema.corpusEntries).set(updates)
+      .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
+      .returning()
   );
 
   if (rows.length === 0) return c.json({ error: "Entry not found" }, 404);
   return c.json(rows[0]);
+});
+
+/**
+ * DELETE /api/schemas/:slug/corpus/:entryId — soft-delete a corpus entry.
+ * Sets deleted_at; the row and its stored file are retained for recovery but
+ * are filtered out of every read path (lists, counts, validate, performance,
+ * extraction, dedup). Re-uploading the same document creates a fresh entry.
+ */
+schemas.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const entryId = c.req.param("entryId")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx.update(schema.corpusEntries)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(schema.corpusEntries.id, entryId),
+        eq(schema.corpusEntries.schemaId, s.id),
+        isNull(schema.corpusEntries.deletedAt),
+      ))
+      .returning({ id: schema.corpusEntries.id })
+  );
+
+  if (rows.length === 0) return c.json({ error: "Corpus entry not found" }, 404);
+  return c.body(null, 204);
 });
 
 /**
@@ -529,7 +566,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const corpusRows = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
   );
   const gtMap = new Map<string, Record<string, unknown>>();
   for (const ce of corpusRows) {
@@ -577,7 +614,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const [corpusCount] = await withRLS(db, tenantId, (tx) =>
     tx.select({ count: sql<number>`count(*)::int` })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   return c.json({
@@ -707,7 +744,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       groundTruthJson: schema.corpusEntries.groundTruthJson,
     })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+      .where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   const entriesWithGT = entries.filter((e: any) =>
@@ -965,7 +1002,7 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
 
   const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
-      .from(schema.corpusEntries).where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+      .from(schema.corpusEntries).where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   const entriesWithGT = entries.filter((e: any) =>
