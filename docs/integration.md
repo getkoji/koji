@@ -518,21 +518,46 @@ document.getElementById("viewer").src = embedUrl.toString();
 <iframe src="https://console.getkoji.dev/embed/viewer?url=https://example.com/doc.pdf&highlights=BASE64_JSON"></iframe>
 ```
 
-The `highlights` param is a base64-encoded JSON array:
+The `highlights` param is a base64-encoded JSON array of highlight objects:
 
 ```typescript
 const highlights = [
-  { field: "vendor", page: 1, bbox: { x: 100, y: 200, w: 300, h: 20 } },
-  { field: "total",  page: 1, bbox: { x: 100, y: 250, w: 200, h: 20 } },
+  // bbox coordinates are NORMALIZED fractions of the page (0–1), not pixels.
+  { field: "vendor", label: "Vendor", value: "Acme Co", page: 1, bbox: { x: 0.10, y: 0.20, w: 0.30, h: 0.03 } },
+  { field: "total",  label: "Total",  value: "$6,000",  page: 1, bbox: { x: 0.10, y: 0.25, w: 0.20, h: 0.03 } },
 ];
-const encoded = btoa(JSON.stringify(highlights));
+// UTF-8-safe base64 (labels/values may contain non-ASCII — em dashes,
+// accents, currency symbols). Plain btoa(JSON.stringify(...)) throws on those.
+const json = JSON.stringify(highlights);
+const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(json)));
 // → use as ?highlights=<encoded>
 ```
+
+The viewer decodes the param as UTF-8, so non-ASCII labels/values round-trip
+correctly. (For ASCII-only payloads, plain `btoa(JSON.stringify(highlights))`
+also works.)
+
+#### Highlight object (`BBoxHighlight`)
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `field` | string | yes | **Stable match key** — what `koji:setActiveField` / `koji:fieldClicked` resolve against. May be opaque (e.g. a record id). |
+| `page` | number | yes | 1-indexed page. |
+| `bbox` | `{ x, y, w, h }` | one of `bbox`/`words` | **Normalized fractions of the page, 0–1** (top-left origin). |
+| `words` | `{ text, page, x, y, w, h }[]` | one of `bbox`/`words` | Per-word boxes (also normalized 0–1); use for precise multi-word highlights. |
+| `value` | string | no | Extracted value; the field picker shows it as `name: value`. |
+| `label` | string | no | Human-readable name for the field picker. The picker renders **`label ?? field`**, so you can keep `field` opaque without leaking it into the UI. |
+| `reasoning` | string | no | Tooltip text shown on hover. |
 
 ### Messaging schema (postMessage)
 
 Control runs over `window.postMessage`. Every message is a plain object with a
 `type` string prefixed `koji:`. The viewer ignores anything without that prefix.
+
+**Envelope is flat.** Payload fields sit at the top level of the message object,
+not nested under a `payload` key — e.g. `{ type: "koji:goToPage", page: 3 }`,
+`{ type: "koji:setActiveField", field: "vendor" }`,
+`{ type: "koji:setHighlights", highlights: [...] }`.
 
 **Inbound** — parent → viewer (`iframe.contentWindow.postMessage(msg, viewerOrigin)`):
 
@@ -544,6 +569,27 @@ Control runs over `window.postMessage`. Every message is a plain object with a
 | `koji:setToken` | `{ token: string }` | Swap in a fresh `documentToken` without reloading the iframe — see [Token refresh](#token-refresh-for-long-sessions). |
 | `koji:setTheme` | `{ theme: { activeColor?: string; inactiveColor?: string } }` | Recolor the highlight boxes (any CSS color; pass `rgba()`/`hsla()` for translucency). |
 | `koji:setViewMode` | `{ mode?: "paginated" \| "scroll"; overflow?: "auto" \| "scroll" \| "hidden" }` | Switch the layout at runtime — see [Layout](#layout-scroll-vs-paginated). Both fields optional; unknown values are ignored. |
+
+#### How fields resolve (important)
+
+`koji:setActiveField`, `koji:goToPage`, and `koji:fieldClicked` all operate over
+the viewer's **current highlights array**:
+
+- **`koji:setActiveField(field)` only resolves a `field` that exists in the
+  current highlights.** It finds the matching highlight, navigates to its page,
+  scrolls to `[data-highlight-field="<field>"]`, and emphasizes that box. A
+  `field` that isn't in the current highlights **silently no-ops** — nothing
+  scrolls, no error.
+- **In Document mode the viewer auto-loads native highlights** from
+  `GET /api/jobs/{job}/documents/{doc}/embed-data`, keyed by **Koji's own field
+  names** (e.g. `total_premium`, `coverages.0`). So `setActiveField` works
+  out-of-the-box with those keys — but **not** with your app's internal ids.
+- **`koji:setHighlights` replaces the entire set.** If you want to drive the
+  viewer with your own keys, push them via `setHighlights` (give each a `label`
+  for a readable picker — see [Highlight object](#highlight-object-bboxhighlight)).
+  Note this **races the async native load** in Document mode: send `setHighlights`
+  *after* you receive `koji:ready`, or use URL mode (no native load) if you only
+  ever want your own highlights.
 
 **Outbound** — viewer → parent (your `window.addEventListener("message", …)`):
 
@@ -657,15 +703,19 @@ defaults.
 ### Field picker
 
 In **Document mode**, the viewer shows a built-in dropdown in the toolbar listing
-each extracted field and its value. Selecting an entry jumps to that field's
-highlight — flipping the page in paginated mode or scrolling it into view in
-scroll mode — and marks it active. The dropdown stays in sync with
+each highlighted field. Each row shows **`label ?? field`**, optionally suffixed
+with `: value` — so if you push highlights with opaque `field` keys via
+`koji:setHighlights`, give each a human-readable `label` and the dropdown stays
+readable (the `field` key is still what gets selected). Selecting an entry jumps
+to that field's highlight — flipping the page in paginated mode or scrolling it
+into view in scroll mode — and marks it active. The dropdown stays in sync with
 `koji:setActiveField` and with clicks on the highlights themselves
 (`koji:fieldClicked`).
 
-The values come from the [`/embed-data`](api-reference.md#get-apijobsslugdocumentsdocidembed-data)
-response (each highlight carries a `value`). Hide the dropdown when your host UI
-already provides field navigation:
+For Document-mode native highlights, the `value` (and the field name shown when
+there's no `label`) come from the
+[`/embed-data`](api-reference.md#get-apijobsslugdocumentsdocidembed-data)
+response. Hide the dropdown when your host UI already provides field navigation:
 
 ```html
 <iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&fieldPicker=off"></iframe>
