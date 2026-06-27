@@ -1,10 +1,15 @@
 /**
  * Endpoint health tracking — wraps a ModelProvider so every LLM call
- * records success or failure against the model_endpoints row, transitions
- * the endpoint between healthy and unhealthy state, and emits
- * endpoint.unhealthy / endpoint.recovered events on the transition.
+ * records success or failure against the credential, transitions it
+ * between healthy and unhealthy state, and emits endpoint.unhealthy /
+ * endpoint.recovered events on the transition.
  *
- * Threshold: UNHEALTHY_THRESHOLD consecutive failures move the endpoint
+ * Health is a property of the credential (key + base_url + provider),
+ * not the model — a 401 on one model means every model on the same
+ * credential will 401 too. Callers pass a `tenant_models.id`; we look
+ * up the credential it belongs to and record health there.
+ *
+ * Threshold: UNHEALTHY_THRESHOLD consecutive failures move the credential
  * from 'healthy' to 'unhealthy' (default 3). Any single success moves it
  * back. Both transitions emit a webhook + in-app notification so
  * consumers can react in either direction.
@@ -31,6 +36,7 @@ const MAX_REASON_LEN = 1024;
 
 interface HealthRow {
   id: string;
+  credentialId: string;
   tenantId: string;
   slug: string;
   consecutiveFailures: number;
@@ -43,19 +49,26 @@ async function transitionAndEmit(
   outcome: "success" | "failure",
   reason?: string,
 ): Promise<void> {
-  // Two-step: read current state, decide transition, write the new row.
-  // The decision is made in app code so the state machine is explicit
-  // and testable without writing SQL fixtures.
+  // endpointId is a tenant_models.id. Health lives on the credential —
+  // join through and update there. Two-step: read current state, decide
+  // transition, write the new row. The decision is made in app code so
+  // the state machine is explicit and testable without writing SQL
+  // fixtures.
   const [row] = await db
     .select({
-      id: schema.modelEndpoints.id,
-      tenantId: schema.modelEndpoints.tenantId,
-      slug: schema.modelEndpoints.slug,
-      consecutiveFailures: schema.modelEndpoints.consecutiveFailures,
-      healthState: schema.modelEndpoints.healthState,
+      id: schema.tenantModels.id,
+      credentialId: schema.providerCredentials.id,
+      tenantId: schema.providerCredentials.tenantId,
+      slug: schema.providerCredentials.slug,
+      consecutiveFailures: schema.providerCredentials.consecutiveFailures,
+      healthState: schema.providerCredentials.healthState,
     })
-    .from(schema.modelEndpoints)
-    .where(eq(schema.modelEndpoints.id, endpointId))
+    .from(schema.tenantModels)
+    .innerJoin(
+      schema.providerCredentials,
+      eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
+    )
+    .where(eq(schema.tenantModels.id, endpointId))
     .limit(1);
   if (!row) return; // endpoint deleted between resolve and call — drop silently
 
@@ -65,19 +78,20 @@ async function transitionAndEmit(
   if (outcome === "success") {
     const nextState = r.healthState === "unhealthy" ? "healthy" : r.healthState;
     await db
-      .update(schema.modelEndpoints)
+      .update(schema.providerCredentials)
       .set({
         consecutiveFailures: 0,
         lastSuccessAt: now,
         healthState: nextState,
         updatedAt: now,
       })
-      .where(eq(schema.modelEndpoints.id, endpointId));
+      .where(eq(schema.providerCredentials.id, r.credentialId));
 
     if (r.healthState === "unhealthy") {
       // Transition: unhealthy → healthy
       await emitEvent(r, "endpoint.recovered", {
         endpoint_id: r.id,
+        credential_id: r.credentialId,
         slug: r.slug,
         previous_consecutive_failures: r.consecutiveFailures,
       });
@@ -94,7 +108,7 @@ async function transitionAndEmit(
       : r.healthState;
 
   await db
-    .update(schema.modelEndpoints)
+    .update(schema.providerCredentials)
     .set({
       consecutiveFailures: nextFailures,
       lastFailureAt: now,
@@ -102,12 +116,13 @@ async function transitionAndEmit(
       healthState: nextState,
       updatedAt: now,
     })
-    .where(eq(schema.modelEndpoints.id, endpointId));
+    .where(eq(schema.providerCredentials.id, r.credentialId));
 
   if (nextState === "unhealthy" && r.healthState === "healthy") {
     // Transition: healthy → unhealthy
     await emitEvent(r, "endpoint.unhealthy", {
       endpoint_id: r.id,
+      credential_id: r.credentialId,
       slug: r.slug,
       consecutive_failures: nextFailures,
       reason: reasonShort,

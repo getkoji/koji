@@ -31,6 +31,7 @@ const ENDPOINT = "00000000-0000-0000-0000-0000000000e1";
 
 interface FakeEndpoint {
   id: string;
+  credentialId: string;
   tenantId: string;
   slug: string;
   consecutiveFailures: number;
@@ -39,7 +40,8 @@ interface FakeEndpoint {
 
 // Minimal Drizzle-shaped db: select returns the current row, update
 // applies the patch in place. Each test gets its own endpoint state via
-// makeDb so the state machine is observable.
+// makeDb so the state machine is observable. The chain mocks innerJoin
+// because resolve reads via tenant_models → provider_credentials.
 function makeDb(endpoint: FakeEndpoint) {
   const ep = { ...endpoint };
   const db: any = {
@@ -47,6 +49,7 @@ function makeDb(endpoint: FakeEndpoint) {
       void proj;
       const chain: any = {
         from: () => chain,
+        innerJoin: () => chain,
         where: () => chain,
         limit: () => Promise.resolve([{ ...ep }]),
       };
@@ -74,8 +77,11 @@ beforeEach(() => {
   createdNotifications.length = 0;
 });
 
+const CREDENTIAL = "00000000-0000-0000-0000-0000000000c1";
+
 const baseEndpoint: FakeEndpoint = {
   id: ENDPOINT,
+  credentialId: CREDENTIAL,
   tenantId: TENANT,
   slug: "openai-prod",
   consecutiveFailures: 0,
@@ -150,8 +156,10 @@ describe("_transitionAndEmit — state machine", () => {
     const db: any = {
       select: () => ({
         from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([]), // no row
+          innerJoin: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([]), // no row
+            }),
           }),
         }),
       }),

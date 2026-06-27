@@ -128,8 +128,8 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         deployedVersion: schema.schemaVersions.versionNumber,
-        modelProviderName: schema.modelEndpoints.displayName,
-        modelProviderModel: schema.modelEndpoints.model,
+        modelProviderName: schema.providerCredentials.displayName,
+        modelProviderModel: schema.tenantModels.model,
       })
       .from(schema.pipelines)
       .leftJoin(schema.schemas, eq(schema.schemas.id, schema.pipelines.schemaId))
@@ -138,8 +138,12 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         eq(schema.schemaVersions.id, schema.pipelines.activeSchemaVersionId),
       )
       .leftJoin(
-        schema.modelEndpoints,
-        eq(schema.modelEndpoints.id, schema.pipelines.modelProviderId),
+        schema.tenantModels,
+        eq(schema.tenantModels.id, schema.pipelines.modelProviderId),
+      )
+      .leftJoin(
+        schema.providerCredentials,
+        eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
       )
       .where(sql`${schema.pipelines.deletedAt} IS NULL`)
       .orderBy(schema.pipelines.createdAt),
@@ -208,16 +212,20 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         updatedAt: schema.pipelines.updatedAt,
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
-        modelProviderName: schema.modelEndpoints.displayName,
-        modelProviderModel: schema.modelEndpoints.model,
+        modelProviderName: schema.providerCredentials.displayName,
+        modelProviderModel: schema.tenantModels.model,
         creatorEmail: schema.users.email,
         creatorName: schema.users.name,
       })
       .from(schema.pipelines)
       .leftJoin(schema.schemas, eq(schema.schemas.id, schema.pipelines.schemaId))
       .leftJoin(
-        schema.modelEndpoints,
-        eq(schema.modelEndpoints.id, schema.pipelines.modelProviderId),
+        schema.tenantModels,
+        eq(schema.tenantModels.id, schema.pipelines.modelProviderId),
+      )
+      .leftJoin(
+        schema.providerCredentials,
+        eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
       )
       .leftJoin(schema.users, eq(schema.users.id, schema.pipelines.createdBy))
       .where(and(eq(schema.pipelines.id, pipelineId), sql`${schema.pipelines.deletedAt} IS NULL`))
