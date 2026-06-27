@@ -67,7 +67,9 @@ export type EmbedMessage =
 /** Messages the embed viewer emits to its parent frame (outbound). */
 export type EmbedOutboundMessage =
   | { type: "koji:ready"; pageCount: number }
-  | { type: "koji:fieldClicked"; field: string; page: number };
+  | { type: "koji:fieldClicked"; field: string; page: number }
+  | { type: "koji:pageChanged"; page: number }
+  | { type: "koji:visibleField"; field: string | null; page: number };
 
 interface PdfViewerProps {
   url: string;
@@ -80,6 +82,13 @@ interface PdfViewerProps {
   onFieldClick?: (field: string, page: number) => void;
   /** Fired once the PDF document has loaded, with its page count. */
   onLoad?: (info: { pageCount: number }) => void;
+  /**
+   * Fired when the highlighted field whose box is most prominently in view
+   * changes (page is the field's page; null when no highlighted field is in
+   * view). Drives the embed's outbound koji:visibleField. When omitted, the
+   * tracking observer is not set up.
+   */
+  onVisibleFieldChange?: (field: string | null, page: number) => void;
   /** Highlight colors — overrides the default vermillion/cream styling. */
   theme?: HighlightTheme;
   /** Control scrollbar behavior: "auto" (default, may flash), "scroll" (always visible), "hidden" (no scrollbars) */
@@ -105,9 +114,15 @@ const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, theme, overflow = "auto", mode = "paginated", toolbarSlot }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, onVisibleFieldChange, theme, overflow = "auto", mode = "paginated", toolbarSlot }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  // Mirror currentPage into a ref so the (mount-once) visible-field observer
+  // can read it without being torn down on every page change.
+  const currentPageRef = useRef(1);
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
 
   // Load react-pdf CSS client-side
   useEffect(() => {
@@ -207,6 +222,81 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
     }
   }, [targetPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Track which highlighted field's box is most prominently in view and report
+  // changes (for the embed's outbound koji:visibleField). Reuses the same
+  // approach as the page observer but over highlight boxes. A MutationObserver
+  // picks up boxes as pages lazily mount/unmount; the IntersectionObserver
+  // tracks how much of each box is visible. The "most prominent" field is the
+  // single most-visible box. Only runs when a consumer is listening.
+  const visibleFieldRef = useRef<string | null>(null);
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !onVisibleFieldChange) return;
+
+    const ratios = new Map<Element, { field: string; ratio: number }>();
+    const recompute = () => {
+      let bestEl: Element | null = null;
+      let bestField: string | null = null;
+      let bestRatio = 0;
+      for (const [el, { field, ratio }] of ratios) {
+        if (!el.isConnected) {
+          ratios.delete(el);
+          continue;
+        }
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          bestField = field;
+          bestEl = el;
+        }
+      }
+      const result = bestRatio > 0 ? bestField : null;
+      if (result === visibleFieldRef.current) return;
+      visibleFieldRef.current = result;
+      let page = currentPageRef.current;
+      if (bestEl) {
+        const pageEl = bestEl.closest("[data-page-number]") as HTMLElement | null;
+        const p = Number(pageEl?.dataset.pageNumber);
+        if (p) page = p;
+      }
+      onVisibleFieldChange(result, page);
+    };
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const field = (e.target as HTMLElement).dataset.highlightField;
+          if (field) ratios.set(e.target, { field, ratio: e.intersectionRatio });
+        }
+        recompute();
+      },
+      { root, threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+
+    const observed = new WeakSet<Element>();
+    const observeBoxes = () => {
+      root.querySelectorAll("[data-highlight-field]").forEach((el) => {
+        if (!observed.has(el)) {
+          observed.add(el);
+          io.observe(el);
+        }
+      });
+    };
+    observeBoxes();
+    // Re-observe newly mounted boxes and prune removed ones (lazy pages,
+    // paginated page flips, highlight toggling).
+    const mo = new MutationObserver(() => {
+      observeBoxes();
+      recompute();
+    });
+    mo.observe(root, { childList: true, subtree: true });
+
+    return () => {
+      io.disconnect();
+      mo.disconnect();
+      visibleFieldRef.current = null;
+    };
+  }, [onVisibleFieldChange]);
+
   // Memoize file object — react-pdf uses === equality check and re-loads
   // the PDF on every render if the object reference changes.
   const file = useMemo(() => ({ url }), [url]);
@@ -228,7 +318,13 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
         const prevBtn =
           totalPages > 1 && mode === "paginated" ? (
             <button
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              onClick={() =>
+                setCurrentPage((p) => {
+                  const np = Math.max(1, p - 1);
+                  if (np !== p) onPageChange?.(np);
+                  return np;
+                })
+              }
               disabled={currentPage <= 1}
               className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
             >
@@ -238,7 +334,13 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
         const nextBtn =
           totalPages > 1 && mode === "paginated" ? (
             <button
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() =>
+                setCurrentPage((p) => {
+                  const np = Math.min(totalPages, p + 1);
+                  if (np !== p) onPageChange?.(np);
+                  return np;
+                })
+              }
               disabled={currentPage >= totalPages}
               className="p-0.5 rounded hover:bg-cream-2 disabled:opacity-30 disabled:cursor-default"
             >

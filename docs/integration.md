@@ -551,6 +551,17 @@ Control runs over `window.postMessage`. Every message is a plain object with a
 |--------|---------|------|
 | `koji:ready` | `{ pageCount: number }` | The PDF has loaded and the viewer is ready to accept commands. |
 | `koji:fieldClicked` | `{ field: string; page: number }` | The user clicked a highlight box in the PDF. |
+| `koji:pageChanged` | `{ page: number }` | The most-visible page changed (1-indexed). Fires as the user scrolls in `mode=scroll` and on page navigation in `mode=paginated`. |
+| `koji:visibleField` | `{ field: string \| null; page: number }` | The highlighted field whose box is most prominently in view changed. `field` uses the same key space as `koji:setActiveField` (e.g. `total_premium`, `coverages.0`); `null` when no highlighted field is in view. |
+
+`koji:pageChanged` and `koji:visibleField` let a parent keep its own UI (e.g. a
+field list) in sync with the viewer's scroll — the cross-origin iframe boundary
+otherwise hides scroll position from the parent. They are **debounced** (~120ms)
+and **deduped** (emitted only when the value actually changes), and only fire
+**after `koji:ready`**. They emit for both user scrolling and programmatic
+navigation (`koji:goToPage` / `koji:setActiveField`); since they're deduped by
+value, a parent that also dedupes won't see feedback loops. If no `parentOrigin`
+is known, they are not emitted (they never post to `"*"`).
 
 > **Always pass a real `targetOrigin` — never `"*"`.** When you post *to* the
 > viewer, the second arg is the **viewer's** origin (e.g.
@@ -575,6 +586,13 @@ window.addEventListener("message", (e) => {
   if (msg?.type === "koji:fieldClicked") {
     // sync selection back into your own UI
     selectFieldInMyApp(msg.field);
+  }
+  if (msg?.type === "koji:pageChanged") {
+    updatePageIndicator(msg.page);                  // e.g. "Page 3 of 12"
+  }
+  if (msg?.type === "koji:visibleField") {
+    // highlight the field row your user is currently scrolled to (or clear it)
+    setActiveRowInMyApp(msg.field);                 // string key, or null
   }
 });
 
