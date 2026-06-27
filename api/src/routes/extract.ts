@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
-import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
@@ -145,12 +145,9 @@ extract.post("/process", requires("job:run"), async (c) => {
   let ep1 = null;
   try {
     const requestedModel = (schemaDef.model as string) ?? null;
-    const [found] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model }).from(schema.modelEndpoints)
-        .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel ? [eq(schema.modelEndpoints.model, requestedModel)] : [])))
-        .limit(1));
+    const found = await pickActiveTenantModel(db, tenantId, requestedModel);
     if (found) {
-      ep1 = await resolveExtractEndpoint(db, tenantId, found.id);
+      ep1 = await resolveExtractEndpoint(db, tenantId, found);
     }
   } catch (err) {
     console.warn("[process] Failed to resolve model endpoint:", err instanceof Error ? err.message : err);
@@ -349,11 +346,8 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
       let ep2 = null;
       try {
         const requestedModel2 = body.model ?? null;
-        const [found] = await withRLS(db, tenantId, (tx) =>
-          tx.select({ id: schema.modelEndpoints.id, model: schema.modelEndpoints.model }).from(schema.modelEndpoints)
-            .where(and(eq(schema.modelEndpoints.status, "active"), ...(requestedModel2 ? [eq(schema.modelEndpoints.model, requestedModel2)] : [])))
-            .limit(1));
-        if (found) ep2 = await resolveExtractEndpoint(db, tenantId, found.id);
+        const found = await pickActiveTenantModel(db, tenantId, requestedModel2);
+        if (found) ep2 = await resolveExtractEndpoint(db, tenantId, found);
       } catch {}
       const extractModel = body.model ?? ep2?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
       const extractProvider = createProvider(extractModel, ep2);
@@ -480,20 +474,8 @@ async function handleExtractRunJSON(
   // Resolve model endpoint — look up by model name or use the first active one
   let endpointPayload = null;
   try {
-    const [ep] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ id: schema.modelEndpoints.id })
-        .from(schema.modelEndpoints)
-        .where(
-          and(
-            eq(schema.modelEndpoints.status, "active"),
-            ...(model ? [eq(schema.modelEndpoints.model, model)] : []),
-          ),
-        )
-        .limit(1),
-    );
-    if (ep) {
-      endpointPayload = await resolveExtractEndpoint(db, tenantId, ep.id);
-    }
+    const found = await pickActiveTenantModel(db, tenantId, model ?? null);
+    if (found) endpointPayload = await resolveExtractEndpoint(db, tenantId, found);
   } catch (err) {
     console.warn("[extract/run] endpoint resolution failed:", err);
   }
