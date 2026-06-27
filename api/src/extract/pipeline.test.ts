@@ -711,6 +711,42 @@ describe("validation integration", () => {
     expect(row.applies_to_raw).toBe("Each Occurrence");   // verbatim companion
   });
 
+  it("keep_raw recovers the printed alias when the model returns the canonical code (array)", async () => {
+    // Production shape: the model returns the canonical value (instructed to pick
+    // from allowed values) plus per-item __source_text. The raw must still be the
+    // document's printed alias, resolved via the field's effective vocabulary.
+    const markdown = "Coverage schedule\nGeneral Liability — Each Occurrence: 1,000,000";
+    const sourceText = "General Liability — Each Occurrence: 1,000,000";
+    const itemProps = (applies: Record<string, unknown>) => ({
+      name: "coi",
+      fields: {
+        coverages: { type: "array", items: { type: "object", properties: { coverage: { type: "string" }, applies_to: applies } } },
+      },
+    });
+
+    // static mapping
+    let result = await extractFields(
+      markdown,
+      itemProps({ type: "mapping", keep_raw: true, mappings: { each_occurrence: ["Each Occurrence"] } }),
+      mockProvider(JSON.stringify({ coverages: [{ coverage: "general_liability", applies_to: "each_occurrence", __source_text: sourceText }] })),
+      "m",
+    );
+    let row = (result.extracted.coverages as Array<Record<string, unknown>>)[0]!;
+    expect(row.applies_to).toBe("each_occurrence");
+    expect(row.applies_to_raw).toBe("Each Occurrence");
+
+    // vocab_by (no static mappings — effective vocab comes from the branch)
+    result = await extractFields(
+      markdown,
+      itemProps({ type: "mapping", keep_raw: true, vocab_by: { coverage: { general_liability: { mappings: { each_occurrence: ["Each Occurrence"] } } } } }),
+      mockProvider(JSON.stringify({ coverages: [{ coverage: "general_liability", applies_to: "each_occurrence", __source_text: sourceText }] })),
+      "m",
+    );
+    row = (result.extracted.coverages as Array<Record<string, unknown>>)[0]!;
+    expect(row.applies_to).toBe("each_occurrence");
+    expect(row.applies_to_raw).toBe("Each Occurrence");
+  });
+
   it("surfaces a conditional-vocabulary mismatch in the validation report", async () => {
     // crime row carrying a GL-only code → resolution against the crime branch
     // fails and the issue is reported.
