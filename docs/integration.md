@@ -638,7 +638,7 @@ defaults.
 
 ### Field picker
 
-In **Document mode**, the viewer shows a built-in dropdown (top-right) listing
+In **Document mode**, the viewer shows a built-in dropdown in the toolbar listing
 each extracted field and its value. Selecting an entry jumps to that field's
 highlight — flipping the page in paginated mode or scrolling it into view in
 scroll mode — and marks it active. The dropdown stays in sync with

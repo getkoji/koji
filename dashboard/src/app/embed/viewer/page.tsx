@@ -286,25 +286,28 @@ function EmbedViewerInner() {
     );
   }
 
+  // The field picker lives inside the viewer toolbar (passed as toolbarSlot)
+  // rather than floating over the document, so it can't cover the page or the
+  // nav controls. It takes the toolbar's flexible left space and truncates.
+  const fieldPicker =
+    showFieldPicker && highlights.length > 0 ? (
+      <select
+        aria-label="Jump to extracted field"
+        value={activeField ?? ""}
+        onChange={(e) => selectField(e.target.value || null)}
+        className="w-full max-w-full truncate rounded border border-neutral-300 bg-white px-1.5 py-0.5 font-mono text-[11px] text-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+      >
+        <option value="">Jump to field…</option>
+        {highlights.map((h) => (
+          <option key={h.field} value={h.field}>
+            {h.value ? `${h.field}: ${h.value}` : h.field}
+          </option>
+        ))}
+      </select>
+    ) : undefined;
+
   return (
-    <div className="relative h-screen w-screen bg-white">
-      {showFieldPicker && highlights.length > 0 && (
-        <div className="absolute top-2 right-2 z-10 max-w-[70%]">
-          <select
-            aria-label="Jump to extracted field"
-            value={activeField ?? ""}
-            onChange={(e) => selectField(e.target.value || null)}
-            className="max-w-full truncate rounded border border-neutral-300 bg-white/95 px-2 py-1 font-mono text-[11px] text-neutral-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-neutral-400"
-          >
-            <option value="">Jump to field…</option>
-            {highlights.map((h) => (
-              <option key={h.field} value={h.field}>
-                {h.value ? `${h.field}: ${h.value}` : h.field}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+    <div className="h-screen w-screen bg-white">
       <PdfViewer
         url={pdfUrl}
         highlights={highlights}
@@ -313,6 +316,7 @@ function EmbedViewerInner() {
         theme={theme}
         mode={viewMode}
         overflow={overflow}
+        toolbarSlot={fieldPicker}
         onLoad={({ pageCount }) => postToParent({ type: "koji:ready", pageCount })}
         onFieldClick={(field, page) => {
           setActiveField(field);
