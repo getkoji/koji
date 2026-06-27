@@ -202,8 +202,11 @@ BYO model — local or API. No vendor lock-in.
 | `koji start` / `stop` | Start or stop the processing cluster |
 | `koji process <path>` | Parse + extract a document |
 | `koji extract <md>` | Extract from pre-parsed markdown |
-| `koji push` | Push schemas and pipelines to Koji Cloud |
-| `koji bench` | Benchmark accuracy against a validation corpus |
+| `koji push` / `pull` | Sync schemas and pipelines with Koji Cloud |
+| `koji validate <schema>` | Backtest a schema against its corpus ground truth |
+| `koji run <schema> <doc>` | Extract one corpus document (the Build tab's Run) |
+| `koji corpus ls / diff / add / tag / gt` | Manage a schema's validation corpus |
+| `koji bench` | Benchmark accuracy against a local validation corpus |
 | `koji test` | Run extraction regression tests |
 | `koji doctor` | Check environment health |
 
