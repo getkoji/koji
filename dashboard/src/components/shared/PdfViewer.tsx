@@ -33,6 +33,7 @@ export interface WordBox {
 }
 
 export interface BBoxHighlight {
+  /** Stable match key — what koji:setActiveField / koji:fieldClicked use. */
   field: string;
   page: number;
   bbox?: { x: number; y: number; w: number; h: number };
@@ -40,6 +41,12 @@ export interface BBoxHighlight {
   reasoning?: string;
   /** Extracted value for this field (from embed-data); shown in the field picker. */
   value?: string;
+  /**
+   * Human-readable display name for the field picker. Lets a consumer use an
+   * opaque/stable `field` key (e.g. a record id) without the dropdown showing
+   * it raw — the picker renders `label ?? field`.
+   */
+  label?: string;
 }
 
 /** Highlight colors, overridable by the embedding host (query param / koji:setTheme). */
