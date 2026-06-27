@@ -143,18 +143,20 @@ describe("POST /api/webhook-targets — header validation", () => {
     const res = await app.request("/api/webhook-targets", {
       method: "POST",
       headers: hdrs,
-      body: postBody({ headers: { Authorization: "Bearer secret-token", "X-API-Key": "k1" } }),
+      body: postBody({ headers: { Authorization: "Bearer secret-token", "X-API-Key": "apikey-9f3c2a7b" } }),
     });
     expect(res.status).toBe(201);
     // Inspect the stored blob: it must NOT contain the plaintext token.
+    // Use distinctive, multi-character secret values — a short value like "k1"
+    // collides with the random base64 ciphertext by chance, making this flaky.
     const blob = storedRows[0]?.headersEncrypted as Buffer;
     expect(blob).toBeInstanceOf(Buffer);
     const blobStr = blob.toString("utf8");
     expect(blobStr).not.toContain("Bearer secret-token");
-    expect(blobStr).not.toContain("k1");
+    expect(blobStr).not.toContain("apikey-9f3c2a7b");
     // And it must decrypt back to the same map.
     const decrypted = JSON.parse(decrypt(blobStr, MASTER_KEY, TENANT_A));
-    expect(decrypted).toEqual({ Authorization: "Bearer secret-token", "X-API-Key": "k1" });
+    expect(decrypted).toEqual({ Authorization: "Bearer secret-token", "X-API-Key": "apikey-9f3c2a7b" });
   });
 
   it("rejects reserved header names (Koji-*)", async () => {
