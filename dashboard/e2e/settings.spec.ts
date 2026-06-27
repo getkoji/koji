@@ -67,8 +67,13 @@ test.describe("settings", () => {
       `${tenantBase}/projects/${slug}/settings/model-providers`,
     );
 
-    // Seeded endpoints should appear
-    await expect(page.getByText("OpenAI primary")).toBeVisible();
+    // Seeded credential renders as a card header. The credential display
+    // name and the first model's default label are both "OpenAI primary"
+    // (the model label defaults to the credential name on dual-write),
+    // so scope the locator to the card header instead of matching both.
+    await expect(
+      page.getByText("OpenAI primary", { exact: true }).first(),
+    ).toBeVisible();
   });
 
   test("danger zone is visible to owner", async ({ page }) => {
