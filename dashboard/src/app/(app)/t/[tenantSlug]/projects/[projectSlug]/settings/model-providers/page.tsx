@@ -1,28 +1,38 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { SectionHeader, SettingsTable, SettingsRow, Badge, Meta } from "@/components/shared/SettingsComponents";
+import { SectionHeader, Badge, Meta } from "@/components/shared/SettingsComponents";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 
-interface ModelProvider {
+// ── Types ─────────────────────────────────────────────────────────────────
+
+interface TenantModel {
+  id: string;
+  model: string;
+  capability: "chat" | "vision" | "ocr";
+  displayName: string | null;
+  status: string;
+  createdAt: string;
+}
+
+interface Credential {
   id: string;
   slug: string;
   displayName: string;
   provider: string;
-  model: string;
   baseUrl: string | null;
   deploymentName: string | null;
   apiVersion: string | null;
   awsRegion: string | null;
   keyHint: string | null;
-  hasKey: boolean;
-  credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
   status: string;
+  healthState: string;
   lastHealthCheckAt: string | null;
   createdAt: string;
+  models: TenantModel[];
 }
 
 const PROVIDER_TYPES = [
@@ -34,7 +44,6 @@ const PROVIDER_TYPES = [
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
 
-/** Fallback suggestions when the registry is unavailable. */
 const FALLBACK_SUGGESTIONS: Record<string, string[]> = {
   openai: ["gpt-4o", "gpt-4o-mini"],
   anthropic: ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
@@ -48,32 +57,39 @@ interface RegistryModel {
   isRecommended: boolean;
 }
 
-/**
- * Compact one-line summary of a provider's non-secret config, shown
- * next to the provider badge in the list row. Stays under ~40 chars.
- */
-function providerConfigSummary(p: ModelProvider): string | null {
-  if (p.provider === "azure-openai") {
+const CAPABILITIES: Array<{ value: TenantModel["capability"]; label: string; hint: string }> = [
+  { value: "chat", label: "Chat", hint: "Text-in, text-out. Default for extraction." },
+  { value: "vision", label: "Vision", hint: "Accepts page images. Used for bad-scan escalation." },
+  { value: "ocr", label: "OCR", hint: "Dedicated OCR engine for scanned PDFs." },
+];
+
+function providerConfigSummary(c: Credential): string | null {
+  if (c.provider === "azure-openai") {
     const parts: string[] = [];
-    if (p.deploymentName) parts.push(p.deploymentName);
-    if (p.apiVersion) parts.push(p.apiVersion);
+    if (c.deploymentName) parts.push(c.deploymentName);
+    if (c.apiVersion) parts.push(c.apiVersion);
     return parts.length ? parts.join(" · ") : null;
   }
-  if (p.provider === "bedrock") {
-    return p.awsRegion ?? null;
-  }
-  return p.baseUrl ?? null;
+  if (c.provider === "bedrock") return c.awsRegion ?? null;
+  return c.baseUrl ?? null;
 }
+
+// ── Page ──────────────────────────────────────────────────────────────────
 
 export default function ModelProvidersPage() {
   const { hasPermission } = useAuth();
-  const [showAdd, setShowAdd] = useState(false);
-  const [rotateTarget, setRotateTarget] = useState<ModelProvider | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ModelProvider | null>(null);
+  const canWrite = hasPermission("endpoint:write");
+  const [showAddCredential, setShowAddCredential] = useState(false);
+  const [rotateTarget, setRotateTarget] = useState<Credential | null>(null);
+  const [deleteCredTarget, setDeleteCredTarget] = useState<Credential | null>(null);
+  const [addModelTarget, setAddModelTarget] = useState<Credential | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const { data: providers, loading, error, refetch } = useApi(
-    useCallback(() => api.get<{ data: ModelProvider[] }>("/api/model-providers").then((r) => r.data), []),
+  const { data: credentials, loading, error, refetch } = useApi(
+    useCallback(
+      () => api.get<{ data: Credential[] }>("/api/credentials").then((r) => r.data),
+      [],
+    ),
   );
 
   if (loading) {
@@ -84,7 +100,6 @@ export default function ModelProvidersPage() {
       </section>
     );
   }
-
   if (error) {
     return (
       <section>
@@ -99,68 +114,64 @@ export default function ModelProvidersPage() {
       {successMessage && (
         <div className="border border-green/30 bg-green/5 rounded-sm p-4 flex items-center justify-between">
           <span className="text-[12.5px] text-ink">{successMessage}</span>
-          <button onClick={() => setSuccessMessage(null)} className="text-[11px] text-ink-3 hover:text-ink">dismiss</button>
+          <button
+            onClick={() => setSuccessMessage(null)}
+            className="text-[11px] text-ink-3 hover:text-ink"
+          >
+            dismiss
+          </button>
         </div>
       )}
 
       <section>
         <SectionHeader
           title="Model Endpoints"
-          action={hasPermission("endpoint:write") ? { label: "Add endpoint", onClick: () => setShowAdd(true) } : undefined}
+          action={
+            canWrite ? { label: "Add credential", onClick: () => setShowAddCredential(true) } : undefined
+          }
         />
 
-        {(providers ?? []).length > 0 ? (
-          <SettingsTable>
-            {(providers ?? []).map((p) => {
-              const configSummary = providerConfigSummary(p);
-              return (
-              <SettingsRow key={p.id}>
-                <div className="flex items-center gap-4">
-                  <span className="text-[12.5px] text-ink font-medium">{p.displayName}</span>
-                  <Badge>{p.provider}</Badge>
-                  <span className="font-mono text-[11px] text-ink-3">{p.model}</span>
-                  {configSummary && (
-                    <span className="font-mono text-[11px] text-ink-4 truncate max-w-[280px]" title={configSummary}>
-                      {configSummary}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-4">
-                  {p.keyHint && <Meta>••••{p.keyHint}</Meta>}
-                  {p.credentialStatus === "invalid" && (
-                    <span className="font-mono text-[10px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded" title="Credentials cannot be decrypted. Re-enter the API key to fix.">
-                      key error
-                    </span>
-                  )}
-                  <Badge variant={p.status === "active" ? "active" : "neutral"}>{p.status}</Badge>
-                  {hasPermission("endpoint:write") && (
-                    <>
-                      <button onClick={() => setRotateTarget(p)} className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors">
-                        rotate key
-                      </button>
-                      <button onClick={() => setDeleteTarget(p)} className="font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors">
-                        delete
-                      </button>
-                    </>
-                  )}
-                </div>
-              </SettingsRow>
-              );
-            })}
-          </SettingsTable>
+        {(credentials ?? []).length > 0 ? (
+          <div className="space-y-3">
+            {(credentials ?? []).map((cred) => (
+              <CredentialCard
+                key={cred.id}
+                cred={cred}
+                canWrite={canWrite}
+                onAddModel={() => setAddModelTarget(cred)}
+                onRotate={() => setRotateTarget(cred)}
+                onDelete={() => setDeleteCredTarget(cred)}
+                onModelChanged={refetch}
+              />
+            ))}
+          </div>
         ) : (
           <div className="border border-border rounded-sm py-6 text-center text-[12.5px] text-ink-3">
-            No model endpoints configured. Add one to start running extractions.
+            No credentials configured. Add one to start running extractions.
           </div>
         )}
       </section>
 
-      {showAdd && (
-        <AddProviderDialog
-          onClose={() => setShowAdd(false)}
+      {showAddCredential && (
+        <AddCredentialDialog
+          onClose={() => setShowAddCredential(false)}
           onCreated={() => {
-            setShowAdd(false);
-            setSuccessMessage("Endpoint added. Your API key has been encrypted and stored.");
+            setShowAddCredential(false);
+            setSuccessMessage(
+              "Credential added. Your API key has been encrypted and the first model is ready.",
+            );
+            refetch();
+          }}
+        />
+      )}
+
+      {addModelTarget && (
+        <AddModelDialog
+          credential={addModelTarget}
+          onClose={() => setAddModelTarget(null)}
+          onAdded={() => {
+            setAddModelTarget(null);
+            setSuccessMessage("Model added to the credential.");
             refetch();
           }}
         />
@@ -168,7 +179,7 @@ export default function ModelProvidersPage() {
 
       {rotateTarget && (
         <RotateKeyDialog
-          provider={rotateTarget}
+          credential={rotateTarget}
           onClose={() => setRotateTarget(null)}
           onRotated={() => {
             setRotateTarget(null);
@@ -178,18 +189,226 @@ export default function ModelProvidersPage() {
         />
       )}
 
-      {deleteTarget && (
-        <DeleteProviderDialog
-          provider={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
-          onDeleted={() => { setDeleteTarget(null); refetch(); }}
+      {deleteCredTarget && (
+        <DeleteCredentialDialog
+          credential={deleteCredTarget}
+          onClose={() => setDeleteCredTarget(null)}
+          onDeleted={() => {
+            setDeleteCredTarget(null);
+            setSuccessMessage("Credential and its models deleted.");
+            refetch();
+          }}
         />
       )}
     </div>
   );
 }
 
-function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+// ── Credential card ──────────────────────────────────────────────────────
+
+function CredentialCard({
+  cred,
+  canWrite,
+  onAddModel,
+  onRotate,
+  onDelete,
+  onModelChanged,
+}: {
+  cred: Credential;
+  canWrite: boolean;
+  onAddModel: () => void;
+  onRotate: () => void;
+  onDelete: () => void;
+  onModelChanged: () => void;
+}) {
+  const configSummary = providerConfigSummary(cred);
+  return (
+    <div className="border border-border rounded-sm bg-cream">
+      <div className="px-4 py-3 flex items-center justify-between border-b border-border">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-[13px] font-medium text-ink truncate">{cred.displayName}</span>
+          <Badge>{cred.provider}</Badge>
+          {configSummary && (
+            <span
+              className="font-mono text-[11px] text-ink-4 truncate max-w-[300px]"
+              title={configSummary}
+            >
+              {configSummary}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {cred.keyHint && <Meta>••••{cred.keyHint}</Meta>}
+          {cred.healthState === "unhealthy" && (
+            <span className="font-mono text-[10px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded">
+              unhealthy
+            </span>
+          )}
+          <Badge variant={cred.status === "active" ? "active" : "neutral"}>{cred.status}</Badge>
+          {canWrite && (
+            <>
+              <button
+                onClick={onRotate}
+                className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+              >
+                rotate key
+              </button>
+              <button
+                onClick={onDelete}
+                className="font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors"
+              >
+                delete
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {cred.models.length > 0 ? (
+        <div className="divide-y divide-border">
+          {cred.models.map((m) => (
+            <ModelRow
+              key={m.id}
+              credentialId={cred.id}
+              model={m}
+              canWrite={canWrite}
+              onChanged={onModelChanged}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="px-4 py-3 text-[12px] text-ink-4">No models yet.</div>
+      )}
+
+      {canWrite && (
+        <div className="px-4 py-2 border-t border-border bg-cream-2/40">
+          <button
+            onClick={onAddModel}
+            className="font-mono text-[11px] text-ink-3 hover:text-ink transition-colors"
+          >
+            + Add model
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Model row (inline edit for capability) ───────────────────────────────
+
+function ModelRow({
+  credentialId,
+  model,
+  canWrite,
+  onChanged,
+}: {
+  credentialId: string;
+  model: TenantModel;
+  canWrite: boolean;
+  onChanged: () => void;
+}) {
+  const [updating, setUpdating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  async function changeCapability(capability: TenantModel["capability"]) {
+    if (capability === model.capability) return;
+    setUpdating(true);
+    setError(null);
+    try {
+      await api.patch(`/api/credentials/${credentialId}/models/${model.id}`, { capability });
+      onChanged();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update capability");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.delete(`/api/credentials/${credentialId}/models/${model.id}`);
+      onChanged();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete model");
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  }
+
+  return (
+    <div className="px-4 py-2.5 flex items-center justify-between gap-4">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="font-mono text-[12px] text-ink truncate">{model.model}</span>
+        {model.displayName && model.displayName !== model.model && (
+          <span className="text-[11px] text-ink-4 truncate">{model.displayName}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-3 flex-shrink-0">
+        {canWrite ? (
+          <select
+            value={model.capability}
+            onChange={(e) => changeCapability(e.target.value as TenantModel["capability"])}
+            disabled={updating}
+            className="h-[24px] rounded-sm border border-input bg-white px-1.5 text-[11px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+            title={CAPABILITIES.find((c) => c.value === model.capability)?.hint}
+          >
+            {CAPABILITIES.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Badge>{model.capability}</Badge>
+        )}
+        <Badge variant={model.status === "active" ? "active" : "neutral"}>{model.status}</Badge>
+        {canWrite &&
+          (confirmDelete ? (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                className="font-mono text-[10px] text-ink-3 hover:text-ink"
+              >
+                cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="font-mono text-[10px] text-vermillion-2 hover:text-ink"
+              >
+                {deleting ? "deleting..." : "confirm"}
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="font-mono text-[10px] text-vermillion-2 hover:text-ink"
+            >
+              delete
+            </button>
+          ))}
+      </div>
+      {error && (
+        <div className="text-[11px] text-vermillion-2 ml-2">{error}</div>
+      )}
+    </div>
+  );
+}
+
+// ── Add credential dialog (reuses /api/model-providers which dual-writes) ──
+
+function AddCredentialDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [name, setName] = useState("");
   const [providerType, setProviderType] = useState("openai");
   const [model, setModel] = useState("");
@@ -198,14 +417,18 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [apiKey, setApiKey] = useState("");
 
-  // Fetch models from the platform registry
   const { data: registryModels } = useApi(
-    useCallback(() => api.get<{ data: RegistryModel[] }>("/api/model-registry").then((r) => r.data).catch(() => []), []),
+    useCallback(
+      () =>
+        api
+          .get<{ data: RegistryModel[] }>("/api/model-registry")
+          .then((r) => r.data)
+          .catch(() => []),
+      [],
+    ),
   );
-  // Azure-specific
   const [deploymentName, setDeploymentName] = useState("");
   const [apiVersion, setApiVersion] = useState("");
-  // Bedrock-specific
   const [awsRegion, setAwsRegion] = useState("");
   const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
   const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
@@ -214,27 +437,32 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Filter registry models by provider + search term
   const providerModels = (registryModels ?? []).filter((m) => m.provider === providerType);
-  const fallback = (FALLBACK_SUGGESTIONS[providerType] ?? []).map((id) => ({ provider: providerType, modelId: id, displayName: id, isRecommended: false }));
+  const fallback = (FALLBACK_SUGGESTIONS[providerType] ?? []).map((id) => ({
+    provider: providerType,
+    modelId: id,
+    displayName: id,
+    isRecommended: false,
+  }));
   const availableModels = providerModels.length > 0 ? providerModels : fallback;
   const filteredModels = modelSearch
-    ? availableModels.filter((m) => m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) || m.displayName.toLowerCase().includes(modelSearch.toLowerCase()))
+    ? availableModels.filter(
+        (m) =>
+          m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) ||
+          m.displayName.toLowerCase().includes(modelSearch.toLowerCase()),
+      )
     : availableModels;
 
   function handleProviderChange(value: string) {
     setProviderType(value);
     setModel("");
     setModelSearch("");
-    // Reset secrets so one provider's key never leaks into another's payload.
     setApiKey("");
     setAwsAccessKeyId("");
     setAwsSecretAccessKey("");
     setAwsSessionToken("");
     const pt = PROVIDER_TYPES.find((p) => p.value === value);
     setBaseUrl(pt?.defaultUrl ?? "");
-    // Seed a sensible default for the Azure api-version so users don't
-    // have to look it up; they can still override.
     if (value === "azure-openai" && !apiVersion) setApiVersion("2024-02-15-preview");
   }
 
@@ -242,13 +470,16 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     e.preventDefault();
     setError(null);
     setCreating(true);
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
     try {
-      // Only send fields that apply to this provider. The backend
-      // validates required-per-provider and returns a 400 with a
-      // specific message if anything is missing.
       const payload: Record<string, unknown> = {
-        name, slug, provider: providerType, model,
+        name,
+        slug,
+        provider: providerType,
+        model,
       };
       if (providerType === "bedrock") {
         payload.aws_region = awsRegion || undefined;
@@ -265,11 +496,10 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
           payload.api_key = apiKey || undefined;
         }
       }
-
       await api.post("/api/model-providers", payload);
       onCreated();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create provider");
+      setError(err instanceof Error ? err.message : "Failed to create credential");
       setCreating(false);
     }
   }
@@ -282,32 +512,50 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Add model endpoint</h2>
+        <h2 className="text-[15px] font-medium text-ink mb-1">Add credential</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Configure a model endpoint for extractions. Credentials are encrypted at rest.
+          One key, many models. The first model is added now — attach more under the credential
+          card afterwards. Keys are encrypted at rest.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-[12.5px] font-medium text-ink">Display name</label>
-            <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. GPT-4o-mini" autoFocus
-              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+            <input
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. OpenAI primary"
+              autoFocus
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Provider</label>
-              <select value={providerType} onChange={(e) => handleProviderChange(e.target.value)}
-                className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30">
-                {PROVIDER_TYPES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              <select
+                value={providerType}
+                onChange={(e) => handleProviderChange(e.target.value)}
+                className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+              >
+                {PROVIDER_TYPES.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="space-y-1.5 relative">
-              <label className="text-[12.5px] font-medium text-ink">Model *</label>
+              <label className="text-[12.5px] font-medium text-ink">First model *</label>
               <input
                 required
                 value={model || modelSearch}
-                onChange={(e) => { setModelSearch(e.target.value); setModel(""); setShowModelDropdown(true); }}
+                onChange={(e) => {
+                  setModelSearch(e.target.value);
+                  setModel("");
+                  setShowModelDropdown(true);
+                }}
                 onFocus={() => setShowModelDropdown(true)}
                 placeholder="Search models..."
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
@@ -327,7 +575,11 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                       className={`w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-cream-2 transition-colors flex items-center justify-between ${m.isRecommended ? "font-medium" : ""}`}
                     >
                       <span>{m.modelId}</span>
-                      {m.isRecommended && <span className="text-[9px] text-vermillion-2 uppercase tracking-wider">recommended</span>}
+                      {m.isRecommended && (
+                        <span className="text-[9px] text-vermillion-2 uppercase tracking-wider">
+                          recommended
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -336,7 +588,6 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
             </div>
           </div>
 
-          {/* Non-Bedrock: base URL (label + required-ness varies by provider) */}
           {!isBedrock && (
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">
@@ -347,16 +598,17 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                 onChange={(e) => setBaseUrl(e.target.value)}
                 required={isAzure || isOllama}
                 placeholder={
-                  isAzure ? "https://{resource}.openai.azure.com" :
-                  isOllama ? "http://localhost:11434" :
-                  "https://api.openai.com/v1"
+                  isAzure
+                    ? "https://{resource}.openai.azure.com"
+                    : isOllama
+                      ? "http://localhost:11434"
+                      : "https://api.openai.com/v1"
                 }
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
             </div>
           )}
 
-          {/* Azure OpenAI: deployment name + api version */}
           {isAzure && (
             <>
               <div className="space-y-1.5">
@@ -368,7 +620,9 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   placeholder="prod-gpt4o"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Azure Portal → your resource → Deployments → this name.</p>
+                <p className="text-[11px] text-ink-4">
+                  Azure Portal → your resource → Deployments → this name.
+                </p>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[12.5px] font-medium text-ink">API version *</label>
@@ -379,12 +633,10 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   placeholder="2024-02-15-preview"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Typically <span className="font-mono">2024-02-15-preview</span> or newer — check the Azure docs for the latest.</p>
               </div>
             </>
           )}
 
-          {/* Bedrock: region + AWS credential pair (+ optional session token) */}
           {isBedrock && (
             <>
               <div className="space-y-1.5">
@@ -396,7 +648,6 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   placeholder="us-east-1"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Example: <span className="font-mono">us-east-1</span>. Bedrock must be enabled in the region.</p>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[12.5px] font-medium text-ink">Access key ID *</label>
@@ -408,7 +659,6 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   autoComplete="off"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Format: <span className="font-mono">AKIA...</span> (or <span className="font-mono">ASIA...</span> for temporary STS creds).</p>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[12.5px] font-medium text-ink">Secret access key *</label>
@@ -420,10 +670,11 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   autoComplete="off"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
               </div>
               <div className="space-y-1.5">
-                <label className="text-[12.5px] font-medium text-ink">Session token (optional)</label>
+                <label className="text-[12.5px] font-medium text-ink">
+                  Session token (optional)
+                </label>
                 <PasswordInput
                   value={awsSessionToken}
                   onChange={(e) => setAwsSessionToken(e.target.value)}
@@ -431,12 +682,10 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                   autoComplete="off"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Only needed if you&apos;re using temporary credentials from AWS STS.</p>
               </div>
             </>
           )}
 
-          {/* Single API key field for non-Bedrock, non-Ollama providers */}
           {!isBedrock && !isOllama && (
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">
@@ -450,22 +699,36 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                 autoComplete="off"
                 className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
-              <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
+              <p className="text-[11px] text-ink-4">
+                Encrypted at rest. Cannot be retrieved — only rotated.
+              </p>
             </div>
           )}
 
           {isOllama && (
-            <p className="text-[11px] text-ink-4">
-              Ollama runs locally, no API key required.
-            </p>
+            <p className="text-[11px] text-ink-4">Ollama runs locally, no API key required.</p>
           )}
 
-          {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
+          {error && (
+            <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
+              {error}
+            </div>
+          )}
 
           <div className="flex items-center justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-            <button type="submit" disabled={creating} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
-              {creating ? "Creating..." : "Add endpoint"}
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50"
+            >
+              {creating ? "Creating..." : "Add credential"}
             </button>
           </div>
         </form>
@@ -474,11 +737,123 @@ function AddProviderDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   );
 }
 
-function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProvider; onClose: () => void; onRotated: () => void }) {
-  // Single-key flow state (non-Bedrock)
+// ── Add model dialog ──────────────────────────────────────────────────────
+
+function AddModelDialog({
+  credential,
+  onClose,
+  onAdded,
+}: {
+  credential: Credential;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [model, setModel] = useState("");
+  const [capability, setCapability] = useState<TenantModel["capability"]>("chat");
+  const [label, setLabel] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setCreating(true);
+    try {
+      await api.post(`/api/credentials/${credential.id}/models`, {
+        model: model.trim(),
+        capability,
+        label: label.trim() || undefined,
+      });
+      onAdded();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to add model");
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+        <h2 className="text-[15px] font-medium text-ink mb-1">Add model</h2>
+        <p className="text-[12.5px] text-ink-3 mb-5">
+          Attach another model to{" "}
+          <strong className="text-ink">{credential.displayName}</strong>. Uses the same API key.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Model *</label>
+            <input
+              required
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={credential.provider === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"}
+              autoFocus
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Capability</label>
+            <select
+              value={capability}
+              onChange={(e) => setCapability(e.target.value as TenantModel["capability"])}
+              className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+            >
+              {CAPABILITIES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label} — {c.hint}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Label (optional)</label>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Defaults to the model id"
+              className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+            />
+          </div>
+          {error && (
+            <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
+              {error}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating || !model.trim()}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50"
+            >
+              {creating ? "Adding..." : "Add model"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Rotate key + delete credential dialogs ───────────────────────────────
+
+function RotateKeyDialog({
+  credential,
+  onClose,
+  onRotated,
+}: {
+  credential: Credential;
+  onClose: () => void;
+  onRotated: () => void;
+}) {
   const [newKey, setNewKey] = useState("");
-  // Bedrock flow state — user must re-enter the full credential set.
-  // Access key id + secret are required; session token stays optional.
   const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
   const [awsSecretAccessKey, setAwsSecretAccessKey] = useState("");
   const [awsSessionToken, setAwsSessionToken] = useState("");
@@ -486,7 +861,7 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isBedrock = provider.provider === "bedrock";
+  const isBedrock = credential.provider === "bedrock";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -500,7 +875,16 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
             ...(awsSessionToken ? { aws_session_token: awsSessionToken } : {}),
           }
         : { api_key: newKey };
-      await api.post(`/api/model-providers/${provider.id}/rotate`, payload);
+      // The /api/model-providers/:id/rotate route updates both legacy
+      // (model_endpoints) and the credential row via the dual-write shim.
+      // The "id" here is the credential's first model id (tenant_models.id
+      // == model_endpoints.id by construction). To target the credential
+      // unambiguously we rotate against the first model's id.
+      const firstModelId = credential.models[0]?.id;
+      if (!firstModelId) {
+        throw new Error("Cannot rotate: credential has no models yet.");
+      }
+      await api.post(`/api/model-providers/${firstModelId}/rotate`, payload);
       onRotated();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to rotate key");
@@ -514,7 +898,9 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Rotate credentials</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Replace credentials for <strong className="text-ink">{provider.displayName}</strong>. The old credentials will be discarded immediately.
+          Replace credentials for{" "}
+          <strong className="text-ink">{credential.displayName}</strong>. The old credentials will
+          be discarded immediately.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           {isBedrock ? (
@@ -543,7 +929,9 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[12.5px] font-medium text-ink">Session token (optional)</label>
+                <label className="text-[12.5px] font-medium text-ink">
+                  Session token (optional)
+                </label>
                 <PasswordInput
                   value={awsSessionToken}
                   onChange={(e) => setAwsSessionToken(e.target.value)}
@@ -551,20 +939,40 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
                   autoComplete="off"
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
                 />
-                <p className="text-[11px] text-ink-4">Leave blank unless your credentials are temporary STS tokens.</p>
               </div>
             </>
           ) : (
             <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">New API key</label>
-              <PasswordInput required value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-..." autoFocus autoComplete="off"
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
+              <PasswordInput
+                required
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                placeholder="sk-..."
+                autoFocus
+                autoComplete="off"
+                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 pr-8 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
+              />
             </div>
           )}
-          {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>}
+          {error && (
+            <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
+              {error}
+            </div>
+          )}
           <div className="flex items-center justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-            <button type="submit" disabled={rotating} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={rotating}
+              className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50"
+            >
               {rotating ? "Rotating..." : isBedrock ? "Rotate credentials" : "Rotate key"}
             </button>
           </div>
@@ -574,14 +982,30 @@ function RotateKeyDialog({ provider, onClose, onRotated }: { provider: ModelProv
   );
 }
 
-function DeleteProviderDialog({ provider, onClose, onDeleted }: { provider: ModelProvider; onClose: () => void; onDeleted: () => void }) {
+function DeleteCredentialDialog({
+  credential,
+  onClose,
+  onDeleted,
+}: {
+  credential: Credential;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleDelete() {
     setDeleting(true);
     try {
-      await api.delete(`/api/model-providers/${provider.id}`);
+      // Same id-sharing rationale as RotateKeyDialog: the first model's id
+      // doubles as the legacy endpoint id, so deleting through
+      // /api/model-providers cascades through the dual-write shim and
+      // takes the credential + all its models with it.
+      const firstModelId = credential.models[0]?.id;
+      if (!firstModelId) {
+        throw new Error("Cannot delete: credential has no models yet.");
+      }
+      await api.delete(`/api/model-providers/${firstModelId}`);
       onDeleted();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to delete");
@@ -593,14 +1017,29 @@ function DeleteProviderDialog({ provider, onClose, onDeleted }: { provider: Mode
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Delete model endpoint</h2>
+        <h2 className="text-[15px] font-medium text-ink mb-1">Delete credential</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
-          Delete <strong className="text-ink">{provider.displayName}</strong>? The encrypted credentials will be permanently removed.
+          Delete <strong className="text-ink">{credential.displayName}</strong> and all{" "}
+          {credential.models.length} model{credential.models.length === 1 ? "" : "s"} attached to
+          it? The encrypted credentials will be permanently removed.
         </p>
-        {error && <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">{error}</div>}
+        {error && (
+          <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">
+            {error}
+          </div>
+        )}
         <div className="flex items-center justify-end gap-2">
-          <button onClick={onClose} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-          <button onClick={handleDelete} disabled={deleting} className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50">
+          <button
+            onClick={onClose}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50"
+          >
             {deleting ? "Deleting..." : "Delete"}
           </button>
         </div>
