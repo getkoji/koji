@@ -48,13 +48,19 @@ export interface HighlightTheme {
   inactiveColor?: string;
 }
 
+/** Display mode: paginated (arrow nav, one page) or scroll (all pages stacked). */
+export type ViewMode = "paginated" | "scroll";
+/** Scrollbar behavior for the viewer container. */
+export type ViewOverflow = "auto" | "scroll" | "hidden";
+
 /** Messages the embed viewer accepts from its parent frame (inbound). */
 export type EmbedMessage =
   | { type: "koji:setActiveField"; field: string | null }
   | { type: "koji:setHighlights"; highlights: BBoxHighlight[] }
   | { type: "koji:goToPage"; page: number }
   | { type: "koji:setToken"; token: string }
-  | { type: "koji:setTheme"; theme: HighlightTheme };
+  | { type: "koji:setTheme"; theme: HighlightTheme }
+  | { type: "koji:setViewMode"; mode?: ViewMode; overflow?: ViewOverflow };
 
 /** Messages the embed viewer emits to its parent frame (outbound). */
 export type EmbedOutboundMessage =
@@ -75,9 +81,9 @@ interface PdfViewerProps {
   /** Highlight colors — overrides the default vermillion/cream styling. */
   theme?: HighlightTheme;
   /** Control scrollbar behavior: "auto" (default, may flash), "scroll" (always visible), "hidden" (no scrollbars) */
-  overflow?: "auto" | "scroll" | "hidden";
+  overflow?: ViewOverflow;
   /** Display mode: "paginated" shows one page at a time with arrows, "scroll" renders all pages in a scrollable container */
-  mode?: "paginated" | "scroll";
+  mode?: ViewMode;
 }
 
 // Tailwind only ships classes it can see as literal strings. Mapping the

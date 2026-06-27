@@ -8,6 +8,8 @@ import {
   type EmbedMessage,
   type EmbedOutboundMessage,
   type HighlightTheme,
+  type ViewMode,
+  type ViewOverflow,
 } from "@/components/shared/PdfViewer";
 
 /**
@@ -30,6 +32,10 @@ import {
  *
  * Theming (optional): ?activeColor=<css>&inactiveColor=<css>
  *
+ * Layout (optional): ?mode=paginated|scroll&overflow=auto|scroll|hidden
+ *   paginated (default) = arrow nav, one page at a time; scroll = all pages
+ *   stacked in a scrollable column.
+ *
  * Outbound origin (optional): ?parentOrigin=<https://host> — the targetOrigin
  * the viewer posts outbound messages to. Falls back to the embedding page's
  * origin (document.referrer). Never posts to "*" unless neither is known.
@@ -40,6 +46,7 @@ import {
  *   { type: "koji:goToPage", page: 3 }
  *   { type: "koji:setToken", token: "<fresh documentToken>" }   // refresh w/o iframe reload
  *   { type: "koji:setTheme", theme: { activeColor, inactiveColor } }
+ *   { type: "koji:setViewMode", mode: "scroll", overflow: "auto" }  // both optional
  *
  * Outbound postMessage (viewer → parent):
  *   { type: "koji:ready", pageCount: 5 }                         // PDF loaded, controllable
@@ -72,6 +79,18 @@ function swapToken(url: string, token: string): string {
   }
 }
 
+const VIEW_MODES: readonly ViewMode[] = ["paginated", "scroll"];
+const VIEW_OVERFLOWS: readonly ViewOverflow[] = ["auto", "scroll", "hidden"];
+
+/** Narrow an untrusted string to a ViewMode, or undefined if not a valid one. */
+function asViewMode(v: string | null | undefined): ViewMode | undefined {
+  return v && (VIEW_MODES as readonly string[]).includes(v) ? (v as ViewMode) : undefined;
+}
+/** Narrow an untrusted string to a ViewOverflow, or undefined if not a valid one. */
+function asViewOverflow(v: string | null | undefined): ViewOverflow | undefined {
+  return v && (VIEW_OVERFLOWS as readonly string[]).includes(v) ? (v as ViewOverflow) : undefined;
+}
+
 function EmbedViewerInner() {
   const searchParams = useSearchParams();
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -79,6 +98,15 @@ function EmbedViewerInner() {
   const [activeField, setActiveField] = useState<string | null>(null);
   const [targetPage, setTargetPage] = useState<number | null>(null);
   const [theme, setTheme] = useState<HighlightTheme | undefined>(undefined);
+  // Scroll/pagination config — host-controlled via ?mode / ?overflow query
+  // params (validated; unknown values fall back to the defaults) and the
+  // koji:setViewMode message. Defaults match the dashboard reviewer surface.
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    () => asViewMode(searchParams.get("mode")) ?? "paginated",
+  );
+  const [overflow, setOverflow] = useState<ViewOverflow>(
+    () => asViewOverflow(searchParams.get("overflow")) ?? "auto",
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -198,6 +226,12 @@ function EmbedViewerInner() {
         case "koji:setTheme":
           setTheme(msg.theme);
           break;
+        case "koji:setViewMode":
+          // Either field is optional; ignore unknown values so a bad message
+          // can't wedge the viewer into an invalid layout.
+          if (asViewMode(msg.mode)) setViewMode(msg.mode!);
+          if (asViewOverflow(msg.overflow)) setOverflow(msg.overflow!);
+          break;
       }
     }
 
@@ -237,6 +271,8 @@ function EmbedViewerInner() {
         activeField={activeField}
         targetPage={targetPage}
         theme={theme}
+        mode={viewMode}
+        overflow={overflow}
         onLoad={({ pageCount }) => postToParent({ type: "koji:ready", pageCount })}
         onFieldClick={(field, page) => {
           setActiveField(field);
