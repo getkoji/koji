@@ -190,6 +190,30 @@ describe("resolveConditionalHints", () => {
     expect(result).toBe(spec);
   });
 
+  it("narrows vocab_by to the selected branch when the sibling is known", () => {
+    const spec = {
+      type: "mapping",
+      vocab_by: {
+        coverage: {
+          crime: { mappings: { employee_theft: ["EE Theft"] } },
+          general_liability: { options: ["each_occurrence"] },
+        },
+      },
+    };
+    const result = resolveConditionalHints(spec, { coverage: "crime" });
+    expect(result.mappings).toEqual({ employee_theft: ["EE Theft"] });
+    expect(result.vocab_by).toBeUndefined(); // collapsed to the chosen branch
+  });
+
+  it("leaves vocab_by intact when the sibling is not yet known", () => {
+    const spec = {
+      type: "mapping",
+      vocab_by: { coverage: { crime: { options: ["employee_theft"] } } },
+    };
+    const result = resolveConditionalHints(spec, {});
+    expect(result.vocab_by).toBeDefined(); // full table still rendered in the prompt
+  });
+
   it("first matching parent wins", () => {
     const spec = {
       type: "string",

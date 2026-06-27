@@ -848,6 +848,79 @@ Under the hood, Koji topologically sorts fields into **extraction waves**. `form
 
 If `depends_on` becomes too heavy for your schema, the alternative is to split the polymorphic field into form-specific fields (`period_fiscal_year_end`, `period_quarter_end`, `period_date_of_report`, `period_meeting_date`) with narrow hints each, and normalize them at a later layer. Both approaches are supported.
 
+### Conditional vocabularies based on other fields
+
+`extraction_hint_by` changes the *guidance* based on a sibling field. `vocab_by` goes a step further and changes the *allowed values* (a `mapping` or `enum` vocabulary) based on a sibling field's value.
+
+The classic case: a coverage row's valid `applies_to` codes depend on the row's `coverage`. Declare the per-value vocabularies under `vocab_by`, keyed by the sibling field and then by its value:
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      coverage:
+        type: enum
+        options: [crime, general_liability]
+      applies_to:
+        type: mapping
+        vocab_by:
+          coverage:                         # the sibling field, in the same row
+            crime:
+              mappings:
+                employee_theft: ["Employee Theft", "EE Theft"]
+                forgery: ["Forgery or Alteration"]
+            general_liability:
+              mappings:
+                each_occurrence: ["Each Occurrence", "Per Occurrence"]
+                general_aggregate: ["Aggregate", "Gen Agg"]
+        vocab_default:                       # optional: used when no branch matches
+          mappings:
+            other: []
+```
+
+How it resolves, per row:
+
+1. Koji picks the branch whose key matches the row's `coverage` value (e.g. `crime`).
+2. The row's `applies_to` is resolved against *only that branch* — so `"EE Theft"` on a crime row becomes `employee_theft`, but a general-liability code on a crime row will not match and is flagged as a validation issue (`rule: conditional_vocab`).
+3. If no branch matches and a `vocab_default` is declared, the default vocabulary is used. If no branch matches and there's no default, the value is left as-is and a validation issue is reported so it surfaces in review.
+
+For **array items** (above), all rows come back from a single extraction call, so Koji can't pre-pick a per-row vocabulary in the prompt. Instead it shows the model the whole decision table as guidance and then enforces the correct branch deterministically after extraction. Correctness comes from that post-extraction step — as long as the row's `coverage` is extracted, the `applies_to` is resolved against the right vocabulary regardless of what the model guessed.
+
+For **top-level scalar fields**, add `depends_on` so the sibling extracts first (same wave mechanics as `extraction_hint_by`); once its value is known, the dependent field's prompt is narrowed to just the selected branch:
+
+```yaml
+fields:
+  coverage:
+    type: enum
+    options: [crime, general_liability]
+  applies_to:
+    type: mapping
+    depends_on: [coverage]
+    vocab_by:
+      coverage:
+        crime: { mappings: { employee_theft: ["EE Theft"] } }
+        general_liability: { mappings: { each_occurrence: ["Each Occ"] } }
+```
+
+Each branch is an ordinary vocabulary block (`mappings`, `options`, or `values`), so it composes with [anchors and `_defs`](#reusing-definitions-dry-schemas) — define a vocabulary once and reference it from multiple branches:
+
+```yaml
+_defs:
+  crime_codes: &crime_codes
+    mappings:
+      employee_theft: ["EE Theft"]
+      forgery: []
+fields:
+  # ...
+  applies_to:
+    type: mapping
+    vocab_by:
+      coverage:
+        crime: *crime_codes
+```
+
 ## Heading inference
 
 The document mapper splits parsed markdown into chunks at `#` headings. For clean PDFs with structured layout, docling emits headings just fine. For OCR'd scans, invoices, and table-heavy forms, the parsed markdown often comes out with no `#` markers at all — and the chunker collapses the whole document into one giant chunk.
