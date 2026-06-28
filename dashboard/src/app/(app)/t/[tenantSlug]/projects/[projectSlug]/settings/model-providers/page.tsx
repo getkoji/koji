@@ -388,7 +388,7 @@ function CredentialCard({
   );
 }
 
-// ── Model row (inline edit for capability) ───────────────────────────────
+// ── Model row (one row per capability — capability is the row's identity) ──
 
 function ModelRow({
   credentialId,
@@ -401,24 +401,9 @@ function ModelRow({
   canWrite: boolean;
   onChanged: () => void;
 }) {
-  const [updating, setUpdating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  async function changeCapability(capability: TenantModel["capability"]) {
-    if (capability === model.capability) return;
-    setUpdating(true);
-    setError(null);
-    try {
-      await api.patch(`/api/credentials/${credentialId}/models/${model.id}`, { capability });
-      onChanged();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to update capability");
-    } finally {
-      setUpdating(false);
-    }
-  }
 
   async function handleDelete() {
     setDeleting(true);
@@ -433,6 +418,12 @@ function ModelRow({
     }
   }
 
+  // Capability shown as a static badge — each row IS one capability
+  // (the (credential, model, capability) unique constraint means an
+  // inline swap would 409 against a sibling row). To change a model's
+  // capabilities, delete and re-add via the Add model dialog.
+  const capabilityHint = CAPABILITIES.find((c) => c.value === model.capability)?.hint;
+
   return (
     <div className="px-4 py-2.5 flex items-center justify-between gap-4">
       <div className="flex items-center gap-3 min-w-0">
@@ -442,23 +433,9 @@ function ModelRow({
         )}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
-        {canWrite ? (
-          <select
-            value={model.capability}
-            onChange={(e) => changeCapability(e.target.value as TenantModel["capability"])}
-            disabled={updating}
-            className="h-[24px] rounded-sm border border-input bg-white px-1.5 text-[11px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
-            title={CAPABILITIES.find((c) => c.value === model.capability)?.hint}
-          >
-            {CAPABILITIES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        ) : (
+        <span title={capabilityHint}>
           <Badge>{model.capability}</Badge>
-        )}
+        </span>
         <Badge variant={model.status === "active" ? "active" : "neutral"}>{model.status}</Badge>
         {canWrite &&
           (confirmDelete ? (

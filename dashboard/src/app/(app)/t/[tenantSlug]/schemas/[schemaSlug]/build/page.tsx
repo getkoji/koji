@@ -4,11 +4,14 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/lib/auth-context";
+import { keepRawView } from "@/lib/keep-raw";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import { AgentPanel } from "./AgentPanel";
 
@@ -120,6 +123,7 @@ export default function BuildPage() {
   const params = useParams();
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+  const { hasPermission } = useAuth();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
 
   // Data
@@ -156,6 +160,7 @@ export default function BuildPage() {
   const [savingGT, setSavingGT] = useState(false);
   const [gtSaved, setGtSaved] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -524,6 +529,12 @@ export default function BuildPage() {
       setUploading(false);
       setUploadProgress(0);
     }
+  }
+
+  async function handleDeleteDoc(entry: CorpusEntry) {
+    await api.delete(`/api/schemas/${schemaSlug}/corpus/${entry.id}`);
+    if (selectedDocId === entry.id) setSelectedDocId(null);
+    refetchCorpus();
   }
 
   // Load signed URL when document is selected
@@ -912,7 +923,9 @@ export default function BuildPage() {
 
                         {/* Results table */}
                         <div className="border border-border rounded-sm divide-y divide-dotted divide-border">
-                          {Object.entries(extractionResult.extracted).map(([key, value]) => {
+                          {(() => {
+                          const { entries: topEntries, rawByField: topRawByField } = keepRawView(extractionResult.extracted);
+                          return topEntries.map(([key, value]) => {
                             const prov = extractionResult.provenance?.[key];
                             const hasProvenance = prov != null;
                             const isHighlighted = highlightedField === key;
@@ -977,8 +990,15 @@ export default function BuildPage() {
                                     {hasProvenance && <MapPin className={`w-3 h-3 ${isHighlighted ? "text-vermillion-2" : "text-ink-4/50"}`} />}
                                     {key}
                                   </span>
-                                  <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                    {String(value ?? "\u2014")}
+                                  <span className="flex flex-col items-end min-w-0">
+                                    <span className="text-[12px] text-ink text-right break-words min-w-0">
+                                      {String(value ?? "\u2014")}
+                                    </span>
+                                    {topRawByField[key] != null && (
+                                      <span className="font-mono text-[10px] text-ink-4 text-right break-words min-w-0" title={topRawByField[key]}>
+                                        {topRawByField[key]}
+                                      </span>
+                                    )}
                                   </span>
                                   {extractionResult.confidence_scores?.[key] !== undefined && (
                                     <span className={`shrink-0 font-mono text-[10px] ${extractionResult.confidence_scores[key]! >= 0.9 ? "text-green" : extractionResult.confidence_scores[key]! >= 0.7 ? "text-yellow-600" : "text-vermillion-2"}`}>
@@ -988,7 +1008,8 @@ export default function BuildPage() {
                                 </div>
                               </div>
                             );
-                          })}
+                          });
+                          })()}
                         </div>
 
                         {/* Save as Ground Truth */}
@@ -1069,6 +1090,15 @@ export default function BuildPage() {
                     <option key={e.id} value={e.id}>{e.filename}</option>
                   ))}
                 </select>
+                {selectedDoc && hasPermission("corpus:write") && (
+                  <button
+                    onClick={() => setConfirmDeleteDoc(selectedDoc)}
+                    title="Delete document from corpus"
+                    className="text-ink-4 hover:text-vermillion-2 transition-colors p-1 rounded-sm hover:bg-cream-2 shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
@@ -1196,6 +1226,16 @@ export default function BuildPage() {
           </div>
         </div>
       )}
+
+      {confirmDeleteDoc && (
+        <ConfirmDialog
+          title="Delete document"
+          description={`Remove "${confirmDeleteDoc.filename}" from the corpus? It will no longer appear in lists, validation, or performance metrics.`}
+          confirmLabel="Delete"
+          onConfirm={async () => { await handleDeleteDoc(confirmDeleteDoc); setConfirmDeleteDoc(null); }}
+          onCancel={() => setConfirmDeleteDoc(null)}
+        />
+      )}
     </>
   );
 }
@@ -1293,7 +1333,7 @@ function BuildNestedValue({
 
   // Object
   if (value != null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
+    const { entries, rawByField } = keepRawView(value);
     return (
       <>
         {entries.map(([propName, propValue]) => {
@@ -1312,8 +1352,15 @@ function BuildNestedValue({
               >
                 {expandable && <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform ${isOpen ? "rotate-90" : ""}`} />}
                 <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
-                <span className="text-[11px] text-ink-2 truncate min-w-0">
-                  {expandable ? (Array.isArray(propValue) ? `${(propValue as unknown[]).length} items` : `${Object.keys(propValue as object).length} fields`) : String(propValue ?? "\u2014")}
+                <span className="flex flex-col min-w-0">
+                  <span className="text-[11px] text-ink-2 truncate min-w-0">
+                    {expandable ? (Array.isArray(propValue) ? `${(propValue as unknown[]).length} items` : `${Object.keys(propValue as object).length} fields`) : String(propValue ?? "\u2014")}
+                  </span>
+                  {!expandable && rawByField[propName] != null && (
+                    <span className="font-mono text-[9.5px] text-ink-4 truncate min-w-0" title={rawByField[propName]}>
+                      {rawByField[propName]}
+                    </span>
+                  )}
                 </span>
               </div>
               {isOpen && expandable && (

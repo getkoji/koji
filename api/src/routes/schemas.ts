@@ -10,7 +10,8 @@ import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
-import { and } from "drizzle-orm";
+import { compareValues, type ValueDiff } from "../extract/value-compare";
+import { and, isNull } from "drizzle-orm";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -54,7 +55,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
     const [cc] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` })
         .from(schema.corpusEntries)
-        .where(eq(schema.corpusEntries.schemaId, row.id))
+        .where(and(eq(schema.corpusEntries.schemaId, row.id), isNull(schema.corpusEntries.deletedAt)))
     );
     const corpusCount = cc?.count ?? 0;
 
@@ -350,7 +351,7 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       groundTruthJson: schema.corpusEntries.groundTruthJson,
       createdAt: schema.corpusEntries.createdAt,
     }).from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
       .orderBy(desc(schema.corpusEntries.createdAt))
   );
 
@@ -404,12 +405,15 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
       .where(and(
         eq(schema.corpusEntries.schemaId, s.id),
         eq(schema.corpusEntries.contentHash, contentHash),
+        isNull(schema.corpusEntries.deletedAt),
       ))
       .limit(1)
   );
 
   if (existing) {
-    // Document already in corpus — return the existing entry
+    // Document already in corpus — return the existing entry.
+    // A previously soft-deleted entry with the same hash is ignored here,
+    // so re-uploading a deleted document creates a fresh entry.
     return c.json(existing, 200);
   }
 
@@ -444,7 +448,7 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
   const [entry] = await withRLS(db, tenantId, (tx) =>
     tx.select({ storageKey: schema.corpusEntries.storageKey })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.id, entryId))
+      .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
       .limit(1)
   );
 
@@ -467,11 +471,45 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
   if (body.tags !== undefined) updates.tags = body.tags;
 
   const rows = await withRLS(db, tenantId, (tx) =>
-    tx.update(schema.corpusEntries).set(updates).where(eq(schema.corpusEntries.id, entryId)).returning()
+    tx.update(schema.corpusEntries).set(updates)
+      .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
+      .returning()
   );
 
   if (rows.length === 0) return c.json({ error: "Entry not found" }, 404);
   return c.json(rows[0]);
+});
+
+/**
+ * DELETE /api/schemas/:slug/corpus/:entryId — soft-delete a corpus entry.
+ * Sets deleted_at; the row and its stored file are retained for recovery but
+ * are filtered out of every read path (lists, counts, validate, performance,
+ * extraction, dedup). Re-uploading the same document creates a fresh entry.
+ */
+schemas.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const entryId = c.req.param("entryId")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx.update(schema.corpusEntries)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(schema.corpusEntries.id, entryId),
+        eq(schema.corpusEntries.schemaId, s.id),
+        isNull(schema.corpusEntries.deletedAt),
+      ))
+      .returning({ id: schema.corpusEntries.id })
+  );
+
+  if (rows.length === 0) return c.json({ error: "Corpus entry not found" }, 404);
+  return c.body(null, 204);
 });
 
 /**
@@ -528,7 +566,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const corpusRows = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
   );
   const gtMap = new Map<string, Record<string, unknown>>();
   for (const ce of corpusRows) {
@@ -550,7 +588,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
 
     if (exRuns.length === 0) continue;
 
-    const fieldCorrect: Record<string, number> = {};
+    const fieldScore: Record<string, number> = {};
     const fieldChecked: Record<string, number> = {};
 
     for (const exRun of exRuns) {
@@ -561,16 +599,13 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
       for (const [field, expected] of Object.entries(gt)) {
         if (expected === undefined || expected === null) continue;
         fieldChecked[field] = (fieldChecked[field] ?? 0) + 1;
-        const got = extracted[field];
-        if (String(expected).trim().toLowerCase() === String(got ?? "").trim().toLowerCase()) {
-          fieldCorrect[field] = (fieldCorrect[field] ?? 0) + 1;
-        }
+        fieldScore[field] = (fieldScore[field] ?? 0) + compareValues(expected, extracted[field]).score;
       }
     }
 
     const fields: Record<string, number> = {};
     for (const f of Object.keys(fieldChecked)) {
-      fields[f] = fieldChecked[f]! > 0 ? ((fieldCorrect[f] ?? 0) / fieldChecked[f]!) * 100 : 100;
+      fields[f] = fieldChecked[f]! > 0 ? ((fieldScore[f] ?? 0) / fieldChecked[f]!) * 100 : 100;
     }
     perRunFieldAccuracy.push({ runId: run.id, fields });
   }
@@ -579,7 +614,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const [corpusCount] = await withRLS(db, tenantId, (tx) =>
     tx.select({ count: sql<number>`count(*)::int` })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, s.id))
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   return c.json({
@@ -709,7 +744,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       groundTruthJson: schema.corpusEntries.groundTruthJson,
     })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+      .where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   const entriesWithGT = entries.filter((e: any) =>
@@ -883,27 +918,25 @@ function computeValidateResult(
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> }> = [];
-  let totalCorrect = 0;
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> }> = [];
+  let totalScore = 0;
   let totalChecked = 0;
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
-    let correct = 0, checked = 0, prevCorrect = 0, prevChecked = 0;
-    const failing: Array<{ id: string; filename: string; expected: string; got: string; confidence: number }> = [];
+    let scoreSum = 0, checked = 0, prevScoreSum = 0, prevChecked = 0;
+    const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> = [];
 
     for (const r of results) {
       const expected = r.groundTruth[fieldName];
       if (expected === undefined || expected === null) continue;
       checked++;
-      const expectedStr = String(expected).trim().toLowerCase();
-      const got = r.extracted[fieldName];
+      const cmp = compareValues(expected, r.extracted[fieldName]);
+      scoreSum += cmp.score;
 
-      if (String(got ?? "").trim().toLowerCase() === expectedStr) {
-        correct++;
-      } else {
+      if (!cmp.match) {
         const conf = r.confidenceScores[fieldName] ?? 0;
-        failing.push({ id: r.entryId, filename: r.filename, expected: String(expected), got: String(got ?? "—"), confidence: conf });
+        failing.push({ id: r.entryId, filename: r.filename, diff: cmp.diff, score: cmp.score, confidence: conf });
         const existing = failingDocsMap.get(r.entryId);
         if (existing) { existing.failedFields.push(fieldName); existing.worstConfidence = Math.min(existing.worstConfidence, conf); }
         else { failingDocsMap.set(r.entryId, { id: r.entryId, filename: r.filename, failedFields: [fieldName], worstConfidence: conf }); }
@@ -912,20 +945,20 @@ function computeValidateResult(
       const prevExtracted = prevExtractedMap.get(r.entryId);
       if (prevExtracted) {
         prevChecked++;
-        if (String(prevExtracted[fieldName] ?? "").trim().toLowerCase() === expectedStr) prevCorrect++;
+        prevScoreSum += compareValues(expected, prevExtracted[fieldName]).score;
       }
     }
 
-    const accuracy = checked > 0 ? (correct / checked) * 100 : 100;
-    const prevAccuracy = prevChecked > 0 ? (prevCorrect / prevChecked) * 100 : null;
-    totalCorrect += correct;
+    const accuracy = checked > 0 ? (scoreSum / checked) * 100 : 100;
+    const prevAccuracy = prevChecked > 0 ? (prevScoreSum / prevChecked) * 100 : null;
+    totalScore += scoreSum;
     totalChecked += checked;
     const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
     fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, failingDocs: failing });
   }
 
   fieldResults.sort((a, b) => a.accuracy - b.accuracy);
-  const overallAccuracy = totalChecked > 0 ? (totalCorrect / totalChecked) * 100 : 100;
+  const overallAccuracy = totalChecked > 0 ? (totalScore / totalChecked) * 100 : 100;
 
   return {
     overallAccuracy,
@@ -969,7 +1002,7 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
 
   const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
-      .from(schema.corpusEntries).where(eq(schema.corpusEntries.schemaId, schemaRow.id))
+      .from(schema.corpusEntries).where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   const entriesWithGT = entries.filter((e: any) =>

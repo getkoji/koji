@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { keepRawView } from "@/lib/keep-raw";
 
 interface ProvenanceItem {
   offset?: number;
@@ -39,7 +40,7 @@ export function TraceResults({
     );
   }
 
-  const fields = Object.entries(extractionJson);
+  const { entries: fields, rawByField } = keepRawView(extractionJson);
 
   const toggleExpand = (key: string) => {
     setExpanded((prev) => {
@@ -135,8 +136,15 @@ export function TraceResults({
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-vermillion-2 shrink-0" />
                 )}
               </span>
-              <span className="font-mono text-[11px] text-ink-2 truncate min-w-0 max-w-[200px] text-right">
-                {formatScalar(value)}
+              <span className="flex flex-col items-end min-w-0 max-w-[200px]">
+                <span className="font-mono text-[11px] text-ink-2 truncate min-w-0 text-right">
+                  {formatScalar(value)}
+                </span>
+                {rawByField[name] != null && (
+                  <span className="font-mono text-[10px] text-ink-4 truncate min-w-0 text-right" title={rawByField[name]}>
+                    {rawByField[name]}
+                  </span>
+                )}
               </span>
               {confidence !== null && (
                 <span className={`font-mono text-[10px] font-medium tabular-nums shrink-0 ${confidenceColor(confidence)}`}>
@@ -249,7 +257,7 @@ function NestedValue({
 
   // Object: render each property
   if (value != null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
+    const { entries, rawByField } = keepRawView(value);
     return (
       <>
         {entries.map(([propName, propValue]) => {
@@ -305,7 +313,14 @@ function NestedValue({
             >
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
-                <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0">{formatScalar(propValue)}</span>
+                <span className="flex flex-col min-w-0">
+                  <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0">{formatScalar(propValue)}</span>
+                  {rawByField[propName] != null && (
+                    <span className="font-mono text-[9.5px] text-ink-4 truncate min-w-0" title={rawByField[propName]}>
+                      {rawByField[propName]}
+                    </span>
+                  )}
+                </span>
               </div>
             </button>
           );
