@@ -9,6 +9,7 @@ import {
   ComboboxItem,
   ComboboxEmpty,
   Dialog,
+  DialogPortal,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -118,10 +119,7 @@ function ModelCombobox({
         autoFocus={autoFocus}
         className="font-mono text-[13px]"
       />
-      {/* pointer-events-auto re-enables interaction: a *modal* Radix dialog
-          sets pointer-events:none on <body> siblings, and this popup portals
-          to <body>. Without this, mouse selection dies inside the dialog. */}
-      <ComboboxContent className="pointer-events-auto">
+      <ComboboxContent>
         <ComboboxEmpty>No models found</ComboboxEmpty>
         <ComboboxList>
           {(m: ModelOption) => (
@@ -583,7 +581,15 @@ function AddCredentialDialog({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
+      // The ModelCombobox popup portals to <body>. A *modal* Radix dialog both
+      // inerts body siblings (pointer-events) AND scroll-locks them — so the
+      // popup can't be clicked or scrolled. Go non-modal and render our own
+      // dimmed backdrop (Radix only renders DialogOverlay in modal mode).
+      modal={false}
     >
+      <DialogPortal>
+        <div className="fixed inset-0 z-50 bg-black/50" />
+      </DialogPortal>
       <DialogContent
         className="bg-cream max-w-[480px] sm:max-w-[480px] max-h-[90vh] overflow-y-auto"
         onOpenAutoFocus={(e) => e.preventDefault()}
@@ -880,7 +886,15 @@ function AddModelDialog({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
+      // The ModelCombobox popup portals to <body>. A *modal* Radix dialog both
+      // inerts body siblings (pointer-events) AND scroll-locks them — so the
+      // popup can't be clicked or scrolled. Go non-modal and render our own
+      // dimmed backdrop (Radix only renders DialogOverlay in modal mode).
+      modal={false}
     >
+      <DialogPortal>
+        <div className="fixed inset-0 z-50 bg-black/50" />
+      </DialogPortal>
       <DialogContent
         className="bg-cream max-w-[460px] sm:max-w-[460px] max-h-[90vh] overflow-y-auto"
         onOpenAutoFocus={(e) => e.preventDefault()}
