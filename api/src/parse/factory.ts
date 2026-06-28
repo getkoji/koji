@@ -41,7 +41,24 @@ export interface ParseConfig {
   modalTimeoutMs?: number;
 }
 
-export async function createParseProvider(config: ParseConfig): Promise<ParseProvider> {
+/** Optional per-call overrides for {@link createParseProvider}. */
+export interface ParseProviderOptions {
+  /**
+   * A tenant-resolved heavy parse provider (from
+   * `resolveTenantParseProvider`). When present, it replaces the
+   * backend-derived default heavy provider inside `SmartParseProvider`,
+   * routing scanned PDFs / images / non-PDF formats to the tenant's BYO
+   * parse engine. When null/undefined, the default heavy provider is used —
+   * so production behavior is unchanged for tenants with no parse endpoint
+   * configured.
+   */
+  tenantHeavy?: ParseProvider | null;
+}
+
+export async function createParseProvider(
+  config: ParseConfig,
+  opts?: ParseProviderOptions,
+): Promise<ParseProvider> {
   let heavy: ParseProvider;
 
   switch (config.backend) {
@@ -67,9 +84,12 @@ export async function createParseProvider(config: ParseConfig): Promise<ParsePro
     }
   }
 
+  // A tenant-resolved BYO parse provider (when configured) replaces the
+  // default heavy provider; otherwise we keep the system default. This is the
+  // BYO-parse hook — inert until a driver + a configured endpoint exist.
   let provider: ParseProvider = new SmartParseProvider(
     new DigitalPdfProvider(),
-    heavy,
+    opts?.tenantHeavy ?? heavy,
   );
 
   // Wrap with chunked parsing for large PDFs (after SmartParseProvider)

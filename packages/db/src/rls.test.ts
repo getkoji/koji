@@ -275,6 +275,14 @@ describe("per-table isolation", () => {
              ('${randomUUID()}', '${tenantB}', 'ep-b', 'EP-B', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userB}')
     `));
 
+    // Parse endpoints (BYO parse, oss-267) — tenant-scoped, holds encrypted
+    // parse-vendor credentials, so cross-tenant isolation is critical.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO parse_endpoints (id, tenant_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
+      VALUES ('${randomUUID()}', '${tenantA}', 'pe-a', 'PE-A', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-a"}', '{}', '${userA}'),
+             ('${randomUUID()}', '${tenantB}', 'pe-b', 'PE-B', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-b"}', '{}', '${userB}')
+    `));
+
     // Provider credentials + tenant models (credential→model split, oss-232)
     const credAId = randomUUID();
     const credBId = randomUUID();
@@ -313,6 +321,7 @@ describe("per-table isolation", () => {
     "pipelines",
     "jobs",
     "model_endpoints",
+    "parse_endpoints",
     "provider_credentials",
     "tenant_models",
   ];
