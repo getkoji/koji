@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -207,7 +207,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         schemaId: schema.corpusEntries.schemaId,
       })
       .from(schema.corpusEntries)
-      .where(eq(schema.corpusEntries.id, body.corpus_entry_id))
+      .where(and(eq(schema.corpusEntries.id, body.corpus_entry_id), isNull(schema.corpusEntries.deletedAt)))
       .limit(1),
   );
 
@@ -648,7 +648,7 @@ extract.post("/extract/compare", requires("job:run"), async (c) => {
     const [entry] = await withRLS(db, tenantId, (tx) =>
       tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename })
         .from(schema.corpusEntries)
-        .where(eq(schema.corpusEntries.id, entryId))
+        .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
         .limit(1),
     );
     return entry ?? null;

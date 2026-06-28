@@ -128,11 +128,11 @@ export interface DocumentViewerProps {
    */
   overflow?: "auto" | "scroll" | "hidden";
   /**
-   * PdfViewer display mode. Defaults to `"paginated"` — same as the
-   * schema build page. Paginated mode gives reviewers `<` / `>` arrows
-   * and shows one page at a time, which matches the canonical reviewer
-   * UX in Koji. `"scroll"` stacks every page in one tall column — opt
-   * into that only when the surface explicitly wants long-form scroll.
+   * PdfViewer display mode. Defaults to `"scroll"` — every page stacked
+   * vertically in one tall, virtualized column, which is the canonical
+   * preview UX in Koji. `"paginated"` instead gives reviewers `<` / `>`
+   * arrows and shows one page at a time — opt into that only when the
+   * surface explicitly wants page-at-a-time navigation.
    */
   mode?: "paginated" | "scroll";
   /** Optional override for the wrapper element's className. */
@@ -177,7 +177,7 @@ export function DocumentViewer({
   highlights,
   activeField,
   overflow = "auto",
-  mode = "paginated",
+  mode = "scroll",
   className,
   lazy = true,
   markdown,

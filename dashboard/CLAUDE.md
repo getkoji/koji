@@ -79,7 +79,7 @@ The viewer pipeline is lazy by default:
 
 ### Scroll and pagination defaults
 
-`DocumentViewer` defaults to `mode="paginated"` and `overflow="auto"` — same as the schema build page (`/t/[tenantSlug]/schemas/[schemaSlug]/build`), which is the canonical reviewer surface. You get `<` / `>` arrow navigation through pages and a scrollbar within the visible page when content overflows. Opt into `mode="scroll"` only if the surface explicitly wants every page stacked vertically in one long column.
+`DocumentViewer` defaults to `mode="scroll"` and `overflow="auto"` — every page stacked vertically in one tall, virtualized column, which is the canonical preview UX across Koji (build page, review queue, document detail). Opt into `mode="paginated"` only if the surface explicitly wants page-at-a-time `<` / `>` arrow navigation showing one page at a time.
 
 **Tailwind gotcha**: `overflow-auto` / `overflow-scroll` / `overflow-hidden` must appear as literal strings somewhere Tailwind can see. PdfViewer maps the prop through an explicit dictionary for this reason — never write `` className={`overflow-${variable}`} `` for these (or any Tailwind utility), the JIT compiler will silently drop the class.
 

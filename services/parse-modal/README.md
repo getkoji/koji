@@ -62,6 +62,47 @@ The deployed app exposes two entry points:
 
 The HTTP endpoint is what the platform uses — Modal's Python SDK has no stable Node equivalent for remote-invoking a function, so we go through HTTP instead.
 
+### Cost attribution: production vs research
+
+This one file serves both tenant/production parse and Frank's academic /
+benchmark parse runs. To keep their Modal spend separable, the app reads
+`KOJI_PARSE_COST_PROFILE` at deploy time and labels the run accordingly. It
+only changes the billing label — parse behavior, output, and the tenant
+endpoint URL are unchanged.
+
+| Profile (env var) | App name | App tags |
+|---|---|---|
+| `production` (default — omit the var) | `koji-parse` | `service=parse`, `cost_profile=production` |
+| `research` | `koji-parse-research` | `service=parse`, `cost_profile=research` |
+
+```bash
+# tenant / production parse (the default — what CI deploys)
+modal deploy app.py
+
+# research / experiment parse (academic corpus, benchmarks, spikes)
+KOJI_PARSE_COST_PROFILE=research modal deploy app.py
+# ...or ephemerally, without taking over a deployed app:
+KOJI_PARSE_COST_PROFILE=research modal run app.py
+```
+
+`research` deploys under a **distinct app name** so they never overwrite the
+production `koji-parse` deployment, and so they appear as their own line even
+on Modal plan tiers without tag-based billing reports. Any value other than
+`production`/`research` is rejected at deploy time.
+
+**Read the split in Modal:**
+- *Usage dashboard* (all plans): group/filter spend by **App** —
+  `koji-parse` is tenant/production COGS, `koji-parse-research` is research.
+- *Billing report* (Team/Enterprise plans), via the native tags:
+  ```bash
+  modal billing report --tag-names cost_profile   # rows broken out by cost_profile
+  ```
+  See <https://modal.com/docs/guide/billing> for the report API/CLI.
+
+Requires a Modal client recent enough to accept `modal.App(tags=...)` (the
+unpinned `pip install modal` in CI is current). Older clients will error at
+deploy with an unexpected-keyword-argument on `tags`.
+
 ### Auto-deploy on merge
 
 A GitHub Action (`.github/workflows/deploy-modal.yml`) auto-runs `modal deploy app.py` on any push to `main` that touches `services/parse-modal/**`. Secrets (`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`) come from the repo's Actions secrets. The runner installs both `modal` and `fastapi` — the latter is required because `modal deploy` imports `app.py` locally before uploading.
