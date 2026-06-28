@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import { review as reviewApi, schemas as schemasApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/lib/auth-context";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
 import { deriveFieldOptions } from "./fieldOptions";
 
@@ -36,6 +37,11 @@ export default function ReviewDetailPage() {
   // so "skip" actually advances instead of looping. State (not ref) so useMemo
   // recomputes the queue position when we skip.
   const [skippedIds, setSkippedIds] = useState<Set<string>>(() => new Set());
+  // Promote-to-corpus state for a resolved item.
+  const { hasPermission } = useAuth();
+  const [promoting, setPromoting] = useState(false);
+  const [promoteResult, setPromoteResult] = useState<{ corpusEntryId: string; deduped: boolean } | null>(null);
+  const [promoteError, setPromoteError] = useState<string | null>(null);
 
   const {
     data: item,
@@ -185,6 +191,26 @@ export default function ReviewDetailPage() {
     goToNext();
   }, [item, submitting, goToNext]);
 
+  const submitPromote = useCallback(async () => {
+    if (!item || promoting) return;
+    setPromoting(true);
+    setPromoteError(null);
+    try {
+      const r = await reviewApi.promote(item.id);
+      setPromoteResult({ corpusEntryId: r.corpusEntryId, deduped: r.deduped });
+    } catch (err) {
+      setPromoteError(err instanceof Error ? err.message : "Promote failed");
+    } finally {
+      setPromoting(false);
+    }
+  }, [item, promoting]);
+
+  // Reset promote feedback when navigating to a different item.
+  useEffect(() => {
+    setPromoteResult(null);
+    setPromoteError(null);
+  }, [reviewItemId]);
+
   // Keyboard shortcuts
   useEffect(() => {
     if (!item || rejectOpen) return;
@@ -312,7 +338,14 @@ export default function ReviewDetailPage() {
               fieldOverrideCount={Object.keys(fieldOverrides).length}
             />
           ) : (
-            <ResolvedPanel item={item} />
+            <ResolvedPanel
+              item={item}
+              canPromote={hasPermission("corpus:promote")}
+              promoting={promoting}
+              promoteResult={promoteResult}
+              promoteError={promoteError}
+              onPromote={submitPromote}
+            />
           )}
         </div>
       </div>
@@ -884,7 +917,24 @@ function RejectDialog({
   );
 }
 
-function ResolvedPanel({ item }: { item: ReviewDetail }) {
+function ResolvedPanel({
+  item,
+  canPromote,
+  promoting,
+  promoteResult,
+  promoteError,
+  onPromote,
+}: {
+  item: ReviewDetail;
+  canPromote: boolean;
+  promoting: boolean;
+  promoteResult: { corpusEntryId: string; deduped: boolean } | null;
+  promoteError: string | null;
+  onPromote: () => void;
+}) {
+  // Only an approved item carries a corrected record worth promoting as ground
+  // truth; rejected docs have nothing to teach the schema.
+  const showPromote = item.resolution === "approved";
   return (
     <div className="border border-border rounded-sm bg-cream">
       <div className="px-4 py-2 border-b border-border bg-cream-2/50 flex items-center gap-2">
@@ -907,6 +957,41 @@ function ResolvedPanel({ item }: { item: ReviewDetail }) {
               Note
             </span>
             <p className="text-[12.5px] text-ink-2 whitespace-pre-wrap">{item.note}</p>
+          </div>
+        )}
+
+        {showPromote && canPromote && (
+          <div className="border-t border-dotted border-border pt-3 flex flex-col gap-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col">
+                <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
+                  Add to corpus
+                </span>
+                <span className="text-[11.5px] text-ink-3 mt-0.5 max-w-[36ch]">
+                  Save this corrected record as ground truth so it&apos;s scored by validation.
+                </span>
+              </div>
+              {promoteResult ? (
+                <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-green shrink-0">
+                  <Check className="w-3.5 h-3.5" />
+                  {promoteResult.deduped ? "Updated in corpus" : "Added to corpus"}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onPromote}
+                  disabled={promoting}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-green border border-green/60 hover:border-green hover:bg-green/[0.05] transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                >
+                  {promoting ? "Adding…" : "Add to corpus"}
+                </button>
+              )}
+            </div>
+            {promoteError && (
+              <div className="font-mono text-[11px] text-vermillion-2 bg-vermillion-3/50 px-2 py-1 rounded-sm">
+                {promoteError}
+              </div>
+            )}
           </div>
         )}
       </div>
