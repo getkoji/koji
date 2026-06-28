@@ -75,6 +75,61 @@ export const modelEndpoints = pgTable(
 );
 
 /**
+ * Parse endpoints — tenant-configured BYO parse/OCR engines (Mistral OCR,
+ * Google Document AI, AWS Textract, Azure Document Intelligence, …).
+ *
+ * A structural twin of `model_endpoints`: the customer brings their own parse
+ * vendor key (encrypted into `auth_json` via `crypto/envelope`), and the
+ * ingestion path resolves it at call time through
+ * `resolveTenantParseProvider`. This keeps parse/OCR inference cost on the
+ * customer's bill, the same way BYO models keep LLM cost off Koji's books.
+ *
+ * Additive and dormant: when a tenant has no active parse endpoint, the parse
+ * factory falls back to the system default heavy provider (docling sidecar /
+ * Modal), so production behavior is unchanged until a driver + a configured
+ * endpoint exist.
+ *
+ * `provider` values: `mistral-ocr`, `google-docai`, `textract`,
+ * `azure-document-intel`, …
+ */
+export const parseEndpoints = pgTable(
+  "parse_endpoints",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    slug: varchar("slug", { length: 64 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    model: varchar("model", { length: 64 }).notNull(),
+    configJson: jsonb("config_json").notNull(),
+    authJson: jsonb("auth_json"),
+    pricingMode: varchar("pricing_mode", { length: 16 }).notNull().default("default"),
+    pricingOverrideJson: jsonb("pricing_override_json"),
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    lastHealthCheckAt: timestamp("last_health_check_at", { withTimezone: true, mode: "date" }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true, mode: "date" }),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true, mode: "date" }),
+    lastFailureReason: text("last_failure_reason"),
+    healthState: varchar("health_state", { length: 16 }).notNull().default("healthy"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (t) => ({
+    tenantSlugIdx: uniqueIndex("parse_endpoints_tenant_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    tenantIdx: index("parse_endpoints_tenant_idx")
+      .on(t.tenantId)
+      .where(sql`deleted_at IS NULL`),
+  }),
+);
+
+/**
  * Provider credentials — a single connection (provider + base_url + encrypted
  * key), decoupled from the model. One credential can serve MANY models via
  * `tenant_models`, so a user no longer duplicates their key per model.
