@@ -692,6 +692,68 @@ schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), asyn
 });
 
 /**
+ * POST /api/schemas/:slug/corpus/:entryId/ground-truth/:gtId/approve
+ *
+ * Approve a draft ground-truth row — the human exit ramp for agent-authored
+ * (provisional) labels promoted from the review queue. Marks the row
+ * `approved` and writes the denormalized `corpusEntries.groundTruthJson` so
+ * `validate` begins scoring against it. Until this runs, provisional drafts are
+ * deliberately excluded from validation.
+ */
+schemas.post(
+  "/:slug/corpus/:entryId/ground-truth/:gtId/approve",
+  requires("corpus:write"),
+  async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const entryId = c.req.param("entryId")!;
+    const gtId = c.req.param("gtId")!;
+    const principal = getPrincipal(c);
+
+    const [gt] = await withRLS(db, tenantId, (tx) =>
+      tx
+        .select({
+          id: schema.corpusEntryGroundTruth.id,
+          payloadJson: schema.corpusEntryGroundTruth.payloadJson,
+          reviewStatus: schema.corpusEntryGroundTruth.reviewStatus,
+        })
+        .from(schema.corpusEntryGroundTruth)
+        .where(
+          and(
+            eq(schema.corpusEntryGroundTruth.id, gtId),
+            eq(schema.corpusEntryGroundTruth.corpusEntryId, entryId),
+          ),
+        )
+        .limit(1),
+    );
+    if (!gt) return c.json({ error: "Ground-truth version not found" }, 404);
+
+    const [updated] = await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.corpusEntryGroundTruth)
+        .set({
+          reviewStatus: "approved",
+          reviewedBy: principal.userId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.corpusEntryGroundTruth.id, gtId))
+        .returning(),
+    );
+
+    // Promote into the denormalized copy that `validate` scores.
+    await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.corpusEntries)
+        .set({ groundTruthJson: gt.payloadJson, updatedAt: new Date() })
+        .where(eq(schema.corpusEntries.id, entryId)),
+    );
+
+    return c.json(updated);
+  },
+);
+
+/**
  * POST /api/schemas/:slug/validate — run validation.
  *
  * Re-runs extraction on every corpus entry with ground truth using the

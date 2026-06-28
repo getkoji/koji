@@ -92,6 +92,10 @@ export default function CorpusPage() {
   const [gtValues, setGtValues] = useState<Record<string, string>>({});
   const [savingGt, setSavingGt] = useState(false);
   const [gtEditing, setGtEditing] = useState(false);
+  // Latest ground-truth version's id + review status, for the draft/approved
+  // badge and the "Approve" action on agent-authored (provisional) labels.
+  const [latestGt, setLatestGt] = useState<{ id: string; reviewStatus: string } | null>(null);
+  const [approvingGt, setApprovingGt] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<CorpusEntry | null>(null);
   const [listCollapsed, setListCollapsed] = useState(() =>
     typeof window !== "undefined" && localStorage.getItem("koji:corpus:list-collapsed") === "true"
@@ -129,23 +133,45 @@ export default function CorpusPage() {
       .then((r) => setPreviewUrl(r.url)).catch(() => setPreviewUrl(null));
   }, [selectedId, schemaSlug]);
 
-  // Load existing GT when selection changes
+  // Load the latest ground-truth version (payload + id + reviewStatus).
+  const loadGroundTruth = useCallback(async () => {
+    if (!selectedId) { setGtValues({}); setLatestGt(null); return; }
+    try {
+      const r = await api.get<{
+        data: Array<{ id: string; payloadJson: Record<string, unknown>; reviewStatus: string }>;
+      }>(`/api/schemas/${schemaSlug}/corpus/${selectedId}/ground-truth`);
+      if (r.data.length > 0) {
+        const latest = r.data[0]!;
+        const vals: Record<string, string> = {};
+        for (const [k, v] of Object.entries(latest.payloadJson)) vals[k] = String(v ?? "");
+        setGtValues(vals);
+        setLatestGt({ id: latest.id, reviewStatus: latest.reviewStatus });
+      } else {
+        setGtValues({}); setLatestGt(null);
+      }
+    } catch {
+      setGtValues({}); setLatestGt(null);
+    }
+  }, [selectedId, schemaSlug]);
+
+  // Reload GT when selection changes.
   useEffect(() => {
     setShowTagInput(false); setNewTag(""); setGtEditing(false);
-    if (!selectedId) { setGtValues({}); return; }
-    api.get<{ data: Array<{ payloadJson: Record<string, unknown> }> }>(`/api/schemas/${schemaSlug}/corpus/${selectedId}/ground-truth`)
-      .then((r) => {
-        if (r.data.length > 0) {
-          const payload = r.data[0]!.payloadJson;
-          const vals: Record<string, string> = {};
-          for (const [k, v] of Object.entries(payload)) vals[k] = String(v ?? "");
-          setGtValues(vals);
-        } else {
-          setGtValues({});
-        }
-      })
-      .catch(() => setGtValues({}));
-  }, [selectedId, schemaSlug]);
+    void loadGroundTruth();
+  }, [loadGroundTruth]);
+
+  async function handleApproveGroundTruth() {
+    if (!selected || !latestGt) return;
+    setApprovingGt(true);
+    try {
+      await api.post(
+        `/api/schemas/${schemaSlug}/corpus/${selected.id}/ground-truth/${latestGt.id}/approve`,
+        {},
+      );
+      await loadGroundTruth();
+      refetch();
+    } finally { setApprovingGt(false); }
+  }
 
   async function handleUpload(file: File) {
     setUploading(true);
@@ -423,6 +449,22 @@ export default function CorpusPage() {
                   <span className="font-mono text-[10px] font-medium tracking-[0.08em] uppercase text-ink-4">Ground Truth</span>
                   <span className="font-mono text-[9px] text-ink-4">·</span>
                   <span className="font-mono text-[9px] text-ink-4">{fields.length} fields</span>
+                  {latestGt && !gtEditing && (
+                    <span
+                      className={`font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase ${
+                        latestGt.reviewStatus === "draft"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-green-100 text-green-700"
+                      }`}
+                      title={
+                        latestGt.reviewStatus === "draft"
+                          ? "Draft label — excluded from validation until approved"
+                          : "Approved — scored by validation"
+                      }
+                    >
+                      {latestGt.reviewStatus}
+                    </span>
+                  )}
                 </div>
                 {hasPermission("corpus:write") && fields.length > 0 && (
                   gtEditing ? (
@@ -434,15 +476,25 @@ export default function CorpusPage() {
                         try {
                           await api.post(`/api/schemas/${schemaSlug}/corpus/${selected.id}/ground-truth`, { values: gtValues });
                           setGtEditing(false);
+                          await loadGroundTruth();
                         } finally { setSavingGt(false); }
                       }} className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-30">
                         {savingGt ? "Saving..." : "Save"}
                       </button>
                     </div>
                   ) : (
-                    <button onClick={() => setGtEditing(true)} className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
-                      Edit
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      {latestGt?.reviewStatus === "draft" && (
+                        <button disabled={approvingGt} onClick={handleApproveGroundTruth}
+                          title="Approve this draft so validation scores against it"
+                          className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] font-medium bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-30">
+                          {approvingGt ? "Approving..." : "Approve"}
+                        </button>
+                      )}
+                      <button onClick={() => setGtEditing(true)} className="inline-flex items-center px-2 py-1 rounded-sm text-[10px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors">
+                        Edit
+                      </button>
+                    </div>
                   )
                 )}
               </div>

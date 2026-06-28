@@ -487,6 +487,16 @@ export const review = {
   reject: (id: string, body: { reason: string }) =>
     api.post<ReviewRow>(`/api/review/${id}/reject`, body),
   skip: (id: string) => api.post<void>(`/api/review/${id}/skip`),
+  promote: (id: string, body?: { to?: string; provisional?: boolean }) =>
+    api.post<{
+      corpusEntryId: string;
+      groundTruthId: string;
+      reviewStatus: "draft" | "approved";
+      provisional: boolean;
+      deduped: boolean;
+      filename: string;
+      fieldCount: number;
+    }>(`/api/review/${id}/promote`, body ?? {}),
 };
 
 // ── Pipelines ──

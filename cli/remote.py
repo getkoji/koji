@@ -863,3 +863,212 @@ def gt_set(
         if resp.status_code not in (200, 201):
             _api_error(resp, "save ground truth")
     console.print(f"[green]✓[/green] ground truth set for {matched.get('filename')} ({len(values)} field(s)).")
+
+
+# ── Review queue: list / show / promote ───────────────────────────────
+
+
+def _fmt_conf(v: Any) -> str:
+    """Render a 0–1 confidence decimal as a percentage, dim if missing."""
+    if v is None or v == "":
+        return "[dim]—[/dim]"
+    try:
+        pct = float(v) * 100
+    except (TypeError, ValueError):
+        return str(v)
+    color = "red" if pct < 70 else ("yellow" if pct < 85 else "green")
+    return f"[{color}]{pct:.0f}%[/{color}]"
+
+
+review_app = typer.Typer(
+    help="Inspect the review queue and promote reviewed docs into the corpus.",
+    no_args_is_help=True,
+)
+
+
+@review_app.command("ls")
+def review_ls(
+    status: str = typer.Option("pending", "--status", help="pending | completed."),
+    reason: str = typer.Option(
+        None, "--reason", help="Filter by routing reason (e.g. low_confidence, validation_failed)."
+    ),
+    limit: int = typer.Option(100, "--limit", help="Max items to return."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List review-queue items.
+
+    These are documents the pipeline routed to human review (a field's confidence
+    fell below the pipeline's reviewThreshold, a validation rule failed, etc.).
+    Pending items are ordered worst-confidence first. Use `--status completed` to
+    find resolved items ready to promote into the corpus.
+    """
+    base_url, headers = resolve_api(profile_name)
+    params: dict[str, Any] = {"status": status, "limit": limit}
+    if reason:
+        params["reason"] = reason
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/review", params=params, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, "list review items")
+        rows = resp.json().get("data", [])
+
+    if as_json:
+        console.print_json(json_mod.dumps(rows))
+        return
+    if not rows:
+        console.print(f"[yellow]No {status} review items.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim")
+    table.add_column("Document")
+    table.add_column("Field")
+    table.add_column("Reason")
+    table.add_column("Conf", justify="right")
+    if status == "completed":
+        table.add_column("Resolution")
+    for r in rows:
+        cells = [
+            (r.get("id") or "")[:8],
+            _fmt_value(r.get("documentFilename") or "", width=32),
+            r.get("fieldName", ""),
+            r.get("reason", ""),
+            _fmt_conf(r.get("confidence")),
+        ]
+        if status == "completed":
+            res = r.get("resolution") or ""
+            color = "green" if res == "approved" else ("red" if res == "rejected" else "dim")
+            cells.append(f"[{color}]{res or '—'}[/{color}]")
+        table.add_row(*cells)
+    console.print(table)
+    console.print(f"\n[dim]{len(rows)} item(s)[/dim]")
+
+
+@review_app.command("show")
+def review_show(
+    review_id: str = typer.Argument(..., help="Review item id."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Show one review item with its full document context.
+
+    Includes the flagged field + why it routed, the document's complete extracted
+    record, and the schema/pipeline it ran under — enough for a human or an agent
+    to decide the correct value and which schema knob to turn.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/review/{review_id}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 404:
+            console.print("[red]Review item not found.[/red]")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, "get review item")
+        row = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(row))
+        return
+
+    console.print(
+        f"\n[bold]{row.get('documentFilename') or row.get('documentId')}[/bold] "
+        f"[dim]({row.get('schemaName')} · {row.get('pipelineName') or 'no pipeline'})[/dim]\n"
+    )
+    meta = Table(show_header=False, box=None)
+    meta.add_column("k", style="dim")
+    meta.add_column("v")
+    meta.add_row("flagged field", str(row.get("fieldName")))
+    meta.add_row("reason", str(row.get("reason")))
+    meta.add_row("confidence", _fmt_conf(row.get("confidence")))
+    meta.add_row("proposed value", _fmt_value(row.get("proposedValue")))
+    meta.add_row("status", str(row.get("status")))
+    if row.get("resolution"):
+        meta.add_row("resolution", str(row.get("resolution")))
+        meta.add_row("final value", _fmt_value(row.get("finalValue")))
+    console.print(meta)
+
+    extraction = row.get("documentExtractionJson") or {}
+    if extraction:
+        console.print("\n[bold]Extracted record[/bold]")
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Field")
+        table.add_column("Value")
+        for k, v in extraction.items():
+            table.add_row(k, _fmt_value(v))
+        console.print(table)
+    console.print()
+
+
+@review_app.command("promote")
+def review_promote(
+    review_id: str = typer.Argument(..., help="Review item id."),
+    provisional: bool = typer.Option(
+        False,
+        "--provisional",
+        help="Write an UNAPPROVED draft label (agent-authored). Excluded from validate "
+        "until a human approves it. Without this flag the item must be resolved+approved.",
+    ),
+    to: str = typer.Option(None, "--to", help="Tag the new corpus entry with this category."),
+    gt_from: str = typer.Option(
+        None, "--gt-from", help="JSON file of {field: value} to use as the label (provisional only)."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Promote a reviewed document into the corpus as ground truth.
+
+    Default (human-gated): the review item must be resolved and approved; its
+    corrected record becomes APPROVED ground truth that `koji validate` scores
+    immediately. With --provisional, an agent-supplied label is written as a
+    draft that stays out of validate until a human approves it in the dashboard.
+    """
+    payload: dict[str, Any] = {"provisional": provisional}
+    if to:
+        payload["to"] = to
+    if gt_from:
+        if not provisional:
+            console.print("[red]--gt-from only applies with --provisional.[/red]")
+            raise typer.Exit(1)
+        path = Path(gt_from)
+        if not path.is_file():
+            console.print(f"[red]File not found: {gt_from}[/red]")
+            raise typer.Exit(1)
+        try:
+            values = json_mod.loads(path.read_text())
+        except Exception as e:
+            console.print(f"[red]Invalid JSON in {gt_from}: {e}[/red]")
+            raise typer.Exit(1)
+        if not isinstance(values, dict):
+            console.print("[red]Ground truth JSON must be an object of field: value.[/red]")
+            raise typer.Exit(1)
+        payload["groundTruth"] = values
+
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(f"{base_url}/api/review/{review_id}/promote", json=payload, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 409:
+            console.print(
+                "[red]Review item is not resolved+approved.[/red] Resolve it in the dashboard "
+                "first, or pass [bold]--provisional[/bold] to write an unapproved draft label."
+            )
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 201):
+            _api_error(resp, "promote review item")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    status_label = "[yellow]draft (needs approval)[/yellow]" if result.get("provisional") else "[green]approved[/green]"
+    dedup_note = " [dim](appended to existing corpus entry)[/dim]" if result.get("deduped") else ""
+    console.print(
+        f"[green]✓[/green] promoted {result.get('filename')} → corpus "
+        f"{(result.get('corpusEntryId') or '')[:8]} as {status_label} "
+        f"({result.get('fieldCount')} field(s)){dedup_note}"
+    )

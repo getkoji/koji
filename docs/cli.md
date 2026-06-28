@@ -295,6 +295,27 @@ A document is addressed by corpus-entry id (a unique prefix is enough — the id
 
 `koji corpus gt accept` reads the document's latest extraction (run `koji run` first) and saves those values as ground truth — the fast path for "this extraction is correct." `koji corpus gt set --from <file>` sets ground truth from a JSON file of `{field: value}`.
 
+### `koji review`
+
+Inspect the human-review queue and promote reviewed documents into the corpus. Documents land in this queue when a pipeline routes them for review — a field's confidence fell below the pipeline's review threshold, a validation rule failed, etc. These are the highest-signal documents to add to your corpus, because they're exactly the ones the current schema struggles with.
+
+```bash
+koji review ls                                       # pending items, worst confidence first
+koji review ls --status completed                    # resolved items (ready to promote)
+koji review ls --reason low_confidence               # filter by routing reason
+koji review ls --limit 50 --json                     # raw rows for an agent to read
+
+koji review show <id>                                # full context: flagged field, why it
+                                                     #   routed, the doc's whole extracted record
+koji review promote <id>                             # resolved+approved → corpus ground truth
+koji review promote <id> --to edge-case              # …and tag the new corpus entry
+koji review promote <id> --provisional --gt-from label.json   # agent draft label (needs approval)
+```
+
+`koji review promote` closes the **review → corpus** loop. By default it requires the item to be resolved and approved (in the dashboard); the human's corrected record becomes ground truth that `koji validate` scores immediately. With `--provisional`, an agent-supplied label is written as a **draft** that stays out of validation until a human approves it in the dashboard Corpus tab. A review item is addressed by its id (a unique prefix is enough). All `review` subcommands accept `--json` and `--profile`.
+
+The full loop — promote the flagged docs, then fix the schema so they stop getting flagged — is encoded in the `review-corpus-loop` Claude skill (which hands off to `schema-loop` for the schema-improvement half).
+
 ---
 
 ## Misc
@@ -305,7 +326,7 @@ Print the installed Koji version.
 
 ```bash
 koji version
-# koji 0.19.0
+# koji 0.22.0
 ```
 
 ---
