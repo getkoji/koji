@@ -6,6 +6,8 @@
  * provider for the cloud tier (see platform-60).
  */
 
+import type { ParseChunk } from "./chunk";
+
 /**
  * Identifier for the parser that produced a ParseResponse. Surfaces in API
  * responses and the trace's `parse.summary_json.engine` so bug reports name
@@ -39,6 +41,17 @@ export interface ParseResponse {
   engine: ParseEngine;
   /** Per-word spatial positions — used by provenance to resolve bounding boxes. */
   text_map?: TextMapSegment[];
+  /**
+   * Provenance-carrying chunks, when the provider produced them from a
+   * structured/positional source (PB-1 contract; see `parse/chunk.ts`).
+   *
+   * Additive and dormant: markdown-native providers leave this undefined and
+   * the live markdown → extraction path ignores it. Structured providers
+   * (PB-6 digital-positional, PB-7 Google, PB-8 Textract) populate it via a
+   * `ChunkCanonicalizer`; later tasks wire it into chunk selection and
+   * provenance.
+   */
+  chunks?: ParseChunk[];
 }
 
 export interface CoordinateExtractionResult {
