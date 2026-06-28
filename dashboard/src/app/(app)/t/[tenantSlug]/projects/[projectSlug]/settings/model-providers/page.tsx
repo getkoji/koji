@@ -118,7 +118,10 @@ function ModelCombobox({
         autoFocus={autoFocus}
         className="font-mono text-[13px]"
       />
-      <ComboboxContent>
+      {/* pointer-events-auto re-enables interaction: a *modal* Radix dialog
+          sets pointer-events:none on <body> siblings, and this popup portals
+          to <body>. Without this, mouse selection dies inside the dialog. */}
+      <ComboboxContent className="pointer-events-auto">
         <ComboboxEmpty>No models found</ComboboxEmpty>
         <ComboboxList>
           {(m: ModelOption) => (
@@ -580,9 +583,6 @@ function AddCredentialDialog({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
-      // The ModelCombobox popup portals to <body>; a *modal* Radix dialog would
-      // inert it (pointer-events: none). modal={false} keeps it interactive.
-      modal={false}
     >
       <DialogContent
         className="bg-cream max-w-[480px] sm:max-w-[480px] max-h-[90vh] overflow-y-auto"
@@ -880,9 +880,6 @@ function AddModelDialog({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
-      // The ModelCombobox popup portals to <body>; a *modal* Radix dialog would
-      // inert it (pointer-events: none). modal={false} keeps it interactive.
-      modal={false}
     >
       <DialogContent
         className="bg-cream max-w-[460px] sm:max-w-[460px] max-h-[90vh] overflow-y-auto"
