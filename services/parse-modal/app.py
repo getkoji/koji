@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import re
 
 import modal
@@ -108,7 +109,45 @@ image = (
     )
 )
 
-app = modal.App("koji-parse", image=image)
+# ---------------------------------------------------------------------------
+# Cost attribution (PB-13)
+# ---------------------------------------------------------------------------
+# Modal bills per workspace and breaks spend down in the usage dashboard by
+# *app name* (all plans) and by *app tags* (tag-based billing reports, Team/
+# Enterprise plans). Academic / benchmark parse runs and tenant/production
+# parse runs both go through this one file, so without a discriminator their
+# Modal spend is commingled and no per-page COGS number is trustworthy
+# (see playbook docs/parse-strategy.md, "Measurement prerequisite").
+#
+# One env var, read at deploy time, selects the cost profile. It changes ONLY
+# how the run is *labelled* for billing — never how parsing behaves, what the
+# function returns, or how tenants reach it:
+#
+#   # production / tenant parse — the default; identical to before this change
+#   modal deploy app.py
+#
+#   # research / experiment parse — academic corpus, benchmarks, spikes
+#   KOJI_PARSE_COST_PROFILE=research modal deploy app.py   # or: modal run app.py
+#
+# The "research" profile deploys under a distinct app name so it (a) never
+# overwrites the production "koji-parse" deployment or its endpoint URL
+# (KOJI_PARSE_MODAL_URL is unchanged for tenants) and (b) shows up as its own
+# line in the Modal usage dashboard on every plan tier. The `tags` carry the
+# same split in Modal's native cost-attribution form for tag-based billing
+# reports (`modal billing ... --tag-names cost_profile`).
+COST_PROFILE = os.environ.get("KOJI_PARSE_COST_PROFILE", "production").strip().lower()
+if COST_PROFILE not in ("production", "research"):
+    raise ValueError(f"KOJI_PARSE_COST_PROFILE must be 'production' or 'research', got {COST_PROFILE!r}")
+
+# Default profile keeps the historical app name so the production deployment
+# and its generated endpoint URL are unchanged.
+_APP_NAME = "koji-parse" if COST_PROFILE == "production" else "koji-parse-research"
+
+app = modal.App(
+    _APP_NAME,
+    image=image,
+    tags={"service": "parse", "cost_profile": COST_PROFILE},
+)
 
 
 # ---------------------------------------------------------------------------
