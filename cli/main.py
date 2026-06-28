@@ -21,7 +21,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.19.1"
+KOJI_VERSION = "0.20.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -1125,14 +1125,15 @@ def version():
     console.print(f"koji {KOJI_VERSION}")
 
 
-# ── Remote platform loop: validate / run / corpus ─────────────────────
+# ── Remote platform loop: validate / run / corpus / review ────────────
 # These talk to a running Koji platform (the same API the dashboard's Build,
-# Validate, and Corpus tabs use). Implementations live in cli/remote.py.
-from .remote import corpus_app, run_doc, validate  # noqa: E402
+# Validate, Corpus, and Review tabs use). Implementations live in cli/remote.py.
+from .remote import corpus_app, review_app, run_doc, validate  # noqa: E402
 
 app.command(name="validate")(validate)
 app.command(name="run")(run_doc)
 app.add_typer(corpus_app, name="corpus")
+app.add_typer(review_app, name="review")
 
 
 if __name__ == "__main__":

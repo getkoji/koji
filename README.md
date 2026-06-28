@@ -206,6 +206,7 @@ BYO model — local or API. No vendor lock-in.
 | `koji validate <schema>` | Backtest a schema against its corpus ground truth |
 | `koji run <schema> <doc>` | Extract one corpus document (the Build tab's Run) |
 | `koji corpus ls / diff / add / tag / gt` | Manage a schema's validation corpus |
+| `koji review ls / show / promote` | Triage the review queue and promote reviewed docs into the corpus |
 | `koji bench` | Benchmark accuracy against a local validation corpus |
 | `koji test` | Run extraction regression tests |
 | `koji doctor` | Check environment health |

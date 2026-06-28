@@ -612,6 +612,68 @@ this shape directly; you can also use it to drive your own renderer.
 
 ---
 
+## Review
+
+The human-review queue. A pipeline routes a document here when a field's confidence falls below the pipeline's review threshold, a validation rule fails, or values conflict. Resolving an item (accept/override/reject) merges the corrected values back into the document. Promotion turns a reviewed document into corpus ground truth, closing the **review → corpus → schema** loop.
+
+### `GET /api/review`
+
+List review-queue items, joined with their document/pipeline/schema context.
+
+**Auth:** Bearer token. Requires `review:read` permission.
+
+**Query parameters**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `status` | string | `pending` | `pending` or `completed`. Pending items are ordered by confidence ascending (worst first); completed by resolution time descending. |
+| `reason` | string | — | Filter by routing reason (e.g. `low_confidence`, `validation_failed`, `conflicting_values`). |
+| `limit` | number | `100` | Max items returned. |
+
+**Response** `200 OK` — `{ "data": [ … ] }`, each item carrying `id`, `fieldName`, `reason`, `proposedValue`, `confidence`, `status`, `resolution`, `documentId`, `documentFilename`, `schemaSlug`, `pipelineSlug`.
+
+### `GET /api/review/{id}`
+
+A single review item with full document context — the flagged field, the document's complete `documentExtractionJson`, the schema/pipeline it ran under, and an inline `documentPreviewUrl` + `documentToken` for the shared viewer.
+
+**Auth:** Bearer token. Requires `review:read` permission.
+
+### `POST /api/review/{id}/promote`
+
+Promote a reviewed document into the schema's corpus as ground truth.
+
+**Auth:** Bearer token. Requires `corpus:promote` permission (held by the `reviewer` role and above).
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provisional` | boolean | no | When `false` (default), the item **must** be resolved with resolution `approved`; the document's corrected record becomes **approved** ground truth that `validate` scores immediately. When `true`, writes a **draft**, agent-authored label that is excluded from `validate` until a human approves it. |
+| `to` | string | no | Tag applied to the new corpus entry. |
+| `groundTruth` | object | no | `{ field: value }` label to use (provisional only). Defaults to the document's current extraction. |
+
+The source file is copied into a corpus-scoped storage key. Dedup is by `(schemaId, contentHash)`: re-promoting a document appends a new ground-truth version to the existing entry instead of duplicating it.
+
+**Response** `201 Created` — `{ corpusEntryId, groundTruthId, reviewStatus, provisional, deduped, filename, fieldCount }`.
+
+**Errors**
+
+| Status | Meaning |
+|--------|---------|
+| `409` | Item is not resolved+approved and `provisional` was not set. |
+| `400` | Item has no associated document or no extracted values to promote. |
+| `404` | Review item or source file not found. |
+
+### `POST /api/schemas/{slug}/corpus/{entryId}/ground-truth/{gtId}/approve`
+
+Approve a draft ground-truth version — the human exit ramp for provisional labels. Marks the version `approved` and writes the denormalized `groundTruthJson` so `validate` begins scoring against it.
+
+**Auth:** Bearer token. Requires `corpus:write` permission.
+
+**Response** `200 OK` — the updated ground-truth row.
+
+---
+
 ## Schemas
 
 CRUD endpoints for managing extraction schemas. Schemas are stored as YAML files in the `KOJI_SCHEMAS_DIR` directory (default `./schemas/`).
