@@ -192,7 +192,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
     return () => observer.disconnect();
   }, [mode, onPageChange]);
 
-  // Auto-navigate to highlighted field's page + scroll to highlight
+  // Auto-navigate to the active field's page + scroll to its highlight. This
+  // must be self-sufficient: it fires for ANY activeField change — inbound
+  // koji:setActiveField, the ?field= param, AND the field picker — so the scroll
+  // can't depend on a separate targetPage being set alongside it.
   useEffect(() => {
     if (!activeField || !highlights.length) return;
     const hit = highlights.find((h) => h.field === activeField);
@@ -203,14 +206,36 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
         setCurrentPage(hit.page);
         onPageChange?.(hit.page);
       }
+    } else {
+      // Scroll mode: bring the field's page into view first so its lazily
+      // mounted highlight box exists before we scroll to it.
+      const pageEl = containerRef.current?.querySelector(`[data-page-number="${hit.page}"]`);
+      pageEl?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
-    setTimeout(() => {
-      const el = containerRef.current?.querySelector(`[data-highlight-field="${activeField}"]`);
+    // Find the box by attribute comparison (not an interpolated selector) so
+    // opaque/special-character field keys can't break the lookup, and retry
+    // until the box has mounted (paginated re-render / lazy scroll page).
+    let cancelled = false;
+    let attempts = 0;
+    const scrollToBox = () => {
+      if (cancelled) return;
+      const boxes = containerRef.current?.querySelectorAll("[data-highlight-field]");
+      const el = boxes
+        ? Array.from(boxes).find((b) => b.getAttribute("data-highlight-field") === activeField)
+        : undefined;
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
       }
-    }, 150);
+      if (attempts++ < 20) setTimeout(scrollToBox, 50); // up to ~1s
+    };
+    const t = setTimeout(scrollToBox, 150);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [activeField]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Imperative page navigation (koji:goToPage). The parent passes a target

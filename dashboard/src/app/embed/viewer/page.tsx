@@ -158,18 +158,12 @@ function EmbedViewerInner() {
     [parentOrigin],
   );
 
-  // Select a field: mark it active (drives the highlight pulse + scroll) and
-  // navigate to its page so it lands in view in both paginated and scroll
-  // layouts. Used by the built-in field picker.
-  const selectField = useCallback(
-    (field: string | null) => {
-      setActiveField(field);
-      if (!field) return;
-      const hit = highlights.find((h) => h.field === field);
-      if (hit) setTargetPage(hit.page);
-    },
-    [highlights],
-  );
+  // Select a field: just mark it active. PdfViewer's activeField effect handles
+  // navigating to its page + scrolling to the box, so the field picker and an
+  // inbound koji:setActiveField behave identically (no separate targetPage).
+  const selectField = useCallback((field: string | null) => {
+    setActiveField(field);
+  }, []);
 
   // Outbound scroll-position events (koji:pageChanged / koji:visibleField).
   // The parent can't observe our scroll across the origin boundary, so we
