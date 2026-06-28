@@ -1,6 +1,14 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import {
+  Combobox,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxList,
+  ComboboxItem,
+  ComboboxEmpty,
+} from "@koji/ui";
 import { SectionHeader, Badge, Meta } from "@/components/shared/SettingsComponents";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
@@ -56,6 +64,86 @@ interface RegistryModel {
   modelId: string;
   displayName: string;
   isRecommended: boolean;
+}
+
+// ── Model picker ──────────────────────────────────────────────────────────
+// Searchable model select built on the shared @koji/ui Combobox. The list is
+// portaled out of the dialog (it would otherwise be clipped by the dialog's
+// `overflow-y-auto`), and we get filtering + keyboard nav for free.
+
+interface ModelOption {
+  modelId: string;
+  displayName: string;
+  isRecommended: boolean;
+}
+
+function ModelCombobox({
+  models,
+  value,
+  onSelect,
+  placeholder = "Search models...",
+  autoFocus,
+}: {
+  models: ModelOption[];
+  value: string;
+  onSelect: (modelId: string) => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+}) {
+  const selected = models.find((m) => m.modelId === value) ?? null;
+  return (
+    <Combobox<ModelOption>
+      items={models}
+      value={selected}
+      onValueChange={(m) => onSelect(m?.modelId ?? "")}
+      itemToStringLabel={(m) => m.modelId}
+      itemToStringValue={(m) => m.modelId}
+      isItemEqualToValue={(a, b) => a.modelId === b.modelId}
+      filter={(item, query) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return true;
+        return (
+          item.modelId.toLowerCase().includes(q) ||
+          item.displayName.toLowerCase().includes(q)
+        );
+      }}
+    >
+      <ComboboxInput
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        className="font-mono text-[13px]"
+      />
+      <ComboboxContent>
+        <ComboboxEmpty>No models found</ComboboxEmpty>
+        <ComboboxList>
+          {(m: ModelOption) => (
+            <ComboboxItem
+              key={m.modelId}
+              value={m}
+              className={`font-mono text-[12px] ${m.isRecommended ? "font-medium" : ""}`}
+            >
+              <span className="truncate">{m.modelId}</span>
+              <span className="ml-auto flex items-center gap-1">
+                {inferModelCapabilities(m.modelId).map((c) => (
+                  <span
+                    key={c}
+                    className="text-[9px] uppercase tracking-wider text-ink-3 bg-cream-2 px-1 py-0.5 rounded"
+                  >
+                    {c}
+                  </span>
+                ))}
+                {m.isRecommended && (
+                  <span className="text-[9px] text-vermillion-2 uppercase tracking-wider ml-1">
+                    recommended
+                  </span>
+                )}
+              </span>
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  );
 }
 
 const CAPABILITIES: Array<{ value: TenantModel["capability"]; label: string; hint: string }> = [
@@ -413,8 +501,6 @@ function AddCredentialDialog({
   const [name, setName] = useState("");
   const [providerType, setProviderType] = useState("openai");
   const [model, setModel] = useState("");
-  const [modelSearch, setModelSearch] = useState("");
-  const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [apiKey, setApiKey] = useState("");
 
@@ -446,18 +532,10 @@ function AddCredentialDialog({
     isRecommended: false,
   }));
   const availableModels = providerModels.length > 0 ? providerModels : fallback;
-  const filteredModels = modelSearch
-    ? availableModels.filter(
-        (m) =>
-          m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) ||
-          m.displayName.toLowerCase().includes(modelSearch.toLowerCase()),
-      )
-    : availableModels;
 
   function handleProviderChange(value: string) {
     setProviderType(value);
     setModel("");
-    setModelSearch("");
     setApiKey("");
     setAwsAccessKeyId("");
     setAwsSecretAccessKey("");
@@ -515,7 +593,9 @@ function AddCredentialDialog({
   const isOllama = providerType === "ollama";
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    // z-50 (not z-[100]) so the portaled ModelCombobox popup — which renders at
+    // z-50 via @koji/ui — floats *above* this modal instead of behind it.
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add credential</h2>
@@ -552,44 +632,19 @@ function AddCredentialDialog({
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">First model *</label>
-              <input
-                required
-                value={model || modelSearch}
-                onChange={(e) => {
-                  setModelSearch(e.target.value);
-                  setModel("");
-                  setShowModelDropdown(true);
+              <ModelCombobox
+                models={availableModels}
+                value={model}
+                onSelect={(modelId) => {
+                  setModel(modelId);
+                  if (!name && modelId) {
+                    const picked = availableModels.find((m) => m.modelId === modelId);
+                    if (picked) setName(picked.displayName.replace(/ \(.*\)$/, ""));
+                  }
                 }}
-                onFocus={() => setShowModelDropdown(true)}
-                placeholder="Search models..."
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
-              {showModelDropdown && filteredModels.length > 0 && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[200px] overflow-y-auto">
-                  {filteredModels.map((m) => (
-                    <button
-                      key={m.modelId}
-                      type="button"
-                      onClick={() => {
-                        setModel(m.modelId);
-                        setModelSearch("");
-                        setShowModelDropdown(false);
-                        if (!name) setName(m.displayName.replace(/ \(.*\)$/, ""));
-                      }}
-                      className={`w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-cream-2 transition-colors flex items-center justify-between ${m.isRecommended ? "font-medium" : ""}`}
-                    >
-                      <span>{m.modelId}</span>
-                      {m.isRecommended && (
-                        <span className="text-[9px] text-vermillion-2 uppercase tracking-wider">
-                          recommended
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
               {model && <p className="text-[10px] text-ink-4 mt-0.5">Selected: {model}</p>}
             </div>
           </div>
@@ -755,8 +810,6 @@ function AddModelDialog({
   onAdded: () => void;
 }) {
   const [model, setModel] = useState("");
-  const [modelSearch, setModelSearch] = useState("");
-  const [showDropdown, setShowDropdown] = useState(false);
   const [label, setLabel] = useState("");
   const [customMode, setCustomMode] = useState(false);
   const [customCapabilities, setCustomCapabilities] = useState<ModelCapability[]>(["chat"]);
@@ -790,13 +843,6 @@ function AddModelDialog({
       isRecommended: false,
     }));
   const availableModels = providerRegistryModels.length > 0 ? providerRegistryModels : fallback;
-  const filteredModels = modelSearch
-    ? availableModels.filter(
-        (m) =>
-          m.modelId.toLowerCase().includes(modelSearch.toLowerCase()) ||
-          m.displayName.toLowerCase().includes(modelSearch.toLowerCase()),
-      )
-    : availableModels;
 
   // Capabilities surfaced to the user (and submitted). In catalog mode
   // they're derived from the chosen model id; in custom mode the user
@@ -832,7 +878,9 @@ function AddModelDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    // z-50 (not z-[100]) so the portaled ModelCombobox popup — which renders at
+    // z-50 via @koji/ui — floats *above* this modal instead of behind it.
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
       <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[460px] p-6 max-h-[90vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Add model</h2>
@@ -842,57 +890,14 @@ function AddModelDialog({
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           {!customMode ? (
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5">
               <label className="text-[12.5px] font-medium text-ink">Model *</label>
-              <input
-                required
-                value={model || modelSearch}
-                onChange={(e) => {
-                  setModelSearch(e.target.value);
-                  setModel("");
-                  setShowDropdown(true);
-                }}
-                onFocus={() => setShowDropdown(true)}
-                placeholder="Search models..."
+              <ModelCombobox
+                models={availableModels}
+                value={model}
+                onSelect={setModel}
                 autoFocus
-                className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] font-mono outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
               />
-              {showDropdown && filteredModels.length > 0 && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-border rounded-sm shadow-lg max-h-[220px] overflow-y-auto">
-                  {filteredModels.map((m) => {
-                    const caps = inferModelCapabilities(m.modelId);
-                    return (
-                      <button
-                        key={m.modelId}
-                        type="button"
-                        onClick={() => {
-                          setModel(m.modelId);
-                          setModelSearch("");
-                          setShowDropdown(false);
-                        }}
-                        className={`w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-cream-2 transition-colors flex items-center justify-between gap-3 ${m.isRecommended ? "font-medium" : ""}`}
-                      >
-                        <span className="truncate">{m.modelId}</span>
-                        <span className="flex items-center gap-1 flex-shrink-0">
-                          {caps.map((c) => (
-                            <span
-                              key={c}
-                              className="text-[9px] uppercase tracking-wider text-ink-3 bg-cream-2 px-1 py-0.5 rounded"
-                            >
-                              {c}
-                            </span>
-                          ))}
-                          {m.isRecommended && (
-                            <span className="text-[9px] text-vermillion-2 uppercase tracking-wider ml-1">
-                              recommended
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
               {model && (
                 <div className="flex items-center justify-between pt-1">
                   <p className="text-[10px] text-ink-4">
@@ -915,7 +920,6 @@ function AddModelDialog({
                 onClick={() => {
                   setCustomMode(true);
                   setModel("");
-                  setModelSearch("");
                 }}
                 className="text-[11px] text-ink-3 hover:text-ink underline underline-offset-2"
               >
