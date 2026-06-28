@@ -8,6 +8,11 @@ import {
   ComboboxList,
   ComboboxItem,
   ComboboxEmpty,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
 } from "@koji/ui";
 import { SectionHeader, Badge, Meta } from "@/components/shared/SettingsComponents";
 import { PasswordInput } from "@/components/shared/PasswordInput";
@@ -593,16 +598,31 @@ function AddCredentialDialog({
   const isOllama = providerType === "ollama";
 
   return (
-    // z-50 (not z-[100]) so the portaled ModelCombobox popup — which renders at
-    // z-50 via @koji/ui — floats *above* this modal instead of behind it.
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Add credential</h2>
-        <p className="text-[12.5px] text-ink-3 mb-5">
-          One key, many models. The first model is added now — attach more under the credential
-          card afterwards. Keys are encrypted at rest.
-        </p>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      // The ModelCombobox popup portals to <body>; a *modal* Radix dialog would
+      // inert it (pointer-events: none). modal={false} keeps it interactive.
+      modal={false}
+    >
+      <DialogContent
+        className="bg-cream max-w-[480px] sm:max-w-[480px] max-h-[90vh] overflow-y-auto"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        // Clicks inside the portaled combobox popup must not dismiss the dialog.
+        onInteractOutside={(e) => {
+          const t = e.target as HTMLElement | null;
+          if (t?.closest('[data-slot="combobox-content"]')) e.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>Add credential</DialogTitle>
+          <DialogDescription>
+            One key, many models. The first model is added now — attach more under the credential
+            card afterwards. Keys are encrypted at rest.
+          </DialogDescription>
+        </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
@@ -793,8 +813,8 @@ function AddCredentialDialog({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -878,16 +898,31 @@ function AddModelDialog({
   }
 
   return (
-    // z-50 (not z-[100]) so the portaled ModelCombobox popup — which renders at
-    // z-50 via @koji/ui — floats *above* this modal instead of behind it.
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[460px] p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Add model</h2>
-        <p className="text-[12.5px] text-ink-3 mb-5">
-          Attach another model to{" "}
-          <strong className="text-ink">{credential.displayName}</strong>. Uses the same API key.
-        </p>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      // The ModelCombobox popup portals to <body>; a *modal* Radix dialog would
+      // inert it (pointer-events: none). modal={false} keeps it interactive.
+      modal={false}
+    >
+      <DialogContent
+        className="bg-cream max-w-[460px] sm:max-w-[460px] max-h-[90vh] overflow-y-auto"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        // Clicks inside the portaled combobox popup must not dismiss the dialog.
+        onInteractOutside={(e) => {
+          const t = e.target as HTMLElement | null;
+          if (t?.closest('[data-slot="combobox-content"]')) e.preventDefault();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>Add model</DialogTitle>
+          <DialogDescription>
+            Attach another model to{" "}
+            <strong className="text-ink">{credential.displayName}</strong>. Uses the same API key.
+          </DialogDescription>
+        </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           {!customMode ? (
             <div className="space-y-1.5">
@@ -1012,8 +1047,8 @@ function AddModelDialog({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1068,15 +1103,24 @@ function RotateKeyDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6 max-h-[90vh] overflow-y-auto">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Rotate credentials</h2>
-        <p className="text-[12.5px] text-ink-3 mb-5">
-          Replace credentials for{" "}
-          <strong className="text-ink">{credential.displayName}</strong>. The old credentials will
-          be discarded immediately.
-        </p>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="bg-cream max-w-[420px] sm:max-w-[420px] max-h-[90vh] overflow-y-auto"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle>Rotate credentials</DialogTitle>
+          <DialogDescription>
+            Replace credentials for{" "}
+            <strong className="text-ink">{credential.displayName}</strong>. The old credentials will
+            be discarded immediately.
+          </DialogDescription>
+        </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           {isBedrock ? (
             <>
@@ -1152,8 +1196,8 @@ function RotateKeyDialog({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1189,15 +1233,21 @@ function DeleteCredentialDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[380px] p-6">
-        <h2 className="text-[15px] font-medium text-ink mb-1">Delete credential</h2>
-        <p className="text-[12.5px] text-ink-3 mb-5">
-          Delete <strong className="text-ink">{credential.displayName}</strong> and all{" "}
-          {credential.models.length} model{credential.models.length === 1 ? "" : "s"} attached to
-          it? The encrypted credentials will be permanently removed.
-        </p>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent className="bg-cream max-w-[380px] sm:max-w-[380px]">
+        <DialogHeader>
+          <DialogTitle>Delete credential</DialogTitle>
+          <DialogDescription>
+            Delete <strong className="text-ink">{credential.displayName}</strong> and all{" "}
+            {credential.models.length} model{credential.models.length === 1 ? "" : "s"} attached to
+            it? The encrypted credentials will be permanently removed.
+          </DialogDescription>
+        </DialogHeader>
         {error && (
           <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">
             {error}
@@ -1218,7 +1268,7 @@ function DeleteCredentialDialog({
             {deleting ? "Deleting..." : "Delete"}
           </button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
