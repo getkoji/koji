@@ -235,24 +235,165 @@ prod) and falls back to local ADC otherwise, identical to setting
 auto-overridden, so self-host configs are unaffected. Set `source` explicitly
 only to be unambiguous, or to name a non-Vercel env-var OIDC runtime.
 
-#### What you (the customer) set up once
+#### Step-by-step: set up keyless WIF (self-serve)
 
-1. Create a **Workload Identity Pool + OIDC provider** in your GCP project that
-   trusts the issuer of the deployment running Koji (for self-hosting, that's
-   your own platform's OIDC issuer; for hosted Koji, the issuer Koji publishes —
-   ask Koji for the exact issuer/audience values).
-2. Grant Koji's federated identity permission to impersonate your target SA:
-   `roles/iam.serviceAccountTokenCreator` on that service account.
-3. Grant the target SA Document AI `:process` access (and, only if you opt into
-   batch for bulk imports, `roles/storage.objectAdmin` on the batch bucket — see
-   above).
+This is a one-time setup in **your** GCP project. You never download a key and
+never paste a long-lived secret. Every command below uses placeholders only —
+substitute your own values.
 
-#### Self-hosting note
+##### 1. Read your Koji trust values from the dashboard
 
-When you self-host Koji, **you** supply the `external_account` config and run
-Koji in an environment that exposes a matching OIDC token at the
-`credential_source` path. Koji's token-exchange code is generic and ships in the
-OSS engine; the source identity is entirely yours to configure.
+Koji's running workload presents an OIDC token. Your WIF pool must trust the
+**exact** `issuer`, `audience`, and `subject` that token carries. **Don't guess
+or hardcode them** — Koji shows the live values for your deployment:
+
+> **Project settings → Parse Endpoints → Add provider → Google Document AI →
+> Authentication: Workload Identity Federation.** The **What to trust in GCP**
+> panel shows the **Issuer**, **Audience**, and **Subject**, each with a copy
+> button.
+
+These are read live from the deployment (hosted Koji decodes its own workload
+OIDC token; self-host can configure them — see the self-host note below), so
+they are always correct for the environment you're connecting to.
+
+Capture them as shell variables for the commands that follow:
+
+```bash
+# Your GCP project
+export PROJECT_ID="my-gcp-project"
+export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+
+# Names you choose for the pool + provider
+export POOL_ID="koji-parse"
+export PROVIDER_ID="koji-oidc"
+
+# The Document AI service account Koji will impersonate
+export SA_EMAIL="docai@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Copied from the dashboard "What to trust in GCP" panel
+export KOJI_ISSUER="<Issuer from the dashboard>"
+export KOJI_AUDIENCE="<Audience from the dashboard>"
+export KOJI_SUBJECT="<Subject from the dashboard>"
+```
+
+##### 2. Create the Workload Identity Pool + OIDC provider
+
+The provider trusts Koji's issuer, accepts Koji's audience, maps the token
+subject to `google.subject`, and — critically — **pins the subject in an
+attribute condition** so only Koji's deployment can federate (no other workload
+with a token from the same issuer can):
+
+```bash
+gcloud iam workload-identity-pools create "$POOL_ID" \
+  --project="$PROJECT_ID" --location="global" \
+  --display-name="Koji parse"
+
+gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_ID" \
+  --project="$PROJECT_ID" --location="global" \
+  --workload-identity-pool="$POOL_ID" \
+  --issuer-uri="$KOJI_ISSUER" \
+  --allowed-audiences="$KOJI_AUDIENCE" \
+  --attribute-mapping="google.subject=assertion.sub" \
+  --attribute-condition="assertion.sub == '${KOJI_SUBJECT}'"
+```
+
+The `attribute-condition` is your security boundary: federation succeeds only
+for the exact subject Koji presents. Keep it pinned to the value from the
+dashboard.
+
+##### 3. Grant the federated identity permission to impersonate your SA
+
+Let the pinned subject impersonate (mint tokens for) your Document AI service
+account. The `principal://…/subject/${KOJI_SUBJECT}` member is the tightest
+grant — it covers exactly that one subject:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --project="$PROJECT_ID" \
+  --role="roles/iam.serviceAccountTokenCreator" \
+  --member="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/subject/${KOJI_SUBJECT}"
+```
+
+> If you prefer to grant the whole pool (the `principalSet://…/workloadIdentityPools/${POOL_ID}/*`
+> member) instead of a single subject, you can — but the per-subject `principal://`
+> member above is narrower and recommended, since the attribute condition has
+> already pinned the subject.
+
+##### 4. Grant the SA Document AI access
+
+```bash
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --role="roles/documentai.apiUser" \
+  --member="serviceAccount:${SA_EMAIL}"
+```
+
+(Only if you opt into **batch** for bulk imports, also grant
+`roles/storage.objectAdmin` on the batch bucket — see
+[Required IAM for batch](#required-iam-for-batch). The default slice-and-merge
+path needs only `documentai.apiUser`.)
+
+##### 5. Build the `external_account` config to paste into Koji
+
+The dashboard's WIF panel includes a **copyable template** pre-filled with this
+exact shape — copy it and substitute your IDs. Note there is **no
+`credential_source`**: Koji's workload OIDC token is exposed by the platform
+runtime (an env var / function call), not a file or URL, so the source is
+**auto-detected** — you supply only the pool/provider audience and the
+impersonation target:
+
+```json
+{
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+  "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/SA_EMAIL:generateAccessToken"
+}
+```
+
+| Field | Value |
+|-------|-------|
+| `type` | Always `external_account`. |
+| `audience` | The **WIF provider resource name** — your pool/provider, not the OIDC token's `aud`. Substitute `PROJECT_NUMBER`, `POOL_ID`, `PROVIDER_ID`. |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt`. |
+| `token_url` | Google STS: `https://sts.googleapis.com/v1/token`. |
+| `service_account_impersonation_url` | Impersonation endpoint for your `SA_EMAIL`. Equivalent to setting **Impersonation service account** in the form. |
+
+> **Don't confuse the two "audiences".** The `audience` field here is the GCP
+> WIF provider *resource name* you just created. It is **not** the OIDC token's
+> `aud` claim — that's the **Audience** trust value from step 1, which you set
+> via `--allowed-audiences` on the provider.
+
+##### 6. Configure the endpoint in the dashboard
+
+Back in **Add provider → Google Document AI**:
+
+1. **Authentication:** Workload Identity Federation (keyless).
+2. **Credential config (external_account JSON):** paste the config from step 5.
+3. **Impersonation service account:** your `SA_EMAIL` (optional if the config
+   already carries `service_account_impersonation_url`).
+4. **GCP project ID / Processor ID / Region:** your Document AI processor's
+   project, processor, and location.
+
+Save. The endpoint is keyless — no secret is stored. **Test** reports
+"Keyless WIF configured"; Koji mints a short-lived token at parse time and
+refreshes it automatically.
+
+#### Hosted vs. self-host
+
+- **Hosted Koji** runs on Vercel and presents the Vercel workload OIDC token.
+  The dashboard's trust panel decodes that live token, so the issuer / audience /
+  subject you see are exactly what Koji will present — nothing is hardcoded.
+- **Self-hosting:** run Koji in an environment that exposes a workload OIDC token
+  and supply the `external_account` config that names its source. Either point
+  `external_account.credential_source` at the file/URL your runtime exposes
+  (e.g. GKE/Cloud Run metadata, Cloudflare Workers OIDC), or — for env-var/
+  function-call runtimes — omit `credential_source` and let the dynamic source
+  resolve it. To make the dashboard's trust panel show the right values for your
+  own issuer, set `KOJI_WIF_ISSUER`, `KOJI_WIF_AUDIENCE`, and `KOJI_WIF_SUBJECT`
+  in the API environment; otherwise read the claims from a sample of your
+  deployment's OIDC token. Koji's token-exchange code is generic and ships in the
+  OSS engine; the source identity is entirely yours to configure.
 
 ## The default endpoint
 

@@ -454,8 +454,13 @@ async function mintViaAdc(settings: GcpWifSettings, scopes: string[]): Promise<M
  * falls back to `VERCEL_OIDC_TOKEN` itself), then the raw env var for builds
  * that don't bundle `@vercel/functions` (e.g. self-host). Returns undefined
  * when neither yields a token — the signal to use the local ADC fallback.
+ *
+ * Exported so the WIF self-serve identity endpoint (`wif-identity.ts`) can
+ * decode the *same* token Koji presents to STS and surface its iss/aud/sub to
+ * the dashboard — keeping the "what to trust" values and the minting path on a
+ * single source of truth.
  */
-async function resolveVercelOidcToken(): Promise<string | undefined> {
+export async function resolveVercelOidcToken(): Promise<string | undefined> {
   try {
     const mod = await import("@vercel/functions/oidc");
     const fn = (mod as { getVercelOidcToken?: () => string | Promise<string> })
