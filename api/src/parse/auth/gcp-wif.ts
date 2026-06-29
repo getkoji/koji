@@ -40,6 +40,12 @@
  *      `getVercelOidcToken()` / `VERCEL_OIDC_TOKEN`, which `fromJSON`'s standard
  *      `credential_source` cannot consume. For these we build the client with a
  *      programmatic **`subject_token_supplier`** that returns the source token.
+ *      The dashboard form (oss-291) persists `{ external_account,
+ *      impersonate_service_account }` with **no `source` marker and no
+ *      `credential_source`**, so the dynamic path is also **auto-detected**
+ *      (oss-292): an `external_account` lacking a consumable `credential_source`
+ *      takes the dynamic path without requiring an explicit `source` field. An
+ *      explicit static `credential_source` always wins and is never overridden.
  *
  * For the dynamic path, source resolution is **environment-aware** so the same
  * WIF-configured endpoint is exercisable in local dev without a Vercel identity:
@@ -84,6 +90,54 @@ const DYNAMIC_SOURCES = new Set(["vercel", "vercel-oidc"]);
 
 function isDynamicSource(source: string | undefined): boolean {
   return !!source && DYNAMIC_SOURCES.has(source.toLowerCase());
+}
+
+/**
+ * Decide whether to take the dynamic-source path (programmatic
+ * `subject_token_supplier` + env-aware ADC fallback) instead of the static
+ * `credential_source` path:
+ *
+ *   1. **Explicit dynamic source** (`source: "vercel"`) → always dynamic
+ *      (backward compatible — the oss-288 path).
+ *   2. **Explicit non-dynamic source** (any other `source` value) → respect it;
+ *      use the static `credential_source` path and never auto-override (guardrail).
+ *   3. **No `source` marker at all** → auto-detect. The dashboard form
+ *      (oss-291) persists `wif = { external_account, impersonate_service_account }`
+ *      with **neither** a `source` marker **nor** a `credential_source` — the
+ *      workload OIDC token comes from the runtime env (Vercel), not the config.
+ *      Such a config can't complete `fromJSON`, so when the external_account has
+ *      **no consumable `credential_source`** we take the dynamic path.
+ *      `mintViaDynamicSource` then uses the Vercel supplier when a Vercel OIDC
+ *      token is present (hosted prod) and falls back to ADC otherwise (local
+ *      dev) — so a form-configured keyless endpoint works in both.
+ *
+ * Static configs that DO carry a consumable `credential_source` (self-host:
+ * file/url/executable/AWS) are untouched — they keep the standard fromJSON path.
+ */
+function shouldUseDynamicSource(settings: GcpWifSettings): boolean {
+  if (isDynamicSource(settings.source)) return true;
+  if (settings.source) return false; // explicit non-dynamic source → static path
+  return !hasConsumableCredentialSource(settings.externalAccount);
+}
+
+/**
+ * Whether the external_account config carries a source descriptor that
+ * `ExternalAccountClient.fromJSON` can consume on its own — a
+ * file/url/executable/AWS `credential_source`, or a programmatic
+ * `subject_token_supplier` already wired into the config. The form-shaped WIF
+ * config carries none of these (the workload OIDC token comes from the runtime
+ * env, not the config), which is what triggers auto-detection of the dynamic
+ * path. We don't validate the descriptor's full shape — `fromJSON` does that
+ * authoritatively; we only check whether a usable key is present.
+ */
+function hasConsumableCredentialSource(ext: ExternalAccountClientOptions): boolean {
+  const e = ext as unknown as Record<string, unknown>;
+  if (e.subject_token_supplier ?? e.subjectTokenSupplier) return true;
+  const cs = (e.credential_source ?? e.credentialSource) as
+    | Record<string, unknown>
+    | undefined;
+  if (!cs || typeof cs !== "object") return false;
+  return Boolean(cs.file ?? cs.url ?? cs.executable ?? cs.environment_id ?? cs.environmentId);
 }
 
 /**
@@ -257,11 +311,14 @@ export async function mintGcpAccessToken(
 
   const scopes = settings.scopes && settings.scopes.length > 0 ? settings.scopes : DEFAULT_SCOPES;
 
-  // Dynamic source (oss-288): the workload OIDC token is exposed as an env var /
-  // function call (Vercel), not a file/URL → use a programmatic supplier, with
-  // an env-aware local-dev fallback to ADC. Otherwise: the standard
-  // file/URL/executable `credential_source` path via fromJSON (backward compat).
-  const minted = isDynamicSource(settings.source)
+  // Dynamic source (oss-288/292): the workload OIDC token is exposed as an env
+  // var / function call (Vercel), not a file/URL. Engaged either by an explicit
+  // `source: "vercel"` marker OR auto-detected when a form-shaped config has no
+  // consumable `credential_source` (see {@link shouldUseDynamicSource}). The
+  // dynamic path uses a programmatic supplier with an env-aware local-dev ADC
+  // fallback. Otherwise: the standard file/URL/executable `credential_source`
+  // path via fromJSON (backward compat).
+  const minted = shouldUseDynamicSource(settings)
     ? await mintViaDynamicSource(settings, scopes)
     : await mintViaCredentialSource(settings, scopes);
 
@@ -350,7 +407,7 @@ async function mintViaDynamicSource(
       throw new Error("gcp-wif: token exchange returned no access token");
     }
     console.info(
-      `[gcp-wif] minted token via Vercel workload OIDC (source=${settings.source})`,
+      `[gcp-wif] minted token via Vercel workload OIDC (source=${settings.source ?? "auto-detected"})`,
     );
     return { token, expiresAt: expiresAtFrom(client.credentials?.expiry_date) };
   }

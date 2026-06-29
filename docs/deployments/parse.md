@@ -224,6 +224,17 @@ fallback`) so you can confirm the path in your runtime logs. The
 file/URL `credential_source` form above is unchanged — `source` is purely
 additive.
 
+**Auto-detection (when `source` is omitted).** The `source: "vercel"` marker is
+optional. If a `wif` block carries an `external_account` with **no consumable
+`credential_source`** (no `file`/`url`/`executable`) and **no `source`** — the
+exact shape the dashboard's Parse Catalog form persists — Koji auto-detects the
+dynamic path: it uses the Vercel workload OIDC token when one is present (hosted
+prod) and falls back to local ADC otherwise, identical to setting
+`source: "vercel"` explicitly. An `external_account` that **does** carry a
+`credential_source` always uses the static file/URL path and is never
+auto-overridden, so self-host configs are unaffected. Set `source` explicitly
+only to be unambiguous, or to name a non-Vercel env-var OIDC runtime.
+
 #### What you (the customer) set up once
 
 1. Create a **Workload Identity Pool + OIDC provider** in your GCP project that

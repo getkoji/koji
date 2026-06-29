@@ -215,3 +215,85 @@ describe("mintGcpAccessToken — backward compatibility", () => {
     expect(googleAuthCtor).not.toHaveBeenCalled();
   });
 });
+
+// ── oss-292: auto-detect the dynamic path for a form-shaped config ────────────
+//
+// The dashboard form persists `wif = { external_account, impersonate_service_account }`
+// with NEITHER a `source` marker NOR a `credential_source`. Such a config must
+// still engage the Vercel supplier in hosted prod (and the ADC fallback locally)
+// without an explicit `source: "vercel"`.
+
+// A form-shaped external_account: keyless, but carries no credential_source.
+const formExternalAccount = {
+  type: "external_account",
+  audience:
+    "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/koji/providers/oidc",
+  subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+  token_url: "https://sts.googleapis.com/v1/token",
+};
+
+describe("mintGcpAccessToken — auto-detect dynamic source (oss-292)", () => {
+  it("engages the Vercel supplier for a form-shaped config (no source) under a Vercel env", async () => {
+    state.vercelToken = "vercel-oidc-tok";
+    const token = await mintGcpAccessToken("ep_form_vercel", {
+      externalAccount: formExternalAccount,
+      impersonateServiceAccount: "docai@proj.iam.gserviceaccount.com",
+    });
+    expect(token).toBe("sts-tok");
+    expect(fromJSON).toHaveBeenCalledTimes(1);
+
+    const opts = fromJSON.mock.calls[0]![0] as Record<string, unknown>;
+    const supplier = opts.subject_token_supplier as { getSubjectToken: () => Promise<string> };
+    expect(supplier).toBeTruthy();
+    await expect(supplier.getSubjectToken()).resolves.toBe("vercel-oidc-tok");
+    // Impersonation URL still derived from the bare target SA.
+    expect(opts.service_account_impersonation_url).toBe(
+      "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/" +
+        "docai%40proj.iam.gserviceaccount.com:generateAccessToken",
+    );
+    // ADC fallback NOT used when a Vercel token is present.
+    expect(googleAuthCtor).not.toHaveBeenCalled();
+    expect(impersonatedCtor).not.toHaveBeenCalled();
+  });
+
+  it("falls back to local ADC for a form-shaped config when no Vercel token is present", async () => {
+    state.vercelThrows = true; // no Vercel OIDC token (local dev)
+    const token = await mintGcpAccessToken("ep_form_local", {
+      externalAccount: formExternalAccount,
+      impersonateServiceAccount: "docai@proj.iam.gserviceaccount.com",
+    });
+    expect(token).toBe("imp-tok");
+    // Did NOT use the STS supplier exchange.
+    expect(fromJSON).not.toHaveBeenCalled();
+    // Used ADC + impersonation of the same target SA.
+    expect(googleAuthCtor).toHaveBeenCalledTimes(1);
+    expect(impersonatedCtor).toHaveBeenCalledTimes(1);
+    const impOpts = impersonatedCtor.mock.calls[0]![0] as Record<string, unknown>;
+    expect(impOpts.targetPrincipal).toBe("docai@proj.iam.gserviceaccount.com");
+  });
+
+  it("still uses the static path when a credential_source IS present (no auto-detect)", async () => {
+    // externalAccount carries credential_source: { file: ... } → must NOT
+    // auto-detect dynamic even though there's no `source` marker.
+    state.vercelToken = "vercel-oidc-tok"; // present, but must be ignored
+    const token = await mintGcpAccessToken("ep_static_present", { externalAccount });
+    expect(token).toBe("sts-tok");
+    const opts = fromJSON.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts.credential_source).toEqual({ file: "/var/run/oidc/token" });
+    expect(opts.subject_token_supplier).toBeUndefined();
+    expect(googleAuthCtor).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-override an explicit non-dynamic `source` (uses the static path)", async () => {
+    // An explicit, unrecognized source must not be coerced to the dynamic path,
+    // even with no consumable credential_source — guardrail.
+    const token = await mintGcpAccessToken("ep_explicit_static", {
+      externalAccount: formExternalAccount,
+      source: "gke-metadata",
+    });
+    expect(token).toBe("sts-tok");
+    const opts = fromJSON.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts.subject_token_supplier).toBeUndefined();
+    expect(googleAuthCtor).not.toHaveBeenCalled();
+  });
+});
