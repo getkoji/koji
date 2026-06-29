@@ -887,20 +887,31 @@ type PreviewStorage = {
 };
 
 /**
- * Resolve the storage key to serve for a document — prefers the searchable
- * PDF (OCR text layer) when available, otherwise the original. Used by the
- * preview handlers below to keep HEAD / range / full responses pointed at
- * the same object.
+ * Resolve the storage key to serve for a document. By default prefers the
+ * searchable PDF (OCR text layer) when available, otherwise the original —
+ * this is what the inline viewer wants so `⌘F` works.
+ *
+ * When `original` is true, the searchable copy is bypassed entirely and the
+ * original bytes are served. The searchable PDF is a derivative (the OCR
+ * text layer is added, and for signed PDFs the signature may be stripped),
+ * so "Open doc" / download must use this mode to hand back the authoritative
+ * source document.
+ *
+ * Used by the preview handlers below to keep HEAD / range / full responses
+ * pointed at the same object.
  */
-async function resolvePreviewKey(
+export async function resolvePreviewKey(
   storage: PreviewStorage,
   storageKey: string,
+  original = false,
 ): Promise<{ key: string; isSearchable: boolean } | null> {
-  const searchableKey = `${storageKey}.searchable.pdf`;
-  const searchable = await storage.head(searchableKey).catch(() => null);
-  if (searchable) return { key: searchableKey, isSearchable: true };
-  const original = await storage.head(storageKey).catch(() => null);
-  if (original) return { key: storageKey, isSearchable: false };
+  if (!original) {
+    const searchableKey = `${storageKey}.searchable.pdf`;
+    const searchable = await storage.head(searchableKey).catch(() => null);
+    if (searchable) return { key: searchableKey, isSearchable: true };
+  }
+  const found = await storage.head(storageKey).catch(() => null);
+  if (found) return { key: storageKey, isSearchable: false };
   return null;
 }
 
@@ -988,7 +999,10 @@ jobs.on("HEAD", "/:slug/documents/:docId/preview", async (c) => {
 
   if (!doc?.storageKey) return c.body(null, 404);
 
-  const resolved = await resolvePreviewKey(storage, doc.storageKey);
+  // `?original=1` serves the source document, bypassing the searchable
+  // derivative — used by "Open doc" / download. The inline viewer omits it.
+  const original = c.req.query("original") === "1";
+  const resolved = await resolvePreviewKey(storage, doc.storageKey, original);
   if (!resolved) return c.body(null, 404);
 
   const meta = await storage.head(resolved.key);
@@ -1038,8 +1052,12 @@ jobs.get("/:slug/documents/:docId/preview", async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
+  // `?original=1` serves the source document, bypassing the searchable
+  // derivative — used by "Open doc" / download. The inline viewer omits it.
+  const original = c.req.query("original") === "1";
+
   try {
-    const resolved = await resolvePreviewKey(storage, doc.storageKey);
+    const resolved = await resolvePreviewKey(storage, doc.storageKey, original);
     if (!resolved) return c.json({ error: "File not available" }, 404);
 
     // head() is a cheap metadata-only S3 call — gives us size + content

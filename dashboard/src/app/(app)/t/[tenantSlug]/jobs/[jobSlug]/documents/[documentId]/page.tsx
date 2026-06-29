@@ -124,6 +124,14 @@ export default function TraceViewPage() {
   if (data?.documentPreviewUrl && !previewUrl.current) {
     previewUrl.current = data.documentPreviewUrl;
   }
+  // "Open doc" serves the ORIGINAL source document, not the searchable
+  // derivative the inline viewer uses. `?original=1` makes the preview
+  // endpoint bypass the `.searchable.pdf` (which has an added OCR text
+  // layer, and for signed PDFs a stripped signature) and return the
+  // authoritative source bytes.
+  const openDocUrl = data?.documentPreviewUrl
+    ? `${data.documentPreviewUrl}${data.documentPreviewUrl.includes("?") ? "&" : "?"}original=1`
+    : null;
   const fields = useMemo<TraceField[]>(() => (data ? mapFields(data) : []), [data]);
 
   // ── Side-by-side state ──
@@ -388,9 +396,9 @@ export default function TraceViewPage() {
               {copiedTrace ? "Copied" : "Copy trace ID"}
             </GhostButton>
             <GhostButton onClick={handleDownloadJson}>Download JSON</GhostButton>
-            {data.documentPreviewUrl ? (
+            {openDocUrl ? (
               <a
-                href={data.documentPreviewUrl}
+                href={openDocUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"

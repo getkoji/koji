@@ -544,9 +544,13 @@ URLs are app-relative — resolve them against your dashboard origin (e.g.
 
 ### `GET /api/jobs/{slug}/documents/{docId}/preview`
 
-Streams the original document bytes for inline rendering. Auth is the HMAC
+Streams the document bytes for inline rendering. Auth is the HMAC
 `documentToken` (`?token=…`) **or** a session/API-key — so it works from a
 cookieless cross-origin iframe.
+
+By default this serves the **searchable** copy of a document when one exists
+— a derivative with an OCR text layer added so the inline viewer is
+`⌘F`-searchable — and falls back to the original bytes otherwise.
 
 - `Content-Disposition: inline` and the real `Content-Type` (e.g.
   `application/pdf`), so browsers render rather than download.
@@ -555,9 +559,18 @@ cookieless cross-origin iframe.
   returns `206 Partial Content` with `Content-Range`; a plain GET returns the
   full body.
 
+**Query parameters**
+
+| Param | Description |
+|-------|-------------|
+| `original` | `1` to bypass the searchable derivative and stream the **original source document** as uploaded. Use this for "download" / "open original" affordances — the searchable copy adds an OCR text layer (and, for signed PDFs, may drop the digital signature), so it is not byte-identical to the source. |
+
 ```bash
-# Full body
+# Full body (searchable copy when available)
 curl -L "https://console.getkoji.dev/api/jobs/acme-invoices/documents/DOC_ID/preview?token=TOKEN" -o invoice.pdf
+
+# The original source document, exactly as uploaded
+curl -L "https://console.getkoji.dev/api/jobs/acme-invoices/documents/DOC_ID/preview?token=TOKEN&original=1" -o invoice-original.pdf
 
 # First 64 KB only (range)
 curl -H "Range: bytes=0-65535" \
