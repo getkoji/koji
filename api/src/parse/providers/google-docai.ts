@@ -23,33 +23,51 @@
  *
  * **Size routing (the Superkey-blocking part).** The synchronous `:process`
  * endpoint caps at 15 pages (30 with `imagelessMode`), but most Superkey docs
- * are larger (50–226pg policies). So the provider counts the PDF's pages and
- * routes:
+ * are larger (50–226pg policies). The provider counts the PDF's pages and, by
+ * default, keeps everything on the synchronous path — **GCS-free**:
  *
- *   - ≤15pg            → online `:process`
- *   - 16–30pg          → online `:process` with `imagelessMode: true`
- *   - >30pg            → **batch** (`:batchProcess`): upload the source to GCS,
- *                        dispatch the async long-running operation, poll it to
- *                        completion, read the sharded output `Document` JSON
- *                        from GCS, canonicalize + merge the shards, then clean
- *                        up the temp GCS objects.
+ *   - ≤ slice size (default 15pg) → a single online `:process` call.
+ *   - > slice size               → slice the PDF into ≤-slice-size segments
+ *                                  (reusing the shared `slicePdfPages` helper),
+ *                                  run each segment through online `:process`
+ *                                  **in parallel** (bounded by a configurable
+ *                                  concurrency cap, default 6, to respect Doc AI
+ *                                  online QPS quotas), then **merge** the
+ *                                  per-segment chunks with global page
+ *                                  renumbering via {@link mergeShardChunks}.
  *
- * Batch is the **primary** path for Superkey, not an edge case. It needs a
- * tenant-supplied GCS bucket (`config_json.gcs_bucket` / `gcs_output_uri`) and
- * a service account whose token carries `roles/documentai.apiUser` (batch) plus
- * `roles/storage.objectAdmin` on that bucket. Auth reuses the existing Bearer
- * token (`payload.api_key`). When the page count can't be determined (e.g. a
- * non-PDF or an unreadable PDF), the provider falls back to online `:process`.
+ * Slicing at page boundaries is quality-neutral for a page-local OCR processor,
+ * avoids GCS/bucket/IAM entirely, and parallel synchronous calls are faster
+ * wallclock per document than batch's async polling. A segment that the online
+ * endpoint rejects as too large (image-heavy pages) is bisected and retried at a
+ * smaller slice; a segment that still fails surfaces the error rather than
+ * silently dropping its pages.
+ *
+ * **Batch is opt-in** (no longer the default large-doc path). Set
+ * `config_json.parse_mode = "batch"` (or `use_batch: true`) to route large docs
+ * through async `:batchProcess` — upload the source to a tenant-supplied GCS
+ * bucket, dispatch the long-running operation, poll to completion, read the
+ * sharded output `Document` JSON, canonicalize + merge the shards, then clean up
+ * the temp GCS objects. This path is reserved for bulk / high-volume historical
+ * imports; it needs a GCS bucket (`config_json.gcs_bucket` / `gcs_output_uri`)
+ * and a service account whose token carries `roles/documentai.apiUser` plus
+ * `roles/storage.objectAdmin` on that bucket.
+ *
+ * Auth reuses the existing Bearer token (`payload.api_key`). When the page count
+ * can't be determined (e.g. a non-PDF or an unreadable PDF), the provider falls
+ * back to a single online `:process` call. Slice size and concurrency are
+ * configurable via `config_json` (`slice_pages` default 15, `online_concurrency`
+ * default 6).
  *
  * Credentials are resolved per-tenant via `resolveTenantParseProvider`
  * (`parse_endpoints` → decrypt → driver registry) — never from raw env vars.
  * The driver is registered under the slug `google-docai` in `drivers.ts`.
  *
- * Live validation against a real Document AI processor + GCS bucket needs a
- * Google Cloud access token, project/processor config, and bucket permissions
- * and is pending. The canonicalizer and the routing / batch-merge logic are
- * unit-tested against sample `Document` fixtures and a fully mocked GCS +
- * long-running-operation REST surface.
+ * Live validation against a real Document AI processor needs a Google Cloud
+ * access token and project/processor config (plus bucket permissions for the
+ * opt-in batch path) and is pending. The canonicalizer and the routing /
+ * slice-parallel-merge / batch-merge logic are unit-tested against sample
+ * `Document` fixtures and a fully mocked Doc AI + GCS REST surface.
  */
 
 import { randomUUID } from "node:crypto";
@@ -64,6 +82,7 @@ import {
   unionBBox,
 } from "../chunk";
 import { GcsClient, joinGcsPath, parseGcsUri, toGcsUri } from "./gcs";
+import { slicePdfPages, mapWithConcurrency } from "../pdf-slice";
 
 // ---------------------------------------------------------------------------
 // Google Document AI `Document` JSON — the subset we consume.
@@ -424,16 +443,63 @@ const DEFAULT_LOCATION = "us";
 
 /**
  * Page-count routing thresholds. Document AI's synchronous `:process` caps at
- * 15 pages, or 30 when `imagelessMode` is set; above that the only path is
- * async `:batchProcess`.
+ * 15 pages plain, or 30 when `imagelessMode` is set — so a single online call
+ * (or one slice) can never exceed 30 pages.
  */
 const ONLINE_MAX_PAGES = 15;
 const IMAGELESS_MAX_PAGES = 30;
+
+/**
+ * Default pages per slice for the slice→parallel→merge large-doc path. 15 keeps
+ * each slice within the plain `:process` cap (no imageless needed). Configurable
+ * via `config_json.slice_pages`; clamped to [1, 30] since online can't exceed 30
+ * pages even with imageless.
+ */
+const DEFAULT_SLICE_PAGES = 15;
+/**
+ * Default cap on concurrent online `:process` calls when fanning slices out.
+ * Conservative to respect Doc AI's per-project online QPS quota. Configurable
+ * via `config_json.online_concurrency`.
+ */
+const DEFAULT_ONLINE_CONCURRENCY = 6;
 
 /** Default batch operation timeout. Large policies (200+pg) take minutes. */
 const DEFAULT_BATCH_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
 /** Delay between batch long-running-operation poll attempts. */
 const DEFAULT_BATCH_POLL_INTERVAL_MS = 5000;
+
+/**
+ * An HTTP error from a Document AI REST call, carrying the status so the slice
+ * path can tell a retryable "request too large" (bisect + retry) apart from a
+ * non-retryable auth/quota error (surface immediately).
+ */
+class GoogleDocAiRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GoogleDocAiRequestError";
+  }
+}
+
+/**
+ * Whether an online `:process` failure is plausibly an oversize-request error
+ * worth retrying at a smaller slice (vs. an auth/quota/config error that
+ * bisecting won't fix). Treats 400/413 and page-/size-limit messages as
+ * retryable.
+ */
+function isOversizeError(err: unknown): boolean {
+  if (err instanceof GoogleDocAiRequestError) {
+    if (err.status === 400 || err.status === 413) return true;
+    // 401/403/404/429/5xx aren't fixed by a smaller slice.
+    if (err.status > 0) return false;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /page limit|page_limit|exceed|too large|payload size|request size|content too large/i.test(
+    msg,
+  );
+}
 
 /** Document-AI-specific config read from the (decrypted) endpoint payload. */
 interface GoogleDocAiConfig {
@@ -452,6 +518,12 @@ interface GoogleDocAiConfig {
   batchTimeoutMs?: number;
   /** Batch poll interval (ms). */
   batchPollIntervalMs?: number;
+  /** Pages per slice for the slice→parallel→merge path. Default 15. */
+  slicePages?: number;
+  /** Max concurrent online `:process` calls when fanning slices out. Default 6. */
+  onlineConcurrency?: number;
+  /** Opt in to the async batch path for large docs (bulk imports). Default off. */
+  useBatch?: boolean;
 }
 
 function readConfig(payload: ParseEndpointPayload): GoogleDocAiConfig {
@@ -460,6 +532,13 @@ function readConfig(payload: ParseEndpointPayload): GoogleDocAiConfig {
     typeof cfg[k] === "string" ? (cfg[k] as string) : undefined;
   const num = (k: string): number | undefined =>
     typeof cfg[k] === "number" ? (cfg[k] as number) : undefined;
+  const bool = (k: string): boolean | undefined =>
+    typeof cfg[k] === "boolean" ? (cfg[k] as boolean) : undefined;
+
+  const parseMode = (str("parse_mode") ?? str("parseMode"))?.toLowerCase();
+  const useBatch =
+    parseMode === "batch" || bool("use_batch") === true || bool("useBatch") === true;
+
   return {
     projectId: str("project_id") ?? str("projectId"),
     processorId: str("processor_id") ?? str("processorId"),
@@ -471,6 +550,13 @@ function readConfig(payload: ParseEndpointPayload): GoogleDocAiConfig {
     gcsOutputUri: str("gcs_output_uri") ?? str("gcsOutputUri"),
     batchTimeoutMs: num("batch_timeout_ms") ?? num("batchTimeoutMs"),
     batchPollIntervalMs: num("batch_poll_interval_ms") ?? num("batchPollIntervalMs"),
+    slicePages: num("slice_pages") ?? num("slicePages") ?? num("slice_size") ?? num("sliceSize"),
+    onlineConcurrency:
+      num("online_concurrency") ??
+      num("onlineConcurrency") ??
+      num("parallel_slices") ??
+      num("parallelSlices"),
+    useBatch,
   };
 }
 
@@ -511,6 +597,19 @@ interface GoogleShardInfo {
 
 type ShardedGoogleDocument = GoogleDocument & { shardInfo?: GoogleShardInfo };
 
+/** A 1-indexed, inclusive page range for the slice→parallel→merge path. */
+interface PageRange {
+  startPage: number;
+  endPage: number;
+}
+
+/** One unit of {@link mergeShardChunks} input: a shard's chunks + page span. */
+interface MergeShard {
+  chunks: ParseChunk[];
+  pageCount: number;
+  basePage: number;
+}
+
 /**
  * Merge canonicalized chunks from a document's output shards into one ordered,
  * globally-page-numbered chunk list.
@@ -547,8 +646,11 @@ export function mergeShardChunks(
  * accepts a ready access token today.) Project / processor / location come from
  * the endpoint's `config_json`.
  *
- * Page-count routing (see file header): ≤15pg online, 16–30pg online imageless,
- * >30pg batch via GCS.
+ * Page-count routing (see file header): a single online `:process` call when
+ * the doc fits one slice (≤ slice size, default 15pg); otherwise slice into
+ * ≤-slice-size segments and run them through online `:process` in parallel,
+ * merging with global page renumbering. Batch via GCS is opt-in for bulk
+ * imports (`config_json.parse_mode = "batch"`).
  */
 export class GoogleDocAiProvider implements ParseProvider {
   private readonly canonicalizer = new GoogleDocAiCanonicalizer();
@@ -571,16 +673,33 @@ export class GoogleDocAiProvider implements ParseProvider {
       throw new Error("google-docai: missing access token (api_key)");
     }
 
+    // Slice size divides "one online call" from the large-doc strategy. Clamp
+    // to [1, 30] — a single online request can't exceed 30 pages even imageless.
+    const sliceSize = Math.min(
+      Math.max(1, Math.floor(cfg.slicePages ?? DEFAULT_SLICE_PAGES)),
+      IMAGELESS_MAX_PAGES,
+    );
+
     // Route by page count. An unknown count (non-PDF / unreadable PDF) falls
-    // back to online `:process` — the smallest, safest path.
+    // back to a single online `:process` call — the smallest, safest path.
     const pageCount = await countPdfPages(input.fileBuffer, input.mimeType);
 
-    if (pageCount !== null && pageCount > IMAGELESS_MAX_PAGES) {
+    // Opt-in batch path for bulk / high-volume historical imports. Requires a
+    // GCS bucket; gated behind config_json.parse_mode="batch" or use_batch=true.
+    if (cfg.useBatch && pageCount !== null && pageCount > sliceSize) {
       return this.processBatch(cfg, token, input);
     }
 
-    const imageless = pageCount !== null && pageCount > ONLINE_MAX_PAGES;
-    return this.processOnline(cfg, token, input, imageless);
+    // Fits a single online call (or page count unknown).
+    if (pageCount === null || pageCount <= sliceSize) {
+      const imageless = pageCount !== null && pageCount > ONLINE_MAX_PAGES;
+      return this.processOnline(cfg, token, input, imageless);
+    }
+
+    // Default large-doc path: slice into ≤sliceSize segments, run each through
+    // online `:process` in parallel (concurrency-capped), merge with global
+    // page renumbering. GCS-free.
+    return this.processSliced(cfg, token, input, pageCount, sliceSize);
   }
 
   /** Build the `documentai.googleapis.com` host for this config. */
@@ -599,9 +718,8 @@ export class GoogleDocAiProvider implements ParseProvider {
   }
 
   /**
-   * Synchronous online path: `:process` with the raw document inline. Sets
-   * `imagelessMode` for the 16–30pg band (Document AI's documented way to lift
-   * the 15-page sync cap to 30).
+   * Synchronous online path: a single `:process` call, canonicalized into a
+   * {@link ParseResponse}. `imageless` lifts the 15-page sync cap to 30.
    */
   private async processOnline(
     cfg: GoogleDocAiConfig,
@@ -609,6 +727,21 @@ export class GoogleDocAiProvider implements ParseProvider {
     input: { filename: string; mimeType: string; fileBuffer: Buffer },
     imageless: boolean,
   ): Promise<ParseResponse> {
+    return this.buildResponse(await this.fetchDocument(cfg, token, input, imageless));
+  }
+
+  /**
+   * One online `:process` call with the raw document inline; returns the raw
+   * `Document`. Sets `imagelessMode` to lift the 15-page sync cap to 30. On a
+   * non-2xx response throws a {@link GoogleDocAiRequestError} carrying the
+   * status so the slice path can decide whether to bisect-and-retry.
+   */
+  private async fetchDocument(
+    cfg: GoogleDocAiConfig,
+    token: string,
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    imageless: boolean,
+  ): Promise<GoogleDocument> {
     const url = `${this.host(cfg)}/v1/${this.processorName(cfg)}:process`;
 
     const body = JSON.stringify({
@@ -629,12 +762,127 @@ export class GoogleDocAiProvider implements ParseProvider {
     });
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
-      throw new Error(`google-docai process ${resp.status}: ${errText.slice(0, 300)}`);
+      throw new GoogleDocAiRequestError(
+        resp.status,
+        `google-docai process ${resp.status}: ${errText.slice(0, 300)}`,
+      );
     }
 
     const json = (await resp.json()) as GoogleProcessResponse;
-    const document = json.document ?? {};
-    return this.buildResponse(document);
+    return json.document ?? {};
+  }
+
+  /**
+   * Default large-doc path: slice the PDF into ≤`sliceSize`-page segments, run
+   * each through online `:process` in parallel (bounded by `onlineConcurrency`),
+   * and merge the per-segment chunks into one globally-page-numbered list.
+   *
+   * No GCS, no async polling — just bounded-parallel synchronous calls. Each
+   * segment is sliced from the ORIGINAL buffer by absolute page range, so a
+   * segment's local page numbers (1..n in its fresh sliced PDF) rebase cleanly
+   * onto the running global offset via {@link mergeShardChunks}. The offset
+   * advances by the segment's page span, so blank/text-less pages still consume
+   * their slot and downstream page numbers + bboxes stay correct end to end.
+   */
+  private async processSliced(
+    cfg: GoogleDocAiConfig,
+    token: string,
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    pageCount: number,
+    sliceSize: number,
+  ): Promise<ParseResponse> {
+    const concurrency = Math.max(
+      1,
+      Math.floor(cfg.onlineConcurrency ?? DEFAULT_ONLINE_CONCURRENCY),
+    );
+
+    const ranges: PageRange[] = [];
+    for (let start = 1; start <= pageCount; start += sliceSize) {
+      ranges.push({ startPage: start, endPage: Math.min(start + sliceSize - 1, pageCount) });
+    }
+
+    console.log(
+      `[google-docai] ${input.filename}: ${pageCount}pg → ${ranges.length} online slice(s) ` +
+        `(≤${sliceSize}pg each, concurrency ${concurrency})`,
+    );
+
+    // Each range yields one or more shards (more than one only when an oversize
+    // segment was bisected). mapWithConcurrency preserves range order, and
+    // bisection preserves sub-range order, so the flattened list is in global
+    // page order.
+    const perRange = await mapWithConcurrency(ranges, concurrency, (range) =>
+      this.processRange(cfg, token, input, range),
+    );
+    const shards = perRange.flat();
+
+    const merged = mergeShardChunks(shards);
+    const totalPages = shards.reduce((sum, s) => sum + s.pageCount, 0);
+    return {
+      markdown: merged.map((c) => c.text).join("\n\n"),
+      pages: totalPages || null,
+      ocr_skipped: false,
+      engine: "google-docai",
+      chunks: merged,
+    };
+  }
+
+  /**
+   * Process one page range as an online `:process` call, returning it as a
+   * single-element shard list. If the request is rejected as too large (an
+   * image-heavy segment) and the range spans more than one page, bisect the
+   * range and process the halves (still GCS-free) — gracefully shrinking the
+   * slice instead of failing. A single-page range that still fails, or any
+   * non-oversize error, surfaces so pages are never silently dropped.
+   */
+  private async processRange(
+    cfg: GoogleDocAiConfig,
+    token: string,
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    range: PageRange,
+  ): Promise<MergeShard[]> {
+    const span = range.endPage - range.startPage + 1;
+
+    let sliceBuffer: Buffer;
+    try {
+      sliceBuffer = await slicePdfPages(input.fileBuffer, range.startPage, range.endPage);
+    } catch (err) {
+      // The slicer couldn't carve this range (e.g. corrupt xref). Surface it —
+      // dropping these pages silently would corrupt the merged output.
+      throw new Error(
+        `google-docai: failed to slice pages ${range.startPage}-${range.endPage}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const imageless = span > ONLINE_MAX_PAGES;
+    try {
+      const document = await this.fetchDocument(
+        cfg,
+        token,
+        {
+          filename: `${input.filename}#p${range.startPage}-${range.endPage}`,
+          mimeType: input.mimeType,
+          fileBuffer: sliceBuffer,
+        },
+        imageless,
+      );
+      const basePage = document.pages?.[0]?.pageNumber ?? 1;
+      return [{ chunks: this.canonicalizer.toChunks(document), pageCount: span, basePage }];
+    } catch (err) {
+      if (span > 1 && isOversizeError(err)) {
+        const mid = range.startPage + Math.floor(span / 2) - 1;
+        console.warn(
+          `[google-docai] ${input.filename}: slice ${range.startPage}-${range.endPage} ` +
+            `rejected as too large; bisecting → ${range.startPage}-${mid} + ${mid + 1}-${range.endPage}.`,
+        );
+        const [left, right] = await Promise.all([
+          this.processRange(cfg, token, input, { startPage: range.startPage, endPage: mid }),
+          this.processRange(cfg, token, input, { startPage: mid + 1, endPage: range.endPage }),
+        ]);
+        return [...left, ...right];
+      }
+      throw err;
+    }
   }
 
   /**
