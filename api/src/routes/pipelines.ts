@@ -8,6 +8,7 @@ import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
+import { formatSemver } from "../schemas/semver";
 import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
@@ -202,6 +203,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         slug: schema.pipelines.slug,
         displayName: schema.pipelines.displayName,
         schemaId: schema.pipelines.schemaId,
+        versionMode: schema.pipelines.versionMode,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
         parseProviderId: schema.pipelines.parseProviderId,
@@ -250,7 +252,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
 
   // Deployed version details
   let deployedVersion:
-    | { id: string; number: number; commitMessage: string | null; deployedAt: Date }
+    | { id: string; number: number; version: string; commitMessage: string | null; deployedAt: Date }
     | null = null;
   if (pipeline.activeSchemaVersionId) {
     const activeVersionId = pipeline.activeSchemaVersionId;
@@ -259,6 +261,10 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         .select({
           id: schema.schemaVersions.id,
           versionNumber: schema.schemaVersions.versionNumber,
+          major: schema.schemaVersions.major,
+          minor: schema.schemaVersions.minor,
+          patch: schema.schemaVersions.patch,
+          prerelease: schema.schemaVersions.prerelease,
           commitMessage: schema.schemaVersions.commitMessage,
           createdAt: schema.schemaVersions.createdAt,
         })
@@ -270,6 +276,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
       deployedVersion = {
         id: sv.id,
         number: sv.versionNumber,
+        version: formatSemver(sv),
         commitMessage: sv.commitMessage,
         deployedAt: sv.createdAt,
       };

@@ -527,6 +527,7 @@ export interface PipelineRow {
 export interface PipelineDeployedVersion {
   id: string;
   number: number;
+  version: string;
   commitMessage: string | null;
   deployedAt: string;
 }
@@ -578,6 +579,7 @@ export interface PipelineDetail {
   slug: string;
   displayName: string;
   schemaId: string | null;
+  versionMode: "auto" | "pinned";
   activeSchemaVersionId: string | null;
   modelProviderId: string | null;
   parseProviderId: string | null;
@@ -627,6 +629,9 @@ export const pipelines = {
     api.post<{ ok: true }>(`/api/pipelines/${idOrSlug}/resume`, {}),
   deploy: (idOrSlug: string, schemaVersionId: string) =>
     api.post(`/api/pipelines/${idOrSlug}/deploy`, { schema_version_id: schemaVersionId }),
+  /** Unpin: set the pipeline back to `auto` so it follows the schema's live release. */
+  setAutoVersion: (idOrSlug: string) =>
+    api.post(`/api/pipelines/${idOrSlug}/deploy`, { mode: "auto" }),
   delete: (idOrSlug: string) => api.delete(`/api/pipelines/${idOrSlug}`),
   /** Update the retry policy. Pass `null` to clear the override. */
   setRetryPolicy: (idOrSlug: string, policy: RetryPolicy | null) =>

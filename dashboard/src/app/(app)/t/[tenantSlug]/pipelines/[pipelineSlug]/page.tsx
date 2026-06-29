@@ -101,6 +101,21 @@ export default function PipelineDetailPage() {
     }
   }
 
+  // Unpin → follow the schema's live release automatically.
+  async function handleSetAuto() {
+    if (!pipeline) return;
+    setSubmitting(true);
+    setErrorMsg(null);
+    try {
+      await pipelinesApi.setAutoVersion(pipeline.slug);
+      await refetch();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Failed to switch to auto");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (error) {
     return (
       <Shell tenantSlug={tenantSlug} pipelineSlug={pipelineSlug}>
@@ -223,7 +238,9 @@ export default function PipelineDetailPage() {
           pipeline={pipeline}
           tenantSlug={tenantSlug}
           canDeploy={canDeploy}
+          submitting={submitting}
           onOpenDeploy={() => setDeployOpen(true)}
+          onSetAuto={handleSetAuto}
         />
         <ConfigurationSection pipeline={pipeline} tenantSlug={tenantSlug} />
         <RetryPolicySection pipeline={pipeline} canWrite={canWrite} onSaved={refetch} />
@@ -352,14 +369,19 @@ function DeploymentSection({
   pipeline,
   tenantSlug,
   canDeploy,
+  submitting,
   onOpenDeploy,
+  onSetAuto,
 }: {
   pipeline: PipelineDetail;
   tenantSlug: string;
   canDeploy: boolean;
+  submitting: boolean;
   onOpenDeploy: () => void;
+  onSetAuto: () => void;
 }) {
   const deployed = pipeline.deployedVersion;
+  const pinned = pipeline.versionMode === "pinned";
   return (
     <Section
       title="Deployment"
@@ -370,11 +392,35 @@ function DeploymentSection({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
           >
             <Upload className="w-3 h-3" />
-            Change schema version
+            Pin a version
           </button>
         ) : null
       }
     >
+      {/* Version-tracking mode: auto follows the schema's live release; pinned
+          holds a fixed version until explicitly bumped. */}
+      <div className="px-4 pt-3 flex items-center justify-between gap-3">
+        <span className="font-mono text-[11px] text-ink-3">
+          {pinned ? (
+            <>
+              <span className="font-medium text-ink">Pinned</span> — stays on this version through promotions
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-ink">Auto</span> — follows the schema&apos;s live release
+            </>
+          )}
+        </span>
+        {canDeploy && pinned && (
+          <button
+            onClick={onSetAuto}
+            disabled={submitting}
+            className="font-mono text-[10.5px] text-ink-3 border border-border rounded-sm px-2 py-1 hover:border-ink hover:text-ink transition-colors disabled:opacity-40"
+          >
+            {submitting ? "…" : "Switch to auto"}
+          </button>
+        )}
+      </div>
       {deployed ? (
         <div className="flex items-start justify-between gap-4 p-4">
           <div className="flex flex-col gap-1">
@@ -383,7 +429,7 @@ function DeploymentSection({
                 {pipeline.schemaName ?? pipeline.schemaSlug ?? "unknown"}
               </span>
               <code className="font-mono text-[12px] text-ink-2 bg-cream-2 px-2 py-0.5 rounded-sm">
-                v{deployed.number}
+                {deployed.version}
               </code>
             </div>
             {deployed.commitMessage && (
