@@ -20,6 +20,7 @@
 
 import type { ParseProvider } from "./provider";
 import type { ParseEndpointPayload } from "./resolve-tenant-parse";
+import { TextractProvider } from "./providers/textract";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
@@ -29,7 +30,9 @@ export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvide
  * interface so the consumer (`SmartParseProvider`) needs no changes.
  */
 const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
-  // Registered by later waves, e.g.:
+  // PB-8: AWS Textract — JSON `Blocks` graph → chunks-with-bbox.
+  textract: (payload) => new TextractProvider(payload),
+  // Registered by other waves, e.g.:
   // "mistral-ocr": (payload) => new MistralOcrProvider(payload),
 };
 
