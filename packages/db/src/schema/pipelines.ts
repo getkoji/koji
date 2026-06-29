@@ -26,6 +26,11 @@ export const pipelines = pgTable(
     schemaId: uuid("schema_id"),
     activeSchemaVersionId: uuid("active_schema_version_id"),
     modelProviderId: uuid("model_provider_id"),
+    // Optional pin to a tenant BYO parse endpoint (parse_endpoints.id). NULL =
+    // use the tenant's active parse default (or the system heavy provider when
+    // none is configured). Mirrors how modelProviderId pins an extract
+    // endpoint; resolved at parse time via resolveTenantParseProvider.
+    parseProviderId: uuid("parse_provider_id"),
     configJson: jsonb("config_json").notNull().default(sql`'{}'::jsonb`),
     // Per-pipeline retry policy override. NULL = fall back to platform defaults
     // (see RetryPolicy in @koji/types/db). Wired to the motor/queue in a
