@@ -89,7 +89,7 @@ describe("createParseDriver — registry", () => {
   });
 
   it("hasParseDriver is false for slugs whose drivers haven't landed yet", () => {
-    for (const p of ["textract", "google-docai"]) {
+    for (const p of ["textract"]) {
       expect(hasParseDriver(p)).toBe(false);
     }
   });
@@ -100,5 +100,9 @@ describe("createParseDriver — registry", () => {
 
   it("hasParseDriver is true for azure-document-intel (PB-5)", () => {
     expect(hasParseDriver("azure-document-intel")).toBe(true);
+  });
+
+  it("hasParseDriver is true for google-docai (PB-7)", () => {
+    expect(hasParseDriver("google-docai")).toBe(true);
   });
 });

@@ -22,6 +22,7 @@ import type { ParseProvider } from "./provider";
 import type { ParseEndpointPayload } from "./resolve-tenant-parse";
 import { MistralOcrProvider } from "./providers/mistral-ocr";
 import { AzureDocIntelProvider } from "./providers/azure-doc-intel";
+import { GoogleDocAiProvider } from "./providers/google-docai";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
@@ -44,6 +45,7 @@ const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
         ? payload.config.api_version
         : undefined,
     }),
+  "google-docai": (payload) => new GoogleDocAiProvider(payload),
 };
 
 /**
