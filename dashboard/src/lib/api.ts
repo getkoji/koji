@@ -580,6 +580,7 @@ export interface PipelineDetail {
   schemaId: string | null;
   activeSchemaVersionId: string | null;
   modelProviderId: string | null;
+  parseProviderId: string | null;
   configJson: Record<string, unknown> | null;
   retryPolicy: RetryPolicy | null;
   reviewThreshold: string;
@@ -595,6 +596,8 @@ export interface PipelineDetail {
   schemaName: string | null;
   modelProviderName: string | null;
   modelProviderModel: string | null;
+  parseProviderName: string | null;
+  parseProviderType: string | null;
   creatorEmail: string | null;
   creatorName: string | null;
   deployedVersion: PipelineDeployedVersion | null;

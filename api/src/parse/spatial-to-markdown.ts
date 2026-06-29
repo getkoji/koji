@@ -31,7 +31,7 @@ export interface ParsedPage {
 // Internal types
 // ---------------------------------------------------------------------------
 
-interface Line {
+export interface Line {
   items: TextItem[];
   y: number;         // average y position
   height: number;    // average item height
@@ -81,7 +81,7 @@ export function spatialToMarkdown(pages: ParsedPage[]): string {
 // Step 1: Group text items into lines
 // ---------------------------------------------------------------------------
 
-function buildLines(items: TextItem[], pageHeight: number): Line[] {
+export function buildLines(items: TextItem[], pageHeight: number): Line[] {
   if (items.length === 0) return [];
 
   // Sort by y (top to bottom), then x (left to right)
@@ -318,7 +318,7 @@ function formatInline(text: string, line: Line): string {
  * that align into at least 2 columns. Column alignment is detected by
  * clustering the x-positions of text items across rows.
  */
-function detectTableRegion(lines: Line[], start: number, pageWidth: number): number {
+export function detectTableRegion(lines: Line[], start: number, pageWidth: number): number {
   if (start + 2 >= lines.length) return start;
 
   // Collect candidate lines (consecutive, non-empty, similar indent)
@@ -359,7 +359,7 @@ function detectTableRegion(lines: Line[], start: number, pageWidth: number): num
  * Detect column boundaries from text item x-positions across multiple lines.
  * Returns sorted array of column start x-positions.
  */
-function detectColumns(lines: Line[], pageWidth: number): number[] {
+export function detectColumns(lines: Line[], pageWidth: number): number[] {
   // Collect all item start x-positions
   const xPositions: number[] = [];
   for (const line of lines) {
@@ -405,7 +405,7 @@ function countCellsInColumns(line: Line, columns: number[]): number {
   return seen.size;
 }
 
-function findColumn(x: number, columns: number[]): number {
+export function findColumn(x: number, columns: number[]): number {
   // Find the nearest column within tolerance
   let best = -1;
   let bestDist = Infinity;

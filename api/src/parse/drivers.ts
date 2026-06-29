@@ -20,6 +20,7 @@
 
 import type { ParseProvider } from "./provider";
 import type { ParseEndpointPayload } from "./resolve-tenant-parse";
+import { MistralOcrProvider } from "./providers/mistral-ocr";
 import { AzureDocIntelProvider } from "./providers/azure-doc-intel";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
@@ -30,6 +31,7 @@ export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvide
  * interface so the consumer (`SmartParseProvider`) needs no changes.
  */
 const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
+  "mistral-ocr": (payload) => new MistralOcrProvider(payload),
   // Azure Document Intelligence — `prebuilt-layout` with markdown output
   // (PB-5). Endpoint host arrives as `base_url`; the subscription key as
   // `api_key` (decrypted by the resolver). Model defaults to prebuilt-layout.

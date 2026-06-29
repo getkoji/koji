@@ -53,6 +53,7 @@ import { members } from "./routes/members";
 import { apiKeys } from "./routes/api-keys";
 import { cliAuth } from "./routes/cli-auth";
 import { modelProviders } from "./routes/model-providers";
+import { parseProviders } from "./routes/parse-providers";
 import { credentials } from "./routes/credentials";
 import { modelCatalog } from "./routes/model-catalog";
 import { webhookTargets } from "./routes/webhook-targets";
@@ -219,6 +220,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/api-keys", apiKeys);
   app.route("/api/cli", cliAuth);
   app.route("/api/model-providers", modelProviders);
+  app.route("/api/parse-providers", parseProviders);
   app.route("/api/credentials", credentials);
   app.route("/api/model-catalog", modelCatalog);
   app.route("/api/webhook-targets", webhookTargets);

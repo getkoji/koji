@@ -119,6 +119,7 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
+        parseProviderId: schema.pipelines.parseProviderId,
         reviewThreshold: schema.pipelines.reviewThreshold,
         pipelineType: schema.pipelines.pipelineType,
         status: schema.pipelines.status,
@@ -130,6 +131,8 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         deployedVersion: schema.schemaVersions.versionNumber,
         modelProviderName: schema.providerCredentials.displayName,
         modelProviderModel: schema.tenantModels.model,
+        parseProviderName: schema.parseEndpoints.displayName,
+        parseProviderType: schema.parseEndpoints.provider,
       })
       .from(schema.pipelines)
       .leftJoin(schema.schemas, eq(schema.schemas.id, schema.pipelines.schemaId))
@@ -144,6 +147,10 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
       .leftJoin(
         schema.providerCredentials,
         eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
+      )
+      .leftJoin(
+        schema.parseEndpoints,
+        eq(schema.parseEndpoints.id, schema.pipelines.parseProviderId),
       )
       .where(sql`${schema.pipelines.deletedAt} IS NULL`)
       .orderBy(schema.pipelines.createdAt),
@@ -197,6 +204,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
+        parseProviderId: schema.pipelines.parseProviderId,
         pipelineType: schema.pipelines.pipelineType,
         dagJson: schema.pipelines.dagJson,
         configJson: schema.pipelines.configJson,
@@ -214,6 +222,8 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         schemaName: schema.schemas.displayName,
         modelProviderName: schema.providerCredentials.displayName,
         modelProviderModel: schema.tenantModels.model,
+        parseProviderName: schema.parseEndpoints.displayName,
+        parseProviderType: schema.parseEndpoints.provider,
         creatorEmail: schema.users.email,
         creatorName: schema.users.name,
       })
@@ -226,6 +236,10 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
       .leftJoin(
         schema.providerCredentials,
         eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
+      )
+      .leftJoin(
+        schema.parseEndpoints,
+        eq(schema.parseEndpoints.id, schema.pipelines.parseProviderId),
       )
       .leftJoin(schema.users, eq(schema.users.id, schema.pipelines.createdBy))
       .where(and(eq(schema.pipelines.id, pipelineId), sql`${schema.pipelines.deletedAt} IS NULL`))
@@ -380,6 +394,7 @@ pipelinesRouter.post(
     yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
+    parse_provider_id?: string | null;
     review_threshold?: number;
     config?: Record<string, unknown>;
   }>();
@@ -412,6 +427,7 @@ pipelinesRouter.post(
         dagJson,
         schemaId: body.schema_id ?? null,
         modelProviderId: body.model_provider_id ?? null,
+        parseProviderId: body.parse_provider_id ?? null,
         reviewThreshold: body.review_threshold?.toString() ?? "0.9",
         configJson: body.config ?? {},
         createdBy: principal.userId,
@@ -437,6 +453,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
     yaml?: string;
     schema_id?: string;
     model_provider_id?: string;
+    parse_provider_id?: string | null;
     review_threshold?: number;
     config?: Record<string, unknown>;
   }>();
@@ -490,6 +507,10 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
   }
   if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;
+  // parse_provider_id pins a tenant parse endpoint; null clears the pin (use
+  // the tenant default / system heavy provider). Mirrors model_provider_id.
+  if (body.parse_provider_id !== undefined)
+    updates.parseProviderId = body.parse_provider_id || null;
   if (body.review_threshold !== undefined)
     updates.reviewThreshold = body.review_threshold.toString();
   if (body.config !== undefined) updates.configJson = body.config;
