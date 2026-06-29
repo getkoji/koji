@@ -901,6 +901,8 @@ Delete a schema.
 
 When extraction runs with a `text_map` (returned by the parse service), Koji resolves **provenance** for each extracted field — the exact location in the source document where the value was found. Provenance is returned in the `provenance` field of extraction responses and used by the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer) to render highlights.
 
+When the parse provider instead emits structured/positional **chunks** carrying geometry (the positional and JSON-native parse paths), Koji uses each chunk's bounding box directly as authoritative geometry rather than re-deriving coordinates from the flattened markdown. Markdown-native parses (no chunk geometry) are unaffected and continue to resolve highlights via the `text_map`.
+
 ### Provenance span
 
 Each field maps to a provenance span (or `null` if the value couldn't be located in the source):
@@ -931,6 +933,7 @@ Each field maps to a provenance span (or `null` if the value couldn't be located
 | `bbox` | object | Bounding box (`x`, `y`, `w`, `h`) in PDF points. Present when `text_map` was available. |
 | `words` | array | Per-word bounding boxes for precise multi-word highlighting. |
 | `reasoning` | string | LLM-provided reasoning for why this value was selected (when available). |
+| `column_mismatch` | boolean | Set only when chunk geometry is available and a column header for the field is found. `true` flags a likely wrong-column association — the value's bounding box does not sit horizontally under its column header's bounding box (a common failure mode when a table is flattened with garbled reading order). `false` means the value sits under its header; omitted when not checked. |
 | `items` | array | Per-item provenance for array fields. See below. |
 
 ### Array field provenance

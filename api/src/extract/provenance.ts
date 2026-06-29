@@ -10,9 +10,17 @@
  * When a text_map (from the parse service) is provided, also resolves
  * bounding box coordinates for each field so the dashboard can highlight
  * values directly on the rendered PDF.
+ *
+ * When the parse provider instead emits structured/positional `ParseChunk`s
+ * carrying geometry (PB-11), the chunk's bbox is preferred as authoritative
+ * geometry over coordinates re-derived from the flattened markdown, and a
+ * column-mismatch flag is raised when a value's bbox does not sit under its
+ * column header's bbox (the detection counterpart to the docling wrong-column
+ * bug). Both are additive — markdown-native parses are unaffected.
  */
 
 import { resolveVocab } from "./schema-tree";
+import type { ParseChunk } from "../parse/chunk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +69,15 @@ export interface ProvenanceSpan {
   items?: ProvenanceSpan[];
   /** Per-property provenance for object items in arrays */
   properties?: Record<string, ProvenanceSpan | null>;
+  /**
+   * Set when the value's bounding box does not sit horizontally under its
+   * column header's bounding box — a likely wrong-column association in a
+   * table (the detection counterpart to the docling reading-order /
+   * wrong-column bug). Only computed when chunk geometry is available and a
+   * header for the field is found; absent otherwise. `false` means "checked,
+   * value sits under its header"; `undefined` means "not checked / no header."
+   */
+  column_mismatch?: boolean;
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -1312,6 +1329,197 @@ function resolveScalarViaSourceText(
   return span;
 }
 
+// ---------------------------------------------------------------------------
+// Chunk-level provenance (PB-11)
+//
+// When the parse provider emits structured / positional chunks
+// (`ParseChunk { text, page, bbox? }` from `parse/chunk.ts`), the chunk's bbox
+// is authoritative geometry — preferable to coordinates re-derived from the
+// flattened markdown. This section maps an extracted value onto its source
+// chunk's bbox and flags likely wrong-column associations (a value whose bbox
+// does not sit under its column header's bbox).
+//
+// The `BBox` convention here matches `parse/chunk.ts` by design (normalized
+// [0,1], top-left origin) so a chunk bbox flows straight in with no conversion.
+//
+// Entirely additive: when no chunk carries a bbox (markdown-native providers),
+// none of this runs and provenance behaves exactly as before.
+// ---------------------------------------------------------------------------
+
+/** Do two boxes overlap on the x-axis (their horizontal extents intersect)? */
+function xOverlaps(a: BBox, b: BBox): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w;
+}
+
+/**
+ * Is `header` positioned above `value` on the page — its bottom edge at or
+ * above the value's top edge, with a small tolerance for baseline jitter?
+ * Coordinates are top-left origin, so smaller `y` is higher on the page.
+ */
+function isAbove(header: BBox, value: BBox): boolean {
+  const tol = 0.005; // half a percent of page height
+  return header.y + header.h <= value.y + tol;
+}
+
+/**
+ * Candidate header strings for a field: its humanized name (`premium_amount` →
+ * "premium amount") plus any schema-declared `label`/`title`. Generic — no
+ * domain knowledge, just the field's own identifier.
+ */
+function headerCandidates(
+  fieldName: string,
+  fieldSpec?: Record<string, unknown>,
+): string[] {
+  const out: string[] = [];
+  const humanized = fieldName.replace(/[_-]+/g, " ").trim();
+  if (humanized) out.push(humanized);
+  for (const key of ["label", "title"]) {
+    const v = fieldSpec?.[key];
+    if (typeof v === "string" && v.trim()) out.push(v.trim());
+  }
+  return out;
+}
+
+/**
+ * Find the chunk whose text contains `value` and carries geometry. When several
+ * match, prefer the one on / closest to `preferredPage`. Returns null when no
+ * bbox-bearing chunk matches (so the text-based bbox is left untouched).
+ */
+function findValueChunk(
+  value: string,
+  chunks: readonly ParseChunk[],
+  preferredPage?: number,
+): ParseChunk | null {
+  const needle = normalizeWhitespace(value).toLowerCase();
+  if (!needle) return null;
+
+  const matches = chunks.filter(
+    (c) => c.bbox && normalizeWhitespace(c.text).toLowerCase().includes(needle),
+  );
+  if (matches.length === 0) return null;
+  if (matches.length === 1 || preferredPage == null) return matches[0]!;
+
+  let best = matches[0]!;
+  let bestDist = Math.abs(best.page - preferredPage);
+  for (let i = 1; i < matches.length; i++) {
+    const d = Math.abs(matches[i]!.page - preferredPage);
+    if (d < bestDist) {
+      best = matches[i]!;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * Find the column-header chunk for a field: a bbox-bearing chunk on the value's
+ * page whose text matches one of the field's header candidates and sits above
+ * the value. Returns null when none is found — the mismatch is then
+ * indeterminate and deliberately not flagged.
+ */
+function findHeaderChunk(
+  headers: string[],
+  valueChunk: ParseChunk,
+  chunks: readonly ParseChunk[],
+): ParseChunk | null {
+  if (!valueChunk.bbox) return null;
+  const wanted = headers.map((h) => normalizeWhitespace(h).toLowerCase()).filter(Boolean);
+  if (wanted.length === 0) return null;
+
+  const candidates = chunks.filter((c) => {
+    if (!c.bbox || c.page !== valueChunk.page) return false;
+    if (!isAbove(c.bbox, valueChunk.bbox!)) return false;
+    const txt = normalizeWhitespace(c.text).toLowerCase();
+    return wanted.some((w) => txt === w || txt.includes(w));
+  });
+  if (candidates.length === 0) return null;
+
+  // Prefer the header nearest above the value (largest y among those above).
+  let best = candidates[0]!;
+  for (let i = 1; i < candidates.length; i++) {
+    if (candidates[i]!.bbox!.y > best.bbox!.y) best = candidates[i]!;
+  }
+  return best;
+}
+
+/**
+ * Map a single resolved span onto chunk geometry: override its bbox/page with
+ * the value's source chunk and flag a column mismatch when the value does not
+ * sit under its header. No-op when no bbox-bearing chunk matches the value.
+ */
+function applyChunkToSpan(
+  span: ProvenanceSpan,
+  value: unknown,
+  fieldName: string,
+  fieldSpec: Record<string, unknown> | undefined,
+  chunks: readonly ParseChunk[],
+): void {
+  const str =
+    typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
+  if (!str) return;
+
+  const vc = findValueChunk(str, chunks, span.page);
+  if (!vc || !vc.bbox) return;
+
+  // Chunk geometry is authoritative — replace the text-derived bbox/page.
+  span.bbox = vc.bbox;
+  span.page = vc.page;
+
+  const header = findHeaderChunk(headerCandidates(fieldName, fieldSpec), vc, chunks);
+  if (header?.bbox) {
+    span.column_mismatch = !xOverlaps(vc.bbox, header.bbox);
+  }
+}
+
+/**
+ * Layer chunk geometry onto a resolved provenance map (PB-11). For each field
+ * with a value located in a bbox-bearing chunk, override the bbox with the
+ * source chunk's box and set the column-mismatch flag. Recurses into
+ * array-of-object item properties, where the wrong-column failure actually
+ * manifests (table rows). Additive: fields with no matching bbox-bearing chunk
+ * are left exactly as the text-based resolver produced them.
+ */
+function applyChunkProvenance(
+  provenance: ProvenanceMap,
+  extracted: Record<string, unknown>,
+  chunks: readonly ParseChunk[],
+  fieldSpecs?: Record<string, Record<string, unknown>>,
+): void {
+  for (const [field, value] of Object.entries(extracted)) {
+    const span = provenance[field];
+    if (!span || value == null) continue;
+
+    if (typeof value === "string" || typeof value === "number") {
+      applyChunkToSpan(span, value, field, fieldSpecs?.[field], chunks);
+      continue;
+    }
+
+    // Array of objects: apply per item-property, using the property name as the
+    // column header. This is the table case the column-mismatch flag targets.
+    if (Array.isArray(value) && span.items) {
+      const itemSpecs = (fieldSpecs?.[field]?.items as Record<string, unknown> | undefined)
+        ?.properties as Record<string, Record<string, unknown>> | undefined;
+      for (let i = 0; i < value.length; i++) {
+        const item = value[i];
+        const itemSpan = span.items[i];
+        if (
+          !itemSpan?.properties ||
+          item == null ||
+          typeof item !== "object" ||
+          Array.isArray(item)
+        ) {
+          continue;
+        }
+        for (const [prop, propVal] of Object.entries(item as Record<string, unknown>)) {
+          const propSpan = itemSpan.properties[prop];
+          if (!propSpan || propVal == null) continue;
+          applyChunkToSpan(propSpan, propVal, prop, itemSpecs?.[prop], chunks);
+        }
+      }
+    }
+  }
+}
+
 export function resolveProvenance(
   extracted: Record<string, unknown>,
   markdown: string,
@@ -1320,6 +1528,7 @@ export function resolveProvenance(
   fieldSpecs?: Record<string, Record<string, unknown>>,
   scalarSourceTexts?: Record<string, string>,
   sourceContexts?: Record<string, string>,
+  chunks?: readonly ParseChunk[],
 ): ProvenanceMap {
   const provenance: ProvenanceMap = {};
 
@@ -1365,6 +1574,13 @@ export function resolveProvenance(
       span = resolveBoolean(value, markdown, textMap);
     }
     provenance[field] = span ?? null;
+  }
+
+  // PB-11: when the parse path produced chunks with geometry, layer the real
+  // bbox onto each resolved span and flag wrong-column associations. Guarded on
+  // at least one chunk carrying a bbox, so markdown-native parses are untouched.
+  if (chunks && chunks.some((c) => c.bbox)) {
+    applyChunkProvenance(provenance, extracted, chunks, fieldSpecs);
   }
 
   return provenance;

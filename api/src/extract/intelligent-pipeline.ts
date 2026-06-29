@@ -40,6 +40,7 @@ import type { ModelProvider } from "./providers";
 import type { ExtractionResult } from "./pipeline";
 import type { TextMap } from "./provenance";
 import { resolveProvenance } from "./provenance";
+import type { ParseChunk } from "../parse/chunk";
 import { applyKeepRaw, schemaHasKeepRaw } from "./keep-raw";
 
 export type { Chunk };
@@ -290,6 +291,7 @@ export async function intelligentExtract(
   provider: ModelProvider,
   model: string,
   textMap?: TextMap,
+  parseChunks?: readonly ParseChunk[],
 ): Promise<ExtractionResult> {
   const start = Date.now();
   const schemaName = (schemaDef.name as string) ?? "unknown";
@@ -362,23 +364,27 @@ export async function intelligentExtract(
 
   const sectionResult = await extractOneSection(chunks, chunks, schemaDef, schemaName, provider, fields, routeAll);
 
-  // Resolve provenance when a textMap is present (for bbox highlighting) OR when
-  // any field opts into keep_raw (the verbatim `chunk` doesn't need a textMap).
+  // Resolve provenance when a textMap is present (for bbox highlighting), when
+  // structured chunks carry geometry (PB-11 bbox + column-mismatch flag), OR
+  // when any field opts into keep_raw (the verbatim `chunk` doesn't need a
+  // textMap).
   const needsRaw = schemaHasKeepRaw(fields);
-  const resolvedProvenance = (textMap || needsRaw)
+  const hasChunkGeometry = !!parseChunks?.some((c) => c.bbox);
+  const resolvedProvenance = (textMap || hasChunkGeometry || needsRaw)
     ? resolveProvenance(
         sectionResult.extracted, markdown, textMap,
         sectionResult.source_texts,
         fields,
         sectionResult.scalar_source_texts,
         sectionResult.source_contexts,
+        parseChunks,
       )
     : undefined;
   if (needsRaw) {
     applyKeepRaw(sectionResult.extracted, fields, resolvedProvenance);
   }
-  // Only expose provenance to the caller when a textMap backed it (unchanged output).
-  const provenance = textMap ? resolvedProvenance : undefined;
+  // Expose provenance to the caller when a textMap or chunk geometry backed it.
+  const provenance = (textMap || hasChunkGeometry) ? resolvedProvenance : undefined;
 
   const elapsedMs = Date.now() - start;
   console.log(
