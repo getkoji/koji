@@ -25,11 +25,55 @@ endpoints) and can never be retrieved — only rotated.
 |----------|----------|---------------|
 | **Mistral OCR** | SMB / cost-sensitive — markdown-native, self-serve, cheap per page | API key |
 | **Azure Document Intelligence** | Teams already on Azure — runs under your existing MSA | Resource endpoint URL + key |
-| **Google Document AI** | Teams already on GCP — structured tables | Project ID + processor ID + region + service-account key |
+| **Google Document AI** | Teams already on GCP — structured tables, handles large docs via batch | Project ID + processor ID + region + service-account key (+ a GCS bucket for documents over 30 pages — see below) |
 | **AWS Textract** | Teams already on AWS — structured tables | Region + access key ID + secret access key |
 
 The model / processor field defaults sensibly per provider (`mistral-ocr-latest`,
 `prebuilt-layout`, etc.) — override it only if you need a specific one.
+
+## Large documents (Google Document AI)
+
+Google Document AI's synchronous API caps at **15 pages** (30 with imageless
+mode). Most real-world documents — multi-hundred-page policies, large SOV/COPE
+schedules, wrap-up specs — are bigger, so Koji routes by page count
+automatically; you don't pick a mode:
+
+| Document size | Path |
+|---------------|------|
+| ≤ 15 pages | Synchronous `:process` |
+| 16–30 pages | Synchronous `:process` with imageless mode |
+| > 30 pages | **Batch** (`:batchProcess`) — asynchronous, via Google Cloud Storage |
+
+Batch processing is the primary path for large documents, not an edge case. It
+uploads the source to a GCS bucket you own, runs Document AI's asynchronous
+batch operation, reads the structured output back, and **deletes the temporary
+objects it created**. Koji never retains your documents in your bucket.
+
+### Required configuration
+
+For documents over 30 pages, add a **GCS bucket** to the Google Document AI
+endpoint config (alongside project ID / processor ID / region):
+
+| Config field | Meaning |
+|--------------|---------|
+| `gcs_bucket` | Bucket Koji uses for batch input + output (it namespaces each job under `koji-docai/input/<run-id>/` and `koji-docai/output/<run-id>/`). |
+| `gcs_input_uri` *(optional)* | Override the input prefix with an explicit `gs://…` location. |
+| `gcs_output_uri` *(optional)* | Override the output prefix with an explicit `gs://…` location. |
+
+Supplying `gcs_bucket` alone is enough; the explicit URIs are for teams that
+want batch I/O under a specific path. If no bucket is configured, documents
+over 30 pages fail with a clear error (smaller documents are unaffected).
+
+### Required IAM
+
+The service account behind your endpoint's access token needs, in addition to
+Document AI access:
+
+- **`roles/documentai.apiUser`** on the processor — to run batch operations.
+- **`roles/storage.objectAdmin`** on the configured bucket — to write the input,
+  read the output shards, and delete both afterward. (A narrower split of
+  object create / view / delete also works; `objectAdmin` is the simplest
+  correct grant.)
 
 ## The default endpoint
 
