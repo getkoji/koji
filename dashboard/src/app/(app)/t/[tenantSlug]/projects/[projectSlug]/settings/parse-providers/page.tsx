@@ -607,29 +607,33 @@ type StepId =
 
 interface StepDef {
   id: StepId;
+  // `label` is the full, descriptive name — used for screen readers (sr-only +
+  // aria-label). `short` is the abbreviated text shown visually so the 5-step
+  // (WIF) path fits on one line in the 480px dialog.
   label: string;
+  short: string;
 }
 
 function buildSteps(def: ProviderDef, authMethod: GcpAuthMethod): StepDef[] {
   const steps: StepDef[] = [
-    { id: "provider", label: "Provider" },
-    { id: "config", label: "Configuration" },
+    { id: "provider", label: "Provider", short: "Provider" },
+    { id: "config", label: "Configuration", short: "Config" },
   ];
   if (!def.gcpAuth) {
     // Non-GCP providers authenticate with a single secret — no method picker, no
     // branching. Authentication stays a single (3rd) step, exactly as before.
-    steps.push({ id: "secret", label: "Authentication" });
+    steps.push({ id: "secret", label: "Authentication", short: "Auth" });
     return steps;
   }
   // GCP-capable providers: pick a method, then branch into its sub-step(s).
-  steps.push({ id: "auth-method", label: "Authentication" });
+  steps.push({ id: "auth-method", label: "Authentication", short: "Auth" });
   if (authMethod === "wif") {
-    steps.push({ id: "wif-trust", label: "Trust setup" });
-    steps.push({ id: "wif-config", label: "Credentials" });
+    steps.push({ id: "wif-trust", label: "Trust setup", short: "Trust" });
+    steps.push({ id: "wif-config", label: "Credentials", short: "Creds" });
   } else if (authMethod === "token") {
-    steps.push({ id: "token", label: "Access token" });
+    steps.push({ id: "token", label: "Access token", short: "Token" });
   } else {
-    steps.push({ id: "sa-json", label: "Service account" });
+    steps.push({ id: "sa-json", label: "Service account", short: "Service" });
   }
   return steps;
 }
@@ -637,7 +641,7 @@ function buildSteps(def: ProviderDef, authMethod: GcpAuthMethod): StepDef[] {
 function StepIndicator({ steps, current }: { steps: StepDef[]; current: number }) {
   return (
     <ol
-      className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5"
+      className="flex flex-wrap items-center gap-x-1 gap-y-1.5"
       aria-label="Add provider progress"
     >
       {steps.map((s, i) => {
@@ -646,7 +650,7 @@ function StepIndicator({ steps, current }: { steps: StepDef[]; current: number }
         return (
           <li
             key={s.id}
-            className="flex items-center gap-1.5"
+            className="flex items-center gap-1"
             aria-current={active ? "step" : undefined}
           >
             <span
@@ -660,13 +664,18 @@ function StepIndicator({ steps, current }: { steps: StepDef[]; current: number }
             >
               {i + 1}
             </span>
+            {/* Visible text is abbreviated to keep all 5 steps on one line; the
+                full step name is exposed to screen readers via aria-label +
+                sr-only so accessibility is unchanged. */}
             <span
               className={`text-[11px] transition-colors ${active ? "text-ink font-medium" : "text-ink-4"}`}
+              aria-label={s.label}
             >
-              {s.label}
+              <span aria-hidden="true">{s.short}</span>
+              <span className="sr-only">{s.label}</span>
             </span>
             {i < steps.length - 1 && (
-              <span className="mx-0.5 h-px w-4 bg-border" aria-hidden="true" />
+              <span className="h-px w-3 bg-border" aria-hidden="true" />
             )}
           </li>
         );
