@@ -16,10 +16,17 @@ import type { ParseChunk } from "./chunk";
  * - `pdfjs`: in-process pdfjs-dist, used for digital PDFs (text-embedded)
  * - `docling`: heavy provider (Docker sidecar or Modal-hosted), used for
  *   scanned PDFs, images, and non-PDF formats (DOCX, HTML, …)
- * - `mistral-ocr`: tenant-configured BYO heavy provider (Mistral OCR API),
- *   markdown-native (see `parse/providers/mistral-ocr.ts`)
+ * - BYO-parse drivers report their own provider slug so the trace names the
+ *   actual engine (the whole point of this field) instead of masquerading as
+ *   `docling`. One slug per registered vendor driver (see `parse/drivers.ts`).
  */
-export type ParseEngine = "pdfjs" | "docling" | "mistral-ocr";
+export type ParseEngine =
+  | "pdfjs"
+  | "docling"
+  | "mistral-ocr"
+  | "azure-document-intel"
+  | "textract"
+  | "google-docai";
 
 /** A word/segment with its spatial position on the page. */
 export interface TextMapSegment {
