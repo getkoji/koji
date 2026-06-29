@@ -11,7 +11,9 @@ import { extractFieldMetas } from "../schemas/field-meta";
 import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues, type ValueDiff } from "../extract/value-compare";
-import { and, isNull } from "drizzle-orm";
+import { and, isNull, isNotNull } from "drizzle-orm";
+import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
+import { formatSemver, type Bump } from "../schemas/semver";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -323,6 +325,149 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
   );
 
   return c.json(newVersion, 201);
+});
+
+/**
+ * GET /api/schemas/:slug/versions — released lineage + candidates, each with its
+ * latest validate accuracy and whether it's the live release.
+ */
+schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
+      .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const versions = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.schemaVersions.id,
+      versionNumber: schema.schemaVersions.versionNumber,
+      major: schema.schemaVersions.major,
+      minor: schema.schemaVersions.minor,
+      patch: schema.schemaVersions.patch,
+      prerelease: schema.schemaVersions.prerelease,
+      createdAt: schema.schemaVersions.createdAt,
+    })
+      .from(schema.schemaVersions)
+      .where(eq(schema.schemaVersions.schemaId, s.id))
+      .orderBy(desc(schema.schemaVersions.versionNumber))
+  );
+
+  const data = [];
+  for (const v of versions) {
+    const [run] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ accuracy: schema.schemaRuns.accuracy, regressionsCount: schema.schemaRuns.regressionsCount })
+        .from(schema.schemaRuns)
+        .where(and(eq(schema.schemaRuns.schemaVersionId, v.id), eq(schema.schemaRuns.status, "completed")))
+        .orderBy(desc(schema.schemaRuns.createdAt))
+        .limit(1)
+    );
+    data.push({
+      id: v.id,
+      version: formatSemver(v),
+      released: v.prerelease === null,
+      active: v.id === s.currentVersionId,
+      accuracy: run?.accuracy ?? null,
+      regressions: run?.regressionsCount ?? null,
+      createdAt: v.createdAt,
+    });
+  }
+  return c.json({ data });
+});
+
+/**
+ * POST /api/schemas/:slug/promote — graduate a release candidate to a release
+ * and make it live. Manual only; gated by schema:deploy. Defaults to the latest
+ * candidate; `versionId` targets a specific one. `requireNoRegressions` refuses
+ * to promote a candidate whose latest run regressed.
+ */
+schemas.post("/:slug/promote", requires("schema:deploy"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const body = await c.req
+    .json<{ versionId?: string; requireNoRegressions?: boolean }>()
+    .catch(() => ({}) as { versionId?: string; requireNoRegressions?: boolean });
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  let versionId = body.versionId;
+  if (!versionId) {
+    const [latestRc] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ id: schema.schemaVersions.id })
+        .from(schema.schemaVersions)
+        .where(and(eq(schema.schemaVersions.schemaId, s.id), isNotNull(schema.schemaVersions.prerelease)))
+        .orderBy(desc(schema.schemaVersions.versionNumber))
+        .limit(1)
+    );
+    if (!latestRc) return c.json({ error: "No release candidate to promote. Run validate first." }, 400);
+    versionId = latestRc.id;
+  }
+
+  if (body.requireNoRegressions) {
+    const [run] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ regressionsCount: schema.schemaRuns.regressionsCount })
+        .from(schema.schemaRuns)
+        .where(and(eq(schema.schemaRuns.schemaVersionId, versionId!), eq(schema.schemaRuns.status, "completed")))
+        .orderBy(desc(schema.schemaRuns.createdAt))
+        .limit(1)
+    );
+    if (run && run.regressionsCount > 0) {
+      return c.json({ error: `Refusing to promote: the latest run had ${run.regressionsCount} regression(s).` }, 409);
+    }
+  }
+
+  const res = await graduateCandidate(db, tenantId, s.id, versionId);
+  if ("error" in res) {
+    if (res.error === "already_released") {
+      return c.json({ error: "A release already occupies that version — re-validate for a fresh candidate." }, 409);
+    }
+    return c.json({ error: "Candidate not found, or it is already a release." }, 404);
+  }
+  return c.json({ released: res.label });
+});
+
+/**
+ * POST /api/schemas/:slug/release — release YAML directly (skip rc) and make it
+ * live; defaults to the draft. The early-stage / empty-corpus path. Manual only;
+ * gated by schema:deploy.
+ */
+schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+  const body = await c.req.json<{ yaml?: string }>().catch(() => ({}) as { yaml?: string });
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
+      .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const yaml = body.yaml ?? s.draftYaml;
+  if (!yaml) return c.json({ error: "No YAML to release — provide yaml or save a draft first." }, 400);
+
+  const compiled = compileSchema(yaml);
+  if (!compiled.ok) return c.json({ error: "Schema validation failed", details: compiled.errors }, 422);
+
+  const res = await releaseDirect(db, tenantId, {
+    schemaId: s.id,
+    yaml,
+    parsed: compiled.parsed,
+    userId: principal.userId,
+  });
+  if ("error" in res) {
+    return c.json({ error: "A release already occupies that version — re-validate for a fresh candidate." }, 409);
+  }
+  return c.json({ released: res.label, versionId: res.id });
 });
 
 // ── Corpus (documents for testing/validation) ──
@@ -766,10 +911,11 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const startTime = Date.now();
 
   const body = await c.req
-    .json<{ model?: string }>()
-    .catch((): { model?: string } => ({}));
+    .json<{ model?: string; yaml?: string; bump?: Bump; commitMessage?: string }>()
+    .catch((): { model?: string; yaml?: string; bump?: Bump; commitMessage?: string } => ({}));
 
-  // Get schema + current YAML
+  const principal = getPrincipal(c);
+
   const [schemaRow] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.schemas.id,
@@ -781,22 +927,8 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   );
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
-  // Get latest version YAML (fallback to draft)
-  const [latestVersion] = await withRLS(db, tenantId, (tx) =>
-    tx.select({
-      versionNumber: schema.schemaVersions.versionNumber,
-      yamlSource: schema.schemaVersions.yamlSource,
-    })
-      .from(schema.schemaVersions)
-      .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
-      .orderBy(desc(schema.schemaVersions.versionNumber))
-      .limit(1)
-  );
-
-  const schemaYaml = latestVersion?.yamlSource ?? schemaRow.draftYaml;
-  if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);
-
-  // Get all corpus entries with ground truth
+  // Ground truth gates the whole run — check before snapshotting a candidate so
+  // a contentless validate (empty corpus) doesn't litter the version history.
   const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
@@ -817,20 +949,65 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     return c.json({ error: "No corpus entries have ground truth. Save ground truth from Build mode first." }, 400);
   }
 
-  const principal = getPrincipal(c);
+  // Resolve the schema content + the version this run is tied to.
+  //
+  // New path: a candidate YAML is sent in the body — snapshot it as an rc
+  // (dedup by content hash) WITHOUT activating it, and tie the run to that
+  // candidate. This is the safe inner loop: iterating never touches the live
+  // schema. Back-compat path: no YAML — validate the latest stored version
+  // (or draft), as before.
+  let schemaYaml: string | null = null;
+  let versionId: string | undefined;
+  let versionLabel: string | null = null;
+  let versionNumber = 0;
+  let bump: Bump | null = null;
+  let deduped = false;
 
-  // Get the version ID for the schema_run
-  const [latestVersionRow] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ id: schema.schemaVersions.id })
-      .from(schema.schemaVersions)
-      .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
-      .orderBy(desc(schema.schemaVersions.versionNumber))
-      .limit(1)
-  );
-  const versionId = latestVersionRow?.id;
-  if (!versionId) return c.json({ error: "No schema version found. Commit the schema first." }, 400);
+  if (body.yaml) {
+    const compiled = compileSchema(body.yaml);
+    if (!compiled.ok) {
+      return c.json({ error: "Schema validation failed", details: compiled.errors }, 422);
+    }
+    const snap = await snapshotCandidate(db, tenantId, {
+      schemaId: schemaRow.id,
+      yaml: body.yaml,
+      parsed: compiled.parsed,
+      userId: principal.userId,
+      bumpOverride: body.bump,
+      commitMessage: body.commitMessage,
+    });
+    schemaYaml = body.yaml;
+    versionId = snap.id;
+    versionNumber = snap.versionNumber;
+    versionLabel = formatSemver(snap);
+    bump = snap.bump;
+    deduped = snap.deduped;
+  } else {
+    const [latestVersion] = await withRLS(db, tenantId, (tx) =>
+      tx.select({
+        id: schema.schemaVersions.id,
+        versionNumber: schema.schemaVersions.versionNumber,
+        major: schema.schemaVersions.major,
+        minor: schema.schemaVersions.minor,
+        patch: schema.schemaVersions.patch,
+        prerelease: schema.schemaVersions.prerelease,
+        yamlSource: schema.schemaVersions.yamlSource,
+      })
+        .from(schema.schemaVersions)
+        .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
+        .orderBy(desc(schema.schemaVersions.versionNumber))
+        .limit(1)
+    );
+    schemaYaml = latestVersion?.yamlSource ?? schemaRow.draftYaml;
+    versionId = latestVersion?.id;
+    versionNumber = latestVersion?.versionNumber ?? 0;
+    versionLabel = latestVersion ? formatSemver(latestVersion) : null;
+  }
 
-  // Create the schema_run record
+  if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);
+  if (!versionId) return c.json({ error: "No schema version found. Save or validate a schema first." }, 400);
+
+  // Create the schema_run record (ties to the candidate or the latest version).
   const [schemaRun] = await withRLS(db, tenantId, (tx) =>
     tx.insert(schema.schemaRuns).values({
       tenantId,
@@ -936,7 +1113,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     return c.json({ error: "All extractions failed" }, 502);
   }
 
-  const validateResult = computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime);
+  const validateResult = computeValidateResult(results, prevExtractedMap, versionNumber, startTime);
 
   // Update schema_run with results
   await withRLS(db, tenantId, (tx) =>
@@ -965,7 +1142,10 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     });
   }
 
-  return c.json(validateResult);
+  // Surface the candidate the run scored — its semver label, the auto-derived
+  // bump (vs the active release), and whether identical content was reused.
+  // The candidate is NOT activated; promotion is a separate, gated step.
+  return c.json({ ...validateResult, version: versionLabel, bump, deduped });
 });
 
 /** Compare extraction results against ground truth and compute accuracy/regressions. */

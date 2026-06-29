@@ -267,13 +267,19 @@ def _render_validate(slug: str, r: dict) -> None:
     passed = r.get("passed")
     head_color = "green" if passed else "yellow"
     overall_disp = f"{overall:.1f}%" if overall is not None else "?"
+    # Semver candidate label + the auto-derived bump. The candidate is NOT live —
+    # promote it with `koji schema promote` once it performs well.
+    version = r.get("version") or f"v{r.get('schemaVersion', '?')}"
+    bump = r.get("bump")
+    bump_disp = f"  [magenta]{bump}[/magenta]" if bump else ""
+    dedup_disp = "  [dim](reused)[/dim]" if r.get("deduped") else "  [dim](candidate · not live)[/dim]"
     console.print(
         f"\n[bold {head_color}]{slug}[/bold {head_color}]  "
         f"overall [bold]{overall_disp}[/bold]{delta}   "
         f"docs {r.get('docsPassed')}/{r.get('docsTotal')}   "
         f"fields {r.get('fieldCount')}   "
         f"${r.get('costUsd', 0):.4f}   {r.get('durationMs', 0) / 1000:.1f}s   "
-        f"v{r.get('schemaVersion', '?')}\n"
+        f"[cyan]{version}[/cyan]{bump_disp}{dedup_disp}\n"
     )
 
     fields = r.get("fields", [])
@@ -368,41 +374,52 @@ def _render_diff(entry: dict, rows: list[dict]) -> None:
 
 
 def validate(
-    schema: str = typer.Argument(..., help="Schema slug, or path to a local schema YAML to push first."),
+    schema: str = typer.Argument(..., help="Schema slug, or path to a local schema YAML to backtest."),
     model: str = typer.Option(None, "--model", help="Override the extraction model (e.g. openai/gpt-4o-mini)."),
     no_push: bool = typer.Option(
-        False, "--no-push", help="Validate the version already on the server; don't push local edits."
+        False, "--no-push", help="Validate the version already live on the server; don't snapshot local edits."
     ),
-    message: str = typer.Option(None, "--message", "-m", help="Commit message when pushing the schema."),
+    bump: str = typer.Option(None, "--bump", help="Override the auto-derived semver bump: major | minor | patch."),
+    message: str = typer.Option(None, "--message", "-m", help="Commit message for the candidate snapshot."),
     watch: bool = typer.Option(False, "--watch", "-w", help="Re-run whenever the local schema file changes."),
     check: bool = typer.Option(False, "--check", help="Exit non-zero if any field regressed (for CI / loops)."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
-    """Backtest a schema against its corpus ground truth.
+    """Backtest a schema against its corpus ground truth — safely.
 
-    Pushes the local schema (unless --no-push), then runs the platform's
-    validation — re-extracting every corpus doc that has ground truth and scoring
-    it — and prints overall + per-field accuracy, regressions, and failing docs.
-    This is the inner loop: edit the schema, run this, see what regressed.
+    Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`) and
+    backtests it — re-extracting every corpus doc that has ground truth and
+    scoring it. The candidate is persisted (it shows in the Validate history)
+    but is **NOT** made live: iterating never touches the schema production
+    pipelines run. Promote a candidate with `koji schema promote` once it
+    performs well. With --no-push (or a bare slug with no local file), validates
+    the version already live on the server instead.
     """
+    if bump and bump not in ("major", "minor", "patch"):
+        console.print("[red]--bump must be major, minor, or patch.[/red]")
+        raise typer.Exit(1)
     base_url, headers = resolve_api(profile_name)
     slug, local_yaml, local_path = _load_schema_arg(schema)
 
     def run_once() -> int:
         with httpx.Client(timeout=300) as client:
-            if not no_push:
-                if local_yaml is None:
-                    err_console.print(
-                        f"[yellow]No local file for '{slug}' — validating the server version. "
-                        f"(Pass a path or use --no-push to silence.)[/yellow]"
-                    )
-                else:
-                    status = _push_schema(client, base_url, headers, slug, local_yaml, message)
-                    err_console.print(f"[dim]push:[/dim] {slug} — {status}")
             body: dict = {}
             if model:
                 body["model"] = model
+            if bump:
+                body["bump"] = bump
+            if no_push or local_yaml is None:
+                if local_yaml is None and not no_push:
+                    err_console.print(
+                        f"[yellow]No local file for '{slug}' — validating the live server version. "
+                        f"(Pass a path to backtest local edits.)[/yellow]"
+                    )
+                # No yaml in body → server scores the latest stored version.
+            else:
+                body["yaml"] = local_yaml
+                if message:
+                    body["commitMessage"] = message
             resp = client.post(f"{base_url}/api/schemas/{slug}/validate", json=body, headers=headers)
             if _auth_error(resp, base_url):
                 raise typer.Exit(1)
@@ -1100,3 +1117,124 @@ def review_promote(
         f"{(result.get('corpusEntryId') or '')[:8]} as {status_label} "
         f"({result.get('fieldCount')} field(s)){dedup_note}"
     )
+
+
+# ── Schema versions: list / promote / release ─────────────────────────
+
+
+def _fetch_versions(client: httpx.Client, base_url: str, headers: dict, slug: str) -> list[dict]:
+    resp = client.get(f"{base_url}/api/schemas/{slug}/versions", headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"list versions for {slug}")
+    return resp.json().get("data", [])
+
+
+schema_app = typer.Typer(
+    help="Manage schema versions — list, promote a candidate to a release, or release directly.",
+    no_args_is_help=True,
+)
+
+
+@schema_app.command("versions")
+def schema_versions(
+    slug: str = typer.Argument(..., help="Schema slug."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List a schema's versions — released lineage + candidates, scores, and which is live."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        versions = _fetch_versions(client, base_url, headers, slug)
+
+    if as_json:
+        console.print_json(json_mod.dumps(versions))
+        return
+    if not versions:
+        console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Version")
+    table.add_column("Acc", justify="right")
+    table.add_column("Kind")
+    table.add_column("Live", justify="center")
+    for v in versions:
+        acc = v.get("accuracy")
+        acc_disp = f"{float(acc) * 100:.1f}%" if acc is not None else "[dim]—[/dim]"
+        kind = "[green]released[/green]" if v.get("released") else "[magenta]candidate[/magenta]"
+        live = "[green]●[/green]" if v.get("active") else ""
+        table.add_row(v.get("version", ""), acc_disp, kind, live)
+    console.print(table)
+    console.print(f"\n[dim]{len(versions)} version(s)[/dim]")
+
+
+@schema_app.command("promote")
+def schema_promote(
+    slug: str = typer.Argument(..., help="Schema slug."),
+    version: str = typer.Option(
+        None, "--version", help="Candidate to promote (e.g. v0.0.4-rc.7). Default: the latest candidate."
+    ),
+    require_no_regressions: bool = typer.Option(
+        False, "--require-no-regressions", help="Refuse to promote if the candidate's latest run regressed."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Graduate a release candidate to a release and make it live (gated by schema:deploy)."""
+    base_url, headers = resolve_api(profile_name)
+    body: dict = {}
+    with httpx.Client(timeout=120) as client:
+        if version:
+            versions = _fetch_versions(client, base_url, headers, slug)
+            match = [v for v in versions if v.get("version") == version or (v.get("id") or "").startswith(version)]
+            if len(match) != 1:
+                console.print(
+                    f"[red]'{version}' didn't match exactly one version. Try [bold]koji schema versions {slug}[/bold].[/red]"
+                )
+                raise typer.Exit(1)
+            body["versionId"] = match[0]["id"]
+        if require_no_regressions:
+            body["requireNoRegressions"] = True
+        resp = client.post(f"{base_url}/api/schemas/{slug}/promote", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"promote {slug}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
+
+
+@schema_app.command("release")
+def schema_release(
+    schema: str = typer.Argument(..., help="Schema slug, or path to a local schema YAML to release directly."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Release a schema directly to a full version, skipping the rc loop.
+
+    For early-stage building when there's nothing in the corpus to backtest yet.
+    Sends your local YAML if given a path; otherwise releases the server-side
+    draft. Makes the new version live (gated by schema:deploy).
+    """
+    base_url, headers = resolve_api(profile_name)
+    slug, local_yaml, _ = _load_schema_arg(schema)
+    body: dict = {}
+    if local_yaml:
+        body["yaml"] = local_yaml
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(f"{base_url}/api/schemas/{slug}/release", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"release {slug}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
