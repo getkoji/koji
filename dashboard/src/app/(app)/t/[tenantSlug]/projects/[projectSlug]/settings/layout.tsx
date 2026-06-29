@@ -7,6 +7,7 @@ const TITLES: Record<string, string> = {
   general: "General",
   "api-keys": "API Keys",
   "model-providers": "Model Endpoints",
+  "parse-providers": "Parse Endpoints",
   webhooks: "Webhooks",
 };
 

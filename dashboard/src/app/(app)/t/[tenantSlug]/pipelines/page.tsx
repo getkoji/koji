@@ -24,6 +24,13 @@ interface ProviderOption {
   model: string;
 }
 
+interface ParseProviderOption {
+  id: string;
+  displayName: string;
+  provider: string;
+  isDefault: boolean;
+}
+
 export default function PipelinesPage() {
   const { hasPermission } = useAuth();
   const params = useParams<{ tenantSlug: string }>();
@@ -355,6 +362,7 @@ function CreatePipelineDialog({
   const [slugTouched, setSlugTouched] = useState(false);
   const [schemaId, setSchemaId] = useState("");
   const [modelProviderId, setModelProviderId] = useState("");
+  const [parseProviderId, setParseProviderId] = useState("");
   const [reviewThreshold, setReviewThreshold] = useState("0.9");
   const [creating, setCreating] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -366,6 +374,16 @@ function CreatePipelineDialog({
   const { data: providersList, loading: providersLoading } = useApi(
     useCallback(
       () => api.get<{ data: ProviderOption[] }>("/api/model-providers").then((r) => r.data),
+      [],
+    ),
+  );
+  const { data: parseProvidersList } = useApi(
+    useCallback(
+      () =>
+        api
+          .get<{ data: ParseProviderOption[] }>("/api/parse-providers")
+          .then((r) => r.data)
+          .catch(() => []),
       [],
     ),
   );
@@ -403,6 +421,7 @@ function CreatePipelineDialog({
         slug,
         schema_id: schemaId,
         model_provider_id: modelProviderId,
+        parse_provider_id: parseProviderId || undefined,
         review_threshold: Number(reviewThreshold),
       });
       onCreated();
@@ -518,6 +537,27 @@ function CreatePipelineDialog({
               ))}
             </select>
           </Field>
+
+          {(parseProvidersList ?? []).length > 0 && (
+            <Field
+              label="Parse engine (optional)"
+              hint="Override the document parse/OCR engine for this pipeline. Defaults to the tenant parse default."
+            >
+              <select
+                value={parseProviderId}
+                onChange={(e) => setParseProviderId(e.target.value)}
+                className={`${inputClass(false)} bg-white`}
+              >
+                <option value="">Tenant default (auto)</option>
+                {(parseProvidersList ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.displayName}
+                    {p.isDefault ? " — default" : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <Field
             label="Review threshold"

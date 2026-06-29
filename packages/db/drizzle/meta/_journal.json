@@ -162,6 +162,13 @@
       "when": 1782669224442,
       "tag": "0022_small_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1782698289518,
+      "tag": "0023_deep_pixie",
+      "breakpoints": true
     }
   ]
 }
