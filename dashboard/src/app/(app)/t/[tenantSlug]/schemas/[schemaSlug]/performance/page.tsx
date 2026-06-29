@@ -409,11 +409,11 @@ export default function PerformancePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.filter((r) => r.versionNumber !== null).map((r, i, arr) => (
-                      <tr key={r.id} className={`border-t border-border ${i === arr.length - 1 ? "bg-cream-2/30" : ""}`}>
+                    {runs.filter((r) => r.versionNumber !== null).slice().reverse().map((r, i) => (
+                      <tr key={r.id} className={`border-t border-border ${i === 0 ? "bg-cream-2/30" : ""}`}>
                         <td className="px-3 py-2 font-mono text-[11px] text-ink">
                           v{r.versionNumber}
-                          {i === arr.length - 1 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
+                          {i === 0 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
                         </td>
                         <td className="px-3 py-2"><span className={`font-mono text-[11px] font-medium ${r.accuracy && parseFloat(r.accuracy) * 100 >= 97 ? "text-green" : "text-ink-3"}`}>{r.accuracy ? (parseFloat(r.accuracy) * 100).toFixed(1) : "—"}%</span></td>
                         <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.docsPassed}/{r.docsTotal}</td>
