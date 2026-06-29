@@ -221,16 +221,17 @@ These commands drive the **Build → Validate → Corpus** workflow from the das
 
 Every command below accepts `--json` to emit raw machine-readable output instead of a table — handy for scripting and for driving the loop from an agent.
 
-The inner loop is: edit the schema YAML → `koji validate` to backtest it against ground truth → drill into a failing doc with `koji corpus diff` → repeat.
+The inner loop is: edit the schema YAML → `koji validate` to backtest it (safely) against ground truth → drill into a failing doc with `koji corpus diff` → repeat → `koji schema promote` once it performs well.
 
 ### `koji validate`
 
-Backtest a schema against its corpus ground truth. Pushes the local schema (so your edits take effect), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs.
+Backtest a schema against its corpus ground truth — **safely**. Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs. **The candidate is not made live**: iterating never touches the schema your pipelines run. The semver bump (`major`/`minor`/`patch`) is auto-derived from how the output shape changed.
 
 ```bash
-koji validate insurance_policy                       # push schemas/insurance_policy.yaml, then validate
+koji validate insurance_policy                       # snapshot schemas/insurance_policy.yaml as a candidate + backtest
 koji validate ./schemas/insurance_policy.yaml        # explicit path
-koji validate insurance_policy --no-push             # validate the version already on the server
+koji validate insurance_policy --bump minor          # override the auto-derived bump
+koji validate insurance_policy --no-push             # validate the version already live on the server
 koji validate insurance_policy --watch               # re-run whenever the local file changes
 koji validate insurance_policy --check               # exit non-zero if any field regressed (CI / loops)
 koji validate insurance_policy --json                # raw result for an agent to read
@@ -239,14 +240,15 @@ koji validate insurance_policy --json                # raw result for an agent t
 | Flag | Description |
 |------|-------------|
 | `--model` | Override the extraction model (e.g. `openai/gpt-4o-mini`). |
-| `--no-push` | Validate the version already on the server; don't push local edits. |
-| `--message`, `-m` | Commit message when pushing the schema. |
+| `--bump` | Override the auto-derived semver bump: `major` \| `minor` \| `patch`. |
+| `--no-push` | Validate the version already live on the server; don't snapshot local edits. |
+| `--message`, `-m` | Message for the candidate snapshot. |
 | `--watch`, `-w` | Re-run whenever the local schema file changes. |
 | `--check` | Exit non-zero if any field regressed (for CI / loops). |
 | `--json` | Emit raw JSON instead of a table. |
 | `--profile`, `-p` | CLI profile to use. |
 
-The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found and pushed automatically) or a path to a YAML file. The slug is taken from the file's `name:` field.
+The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found automatically) or a path to a YAML file. The slug is taken from the file's `name:` field. Promote a candidate to live with [`koji schema promote`](#koji-schema).
 
 ### `koji run`
 
@@ -316,6 +318,23 @@ koji review promote <id> --provisional --gt-from label.json   # agent draft labe
 
 The full loop — promote the flagged docs, then fix the schema so they stop getting flagged — is encoded in the `review-corpus-loop` Claude skill (which hands off to `schema-loop` for the schema-improvement half).
 
+### `koji schema`
+
+Manage schema versions — list the released lineage and candidates, and promote/release. Versions use semver: `koji validate` snapshots **candidates** (`v0.0.4-rc.N`); promotion graduates one to a **release** (`v0.0.4`) and makes it live for pipelines. Promotion is **manual** and gated by the `schema:deploy` permission.
+
+```bash
+koji schema versions insurance_policy                # released lineage + candidates, scores, which is live
+koji schema promote insurance_policy                 # graduate the latest candidate to a release + make it live
+koji schema promote insurance_policy --version v0.0.4-rc.7      # promote a specific candidate
+koji schema promote insurance_policy --require-no-regressions   # refuse if the candidate's latest run regressed
+koji schema release insurance_policy                 # release a schema directly, skipping the rc loop
+koji schema release ./schemas/insurance_policy.yaml  # …from a local file
+```
+
+`koji schema release` is the early-stage path: when there's nothing in the corpus to backtest yet, skip candidates and release straight to a full version. All `schema` subcommands accept `--json` and `--profile`.
+
+The full **validate → promote** loop is encoded in the `schema-loop` Claude skill.
+
 ---
 
 ## Misc
@@ -326,7 +345,7 @@ Print the installed Koji version.
 
 ```bash
 koji version
-# koji 0.23.0
+# koji 0.24.0
 ```
 
 ---
