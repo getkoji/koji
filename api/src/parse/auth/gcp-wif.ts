@@ -28,25 +28,63 @@
  * engine-generic rule.
  *
  * **The hosted source identity is NOT baked in here.** WIF requires the
- * workload to present an OIDC identity the customer's pool trusts. That source
- * identity is driven entirely by the `credential_source` of the supplied
- * `external_account` config (a file/URL/executable the runtime exposes —
- * Cloudflare Workers OIDC, Vercel OIDC, or a Koji-managed identity). This OSS
- * code is generic: the deployer (self-host) or the platform layer (hosted Koji)
- * supplies the `external_account` config that names its issuer. We never encode
- * Koji's production identity in OSS. See `docs/deployments/parse.md` and the
- * design note in the oss-282 PR for the hosted source-identity decision (needs
- * infra sign-off).
+ * workload to present an OIDC identity the customer's pool trusts. Two ways the
+ * source token reaches us:
+ *
+ *   1. **Static source (`credential_source`)** — a file/URL/executable the
+ *      runtime exposes (Cloudflare Workers OIDC, GKE/Cloud Run metadata, a
+ *      Koji-managed identity). `ExternalAccountClient.fromJSON` reads it.
+ *   2. **Dynamic source (`source: "vercel"`, oss-288)** — some runtimes expose
+ *      their workload OIDC token as an **env var / function call**, not a file
+ *      or URL. Vercel is the motivating case: the token comes from
+ *      `getVercelOidcToken()` / `VERCEL_OIDC_TOKEN`, which `fromJSON`'s standard
+ *      `credential_source` cannot consume. For these we build the client with a
+ *      programmatic **`subject_token_supplier`** that returns the source token.
+ *
+ * For the dynamic path, source resolution is **environment-aware** so the same
+ * WIF-configured endpoint is exercisable in local dev without a Vercel identity:
+ *
+ *   - **Prod (Vercel):** the supplier returns the Vercel workload OIDC token
+ *     (`getVercelOidcToken()` preferred, `VERCEL_OIDC_TOKEN` fallback) → STS
+ *     exchange → SA impersonation.
+ *   - **Local dev (no Vercel token):** fall back to **Application Default
+ *     Credentials** (`gcloud auth application-default login`) and mint the
+ *     access token via ADC, impersonating the same target SA. This lets a
+ *     developer drive the real WIF endpoint path locally.
+ *
+ * This OSS code is generic: the deployer (self-host) or the platform layer
+ * (hosted Koji) supplies the `external_account` config + `source` that names its
+ * issuer. We never encode Koji's production identity in OSS. See
+ * `docs/deployments/parse.md` and the design note in the oss-282 PR for the
+ * hosted source-identity decision (needs infra sign-off).
  *
  * **Failure posture.** Minting errors throw — the caller (the parse-endpoint
  * resolver) treats a throw as "credential unavailable" and falls back to the
  * default heavy provider, consistent with how it treats a decryption failure.
  */
 
-import { ExternalAccountClient, type ExternalAccountClientOptions } from "google-auth-library";
+import {
+  ExternalAccountClient,
+  GoogleAuth,
+  Impersonated,
+  type ExternalAccountClientOptions,
+} from "google-auth-library";
 
 /** Default OAuth scope — broad enough for any GCP API the provider may call. */
 const DEFAULT_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"];
+
+/**
+ * `source` values that mean "the workload OIDC token is exposed dynamically
+ * (env var / function call), not via a file/URL `credential_source`." These
+ * route to the programmatic `subject_token_supplier` path. Today that's Vercel;
+ * the set is open so other env-var-token runtimes can opt in without engine
+ * changes.
+ */
+const DYNAMIC_SOURCES = new Set(["vercel", "vercel-oidc"]);
+
+function isDynamicSource(source: string | undefined): boolean {
+  return !!source && DYNAMIC_SOURCES.has(source.toLowerCase());
+}
 
 /**
  * Re-mint when the cached token is within this many ms of expiry. A generous
@@ -80,6 +118,14 @@ export interface GcpWifSettings {
   impersonateServiceAccount?: string;
   /** OAuth scopes for the minted token. Defaults to cloud-platform. */
   scopes?: string[];
+  /**
+   * Optional dynamic-source marker (oss-288). When set to a recognized dynamic
+   * source (e.g. `"vercel"`), the workload OIDC token is fetched programmatically
+   * (env var / function call) and supplied to STS via a `subject_token_supplier`,
+   * rather than read from the config's `credential_source`. Unset → the standard
+   * file/URL/executable `credential_source` path (backward compatible).
+   */
+  source?: string;
 }
 
 /**
@@ -87,9 +133,14 @@ export interface GcpWifSettings {
  * null when the endpoint isn't WIF-configured (the static-token / today path).
  *
  * Recognized shapes (in priority order):
- *   1. `config.wif = { external_account, impersonate_service_account?, scopes? }`
- *      — the explicit, recommended block.
+ *   1. `config.wif = { external_account, impersonate_service_account?, scopes?,
+ *      source? }` — the explicit, recommended block.
  *   2. `config.auth_method === "wif"` with a top-level `config.external_account`.
+ *
+ * `source` is the optional dynamic-source marker (oss-288): set it to e.g.
+ * `"vercel"` when the workload OIDC token is exposed as an env var / function
+ * call instead of a file/URL. When unset, the standard `credential_source`
+ * path is used (backward compatible).
  *
  * A config carrying neither is not WIF → returns null so the resolver keeps
  * using the static token. This is what makes WIF *additive*: existing
@@ -110,6 +161,7 @@ export function readGcpWifConfig(
         ext,
         asString(w.impersonate_service_account ?? w.impersonateServiceAccount),
         asStringArray(w.scopes),
+        asString(w.source),
       );
     }
   }
@@ -122,6 +174,7 @@ export function readGcpWifConfig(
         ext,
         asString(config.impersonate_service_account ?? config.impersonateServiceAccount),
         asStringArray(config.scopes),
+        asString(config.source),
       );
     }
   }
@@ -156,11 +209,13 @@ function buildSettings(
   externalAccount: ExternalAccountClientOptions,
   impersonateServiceAccount: string | undefined,
   scopes: string[] | undefined,
+  source: string | undefined,
 ): GcpWifSettings {
   return {
     externalAccount,
     ...(impersonateServiceAccount ? { impersonateServiceAccount } : {}),
     ...(scopes ? { scopes } : {}),
+    ...(source ? { source } : {}),
   };
 }
 
@@ -201,11 +256,42 @@ export async function mintGcpAccessToken(
   }
 
   const scopes = settings.scopes && settings.scopes.length > 0 ? settings.scopes : DEFAULT_SCOPES;
-  const options = withImpersonation(settings);
 
-  // ExternalAccountClient handles the full OIDC → STS → (optional) SA
-  // impersonation exchange. We pass scopes via the config so they apply to both
-  // the STS exchange and the impersonated-token request.
+  // Dynamic source (oss-288): the workload OIDC token is exposed as an env var /
+  // function call (Vercel), not a file/URL → use a programmatic supplier, with
+  // an env-aware local-dev fallback to ADC. Otherwise: the standard
+  // file/URL/executable `credential_source` path via fromJSON (backward compat).
+  const minted = isDynamicSource(settings.source)
+    ? await mintViaDynamicSource(settings, scopes)
+    : await mintViaCredentialSource(settings, scopes);
+
+  tokenCache.set(cacheKey, { token: minted.token, expiresAt: minted.expiresAt });
+  return minted.token;
+}
+
+interface MintedToken {
+  token: string;
+  /** Epoch ms at which the minted token expires. */
+  expiresAt: number;
+}
+
+/** Compute an absolute expiry, falling back when the client reports none. */
+function expiresAtFrom(expiry: number | null | undefined): number {
+  const now = Date.now();
+  return typeof expiry === "number" && expiry > now ? expiry : now + FALLBACK_LIFETIME_MS;
+}
+
+/**
+ * Standard path: the `external_account` config carries a file/URL/executable
+ * `credential_source`. `ExternalAccountClient.fromJSON` handles the full
+ * OIDC → STS → (optional) SA impersonation exchange. Scopes are passed via the
+ * config so they apply to both the STS exchange and the impersonated request.
+ */
+async function mintViaCredentialSource(
+  settings: GcpWifSettings,
+  scopes: string[],
+): Promise<MintedToken> {
+  const options = withImpersonation(settings);
   const client = ExternalAccountClient.fromJSON({ ...options, scopes });
   if (!client) {
     throw new Error(
@@ -219,12 +305,115 @@ export async function mintGcpAccessToken(
   if (!token) {
     throw new Error("gcp-wif: token exchange returned no access token");
   }
+  return { token, expiresAt: expiresAtFrom(client.credentials?.expiry_date) };
+}
 
-  const expiry = client.credentials?.expiry_date;
-  const expiresAt = typeof expiry === "number" && expiry > now ? expiry : now + FALLBACK_LIFETIME_MS;
-  tokenCache.set(cacheKey, { token, expiresAt });
+/**
+ * Dynamic-source path (oss-288). Resolve the workload OIDC token from the
+ * environment and branch:
+ *   - **Vercel token present (prod):** build an `ExternalAccountClient` (an
+ *     `IdentityPoolClient`) with a `subject_token_supplier` that returns the
+ *     Vercel token, then run the standard STS → impersonation exchange.
+ *   - **No Vercel token (local dev):** fall back to ADC so the same WIF-
+ *     configured endpoint is exercisable without a Vercel identity.
+ */
+async function mintViaDynamicSource(
+  settings: GcpWifSettings,
+  scopes: string[],
+): Promise<MintedToken> {
+  const subjectToken = await resolveVercelOidcToken();
 
-  return token;
+  if (subjectToken) {
+    // PROD: feed the Vercel OIDC token to STS via a programmatic supplier.
+    // `subject_token_supplier` and `credential_source` are mutually exclusive,
+    // so strip any configured credential_source before building the client.
+    const base = withImpersonation(settings) as unknown as Record<string, unknown>;
+    const { credential_source: _cs, credentialSource: _csCamel, ...rest } = base;
+    void _cs;
+    void _csCamel;
+
+    const client = ExternalAccountClient.fromJSON({
+      ...(rest as unknown as ExternalAccountClientOptions),
+      subject_token_supplier: { getSubjectToken: async () => subjectToken },
+      scopes,
+    });
+    if (!client) {
+      throw new Error(
+        "gcp-wif: Vercel-source external_account config did not yield an " +
+          "ExternalAccountClient (check `type`, `audience`, `subject_token_type`, `token_url`)",
+      );
+    }
+    client.scopes = scopes;
+
+    const { token } = await client.getAccessToken();
+    if (!token) {
+      throw new Error("gcp-wif: token exchange returned no access token");
+    }
+    console.info(
+      `[gcp-wif] minted token via Vercel workload OIDC (source=${settings.source})`,
+    );
+    return { token, expiresAt: expiresAtFrom(client.credentials?.expiry_date) };
+  }
+
+  // LOCAL DEV: no Vercel OIDC token → mint via Application Default Credentials.
+  return mintViaAdc(settings, scopes);
+}
+
+/**
+ * Local-dev fallback: mint an access token via Application Default Credentials
+ * (`gcloud auth application-default login`). When a target SA is configured we
+ * impersonate it (the dev's ADC identity needs Token Creator on it), exercising
+ * the same impersonation target the prod path uses; otherwise the ADC identity's
+ * own token is returned.
+ */
+async function mintViaAdc(settings: GcpWifSettings, scopes: string[]): Promise<MintedToken> {
+  const auth = new GoogleAuth({ scopes });
+  const sourceClient = await auth.getClient();
+
+  const target = settings.impersonateServiceAccount;
+  const client = target
+    ? new Impersonated({
+        sourceClient,
+        targetPrincipal: target,
+        targetScopes: scopes,
+        lifetime: 3600,
+      })
+    : sourceClient;
+
+  const { token } = await client.getAccessToken();
+  if (!token) {
+    throw new Error("gcp-wif: ADC fallback returned no access token");
+  }
+  console.info(
+    `[gcp-wif] minted token via local ADC fallback (no Vercel OIDC token present)` +
+      (target ? `, impersonating ${target}` : ""),
+  );
+  return { token, expiresAt: expiresAtFrom(client.credentials?.expiry_date) };
+}
+
+/**
+ * Resolve the Vercel workload OIDC token. Prefers `@vercel/functions/oidc`'s
+ * `getVercelOidcToken()` (reads the request context on Fluid/Functions and
+ * falls back to `VERCEL_OIDC_TOKEN` itself), then the raw env var for builds
+ * that don't bundle `@vercel/functions` (e.g. self-host). Returns undefined
+ * when neither yields a token — the signal to use the local ADC fallback.
+ */
+async function resolveVercelOidcToken(): Promise<string | undefined> {
+  try {
+    const mod = await import("@vercel/functions/oidc");
+    const fn = (mod as { getVercelOidcToken?: () => string | Promise<string> })
+      .getVercelOidcToken;
+    if (typeof fn === "function") {
+      const raw = fn();
+      const tok =
+        raw && typeof (raw as Promise<string>).then === "function" ? await raw : raw;
+      if (typeof tok === "string" && tok.length > 0) return tok;
+    }
+  } catch {
+    // @vercel/functions absent, or no Vercel request context → fall through.
+  }
+  const env = process.env.VERCEL_OIDC_TOKEN;
+  return typeof env === "string" && env.length > 0 ? env : undefined;
 }
 
 /**
@@ -255,7 +444,10 @@ function withImpersonation(settings: GcpWifSettings): ExternalAccountClientOptio
 export function gcpWifCacheKey(endpointId: string | undefined, settings: GcpWifSettings): string {
   const id = endpointId ?? "no-endpoint";
   const audience = (settings.externalAccount as unknown as Record<string, unknown>).audience;
-  const fingerprint = `${typeof audience === "string" ? audience : ""}|${settings.impersonateServiceAccount ?? ""}`;
+  const fingerprint =
+    `${typeof audience === "string" ? audience : ""}` +
+    `|${settings.impersonateServiceAccount ?? ""}` +
+    `|${settings.source ?? ""}`;
   return `${id}::${fingerprint}`;
 }
 

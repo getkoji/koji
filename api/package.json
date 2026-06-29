@@ -20,6 +20,7 @@
     "@koji/db": "workspace:*",
     "@koji/pipeline": "workspace:^",
     "@koji/types": "workspace:*",
+    "@vercel/functions": "^3.7.4",
     "drizzle-orm": "^0.45.2",
     "google-auth-library": "^10.9.0",
     "hono": "^4.6.0",

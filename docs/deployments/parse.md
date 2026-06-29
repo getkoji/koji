@@ -170,7 +170,7 @@ credential config in the endpoint's `config_json` under a `wif` block:
 - `external_account` is the same config you'd otherwise point
   `GOOGLE_APPLICATION_CREDENTIALS` at. Its `credential_source` names **where the
   workload's OIDC token comes from** — a file or URL your runtime exposes
-  (Cloudflare Workers OIDC, Vercel OIDC, GKE/Cloud Run metadata, etc.). This is
+  (Cloudflare Workers OIDC, GKE/Cloud Run metadata, etc.). This is
   the only place the source identity is configured; Koji's engine hardcodes
   nothing.
 - `impersonate_service_account` is the SA whose Document AI access you want to
@@ -179,6 +179,50 @@ credential config in the endpoint's `config_json` under a `wif` block:
 
 With WIF configured, the endpoint needs **no** stored secret — `auth_json` can be
 empty.
+
+##### Vercel (and other env-var OIDC runtimes): the `source` marker
+
+Some runtimes — **Vercel** chief among them — don't expose the workload OIDC
+token as a file or URL. They expose it as an **environment variable**
+(`VERCEL_OIDC_TOKEN`) / a function call (`getVercelOidcToken()`), which a
+standard `credential_source` can't read. For these, add a `source` marker to the
+`wif` block and **omit `credential_source`** — Koji fetches the token
+programmatically and supplies it to Google's STS exchange:
+
+```json
+{
+  "project_id": "my-project",
+  "processor_id": "abc123",
+  "location": "us",
+  "wif": {
+    "source": "vercel",
+    "external_account": {
+      "type": "external_account",
+      "audience": "//iam.googleapis.com/projects/PROJ_NUM/locations/global/workloadIdentityPools/POOL/providers/PROVIDER",
+      "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+      "token_url": "https://sts.googleapis.com/v1/token"
+    },
+    "impersonate_service_account": "docai@my-project.iam.gserviceaccount.com"
+  }
+}
+```
+
+How Koji resolves the source token, **environment-aware**:
+
+1. **On Vercel (production):** the Vercel workload OIDC token
+   (`getVercelOidcToken()`, falling back to `VERCEL_OIDC_TOKEN`) is exchanged via
+   STS and impersonates your target SA. No secret is stored.
+2. **In local dev (no Vercel token present):** Koji falls back to
+   **Application Default Credentials** — run
+   `gcloud auth application-default login` and Koji mints the token via ADC,
+   impersonating the same target SA (your local identity needs
+   `roles/iam.serviceAccountTokenCreator` on it). This lets you exercise a
+   WIF-configured endpoint locally without a Vercel identity.
+
+Koji logs which source fired (`via Vercel workload OIDC` vs `via local ADC
+fallback`) so you can confirm the path in your runtime logs. The
+file/URL `credential_source` form above is unchanged — `source` is purely
+additive.
 
 #### What you (the customer) set up once
 
