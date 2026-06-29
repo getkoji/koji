@@ -6,6 +6,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 import { hasParseDriver } from "../parse/drivers";
+import { resolveWifIdentity } from "../parse/auth/wif-identity";
 
 /**
  * Tenant BYO parse-endpoint management — the API behind the dashboard's
@@ -341,6 +342,26 @@ parseProviders.get("/", requires("endpoint:read"), async (c) => {
       };
     }),
   });
+});
+
+/**
+ * GET /api/parse-providers/wif-identity — the running deployment's OIDC
+ * identity (issuer / audience / subject) that a customer must trust in their
+ * GCP Workload Identity Pool to use keyless Google Document AI.
+ *
+ * Sourced live from the deployment's OWN workload OIDC token (or self-host
+ * `KOJI_WIF_*` env overrides), never hardcoded — so the dashboard always shows
+ * the correct trust values for both the hosted platform and self-host. This is
+ * the self-serve enabler: the customer reads these straight from the UI instead
+ * of asking Koji for the issuer/audience/subject by hand.
+ *
+ * Static path — registered before any `/:id` routes. No tenant data is touched
+ * (the identity is deployment-global); `endpoint:read` gates it to users who
+ * can configure parse endpoints.
+ */
+parseProviders.get("/wif-identity", requires("endpoint:read"), async (c) => {
+  const identity = await resolveWifIdentity();
+  return c.json(identity);
 });
 
 /**

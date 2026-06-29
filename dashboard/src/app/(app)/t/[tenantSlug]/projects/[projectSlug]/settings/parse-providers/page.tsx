@@ -65,6 +65,39 @@ interface ProviderDef {
 }
 
 /**
+ * The running deployment's OIDC identity — the issuer / audience / subject a
+ * customer must trust in their GCP Workload Identity Pool. Sourced live from
+ * `GET /api/parse-providers/wif-identity` (decoded from the deployment's own
+ * workload OIDC token, or self-host env overrides) — never hardcoded.
+ */
+interface WifIdentity {
+  available: boolean;
+  source: "vercel-oidc" | "configured" | "none";
+  issuer: string | null;
+  audience: string | null;
+  subject: string | null;
+}
+
+/** Deep link to the keyless-WIF setup guide on the docs site. */
+const WIF_GUIDE_URL =
+  "https://docs.getkoji.dev/deployments/parse/#step-by-step-set-up-keyless-wif-self-serve";
+
+/**
+ * Pre-filled `external_account` template the user pastes into the credential
+ * config. Deliberately carries **no `credential_source`** — the workload OIDC
+ * token source is auto-detected by Koji's runtime (see the guide). Placeholders
+ * (PROJECT_NUMBER / POOL_ID / PROVIDER_ID / SA_EMAIL) are GCP-side values the
+ * user fills in after creating their pool.
+ */
+const WIF_EXTERNAL_ACCOUNT_TEMPLATE = `{
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+  "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/SA_EMAIL:generateAccessToken"
+}`;
+
+/**
  * Auth methods for GCP-capable providers (Google Document AI). WIF is the
  * default and recommended path: keyless, no service-account key, the one that
  * survives enterprise org policies that block SA-key creation.
@@ -428,6 +461,120 @@ function ParseEndpointCard({
   );
 }
 
+// ── WIF trust panel ──────────────────────────────────────────────────────────
+
+/** Small copy-to-clipboard button with transient "Copied" feedback. */
+function CopyButton({ value, label = "copy" }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors flex-shrink-0"
+    >
+      {copied ? "copied" : label}
+    </button>
+  );
+}
+
+/** One labelled trust value with a monospace display + copy button. */
+function TrustValueRow({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-ink">{label}</span>
+        {value && <CopyButton value={value} />}
+      </div>
+      <code className="block font-mono text-[11px] text-ink-2 bg-cream border border-border rounded-sm px-2 py-1 break-all select-all">
+        {value ?? "—"}
+      </code>
+    </div>
+  );
+}
+
+/**
+ * Surfaces the issuer / audience / subject the customer must trust in their GCP
+ * Workload Identity Pool, fetched live from the deployment (never hardcoded),
+ * plus a link to the setup guide and a copyable `external_account` template.
+ * This is what makes keyless WIF self-serve — the customer reads exactly what to
+ * trust straight from the form.
+ */
+function WifTrustPanel({ onUseTemplate }: { onUseTemplate: (template: string) => void }) {
+  const { data: identity, loading } = useApi(
+    useCallback(() => api.get<WifIdentity>("/api/parse-providers/wif-identity"), []),
+  );
+
+  return (
+    <div className="rounded-sm border border-input bg-cream-2 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12.5px] font-medium text-ink">What to trust in GCP</span>
+        <a
+          href={WIF_GUIDE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-[10px] text-ink-3 hover:text-ink underline transition-colors flex-shrink-0"
+        >
+          setup guide ↗
+        </a>
+      </div>
+      <p className="text-[11px] text-ink-4">
+        Create a Workload Identity Pool + OIDC provider in your GCP project that trusts these exact
+        values from Koji&apos;s running deployment. Pin the subject in the provider&apos;s attribute
+        condition so only Koji can federate.
+      </p>
+
+      {loading ? (
+        <div className="animate-pulse font-mono text-[11px] text-ink-4 py-2">
+          Loading trust values...
+        </div>
+      ) : identity?.available ? (
+        <div className="space-y-2.5">
+          <TrustValueRow label="Issuer (--issuer-uri)" value={identity.issuer} />
+          <TrustValueRow label="Audience (--allowed-audiences)" value={identity.audience} />
+          <TrustValueRow label="Subject (attribute condition)" value={identity.subject} />
+        </div>
+      ) : (
+        <p className="text-[11px] text-vermillion-2">
+          Koji can&apos;t resolve its OIDC identity in this environment. On a self-hosted deployment,
+          set <span className="font-mono">KOJI_WIF_ISSUER</span>,{" "}
+          <span className="font-mono">KOJI_WIF_AUDIENCE</span>, and{" "}
+          <span className="font-mono">KOJI_WIF_SUBJECT</span>, or read the claims from a sample of
+          your deployment&apos;s OIDC token. See the setup guide.
+        </p>
+      )}
+
+      <div className="pt-1 border-t border-border space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-medium text-ink">
+            Credential config template (no credential_source — auto-detected)
+          </span>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => onUseTemplate(WIF_EXTERNAL_ACCOUNT_TEMPLATE)}
+              className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+            >
+              use template
+            </button>
+            <CopyButton value={WIF_EXTERNAL_ACCOUNT_TEMPLATE} />
+          </div>
+        </div>
+        <p className="text-[11px] text-ink-4">
+          Fill <span className="font-mono">PROJECT_NUMBER</span> /{" "}
+          <span className="font-mono">POOL_ID</span> / <span className="font-mono">PROVIDER_ID</span>{" "}
+          (the pool you create) and <span className="font-mono">SA_EMAIL</span> (the SA Koji
+          impersonates). This <span className="font-mono">audience</span> is the WIF provider resource
+          name, not the OIDC token audience above.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Add provider dialog ─────────────────────────────────────────────────────
 
 function inputCls(): string {
@@ -703,6 +850,7 @@ function AddParseProviderDialog({
 
               {authMethod === "wif" && (
                 <div className="space-y-3 pt-1">
+                  <WifTrustPanel onUseTemplate={setExternalAccount} />
                   <div className="space-y-1.5">
                     <label className="text-[12.5px] font-medium text-ink">
                       Credential config (external_account JSON) *

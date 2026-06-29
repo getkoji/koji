@@ -58,6 +58,14 @@ nav:
   - API Reference: api-reference.md
   - Forms: forms-guide.md
   - Trace Format: trace-format.md
+  - Deployments:
+      - Overview: deployments/index.md
+      - Parse / OCR Providers: deployments/parse.md
+      - OpenAI: deployments/openai.md
+      - Anthropic: deployments/anthropic.md
+      - Azure: deployments/azure.md
+      - AWS Bedrock: deployments/bedrock.md
+      - On-Prem: deployments/on-prem.md
 
 hooks:
   - scripts/mkdocs-hooks.py
