@@ -17,6 +17,7 @@ import { validateExtracted } from "./validate";
 import { arrayItemProperties, objectProperties, resolveVocab } from "./schema-tree";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
 import type { FitReport } from "./fit";
+import type { ParseChunk } from "../parse/chunk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -608,11 +609,12 @@ export async function extractFields(
   provider: ModelProvider,
   model: string,
   textMap?: TextMap,
+  chunks?: readonly ParseChunk[],
 ): Promise<ExtractionResult> {
   // Delegate to the intelligent pipeline (chunk → route → parallel extract → gap-fill → reconcile).
   // This replaces the old single-shot approach that stuffed the entire document into one LLM call.
   const { intelligentExtract } = await import("./intelligent-pipeline");
-  const result = await intelligentExtract(markdown, schemaDef, provider, model, textMap);
+  const result = await intelligentExtract(markdown, schemaDef, provider, model, textMap, chunks);
 
   // A fit gate with `on_misfit: reject` short-circuits extraction — there is
   // nothing to validate or normalize. The `fit` block already explains why.

@@ -23,6 +23,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
+import type { ParseChunk } from "../parse/chunk";
 import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
@@ -220,6 +221,10 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     );
     let markdown = parseOutput.markdown;
     const textMap = parseOutput.textMap;
+    // Provenance-carrying chunks from a structured/positional parse (PB-11).
+    // Mutable: a vision-OCR escalation replaces the markdown with a
+    // markdown-native re-parse, so any positional chunks become stale.
+    let chunks = parseOutput.chunks;
 
     // ── Legibility check + bad-scan escalation (opt-in) ──────────────────
     // When enabled on the pipeline, judge whether the parsed text is coherent
@@ -286,6 +291,8 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 
           if (escalated.markdown.trim().length > 0) {
             markdown = escalated.markdown;
+            // Vision-OCR is markdown-native: drop stale positional chunks.
+            chunks = undefined;
             // Re-cache the vision text so a reprocess of this file doesn't
             // re-escalate (and re-pay the per-page vision cost).
             await overwriteParseCache(storage, tenantId, document.contentHash, markdown, escalated.pages);
@@ -385,7 +392,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
               const { provider, model: modelStr } = await resolveTenantProvider(db, tenantId, {
                 modelProviderId: pipeline.modelProviderId,
               });
-              const llmResult = await extractFields(markdown, schemaDef, provider, modelStr, textMap);
+              const llmResult = await extractFields(markdown, schemaDef, provider, modelStr, textMap, chunks);
 
               // Merge: form extraction wins for mapped fields, LLM fills the rest
               for (const field of nullFields) {
@@ -435,7 +442,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           }
           const modelStr = endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
           const provider = createProvider(modelStr, endpointPayload);
-          const res = await extractFields(markdown, schemaDef, provider, modelStr, textMap);
+          const res = await extractFields(markdown, schemaDef, provider, modelStr, textMap, chunks);
           return {
             value: res as unknown as ExtractResult,
             summary: {
@@ -931,7 +938,7 @@ async function getOrParse(
     mimeType: string | null;
     contentHash: string;
   },
-): Promise<{ markdown: string; textMap?: any[]; engine?: string }> {
+): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[] }> {
   const fileHash = document.contentHash;
 
   // 1. Cache lookup
@@ -957,6 +964,7 @@ async function getOrParse(
             markdown?: string;
             text_map?: any[];
             engine?: string;
+            chunks?: ParseChunk[];
             parser_version?: number;
           };
           // Stale parser version → treat as a miss and re-parse (the live-parse
@@ -968,7 +976,7 @@ async function getOrParse(
             // OCR overlay Inngest function — it checks the cache and copies
             // to the per-doc storage key as its first step. Doing it again
             // here would race for no benefit.
-            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine };
+            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.
@@ -1007,6 +1015,7 @@ async function getOrParse(
         ocr_skipped: parseResult.ocr_skipped,
         engine: parseResult.engine,
         text_map: parseResult.text_map ?? [],
+        ...(parseResult.chunks ? { chunks: parseResult.chunks } : {}),
         parser_version: PARSE_VERSION,
       }),
     );
@@ -1037,6 +1046,7 @@ async function getOrParse(
     markdown: parseResult.markdown,
     textMap: (parseResult.text_map as any[]) ?? undefined,
     engine: parseResult.engine,
+    chunks: parseResult.chunks,
   };
 }
 

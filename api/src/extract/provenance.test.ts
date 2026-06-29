@@ -1391,3 +1391,114 @@ describe("resolveProvenance — array per-property alias fallback", () => {
     expect(propSpan!.chunk).toBe("Each Occurrence");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PB-11: chunk-level bbox provenance + column-mismatch flag
+// ---------------------------------------------------------------------------
+
+describe("resolveProvenance — chunk-level bbox (PB-11)", () => {
+  it("maps an extracted scalar to its source chunk's bbox", () => {
+    const markdown = "Invoice Total: $1,000";
+    const chunks = [
+      { text: "Invoice Total:", page: 2, bbox: { x: 0.1, y: 0.3, w: 0.2, h: 0.02 } },
+      { text: "$1,000", page: 2, bbox: { x: 0.5, y: 0.3, w: 0.1, h: 0.02 } },
+    ];
+    const result = resolveProvenance(
+      { total: "$1,000" }, markdown, undefined, undefined, undefined, undefined, undefined, chunks,
+    );
+    expect(result.total).not.toBeNull();
+    expect(result.total!.page).toBe(2);
+    expect(result.total!.bbox).toEqual({ x: 0.5, y: 0.3, w: 0.1, h: 0.02 });
+  });
+
+  it("prefers chunk geometry over a text_map-derived bbox", () => {
+    const markdown = "Company: ACME CORP";
+    const textMap: TextMap = [
+      { text: "ACME", page: 1, bbox: { x: 0.01, y: 0.01, w: 0.05, h: 0.02 } },
+      { text: "CORP", page: 1, bbox: { x: 0.07, y: 0.01, w: 0.05, h: 0.02 } },
+    ];
+    const chunks = [
+      { text: "ACME CORP", page: 1, bbox: { x: 0.4, y: 0.6, w: 0.2, h: 0.03 } },
+    ];
+    const result = resolveProvenance(
+      { company: "ACME CORP" }, markdown, textMap, undefined, undefined, undefined, undefined, chunks,
+    );
+    // Chunk geometry is authoritative — the coarse chunk box wins over the
+    // per-word text_map envelope.
+    expect(result.company!.bbox).toEqual({ x: 0.4, y: 0.6, w: 0.2, h: 0.03 });
+  });
+
+  it("degrades gracefully when chunks carry no bbox (markdown-native path)", () => {
+    const markdown = "Invoice Total: $1,000";
+    const chunks = [
+      { text: "Invoice Total: $1,000", page: 1 }, // no bbox
+    ];
+    const result = resolveProvenance(
+      { total: "$1,000" }, markdown, undefined, undefined, undefined, undefined, undefined, chunks,
+    );
+    // Value still located in the markdown; no bbox invented, no flag raised.
+    expect(result.total).not.toBeNull();
+    expect(result.total!.offset).toBeGreaterThanOrEqual(0);
+    expect(result.total!.bbox).toBeUndefined();
+    expect(result.total!.column_mismatch).toBeUndefined();
+  });
+
+  it("output is unchanged when no chunks are supplied", () => {
+    const markdown = "Invoice Total: $1,000";
+    const withChunks = resolveProvenance({ total: "$1,000" }, markdown);
+    expect(withChunks.total!.column_mismatch).toBeUndefined();
+    expect(withChunks.total!.bbox).toBeUndefined();
+  });
+});
+
+describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
+  // A header at the top of one column; the value sits under a DIFFERENT column.
+  const headerChunk = { text: "Premium", page: 1, bbox: { x: 0.60, y: 0.10, w: 0.10, h: 0.02 } };
+
+  it("flags a value whose bbox is not under its column header", () => {
+    const markdown = "Premium\n5000";
+    const valueWrongColumn = { text: "5000", page: 1, bbox: { x: 0.20, y: 0.40, w: 0.08, h: 0.02 } };
+    const result = resolveProvenance(
+      { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
+      [headerChunk, valueWrongColumn],
+    );
+    expect(result.premium!.bbox).toEqual(valueWrongColumn.bbox);
+    expect(result.premium!.column_mismatch).toBe(true);
+  });
+
+  it("does not flag a value that sits under its column header", () => {
+    const markdown = "Premium\n5000";
+    const valueRightColumn = { text: "5000", page: 1, bbox: { x: 0.62, y: 0.40, w: 0.06, h: 0.02 } };
+    const result = resolveProvenance(
+      { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
+      [headerChunk, valueRightColumn],
+    );
+    expect(result.premium!.column_mismatch).toBe(false);
+  });
+
+  it("leaves the flag undefined when no header chunk matches the field", () => {
+    const markdown = "Amount\n5000";
+    const valueChunk = { text: "5000", page: 1, bbox: { x: 0.20, y: 0.40, w: 0.08, h: 0.02 } };
+    // Header text "Amount" does not match field name "premium".
+    const result = resolveProvenance(
+      { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
+      [{ text: "Amount", page: 1, bbox: { x: 0.6, y: 0.1, w: 0.1, h: 0.02 } }, valueChunk],
+    );
+    expect(result.premium!.column_mismatch).toBeUndefined();
+  });
+
+  it("flags a wrong-column association on an array-of-objects table row", () => {
+    const markdown = "Premium\n1200";
+    const headerCol = { text: "Premium", page: 1, bbox: { x: 0.60, y: 0.10, w: 0.10, h: 0.02 } };
+    const valueWrongCol = { text: "1200", page: 1, bbox: { x: 0.15, y: 0.40, w: 0.08, h: 0.02 } };
+    const result = resolveProvenance(
+      { rows: [{ premium: 1200 }] }, markdown,
+      undefined, { rows: ["1200"] }, undefined, undefined, undefined,
+      [headerCol, valueWrongCol],
+    );
+    const propSpan = result.rows!.items![0]!.properties!.premium;
+    expect(propSpan).not.toBeNull();
+    expect(propSpan!.bbox).toEqual(valueWrongCol.bbox);
+    expect(propSpan!.column_mismatch).toBe(true);
+  });
+});

@@ -160,6 +160,7 @@ extract.post("/process", requires("job:run"), async (c) => {
     provider,
     modelStr,
     (parseResult.text_map as any[]) ?? undefined,
+    (parseResult.chunks as any[]) ?? undefined,
   );
 
   return c.json({
@@ -357,6 +358,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         extractProvider,
         extractModel,
         (parseResult.text_map as any[]) ?? undefined,
+        (parseResult.chunks as any[]) ?? undefined,
       );
 
       await stream.writeSSE({
@@ -489,6 +491,7 @@ async function handleExtractRunJSON(
       extractProvider,
       extractModel,
       (parseResult.text_map as any[]) ?? undefined,
+      (parseResult.chunks as any[]) ?? undefined,
     ) as unknown as Record<string, unknown>;
 
     // Persist the run
