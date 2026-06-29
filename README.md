@@ -203,7 +203,8 @@ BYO model — local or API. No vendor lock-in.
 | `koji process <path>` | Parse + extract a document |
 | `koji extract <md>` | Extract from pre-parsed markdown |
 | `koji push` / `pull` | Sync schemas and pipelines with Koji Cloud |
-| `koji validate <schema>` | Backtest a schema against its corpus ground truth |
+| `koji validate <schema>` | Backtest a schema candidate against its corpus ground truth (doesn't go live) |
+| `koji schema versions / promote / release` | List versions; promote a candidate to a live release |
 | `koji run <schema> <doc>` | Extract one corpus document (the Build tab's Run) |
 | `koji corpus ls / diff / add / tag / gt` | Manage a schema's validation corpus |
 | `koji review ls / show / promote` | Triage the review queue and promote reviewed docs into the corpus |

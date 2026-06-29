@@ -910,6 +910,52 @@ Delete a schema.
 
 ---
 
+## Schema versions
+
+Versions use semver. **Candidates** carry a prerelease tag (`v0.0.4-rc.7`) and are never live; **releases** (`v0.0.4`) are activatable. `schemas.currentVersionId` points at the live release. The major/minor/patch bump is auto-derived by diffing the candidate's output shape against the active release (`required→optional` / removed / retyped fields = major; additive/stricter = minor; tuning only = patch).
+
+### `POST /api/schemas/{slug}/validate`
+
+Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a **candidate** (dedup by content hash) **without activating it**, ties the run to that candidate, and scores it. Without `yaml`, scores the latest stored version (back-compat). Auth: `job:run`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `yaml` | string? | Candidate YAML to snapshot + backtest. Omit to validate the live version. |
+| `bump` | `"major"\|"minor"\|"patch"`? | Override the auto-derived bump. |
+| `model` | string? | Override the extraction model. |
+| `commitMessage` | string? | Message for the candidate snapshot. |
+
+**Response** `200 OK` — the validate result plus `version` (semver label), `bump`, and `deduped`. Requires corpus ground truth (`400` otherwise). The candidate is **not** activated.
+
+### `GET /api/schemas/{slug}/versions`
+
+The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
+
+### `POST /api/schemas/{slug}/versions`
+
+Create a version. `candidate: true` snapshots a non-active candidate; otherwise releases directly and activates. Auth: `schema:write`. Returns `{ id, version, released, ... }`.
+
+### `POST /api/schemas/{slug}/promote`
+
+Graduate a candidate to a release and make it live — **manual, gated by `schema:deploy`**.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `versionId` | string? | Candidate to promote. Default: the latest candidate. |
+| `requireNoRegressions` | boolean? | Refuse (`409`) if the candidate's latest run regressed. |
+
+**Response** `200 OK` — `{ released: "v0.0.4" }`. `409` if a release already occupies that `x.y.z`.
+
+### `POST /api/schemas/{slug}/release`
+
+Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Defaults to the schema's draft. Auth: `schema:deploy`. Body: `{ yaml? }`. Returns `{ released, versionId }`.
+
+---
+
 ## Provenance
 
 When extraction runs with a `text_map` (returned by the parse service), Koji resolves **provenance** for each extracted field — the exact location in the source document where the value was found. Provenance is returned in the `provenance` field of extraction responses and used by the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer) to render highlights.

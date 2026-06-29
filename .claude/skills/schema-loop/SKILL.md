@@ -26,11 +26,17 @@ instead — that's a different, file-based world and not what this skill is for.
 Always pass `--json` and parse the result — don't scrape the table. Key shapes:
 
 - `koji validate <schema> --json` → `{ overallAccuracy, prevAccuracy, docsPassed, docsTotal,
-  schemaVersion, fields: [{name, accuracy, prevAccuracy, status: "pass"|"regressed"|"failing",
+  version, bump, deduped, fields: [{name, accuracy, prevAccuracy, status: "pass"|"regressed"|"failing",
   failingDocs: [{filename, expected, got, confidence}]}], failingDocs: [{filename, failedFields}] }`.
-  Pushes the local schema first (a new version), then re-extracts every corpus doc that has
-  ground truth and scores it. `--no-push` validates the server's current version. `--check`
-  exits non-zero if any field regressed.
+  Snapshots the local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content),
+  then re-extracts every corpus doc with ground truth and scores it. **The candidate is NOT
+  made live** — iterating never touches the schema production pipelines run. `--bump
+  major|minor|patch` overrides the auto-derived bump; `--no-push` validates the live server
+  version instead; `--check` exits non-zero if any field regressed.
+- `koji schema versions <schema> --json` → released lineage + candidates with scores and which
+  is live. `koji schema promote <schema> [--version v0.0.4-rc.7] [--require-no-regressions]`
+  graduates a candidate to a release and makes it live (gated by `schema:deploy`). `koji schema
+  release <schema>` releases directly, skipping the rc loop (early-stage / empty corpus).
 - `koji run <schema> <doc> --json` → `{ extracted: {field: value}, confidence_scores: {field: 0..1},
   provenance, model, pages }`. One-doc extraction with the **local** schema (no version pushed).
   `<doc>` is a corpus-entry id (prefix ok) or a filename (substring ok).
@@ -96,10 +102,12 @@ Loop steps 4–5 until the target doc passes **and** `overallAccuracy >= baselin
 regressions. For tight iteration on one doc, `koji run` (step 2) is faster than a full validate;
 use it to check a single doc, then `koji validate` to confirm no collateral damage.
 
-### 7. Report
-Summarize to the user: which fields were failing, what schema change fixed them, the
-before/after `overallAccuracy`, and confirm zero regressions. The schema version is already
-pushed (validate pushes on each run); no extra deploy step is needed.
+### 7. Promote, then report
+Once the target doc passes with zero regressions, **promote** the winning candidate to make it
+live: `koji schema promote <schema> --require-no-regressions`. Until you promote, every validate
+ran against a candidate and the live schema is unchanged — promotion is the one step that affects
+production pipelines. Then summarize: which fields were failing, what schema change fixed them,
+the before/after `overallAccuracy`, the released version, and confirm zero regressions.
 
 ## Guardrails
 
@@ -109,6 +117,7 @@ pushed (validate pushes on each run); no extra deploy step is needed.
   flag it — that's a separate `oss` task, and the engine must stay document-type-agnostic.
 - **Ground truth is sacred.** Don't change ground truth just to make a number go up; only correct
   it when it's genuinely wrong, ideally confirmed against the source document.
-- `koji validate` creates a new schema version each push and costs LLM calls (it re-extracts all
-  GT docs). That's expected and cheap, but use `koji run` for single-doc iteration to keep the
-  loop fast and avoid version churn.
+- **Validate is safe to iterate; promote is the gated, prod-affecting step.** Validate only ever
+  snapshots a non-live candidate (deduped by content, so re-running identical YAML doesn't churn
+  versions). Nothing reaches production until `koji schema promote`. Use `koji run` for single-doc
+  iteration to keep the loop fast; `koji validate` costs LLM calls (it re-extracts all GT docs).

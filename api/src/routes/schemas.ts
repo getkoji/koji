@@ -236,7 +236,8 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
   const slug = c.req.param("slug")!;
 
   const [s] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+    tx.select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
+      .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
@@ -244,6 +245,10 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
     tx.select({
       id: schema.schemaVersions.id,
       versionNumber: schema.schemaVersions.versionNumber,
+      major: schema.schemaVersions.major,
+      minor: schema.schemaVersions.minor,
+      patch: schema.schemaVersions.patch,
+      prerelease: schema.schemaVersions.prerelease,
       commitMessage: schema.schemaVersions.commitMessage,
       committedByName: schema.users.name,
       createdAt: schema.schemaVersions.createdAt,
@@ -253,7 +258,27 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
       .orderBy(desc(schema.schemaVersions.versionNumber))
   );
 
-  return c.json({ data: rows });
+  // Enrich each version with its semver label, released/live flags, and latest
+  // validate accuracy — drives both the Build version list and `koji schema versions`.
+  const data = [];
+  for (const v of rows) {
+    const [run] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ accuracy: schema.schemaRuns.accuracy, regressionsCount: schema.schemaRuns.regressionsCount })
+        .from(schema.schemaRuns)
+        .where(and(eq(schema.schemaRuns.schemaVersionId, v.id), eq(schema.schemaRuns.status, "completed")))
+        .orderBy(desc(schema.schemaRuns.createdAt))
+        .limit(1)
+    );
+    data.push({
+      ...v,
+      version: formatSemver(v),
+      released: v.prerelease === null,
+      active: v.id === s.currentVersionId,
+      accuracy: run?.accuracy ?? null,
+      regressions: run?.regressionsCount ?? null,
+    });
+  }
+  return c.json({ data });
 });
 
 schemas.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
@@ -281,7 +306,7 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
-  const body = await c.req.json<{ yaml: string; commit_message?: string }>();
+  const body = await c.req.json<{ yaml: string; commit_message?: string; candidate?: boolean; bump?: Bump }>();
 
   if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
 
@@ -295,88 +320,34 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const [latest] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ versionNumber: schema.schemaVersions.versionNumber })
-      .from(schema.schemaVersions)
-      .where(eq(schema.schemaVersions.schemaId, s.id))
-      .orderBy(desc(schema.schemaVersions.versionNumber))
-      .limit(1)
-  );
-  const nextVersion = (latest?.versionNumber ?? 0) + 1;
-  const yamlHash = createHash("sha256").update(body.yaml).digest("hex");
-
-  const [newVersion] = await withRLS(db, tenantId, (tx) =>
-    tx.insert(schema.schemaVersions).values({
-      tenantId,
+  // Build mode's two actions, semver-assigned via the shared lifecycle helpers
+  // (so versions never collide on the released-semver index):
+  //   candidate=true  → snapshot a non-active candidate (Save as candidate)
+  //   else            → release directly + activate (Release / `koji push`)
+  if (body.candidate) {
+    const snap = await snapshotCandidate(db, tenantId, {
       schemaId: s.id,
-      versionNumber: nextVersion,
-      yamlSource: body.yaml,
-      yamlHash,
-      parsedJson: result.parsed,
-      commitMessage: body.commit_message ?? null,
-      committedBy: principal.userId,
-    }).returning()
-  );
-
-  await withRLS(db, tenantId, (tx) =>
-    tx.update(schema.schemas)
-      .set({ currentVersionId: newVersion!.id, updatedAt: new Date() })
-      .where(eq(schema.schemas.id, s.id))
-  );
-
-  return c.json(newVersion, 201);
-});
-
-/**
- * GET /api/schemas/:slug/versions — released lineage + candidates, each with its
- * latest validate accuracy and whether it's the live release.
- */
-schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
-  const db = c.get("db");
-  const tenantId = getTenantId(c);
-  const slug = c.req.param("slug")!;
-
-  const [s] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
-      .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
-  );
-  if (!s) return c.json({ error: "Schema not found" }, 404);
-
-  const versions = await withRLS(db, tenantId, (tx) =>
-    tx.select({
-      id: schema.schemaVersions.id,
-      versionNumber: schema.schemaVersions.versionNumber,
-      major: schema.schemaVersions.major,
-      minor: schema.schemaVersions.minor,
-      patch: schema.schemaVersions.patch,
-      prerelease: schema.schemaVersions.prerelease,
-      createdAt: schema.schemaVersions.createdAt,
-    })
-      .from(schema.schemaVersions)
-      .where(eq(schema.schemaVersions.schemaId, s.id))
-      .orderBy(desc(schema.schemaVersions.versionNumber))
-  );
-
-  const data = [];
-  for (const v of versions) {
-    const [run] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ accuracy: schema.schemaRuns.accuracy, regressionsCount: schema.schemaRuns.regressionsCount })
-        .from(schema.schemaRuns)
-        .where(and(eq(schema.schemaRuns.schemaVersionId, v.id), eq(schema.schemaRuns.status, "completed")))
-        .orderBy(desc(schema.schemaRuns.createdAt))
-        .limit(1)
-    );
-    data.push({
-      id: v.id,
-      version: formatSemver(v),
-      released: v.prerelease === null,
-      active: v.id === s.currentVersionId,
-      accuracy: run?.accuracy ?? null,
-      regressions: run?.regressionsCount ?? null,
-      createdAt: v.createdAt,
+      yaml: body.yaml,
+      parsed: result.parsed,
+      userId: principal.userId,
+      bumpOverride: body.bump,
+      commitMessage: body.commit_message,
     });
+    return c.json({ id: snap.id, version: formatSemver(snap), released: false, bump: snap.bump, deduped: snap.deduped }, 201);
   }
-  return c.json({ data });
+
+  const res = await releaseDirect(db, tenantId, {
+    schemaId: s.id,
+    yaml: body.yaml,
+    parsed: result.parsed,
+    userId: principal.userId,
+    bumpOverride: body.bump,
+    commitMessage: body.commit_message,
+  });
+  if ("error" in res) {
+    return c.json({ error: "A release already occupies that version — re-validate for a fresh candidate." }, 409);
+  }
+  return c.json({ id: res.id, version: res.label, released: true }, 201);
 });
 
 /**
@@ -688,20 +659,30 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
       .orderBy(schema.schemaRuns.createdAt)
   );
 
-  // Enrich with version numbers
+  // Enrich each run with its version's semver label + released/candidate flag.
   const enrichedRuns = [];
   for (const run of runs) {
     let versionNumber: number | null = null;
+    let version: string | null = null;
+    let released: boolean | null = null;
     if (run.schemaVersionId) {
       const [sv] = await withRLS(db, tenantId, (tx) =>
-        tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+        tx.select({
+          versionNumber: schema.schemaVersions.versionNumber,
+          major: schema.schemaVersions.major,
+          minor: schema.schemaVersions.minor,
+          patch: schema.schemaVersions.patch,
+          prerelease: schema.schemaVersions.prerelease,
+        })
           .from(schema.schemaVersions)
           .where(eq(schema.schemaVersions.id, run.schemaVersionId))
           .limit(1)
       );
       versionNumber = sv?.versionNumber ?? null;
+      version = sv ? formatSemver(sv) : null;
+      released = sv ? sv.prerelease === null : null;
     }
-    enrichedRuns.push({ ...run, versionNumber });
+    enrichedRuns.push({ ...run, versionNumber, version, released });
   }
 
   // Compute per-field accuracy per run from extraction_runs + ground truth

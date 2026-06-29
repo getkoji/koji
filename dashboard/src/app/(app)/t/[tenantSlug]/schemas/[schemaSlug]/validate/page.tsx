@@ -67,7 +67,7 @@ export default function ValidatePage() {
 
   // Run history from schema_runs
   const { data: perfData, loading: perfLoading, error: perfError } = useApi(
-    useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
+    useCallback(() => api.get<{ runs: Array<{ id: string; versionNumber: number | null; version: string | null; released: boolean | null; accuracy: string | null; docsTotal: number; docsPassed: number; regressionsCount: number; completedAt: string | null; createdAt: string }> }>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),
   );
 
   const runHistory = (perfData?.runs ?? []).slice().reverse();
@@ -445,8 +445,13 @@ export default function ValidatePage() {
                         <div key={r.id}
                           className={`flex items-center justify-between gap-4 px-4 py-3 transition-colors ${isSelected ? "bg-cream-2" : "hover:bg-cream-2/50"}`}>
                           <div className="flex items-center gap-4">
-                            <span className="font-mono text-[11px] text-ink font-medium">
-                              {r.versionNumber !== null ? `v${r.versionNumber}` : "—"}
+                            <span className="font-mono text-[11px] text-ink font-medium flex items-center gap-1.5">
+                              {r.version ?? (r.versionNumber !== null ? `v${r.versionNumber}` : "—")}
+                              {r.released === false && (
+                                <span className="font-mono text-[8px] font-medium uppercase tracking-wide px-1 py-0.5 rounded-sm bg-cream-2 text-ink-3 border border-border" title="Release candidate — not live">
+                                  rc
+                                </span>
+                              )}
                             </span>
                             <span className={`font-mono text-[11px] font-medium ${parseFloat(acc) >= 97 ? "text-green" : parseFloat(acc) >= 95 ? "text-ink" : "text-vermillion-2"}`}>
                               {acc}%

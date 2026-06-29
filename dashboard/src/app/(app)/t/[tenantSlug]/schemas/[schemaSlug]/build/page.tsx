@@ -337,16 +337,17 @@ export default function BuildPage() {
   const hasChanges = yaml !== committedYaml && initialized;
   const changedLines = hasChanges ? countChangedLines(committedYaml, yaml) : 0;
   const currentVersion = schemaDetail?.latestVersion?.versionNumber ?? 0;
-  const nextVersion = currentVersion + 1;
   const { fields, error: parseError } = useMemo(() => parseFields(yaml), [yaml]);
 
   // Actions
-  async function handleCommit() {
+  // candidate=true snapshots a non-active release candidate (-rc) to backtest;
+  // candidate=false releases the schema live (graduates / creates a release).
+  async function handleCommit(candidate: boolean) {
     setCommitError(null);
     setCommitErrors([]);
     setCommitting(true);
     try {
-      await api.post(`/api/schemas/${schemaSlug}/versions`, { yaml, commit_message: commitMessage || undefined });
+      await api.post(`/api/schemas/${schemaSlug}/versions`, { yaml, commit_message: commitMessage || undefined, candidate });
       setShowCommit(false);
       setCommitMessage("");
       setCommitting(false);
@@ -720,7 +721,7 @@ export default function BuildPage() {
 
             <button onClick={() => setShowCommit(true)} disabled={!hasChanges}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
-              Save v{nextVersion}
+              Save…
             </button>
           </div>
         </div>
@@ -1197,18 +1198,20 @@ export default function BuildPage() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div className="absolute inset-0 bg-ink/20" onClick={() => setShowCommit(false)} />
           <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
-            <h2 className="text-[15px] font-medium text-ink mb-1">Save version v{nextVersion}</h2>
+            <h2 className="text-[15px] font-medium text-ink mb-1">Save schema</h2>
             <p className="text-[12.5px] text-ink-3 mb-5">
-              This will validate the schema YAML and create a new committed version.
+              Save as a release <strong>candidate</strong> to backtest it without affecting
+              what pipelines run, or <strong>release</strong> it live now. The semver bump is
+              derived from the schema changes.
             </p>
 
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-[12.5px] font-medium text-ink">Commit message</label>
+                <label className="text-[12.5px] font-medium text-ink">Message (optional)</label>
                 <input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} autoFocus
                   placeholder="e.g. Add line_items array field"
                   data-1p-ignore autoComplete="off"
-                  onKeyDown={(e) => { if (e.key === "Enter" && !committing) handleCommit(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !committing) handleCommit(true); }}
                   className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4" />
               </div>
 
@@ -1217,9 +1220,13 @@ export default function BuildPage() {
               <div className="flex items-center justify-end gap-2">
                 <button onClick={() => { setShowCommit(false); setCommitError(null); setCommitErrors([]); }}
                   className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors">Cancel</button>
-                <button onClick={handleCommit} disabled={committing}
+                <button onClick={() => handleCommit(true)} disabled={committing}
+                  className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors disabled:opacity-50">
+                  {committing ? "Saving..." : "Save as candidate"}
+                </button>
+                <button onClick={() => handleCommit(false)} disabled={committing}
                   className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50">
-                  {committing ? "Saving..." : `Save v${nextVersion}`}
+                  {committing ? "..." : "Release"}
                 </button>
               </div>
             </div>
