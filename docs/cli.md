@@ -335,6 +335,18 @@ koji schema release ./schemas/insurance_policy.yaml  # …from a local file
 
 The full **validate → promote** loop is encoded in the `schema-loop` Claude skill.
 
+### `koji pipeline`
+
+Inspect pipelines and control which schema version each one runs. Every pipeline tracks schema versions in one of two modes: **auto** (default) always runs the schema's current live release, so it picks up a promotion immediately; **pinned** holds a specific version until you bump it — useful for canary / staged rollout (pin a critical pipeline, let the rest auto-follow a promotion, verify, then bump the pinned one).
+
+```bash
+koji pipeline ls                                     # pipelines with their schema + status
+koji pipeline deploy policies --version v0.0.26      # pin this pipeline to v0.0.26
+koji pipeline deploy policies --auto                 # unpin → follow the live release again
+```
+
+Pinning is gated by the `schema:deploy` permission. The version is addressed by its semver label (or an id prefix) and must belong to the pipeline's schema. All `pipeline` subcommands accept `--json` and `--profile`.
+
 ---
 
 ## Misc

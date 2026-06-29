@@ -1238,3 +1238,110 @@ def schema_release(
         console.print_json(json_mod.dumps(result))
         return
     console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
+
+
+# ── Pipelines: list / deploy (pin or auto a schema version) ───────────
+
+
+def _fetch_pipeline(client: httpx.Client, base_url: str, headers: dict, slug: str) -> dict:
+    resp = client.get(f"{base_url}/api/pipelines/{slug}", headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code == 404:
+        console.print(f"[red]Pipeline '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"get pipeline {slug}")
+    return resp.json()
+
+
+pipeline_app = typer.Typer(
+    help="Manage pipelines — list, and pin/unpin the schema version they run.",
+    no_args_is_help=True,
+)
+
+
+@pipeline_app.command("ls")
+def pipeline_ls(
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List pipelines with their schema and status."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/pipelines", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, "list pipelines")
+        rows = resp.json().get("data", [])
+
+    if as_json:
+        console.print_json(json_mod.dumps(rows))
+        return
+    if not rows:
+        console.print("[yellow]No pipelines.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Pipeline")
+    table.add_column("Schema")
+    table.add_column("Status")
+    for p in rows:
+        table.add_row(p.get("slug", ""), p.get("schemaSlug") or "[dim]—[/dim]", p.get("status", ""))
+    console.print(table)
+    console.print(f"\n[dim]{len(rows)} pipeline(s)[/dim]")
+
+
+@pipeline_app.command("deploy")
+def pipeline_deploy(
+    pipeline: str = typer.Argument(..., help="Pipeline slug."),
+    version: str = typer.Option(None, "--version", help="Pin the pipeline to this schema version (e.g. v0.0.4)."),
+    auto: bool = typer.Option(False, "--auto", help="Unpin: follow the schema's live release automatically."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Pin a pipeline to a specific schema version, or set it back to auto.
+
+    A pinned pipeline keeps running its version through schema promotions (staged
+    rollout); an auto pipeline always runs the schema's current live release.
+    Gated by the schema:deploy permission.
+    """
+    if auto == bool(version):
+        console.print("[red]Pass either --version <v> or --auto (not both).[/red]")
+        raise typer.Exit(1)
+
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        if auto:
+            body: dict = {"mode": "auto"}
+        else:
+            detail = _fetch_pipeline(client, base_url, headers, pipeline)
+            schema_slug = detail.get("schemaSlug")
+            if not schema_slug:
+                console.print(f"[red]Pipeline '{pipeline}' has no schema to pin a version for.[/red]")
+                raise typer.Exit(1)
+            versions = _fetch_versions(client, base_url, headers, schema_slug)
+            match = [v for v in versions if v.get("version") == version or (v.get("id") or "").startswith(version)]
+            if len(match) != 1:
+                console.print(
+                    f"[red]'{version}' didn't match exactly one version of {schema_slug}. "
+                    f"Try [bold]koji schema versions {schema_slug}[/bold].[/red]"
+                )
+                raise typer.Exit(1)
+            body = {"schema_version_id": match[0]["id"]}
+
+        resp = client.post(f"{base_url}/api/pipelines/{pipeline}/deploy", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"deploy {pipeline}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    mode = result.get("versionMode", "auto" if auto else "pinned")
+    if mode == "pinned":
+        console.print(f"[green]✓[/green] {pipeline} pinned to [cyan]{version}[/cyan]")
+    else:
+        console.print(f"[green]✓[/green] {pipeline} set to [cyan]auto[/cyan] — follows the live release")
