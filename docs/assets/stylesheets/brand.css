@@ -60,20 +60,25 @@
   --md-default-fg-color--lighter: var(--koji-ink-3);
   --md-default-fg-color--lightest: var(--koji-ink-4);
 
-  /* Code blocks */
+  /* Code blocks
+     Token colors are tuned for WCAG AA legibility against the dark code
+     background (--koji-ink #171410, relative luminance ≈ 0.0072). The
+     contrast ratios noted below are measured against that background.
+     Previously comments (#736B5A ≈ 3.5:1) failed AA outright, and
+     operators/punctuation (#8A8577 ≈ 5.0:1) read as dim gray-on-black. */
   --md-code-bg-color: var(--koji-ink);
-  --md-code-fg-color: var(--koji-cream-2);
+  --md-code-fg-color: var(--koji-cream-2);              /* plain text ≈ 14.4:1 */
   --md-code-hl-color: rgba(195, 53, 32, 0.18);
-  --md-code-hl-number-color: #F2A57B;
-  --md-code-hl-string-color: #C8D79D;
-  --md-code-hl-keyword-color: #E8C583;
-  --md-code-hl-name-color: var(--koji-cream-2);
-  --md-code-hl-operator-color: #8A8577;
-  --md-code-hl-punctuation-color: #8A8577;
-  --md-code-hl-comment-color: #736B5A;
+  --md-code-hl-number-color: #F2A57B;                  /* ≈ 8.9:1 */
+  --md-code-hl-string-color: #C8D79D;                  /* ≈ 11.0:1 */
+  --md-code-hl-keyword-color: #E8C583;                 /* ≈ 11.4:1 */
+  --md-code-hl-name-color: var(--koji-cream-2);        /* ≈ 14.4:1 */
+  --md-code-hl-operator-color: var(--koji-cream-3);    /* #DFD3B9 ≈ 12.4:1 */
+  --md-code-hl-punctuation-color: var(--koji-cream-3); /* #DFD3B9 ≈ 12.4:1 */
+  --md-code-hl-comment-color: #A39A85;                 /* ≈ 6.6:1 (was 3.5:1) */
   --md-code-hl-generic-color: var(--koji-cream-3);
   --md-code-hl-variable-color: var(--koji-cream);
-  --md-code-hl-special-color: var(--koji-vermillion);
+  --md-code-hl-special-color: #E8857A;                 /* brighter vermillion ≈ 7.0:1 */
   --md-code-hl-function-color: var(--koji-cream);
   --md-code-hl-constant-color: #F2A57B;
 
