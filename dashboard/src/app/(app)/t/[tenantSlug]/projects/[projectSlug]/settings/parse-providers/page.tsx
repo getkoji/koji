@@ -575,33 +575,80 @@ function WifTrustPanel({ onUseTemplate }: { onUseTemplate: (template: string) =>
   );
 }
 
-// ── Add provider dialog (3-step wizard) ──────────────────────────────────────
+// ── Add provider dialog (branching step wizard) ──────────────────────────────
 
 function inputCls(): string {
   return "w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4";
 }
 
-// The wizard splits the (previously one long scrolling) Add form into three
-// steps. The field set, state bindings, per-provider visibility, and submit
-// payload are unchanged — only the layout is paginated. `relevant` lets a step
-// be skipped/collapsed if a provider exposes no fields for it (today every
-// provider has content on all three steps, but this keeps the wizard honest).
-const WIZARD_STEPS: Array<{ n: 1 | 2 | 3; label: string }> = [
-  { n: 1, label: "Provider" },
-  { n: 2, label: "Configuration" },
-  { n: 3, label: "Authentication" },
-];
+// The wizard splits the (previously one long scrolling) Add form into steps.
+// The field set, state bindings, per-provider visibility, and submit payload are
+// unchanged — only the layout is paginated. The Authentication step now branches
+// into method-specific sub-steps so the (tall) keyless-WIF flow isn't crammed
+// onto one scrolly page:
+//
+//   Provider → Configuration → Authentication (method picker) → …
+//     WIF        → Trust setup → Credentials      (5 steps total)
+//     Access token → Access token                 (4 steps total)
+//     Service-account JSON → Service account      (4 steps total)
+//     non-GCP providers → single secret field on the Authentication step (3)
+//
+// The step list is derived from the provider + selected auth method, so the
+// indicator and Next/Back navigation always reflect the actual path.
+type StepId =
+  | "provider"
+  | "config"
+  | "auth-method"
+  | "wif-trust"
+  | "wif-config"
+  | "token"
+  | "sa-json"
+  | "secret";
 
-type WizardStep = 1 | 2 | 3;
+interface StepDef {
+  id: StepId;
+  label: string;
+}
 
-function StepIndicator({ step }: { step: WizardStep }) {
+function buildSteps(def: ProviderDef, authMethod: GcpAuthMethod): StepDef[] {
+  const steps: StepDef[] = [
+    { id: "provider", label: "Provider" },
+    { id: "config", label: "Configuration" },
+  ];
+  if (!def.gcpAuth) {
+    // Non-GCP providers authenticate with a single secret — no method picker, no
+    // branching. Authentication stays a single (3rd) step, exactly as before.
+    steps.push({ id: "secret", label: "Authentication" });
+    return steps;
+  }
+  // GCP-capable providers: pick a method, then branch into its sub-step(s).
+  steps.push({ id: "auth-method", label: "Authentication" });
+  if (authMethod === "wif") {
+    steps.push({ id: "wif-trust", label: "Trust setup" });
+    steps.push({ id: "wif-config", label: "Credentials" });
+  } else if (authMethod === "token") {
+    steps.push({ id: "token", label: "Access token" });
+  } else {
+    steps.push({ id: "sa-json", label: "Service account" });
+  }
+  return steps;
+}
+
+function StepIndicator({ steps, current }: { steps: StepDef[]; current: number }) {
   return (
-    <ol className="flex items-center gap-1.5" aria-label="Add provider progress">
-      {WIZARD_STEPS.map(({ n, label }, i) => {
-        const active = n === step;
-        const done = n < step;
+    <ol
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5"
+      aria-label="Add provider progress"
+    >
+      {steps.map((s, i) => {
+        const active = i === current;
+        const done = i < current;
         return (
-          <li key={n} className="flex items-center gap-1.5" aria-current={active ? "step" : undefined}>
+          <li
+            key={s.id}
+            className="flex items-center gap-1.5"
+            aria-current={active ? "step" : undefined}
+          >
             <span
               className={`flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-full text-[10px] font-medium transition-colors ${
                 active
@@ -611,14 +658,14 @@ function StepIndicator({ step }: { step: WizardStep }) {
                     : "bg-cream-2 text-ink-4 border border-border"
               }`}
             >
-              {n}
+              {i + 1}
             </span>
             <span
               className={`text-[11px] transition-colors ${active ? "text-ink font-medium" : "text-ink-4"}`}
             >
-              {label}
+              {s.label}
             </span>
-            {i < WIZARD_STEPS.length - 1 && (
+            {i < steps.length - 1 && (
               <span className="mx-0.5 h-px w-4 bg-border" aria-hidden="true" />
             )}
           </li>
@@ -651,22 +698,33 @@ function AddParseProviderDialog({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The dialog is mounted only while showAdd is true (see ParseProvidersPage),
-  // so step state resets to 1 every time the dialog reopens.
-  const [step, setStep] = useState<WizardStep>(1);
+  // so step state resets to 0 (Provider) every time the dialog reopens.
+  const [stepIdx, setStepIdx] = useState(0);
 
   const def = PROVIDER_TYPES.find((p) => p.value === providerType)!;
+
+  // The active path is derived from the provider + selected auth method. Clamp
+  // the index so a path that shrank (e.g. switching off WIF's 2 sub-steps) can
+  // never strand the user past the last step.
+  const steps = buildSteps(def, authMethod);
+  const stepIndex = Math.min(stepIdx, steps.length - 1);
+  const currentStep = steps[stepIndex]!;
+  const isLastStep = stepIndex === steps.length - 1;
 
   // Move focus to the first field of the active step whenever the step changes
   // (and on first open). Radix's own autofocus is suppressed via
   // onOpenAutoFocus so we own focus management here — keyboard users land on the
-  // right control as they page through.
+  // right control as they page through. Steps with no focusable field (the WIF
+  // trust panel is informational) fall back to the step container so focus still
+  // moves into the new step for screen-reader users.
   const stepRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = stepRef.current?.querySelector<HTMLElement>(
       "input:not([type=hidden]), select, textarea, [tabindex]",
     );
-    el?.focus();
-  }, [step]);
+    if (el) el.focus();
+    else stepRef.current?.focus();
+  }, [stepIndex]);
 
   function handleProviderChange(value: string) {
     setProviderType(value);
@@ -683,8 +741,8 @@ function AddParseProviderDialog({
     setError(null);
   }
 
-  // Parse + validate the WIF external_account config. Shared by step-3
-  // validation and the final submit so the rules stay in one place.
+  // Parse + validate the WIF external_account config. Shared by the wif-config
+  // step validation and the final submit so the rules stay in one place.
   function parseExternalAccount(): { error: string } | { value: unknown } {
     let parsed: unknown;
     try {
@@ -708,42 +766,53 @@ function AddParseProviderDialog({
     return { value: parsed };
   }
 
-  // Per-step validation: returns an inline error message for the current step,
-  // or null if the required fields on that step are satisfied. Mirrors the
-  // `required` attributes the single-form version relied on.
-  function validateStep(s: WizardStep): string | null {
-    if (s === 1) {
-      if (!name.trim()) return "Enter a display name for this endpoint.";
-      return null;
-    }
-    if (s === 2) {
-      if (
-        def.fields.includes("base_url") &&
-        providerType === "azure-document-intel" &&
-        !baseUrl.trim()
-      )
-        return "Enter the Azure endpoint / base URL.";
-      if (def.fields.includes("project_id") && !projectId.trim()) return "Enter your GCP project ID.";
-      if (def.fields.includes("processor_id") && !processorId.trim()) return "Enter the Processor ID.";
-      if (def.fields.includes("region") && providerType === "textract" && !region.trim())
-        return "Enter the AWS region.";
-      if (def.fields.includes("aws_access_key_id") && !awsAccessKeyId.trim())
-        return "Enter the access key ID.";
-      return null;
-    }
-    // s === 3
-    if (def.gcpAuth) {
-      if (authMethod === "wif") {
+  // Per-step validation: returns an inline error message for the given step, or
+  // null if the required fields on that step are satisfied. Mirrors the
+  // `required` attributes the single-form version relied on. Keyed by step id so
+  // the rules stay tied to the step regardless of where it lands in the path.
+  function validateStep(id: StepId): string | null {
+    switch (id) {
+      case "provider":
+        if (!name.trim()) return "Enter a display name for this endpoint.";
+        return null;
+      case "config":
+        if (
+          def.fields.includes("base_url") &&
+          providerType === "azure-document-intel" &&
+          !baseUrl.trim()
+        )
+          return "Enter the Azure endpoint / base URL.";
+        if (def.fields.includes("project_id") && !projectId.trim())
+          return "Enter your GCP project ID.";
+        if (def.fields.includes("processor_id") && !processorId.trim())
+          return "Enter the Processor ID.";
+        if (def.fields.includes("region") && providerType === "textract" && !region.trim())
+          return "Enter the AWS region.";
+        if (def.fields.includes("aws_access_key_id") && !awsAccessKeyId.trim())
+          return "Enter the access key ID.";
+        return null;
+      case "auth-method":
+        // A method is always selected (WIF by default); nothing to validate.
+        return null;
+      case "wif-trust":
+        // Informational step — the trust values + template are read-only guidance.
+        return null;
+      case "wif-config": {
         if (!externalAccount.trim()) return "Paste your external_account credential config.";
         const r = parseExternalAccount();
         if ("error" in r) return r.error;
         return null;
       }
-      if (!secret) return `Enter the ${authMethod === "token" ? "access token" : "service-account JSON"}.`;
-      return null;
+      case "token":
+        if (!secret) return "Enter the access token.";
+        return null;
+      case "sa-json":
+        if (!secret) return "Enter the service-account JSON.";
+        return null;
+      case "secret":
+        if (!secret) return `Enter the ${def.keyLabel.toLowerCase()}.`;
+        return null;
     }
-    if (!secret) return `Enter the ${def.keyLabel.toLowerCase()}.`;
-    return null;
   }
 
   async function doCreate() {
@@ -794,18 +863,19 @@ function AddParseProviderDialog({
     }
   }
 
-  // Single submit handler so Enter behaves: on steps 1–2 it validates and
-  // advances (never submits); only on step 3 does it create the endpoint.
+  // Single submit handler so Enter behaves: on every step but the last it
+  // validates and advances (never submits); only on the final sub-step of the
+  // active path does it create the endpoint.
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const err = validateStep(step);
+    const err = validateStep(currentStep.id);
     if (err) {
       setError(err);
       return;
     }
     setError(null);
-    if (step < 3) {
-      setStep((step + 1) as WizardStep);
+    if (!isLastStep) {
+      setStepIdx(stepIndex + 1);
       return;
     }
     void doCreate();
@@ -813,7 +883,7 @@ function AddParseProviderDialog({
 
   function handleBack() {
     setError(null);
-    setStep((s) => (s > 1 ? ((s - 1) as WizardStep) : s));
+    setStepIdx(Math.max(0, stepIndex - 1));
   }
 
   return (
@@ -836,14 +906,16 @@ function AddParseProviderDialog({
         </DialogHeader>
 
         <div className="pb-1">
-          <StepIndicator step={step} />
+          <StepIndicator steps={steps} current={stepIndex} />
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Step content. Only the active step is mounted; field state lives on
-              the dialog, so paging between steps preserves every value. */}
-          <div ref={stepRef} className="space-y-4">
-            {step === 1 && (
+              the dialog, so paging between steps preserves every value. The
+              container is focusable (tabIndex -1) as a focus fallback for steps
+              with no input (the WIF trust panel). */}
+          <div ref={stepRef} tabIndex={-1} className="space-y-4 outline-none">
+            {currentStep.id === "provider" && (
               <>
                 <div className="space-y-1.5">
                   <label className="text-[12.5px] font-medium text-ink">Provider</label>
@@ -874,7 +946,7 @@ function AddParseProviderDialog({
               </>
             )}
 
-            {step === 2 && (
+            {currentStep.id === "config" && (
               <>
                 {def.usesModelField && (
                   <div className="space-y-1.5">
@@ -975,120 +1047,138 @@ function AddParseProviderDialog({
               </>
             )}
 
-            {step === 3 &&
-              (def.gcpAuth ? (
-                <div className="space-y-2.5">
-                  <label className="text-[12.5px] font-medium text-ink">Authentication</label>
-                  <div className="space-y-1.5">
-                    {GCP_AUTH_METHODS.map((m) => (
-                      <label
-                        key={m.value}
-                        className={`flex items-start gap-2.5 cursor-pointer rounded-sm border px-2.5 py-2 transition-colors ${
-                          authMethod === m.value
-                            ? "border-ring bg-cream-2"
-                            : "border-input hover:border-ink-4"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="gcp-auth-method"
-                          value={m.value}
-                          checked={authMethod === m.value}
-                          onChange={() => setAuthMethod(m.value)}
-                          className="mt-0.5 flex-shrink-0"
-                        />
-                        <span className="min-w-0">
-                          <span className="block text-[12.5px] text-ink">{m.label}</span>
-                          <span className="block text-[11px] text-ink-4 mt-0.5">{m.blurb}</span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-
-                  {authMethod === "wif" && (
-                    <div className="space-y-3 pt-1">
-                      <WifTrustPanel onUseTemplate={setExternalAccount} />
-                      <div className="space-y-1.5">
-                        <label className="text-[12.5px] font-medium text-ink">
-                          Credential config (external_account JSON) *
-                        </label>
-                        <textarea
-                          required
-                          value={externalAccount}
-                          onChange={(e) => setExternalAccount(e.target.value)}
-                          rows={6}
-                          placeholder={'{\n  "type": "external_account",\n  "audience": "//iam.googleapis.com/projects/...",\n  ...\n}'}
-                          className="w-full rounded-sm border border-input bg-transparent px-2.5 py-2 text-[12px] font-mono leading-snug outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4 resize-y"
-                        />
-                        <p className="text-[11px] text-ink-4">
-                          Paste the JSON from{" "}
-                          <span className="font-mono">
-                            gcloud iam workload-identity-pools create-cred-config
-                          </span>
-                          . Keyless — it references your workload&apos;s OIDC identity, not a
-                          downloaded secret. Nothing here is stored as a credential.
-                        </p>
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[12.5px] font-medium text-ink">
-                          Impersonation service account
-                        </label>
-                        <input
-                          value={impersonateSa}
-                          onChange={(e) => setImpersonateSa(e.target.value)}
-                          placeholder="docai@my-project.iam.gserviceaccount.com"
-                          autoComplete="off"
-                          className={`${inputCls()} font-mono`}
-                        />
-                        <p className="text-[11px] text-ink-4">
-                          The service account Koji impersonates to call Document AI. Optional if your
-                          credential config already includes an impersonation URL.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {authMethod !== "wif" && (
-                    <div className="space-y-1.5 pt-1">
-                      <label className="text-[12.5px] font-medium text-ink">
-                        {authMethod === "token" ? "Access token" : "Service-account JSON"} *
-                      </label>
-                      <PasswordInput
-                        required
-                        value={secret}
-                        onChange={(e) => setSecret(e.target.value)}
-                        placeholder={
-                          authMethod === "token"
-                            ? "Short-lived OAuth access token (~1h)"
-                            : "Paste the service-account JSON key"
-                        }
-                        autoComplete="off"
-                        className={`${inputCls()} pr-8 font-mono`}
-                      />
-                      <p className="text-[11px] text-ink-4">
-                        {authMethod === "token"
-                          ? "Encrypted at rest. Expires in ~1 hour — for dev / testing, not production."
-                          : "Encrypted at rest. Cannot be retrieved — only rotated. Prefer WIF where SA-key creation is blocked."}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ) : (
+            {/* GCP providers: Authentication is just the method picker; each
+                method then branches into its own sub-step(s) below. */}
+            {currentStep.id === "auth-method" && (
+              <div className="space-y-2.5">
+                <label className="text-[12.5px] font-medium text-ink">Authentication</label>
                 <div className="space-y-1.5">
-                  <label className="text-[12.5px] font-medium text-ink">{def.keyLabel} *</label>
-                  <PasswordInput
+                  {GCP_AUTH_METHODS.map((m) => (
+                    <label
+                      key={m.value}
+                      className={`flex items-start gap-2.5 cursor-pointer rounded-sm border px-2.5 py-2 transition-colors ${
+                        authMethod === m.value
+                          ? "border-ring bg-cream-2"
+                          : "border-input hover:border-ink-4"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="gcp-auth-method"
+                        value={m.value}
+                        checked={authMethod === m.value}
+                        onChange={() => setAuthMethod(m.value)}
+                        className="mt-0.5 flex-shrink-0"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[12.5px] text-ink">{m.label}</span>
+                        <span className="block text-[11px] text-ink-4 mt-0.5">{m.blurb}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* WIF sub-step 1: what to trust in GCP (values + copy + template). */}
+            {currentStep.id === "wif-trust" && (
+              <div className="space-y-2.5">
+                <label className="text-[12.5px] font-medium text-ink">Trust setup</label>
+                <p className="text-[11px] text-ink-4">
+                  Set up a Workload Identity Pool in your GCP project that trusts Koji&apos;s running
+                  deployment, then continue to paste the credential config. Use the template below as a
+                  starting point.
+                </p>
+                <WifTrustPanel onUseTemplate={setExternalAccount} />
+              </div>
+            )}
+
+            {/* WIF sub-step 2: paste the external_account config + impersonate SA. */}
+            {currentStep.id === "wif-config" && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-[12.5px] font-medium text-ink">
+                    Credential config (external_account JSON) *
+                  </label>
+                  <textarea
                     required
-                    value={secret}
-                    onChange={(e) => setSecret(e.target.value)}
-                    placeholder={def.keyPlaceholder}
-                    autoComplete="off"
-                    className={`${inputCls()} pr-8 font-mono`}
+                    value={externalAccount}
+                    onChange={(e) => setExternalAccount(e.target.value)}
+                    rows={6}
+                    placeholder={'{\n  "type": "external_account",\n  "audience": "//iam.googleapis.com/projects/...",\n  ...\n}'}
+                    className="w-full rounded-sm border border-input bg-transparent px-2.5 py-2 text-[12px] font-mono leading-snug outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4 resize-y"
                   />
                   <p className="text-[11px] text-ink-4">
-                    Encrypted at rest. Cannot be retrieved — only rotated.
+                    Paste the JSON from{" "}
+                    <span className="font-mono">
+                      gcloud iam workload-identity-pools create-cred-config
+                    </span>
+                    . Keyless — it references your workload&apos;s OIDC identity, not a downloaded
+                    secret. Nothing here is stored as a credential.
                   </p>
                 </div>
-              ))}
+                <div className="space-y-1.5">
+                  <label className="text-[12.5px] font-medium text-ink">
+                    Impersonation service account
+                  </label>
+                  <input
+                    value={impersonateSa}
+                    onChange={(e) => setImpersonateSa(e.target.value)}
+                    placeholder="docai@my-project.iam.gserviceaccount.com"
+                    autoComplete="off"
+                    className={`${inputCls()} font-mono`}
+                  />
+                  <p className="text-[11px] text-ink-4">
+                    The service account Koji impersonates to call Document AI. Optional if your
+                    credential config already includes an impersonation URL.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Access token / service-account JSON: single paste sub-step. */}
+            {(currentStep.id === "token" || currentStep.id === "sa-json") && (
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">
+                  {authMethod === "token" ? "Access token" : "Service-account JSON"} *
+                </label>
+                <PasswordInput
+                  required
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  placeholder={
+                    authMethod === "token"
+                      ? "Short-lived OAuth access token (~1h)"
+                      : "Paste the service-account JSON key"
+                  }
+                  autoComplete="off"
+                  className={`${inputCls()} pr-8 font-mono`}
+                />
+                <p className="text-[11px] text-ink-4">
+                  {authMethod === "token"
+                    ? "Encrypted at rest. Expires in ~1 hour — for dev / testing, not production."
+                    : "Encrypted at rest. Cannot be retrieved — only rotated. Prefer WIF where SA-key creation is blocked."}
+                </p>
+              </div>
+            )}
+
+            {/* Non-GCP providers: single secret field. */}
+            {currentStep.id === "secret" && (
+              <div className="space-y-1.5">
+                <label className="text-[12.5px] font-medium text-ink">{def.keyLabel} *</label>
+                <PasswordInput
+                  required
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  placeholder={def.keyPlaceholder}
+                  autoComplete="off"
+                  className={`${inputCls()} pr-8 font-mono`}
+                />
+                <p className="text-[11px] text-ink-4">
+                  Encrypted at rest. Cannot be retrieved — only rotated.
+                </p>
+              </div>
+            )}
           </div>
 
           {error && (
@@ -1099,7 +1189,7 @@ function AddParseProviderDialog({
 
           <div className="flex items-center justify-between gap-2 pt-1">
             <div>
-              {step > 1 && (
+              {stepIndex > 0 && (
                 <button
                   type="button"
                   onClick={handleBack}
@@ -1118,7 +1208,7 @@ function AddParseProviderDialog({
               >
                 Cancel
               </button>
-              {step < 3 ? (
+              {!isLastStep ? (
                 <button
                   type="submit"
                   className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
