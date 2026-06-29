@@ -46,6 +46,12 @@ interface ProviderDef {
   label: string;
   blurb: string;
   defaultModel: string;
+  // Whether the provider exposes a user-selectable model/processor. Mistral and
+  // Azure pick a real model (mistral-ocr-latest, prebuilt-layout). Google
+  // identifies the processor via the separate Processor ID field, and Textract
+  // has no model concept — for those the generic `model` field is vestigial and
+  // hidden from the Add dialog.
+  usesModelField: boolean;
   fields: Array<"base_url" | "region" | "project_id" | "processor_id" | "aws_access_key_id">;
   keyLabel: string;
   keyKind: "api_key" | "aws_secret_access_key";
@@ -58,6 +64,7 @@ const PROVIDER_TYPES: ProviderDef[] = [
     label: "Mistral OCR",
     blurb: "Markdown-native OCR. Self-serve key, cheap per page. Good SMB default.",
     defaultModel: "mistral-ocr-latest",
+    usesModelField: true,
     fields: ["base_url"],
     keyLabel: "API key",
     keyKind: "api_key",
@@ -68,6 +75,7 @@ const PROVIDER_TYPES: ProviderDef[] = [
     label: "Azure Document Intelligence",
     blurb: "prebuilt-layout → markdown. Runs under your existing Azure MSA.",
     defaultModel: "prebuilt-layout",
+    usesModelField: true,
     fields: ["base_url"],
     keyLabel: "API key",
     keyKind: "api_key",
@@ -78,6 +86,7 @@ const PROVIDER_TYPES: ProviderDef[] = [
     label: "Google Document AI",
     blurb: "Document AI processor → structured chunks. Uses your GCP project.",
     defaultModel: "documentai",
+    usesModelField: false,
     fields: ["project_id", "processor_id", "region"],
     keyLabel: "Service-account key / token",
     keyKind: "api_key",
@@ -88,12 +97,19 @@ const PROVIDER_TYPES: ProviderDef[] = [
     label: "AWS Textract",
     blurb: "Textract → structured chunks. Runs under your existing AWS account.",
     defaultModel: "textract",
+    usesModelField: false,
     fields: ["region", "aws_access_key_id"],
     keyLabel: "Secret access key",
     keyKind: "aws_secret_access_key",
     keyPlaceholder: "40-char secret",
   },
 ];
+
+// Alphabetical by label so the dropdown order implies no preference between
+// vendors, and stays alphabetical as providers are added.
+const PROVIDER_TYPES_SORTED: ProviderDef[] = [...PROVIDER_TYPES].sort((a, b) =>
+  a.label.localeCompare(b.label),
+);
 
 function providerLabel(provider: string): string {
   return PROVIDER_TYPES.find((p) => p.value === provider)?.label ?? provider;
@@ -382,7 +398,7 @@ function AddParseProviderDialog({
   onClose: () => void;
   onCreated: (name: string) => void;
 }) {
-  const [providerType, setProviderType] = useState(PROVIDER_TYPES[0]!.value);
+  const [providerType, setProviderType] = useState(PROVIDER_TYPES_SORTED[0]!.value);
   const [name, setName] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -415,7 +431,10 @@ function AddParseProviderDialog({
       const payload: Record<string, unknown> = {
         name: name.trim(),
         provider: providerType,
-        model: model.trim() || undefined,
+        // Only providers that expose a user-selectable model send one. For the
+        // rest (Google Doc AI, Textract) the model field is vestigial, so we
+        // send the provider's default identifier and never a user value.
+        model: def.usesModelField ? model.trim() || undefined : def.defaultModel,
       };
       if (def.fields.includes("base_url")) payload.base_url = baseUrl.trim() || undefined;
       if (def.fields.includes("region")) payload.region = region.trim() || undefined;
@@ -460,7 +479,7 @@ function AddParseProviderDialog({
               onChange={(e) => handleProviderChange(e.target.value)}
               className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
             >
-              {PROVIDER_TYPES.map((p) => (
+              {PROVIDER_TYPES_SORTED.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
@@ -481,16 +500,18 @@ function AddParseProviderDialog({
             />
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">Model / processor</label>
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={def.defaultModel}
-              className={`${inputCls()} font-mono`}
-            />
-            <p className="text-[11px] text-ink-4">Defaults to {def.defaultModel} if left blank.</p>
-          </div>
+          {def.usesModelField && (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">Model / processor</label>
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={def.defaultModel}
+                className={`${inputCls()} font-mono`}
+              />
+              <p className="text-[11px] text-ink-4">Defaults to {def.defaultModel} if left blank.</p>
+            </div>
+          )}
 
           {def.fields.includes("base_url") && (
             <div className="space-y-1.5">
