@@ -23,6 +23,7 @@ import type { Db } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import type { ParseProvider } from "./provider";
 import { createParseDriver, parseDriverKind, type ParseDriverKind } from "./drivers";
+import { readGcpWifConfig, mintGcpAccessToken, gcpWifCacheKey } from "./auth/gcp-wif";
 
 export interface ParseEndpointPayload {
   /** UUID of the source `parse_endpoints` row (for health attribution later). */
@@ -31,7 +32,15 @@ export interface ParseEndpointPayload {
   provider: string;
   /** Provider model/processor, e.g. "mistral-ocr-latest", "prebuilt-layout". */
   model?: string;
-  /** Decrypted API key (when the provider authenticates with a single key). */
+  /**
+   * Bearer credential the driver authenticates with. Either:
+   *   - the decrypted static API key / access token (single-key providers, and
+   *     the today path for GCP providers that take a ready access token), or
+   *   - a **freshly minted, short-lived** access token when the endpoint is
+   *     configured for keyless Workload Identity Federation (see
+   *     `auth/gcp-wif.ts`). Minting + caching happen in the resolver so the
+   *     driver stays credential-agnostic — it just receives a ready token.
+   */
   api_key?: string;
   /** Optional API base URL override (from config_json). */
   base_url?: string;
@@ -80,8 +89,22 @@ export async function pickActiveParseEndpoint(
 }
 
 /**
- * Resolve a specific `parse_endpoints` row into a decrypted payload. Returns
- * null when the row is missing, has no auth, or decryption fails.
+ * Resolve a specific `parse_endpoints` row into a ready-to-use payload.
+ *
+ * Two credential shapes are supported, both yielding a ready bearer token in
+ * `payload.api_key` so drivers stay credential-agnostic:
+ *
+ *   - **Static** (today's path): decrypt the stored `auth_json` key/token.
+ *     Needs `KOJI_MASTER_KEY`.
+ *   - **Keyless WIF**: the endpoint's `config_json` carries a Google
+ *     `external_account` credential config (see `auth/gcp-wif.ts`). The token
+ *     is minted fresh via Workload Identity Federation and cached until
+ *     near-expiry — no stored secret, no master key required. This is the
+ *     enterprise path for orgs that block service-account-key creation.
+ *
+ * Returns null when the row is missing, carries neither credential shape, or
+ * the credential can't be produced (decryption / minting failure) — the safe,
+ * dormant path that falls back to the default heavy provider.
  */
 export async function resolveParseEndpoint(
   db: Db,
@@ -109,18 +132,14 @@ export async function resolveParseEndpoint(
   const cfg = (endpoint.configJson ?? {}) as ParseConfigBlob;
   const auth = (endpoint.authJson ?? null) as ParseAuthBlob | null;
 
-  // No credentials → can't call the vendor. Return null so the factory uses
-  // the default heavy provider rather than a half-configured driver.
-  if (!auth) return null;
+  // Keyless WIF is configured in (non-secret) config_json, so an endpoint can
+  // be fully valid with no auth_json at all. Detect it before the
+  // "no credentials" guard.
+  const wif = readGcpWifConfig(cfg);
 
-  const masterKey = getMasterKey();
-  if (!masterKey) {
-    console.warn(
-      "[resolve-tenant-parse] KOJI_MASTER_KEY is not set; skipping parse " +
-        "credential decryption. Falling back to the default heavy provider.",
-    );
-    return null;
-  }
+  // No credential of either kind → can't call the vendor. Return null so the
+  // factory uses the default heavy provider rather than a half-configured one.
+  if (!auth && !wif) return null;
 
   const payload: ParseEndpointPayload = {
     endpoint_id: endpoint.id,
@@ -131,9 +150,36 @@ export async function resolveParseEndpoint(
   if (cfg.base_url) payload.base_url = cfg.base_url;
   if (cfg.region) payload.region = cfg.region;
 
+  if (wif) {
+    // Keyless path: mint a short-lived access token via Workload Identity
+    // Federation. Cached until near-expiry inside gcp-wif (not per request).
+    // No master key needed — there is no stored secret to decrypt.
+    try {
+      payload.api_key = await mintGcpAccessToken(gcpWifCacheKey(endpoint.id, wif), wif);
+    } catch (err) {
+      console.warn(
+        `[resolve-tenant-parse] failed to mint WIF access token for parse endpoint ` +
+          `${parseProviderId}: `,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+    return payload;
+  }
+
+  // Static path (today): decrypt the stored key/token. Requires the master key.
+  const masterKey = getMasterKey();
+  if (!masterKey) {
+    console.warn(
+      "[resolve-tenant-parse] KOJI_MASTER_KEY is not set; skipping parse " +
+        "credential decryption. Falling back to the default heavy provider.",
+    );
+    return null;
+  }
+
   try {
-    if (auth.key_blob) {
-      payload.api_key = decrypt(auth.key_blob, masterKey, tenantId);
+    if (auth!.key_blob) {
+      payload.api_key = decrypt(auth!.key_blob, masterKey, tenantId);
     }
   } catch (err) {
     console.warn(

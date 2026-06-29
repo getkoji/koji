@@ -21,6 +21,7 @@
     "@koji/pipeline": "workspace:^",
     "@koji/types": "workspace:*",
     "drizzle-orm": "^0.45.2",
+    "google-auth-library": "^10.9.0",
     "hono": "^4.6.0",
     "nodemailer": "^8.0.5",
     "pdf-lib": "^1.17.1",
