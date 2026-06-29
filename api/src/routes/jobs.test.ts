@@ -3,7 +3,26 @@ import {
   nextJobStatusAfterDocFinalize,
   parseRangeHeader,
   highlightValue,
+  resolvePreviewKey,
 } from "./jobs";
+
+/**
+ * Minimal storage stub for resolvePreviewKey — only `head` is exercised.
+ * `present` is the set of keys that exist. Records which keys were probed
+ * so we can assert the searchable copy is bypassed in `original` mode.
+ */
+function stubStorage(present: Set<string>) {
+  const probed: string[] = [];
+  return {
+    probed,
+    storage: {
+      head: async (key: string) => {
+        probed.push(key);
+        return present.has(key) ? { size: 1, contentType: "application/pdf" } : null;
+      },
+    } as unknown as Parameters<typeof resolvePreviewKey>[0],
+  };
+}
 
 describe("highlightValue (embed-data field → display value)", () => {
   it("uses the scalar extracted value (string/number/boolean)", () => {
@@ -261,6 +280,38 @@ describe("trace timeline on rerun", () => {
  * regression here re-introduces the "preview hangs for 30s on big PDFs"
  * bug.
  */
+describe("resolvePreviewKey", () => {
+  const KEY = "tenant/doc-123";
+  const SEARCHABLE = `${KEY}.searchable.pdf`;
+
+  it("prefers the searchable copy when it exists (default mode)", async () => {
+    const { storage, probed } = stubStorage(new Set([SEARCHABLE, KEY]));
+    const r = await resolvePreviewKey(storage, KEY);
+    expect(r).toEqual({ key: SEARCHABLE, isSearchable: true });
+    expect(probed).toContain(SEARCHABLE);
+  });
+
+  it("falls back to the original when no searchable copy exists", async () => {
+    const { storage } = stubStorage(new Set([KEY]));
+    const r = await resolvePreviewKey(storage, KEY);
+    expect(r).toEqual({ key: KEY, isSearchable: false });
+  });
+
+  it("bypasses the searchable copy entirely in original mode", async () => {
+    // searchable exists, but original=true must ignore it and never probe it
+    const { storage, probed } = stubStorage(new Set([SEARCHABLE, KEY]));
+    const r = await resolvePreviewKey(storage, KEY, true);
+    expect(r).toEqual({ key: KEY, isSearchable: false });
+    expect(probed).not.toContain(SEARCHABLE);
+  });
+
+  it("returns null when neither key exists", async () => {
+    const { storage } = stubStorage(new Set());
+    expect(await resolvePreviewKey(storage, KEY)).toBeNull();
+    expect(await resolvePreviewKey(storage, KEY, true)).toBeNull();
+  });
+});
+
 describe("parseRangeHeader", () => {
   it("returns null for missing or non-bytes ranges", () => {
     expect(parseRangeHeader(undefined, 1000)).toBeNull();
