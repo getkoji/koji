@@ -88,8 +88,10 @@ describe("createParseDriver — registry is dormant", () => {
     expect(driver).toBeNull();
   });
 
-  it("hasParseDriver is false for every provider slug today", () => {
-    for (const p of ["mistral-ocr", "azure-document-intel", "textract", "google-docai"]) {
+  it("hasParseDriver is false for slugs without a registered driver yet", () => {
+    // "azure-document-intel" is registered by PB-5 (this driver lands its own
+    // test in providers/azure-doc-intel.test.ts); the rest are still pending.
+    for (const p of ["mistral-ocr", "textract", "google-docai"]) {
       expect(hasParseDriver(p)).toBe(false);
     }
   });
