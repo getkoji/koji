@@ -880,6 +880,32 @@ def _fmt_conf(v: Any) -> str:
     return f"[{color}]{pct:.0f}%[/{color}]"
 
 
+def _resolve_review_id(client: httpx.Client, base_url: str, headers: dict, raw: str) -> str:
+    """Resolve a review-item id or unique id-prefix to a full id.
+
+    `koji review ls` prints truncated (8-char) ids for readability; accept those
+    by matching a unique prefix across pending + completed items. A full id
+    (36 chars) passes straight through without a lookup.
+    """
+    if len(raw) == 36 and raw.count("-") == 4:
+        return raw
+    ids: list[str] = []
+    for status in ("pending", "completed"):
+        resp = client.get(f"{base_url}/api/review", params={"status": status, "limit": 1000}, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 200:
+            ids.extend(r["id"] for r in resp.json().get("data", []) if r.get("id"))
+    matches = [i for i in ids if i.startswith(raw)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        console.print(f"[red]'{raw}' matches multiple review items. Use a longer id.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[red]No review item matching '{raw}'. Try [bold]koji review ls[/bold].[/red]")
+    raise typer.Exit(1)
+
+
 review_app = typer.Typer(
     help="Inspect the review queue and promote reviewed docs into the corpus.",
     no_args_is_help=True,
@@ -948,7 +974,7 @@ def review_ls(
 
 @review_app.command("show")
 def review_show(
-    review_id: str = typer.Argument(..., help="Review item id."),
+    review_id: str = typer.Argument(..., help="Review item id, or a unique id prefix from `review ls`."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
@@ -960,6 +986,7 @@ def review_show(
     """
     base_url, headers = resolve_api(profile_name)
     with httpx.Client(timeout=60) as client:
+        review_id = _resolve_review_id(client, base_url, headers, review_id)
         resp = client.get(f"{base_url}/api/review/{review_id}", headers=headers)
         if _auth_error(resp, base_url):
             raise typer.Exit(1)
@@ -1005,7 +1032,7 @@ def review_show(
 
 @review_app.command("promote")
 def review_promote(
-    review_id: str = typer.Argument(..., help="Review item id."),
+    review_id: str = typer.Argument(..., help="Review item id, or a unique id prefix from `review ls`."),
     provisional: bool = typer.Option(
         False,
         "--provisional",
@@ -1049,6 +1076,7 @@ def review_promote(
 
     base_url, headers = resolve_api(profile_name)
     with httpx.Client(timeout=120) as client:
+        review_id = _resolve_review_id(client, base_url, headers, review_id)
         resp = client.post(f"{base_url}/api/review/{review_id}/promote", json=payload, headers=headers)
         if _auth_error(resp, base_url):
             raise typer.Exit(1)

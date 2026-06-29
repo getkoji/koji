@@ -11,8 +11,25 @@
  * Permission gating mirrors the route's `requires("corpus:write")` guard.
  */
 import { describe, it, expect } from "vitest";
-import { resolvePromotion } from "./review";
+import { resolvePromotion, isUuid } from "./review";
 import { resolvePermissions } from "../auth/roles";
+
+describe("isUuid — malformed ids are rejected (→ 404, not a Postgres 500)", () => {
+  it("accepts a well-formed uuid", () => {
+    expect(isUuid("94f9271d-4d16-40e3-a6c6-6217398a8242")).toBe(true);
+  });
+
+  it("rejects the 8-char prefix shown in `review ls`", () => {
+    // The exact footgun that crashed prod: a truncated id reaching the uuid cast.
+    expect(isUuid("e100cad1")).toBe(false);
+  });
+
+  it("rejects other malformed ids", () => {
+    expect(isUuid("")).toBe(false);
+    expect(isUuid("not-a-uuid")).toBe(false);
+    expect(isUuid("94f9271d-4d16-40e3-a6c6-6217398a8242-extra")).toBe(false);
+  });
+});
 
 describe("resolvePromotion — gating", () => {
   it("rejects human-gated promotion of an unresolved item (409 path)", () => {
