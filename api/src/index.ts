@@ -49,13 +49,17 @@ const storage = new S3Storage({
   forcePathStyle: process.env.KOJI_S3_FORCE_PATH_STYLE === "true",
 });
 const queue = new PostgresQueue(db);
-const parseProvider = await createParseProvider({
+// Built once at boot for the default (no-BYO) path; also handed to createApp so
+// the ingestion worker can rebuild a per-tenant provider at call time when a
+// tenant has configured a BYO parse endpoint.
+const parseConfig = {
   backend: (process.env.KOJI_PARSE_BACKEND ?? "docker") as "docker" | "modal",
   dockerUrl: PARSE_URL,
   modalUrl: process.env.KOJI_PARSE_MODAL_URL,
   modalTokenId: process.env.MODAL_TOKEN_ID,
   modalTokenSecret: process.env.MODAL_TOKEN_SECRET,
-});
+};
+const parseProvider = await createParseProvider(parseConfig);
 const emailSender = new SmtpEmailSender({
   host: process.env.SMTP_HOST ?? "localhost",
   port: parseInt(process.env.SMTP_PORT ?? "1025", 10),
@@ -70,6 +74,7 @@ const { app, handlers } = createApp({
   storage,
   queue,
   parseProvider,
+  parseConfig,
   emailSender,
   masterKey: MASTER_KEY,
   appUrl: APP_URL,

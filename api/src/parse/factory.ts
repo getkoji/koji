@@ -53,6 +53,16 @@ export interface ParseProviderOptions {
    * configured.
    */
   tenantHeavy?: ParseProvider | null;
+  /**
+   * A tenant-resolved *structured* parse provider (from
+   * `resolveTenantParse`, when the configured endpoint's driver emits
+   * row/column structure — Google Doc AI, Textract, positional). When present,
+   * `SmartParseProvider` routes table-heavy docs here (PB-10 doc-type routing)
+   * while text-heavy docs keep the markdown/docling path. When null/undefined,
+   * doc-type routing is disabled and behavior is unchanged — the content-shape
+   * classifier never runs.
+   */
+  tenantStructured?: ParseProvider | null;
 }
 
 export async function createParseProvider(
@@ -85,11 +95,14 @@ export async function createParseProvider(
   }
 
   // A tenant-resolved BYO parse provider (when configured) replaces the
-  // default heavy provider; otherwise we keep the system default. This is the
+  // default heavy provider; a tenant-resolved structured provider (when
+  // configured) enables PB-10 doc-type routing for table-heavy docs. Otherwise
+  // we keep the system default and doc-type routing stays off. This is the
   // BYO-parse hook — inert until a driver + a configured endpoint exist.
   let provider: ParseProvider = new SmartParseProvider(
     new DigitalPdfProvider(),
     opts?.tenantHeavy ?? heavy,
+    opts?.tenantStructured ?? null,
   );
 
   // Wrap with chunked parsing for large PDFs (after SmartParseProvider)

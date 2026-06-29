@@ -34,6 +34,7 @@ import { NoOpBillingAdapter } from "./billing/noop";
 import type { StorageProvider } from "./storage/provider";
 import type { QueueProvider, HandlerMap } from "./queue/provider";
 import type { ParseProvider } from "./parse/provider";
+import type { ParseConfig } from "./parse/factory";
 import type { EmailSender } from "./email/provider";
 
 // Routes
@@ -95,6 +96,15 @@ export interface CreateAppDeps {
   storage: StorageProvider;
   queue: QueueProvider;
   parseProvider: ParseProvider;
+  /**
+   * The {@link ParseConfig} `parseProvider` was built from. When provided, the
+   * ingestion path can rebuild a per-tenant provider at call time (BYO parse —
+   * tenant-resolved heavy / structured providers). When omitted (e.g. an edge
+   * entry point that only hands over a pre-built provider), per-tenant
+   * resolution is disabled and `parseProvider` is used for every tenant —
+   * identical to today.
+   */
+  parseConfig?: ParseConfig;
   emailSender: EmailSender;
 
   /** 64-hex master key for envelope encryption. May be `null` in read-only
@@ -152,7 +162,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initNotifications(deps.db);
   initDeliveryHandler(deps.db, deps.masterKey);
   initIngestionHandler(deps.db, deps.storage);
-  initParseProvider(deps.parseProvider);
+  initParseProvider(deps.parseProvider, deps.parseConfig);
   initDagRunner(deps.db, deps.storage);
   setDagParseProvider(deps.parseProvider);
   initBilling(billing);

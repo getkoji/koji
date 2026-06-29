@@ -80,6 +80,23 @@ The API automatically routes documents to the fastest parser that can handle the
 
 This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt (heavy 1-2 character fragmentation, as seen historically on some carrier PDFs), the request falls back to Docling automatically with zero caller-side changes.
 
+#### Bring-your-own parse (per-tenant providers)
+
+The "heavy" parser above is resolved **per document at ingestion time**, not fixed at boot. When a tenant has configured a parse endpoint (Settings → Parse Catalog, or a pipeline-pinned override stored in the pipeline's `config_json.parse_provider_id`), that provider replaces Docling for the document's scanned/image/non-PDF path. The credential is decrypted at call time, mirroring how BYO model endpoints work for extraction — the customer pays the parse vendor directly.
+
+**Dormant until configured.** A tenant with no parse endpoint configured gets exactly the default behavior described above (Docling for the heavy path). The resolver returns nothing when there's no endpoint, no driver, or no decryptable credential, and ingestion falls back to the same default provider instance — so existing deployments are unaffected.
+
+#### Doc-type routing (table-heavy → structured)
+
+When a tenant configures a **structured** parse provider (one that preserves row/column structure — e.g. Google Document AI, Textract, or the digital-positional path), the smart router adds a second routing dimension on top of source-type detection:
+
+| Content shape | Routes to | Why |
+|--------------|-----------|-----|
+| **Table-heavy** (dec pages, schedules, grids) | the structured provider | flattening a grid to markdown scrambles which value belongs to which column |
+| **Text-heavy** (letters, covenants, prose) | the markdown/Docling path | markdown is the right representation; no table-extraction premium |
+
+Table- vs text-heaviness is a **geometric** signal (the fraction of lines that read as multi-column grids in the PDF's text-item layout), not a per-document-type rule — the engine never inspects field names or document categories. The structured path has the same safety net as pdfjs: if it errors, the request falls through to source-type routing (digital → pdfjs, otherwise → Docling). This routing is **inert unless a structured provider is configured** — the content-shape classifier isn't even invoked otherwise, so the default path pays nothing.
+
 #### Docling (heavy provider)
 
 [Docling](https://github.com/DS4SD/docling) provides OCR, table detection, and layout analysis:

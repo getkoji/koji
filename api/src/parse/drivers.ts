@@ -72,3 +72,39 @@ export function createParseDriver(payload: ParseEndpointPayload): ParseProvider 
 export function hasParseDriver(provider: string): boolean {
   return provider in PARSE_DRIVERS;
 }
+
+/**
+ * Output class of a parse provider, used by PB-10 doc-type routing to decide
+ * which `SmartParseProvider` slot a tenant's resolved provider fills.
+ *
+ *  - `markdown`   — emits a markdown view (Mistral OCR, Azure DI, docling).
+ *                   Fills the `heavy` slot; serves text-heavy docs.
+ *  - `structured` — preserves row/column structure / chunks-with-bbox
+ *                   (Google Doc AI, Textract, the digital-positional path).
+ *                   Fills the `structured` slot; serves table-heavy docs.
+ *
+ * This is a property of the *vendor output format*, not of any document
+ * domain — it never inspects field names or document categories, so it stays
+ * inside the engine-generic rule.
+ */
+export type ParseDriverKind = "markdown" | "structured";
+
+/**
+ * Provider slugs whose drivers produce structured (row/column) output. Future
+ * structured drivers (PB-6 positional, PB-7 Google Doc AI, PB-8 Textract)
+ * register their slug here so doc-type routing places them in the structured
+ * slot. Empty-but-named today, matching the dormant driver registry above.
+ */
+const STRUCTURED_PROVIDERS = new Set<string>([
+  // "google-docai",
+  // "textract",
+]);
+
+/**
+ * Classify a provider slug as markdown- or structured-output. Defaults to
+ * `markdown` for anything not explicitly listed as structured — the safe slot,
+ * since the markdown/docling path is the existing behaviour.
+ */
+export function parseDriverKind(provider: string): ParseDriverKind {
+  return STRUCTURED_PROVIDERS.has(provider) ? "structured" : "markdown";
+}
