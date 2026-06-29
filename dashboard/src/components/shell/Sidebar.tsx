@@ -45,6 +45,7 @@ import {
   Settings,
   Key,
   Radio,
+  ScanText,
   Webhook,
   Users,
   Info,
@@ -330,6 +331,11 @@ export function AppSidebar({
                         href={`${projectSettingsBase}/model-providers`}
                         icon={<Radio className={SUBICON} />}
                         label="Model Endpoints"
+                      />
+                      <SubNavItemLink
+                        href={`${projectSettingsBase}/parse-providers`}
+                        icon={<ScanText className={SUBICON} />}
+                        label="Parse Endpoints"
                       />
                       <SubNavItemLink
                         href={`${projectSettingsBase}/webhooks`}

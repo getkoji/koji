@@ -1,0 +1,1 @@
+ALTER TABLE "pipelines" ADD COLUMN "parse_provider_id" uuid;
