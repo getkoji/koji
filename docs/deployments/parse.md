@@ -25,7 +25,7 @@ endpoints) and can never be retrieved — only rotated.
 |----------|----------|---------------|
 | **Mistral OCR** | SMB / cost-sensitive — markdown-native, self-serve, cheap per page | API key |
 | **Azure Document Intelligence** | Teams already on Azure — runs under your existing MSA | Resource endpoint URL + key |
-| **Google Document AI** | Teams already on GCP — structured tables, handles large docs by slicing (no GCS needed) | Project ID + processor ID + region + service-account key |
+| **Google Document AI** | Teams already on GCP — structured tables, handles large docs by slicing (no GCS needed) | Project ID + processor ID + region + an access credential — a short-lived OAuth token *or* keyless Workload Identity Federation (see [Authentication](#authentication-google-document-ai)) |
 | **AWS Textract** | Teams already on AWS — structured tables | Region + access key ID + secret access key |
 
 The model / processor field defaults sensibly per provider (`mistral-ocr-latest`,
@@ -99,6 +99,89 @@ Document AI access:
 
 The default slice-and-merge path needs **neither** of these storage grants —
 just Document AI `:process` access.
+
+## Authentication (Google Document AI)
+
+Document AI authenticates with a Google Cloud OAuth2 **access token** (sent as a
+`Bearer` token). Koji supports two ways to supply it:
+
+### Option 1 — static access token (quick start)
+
+Paste a short-lived access token into the endpoint's credential field. Mint one
+with, e.g.:
+
+```bash
+gcloud auth print-access-token \
+  --impersonate-service-account=docai@PROJECT.iam.gserviceaccount.com
+```
+
+This is the fastest way to validate an endpoint, but a Google access token lives
+**~1 hour** — it is not a durable production credential, and you'll have to
+rotate it by hand. Use it for a first test, not for ongoing operation.
+
+### Option 2 — keyless Workload Identity Federation (recommended for production)
+
+Many organizations disable service-account-key creation
+(`iam.disableServiceAccountKeyCreation`), so a downloaded JSON key isn't an
+option — and a pasted token isn't durable. **Workload Identity Federation (WIF)**
+solves both: Koji's running workload presents its own OIDC identity, your WIF
+pool trusts that identity, and Google exchanges it for a short-lived token that
+impersonates your target service account. **No long-lived secret is ever stored
+or downloaded.** Koji mints a fresh token at call time and caches it until it
+nears expiry, refreshing automatically — you never rotate anything.
+
+Configure it by putting a standard Google `external_account` credential config in
+the endpoint's `config_json` under a `wif` block:
+
+```json
+{
+  "project_id": "my-project",
+  "processor_id": "abc123",
+  "location": "us",
+  "wif": {
+    "external_account": {
+      "type": "external_account",
+      "audience": "//iam.googleapis.com/projects/PROJ_NUM/locations/global/workloadIdentityPools/POOL/providers/PROVIDER",
+      "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+      "token_url": "https://sts.googleapis.com/v1/token",
+      "credential_source": { "file": "/var/run/secrets/oidc/token" }
+    },
+    "impersonate_service_account": "docai@my-project.iam.gserviceaccount.com"
+  }
+}
+```
+
+- `external_account` is the same config you'd otherwise point
+  `GOOGLE_APPLICATION_CREDENTIALS` at. Its `credential_source` names **where the
+  workload's OIDC token comes from** — a file or URL your runtime exposes
+  (Cloudflare Workers OIDC, Vercel OIDC, GKE/Cloud Run metadata, etc.). This is
+  the only place the source identity is configured; Koji's engine hardcodes
+  nothing.
+- `impersonate_service_account` is the SA whose Document AI access you want to
+  use. (You can instead set `service_account_impersonation_url` directly inside
+  `external_account`; if present it wins.)
+
+With WIF configured, the endpoint needs **no** stored secret — `auth_json` can be
+empty.
+
+#### What you (the customer) set up once
+
+1. Create a **Workload Identity Pool + OIDC provider** in your GCP project that
+   trusts the issuer of the deployment running Koji (for self-hosting, that's
+   your own platform's OIDC issuer; for hosted Koji, the issuer Koji publishes —
+   ask Koji for the exact issuer/audience values).
+2. Grant Koji's federated identity permission to impersonate your target SA:
+   `roles/iam.serviceAccountTokenCreator` on that service account.
+3. Grant the target SA Document AI `:process` access (and, only if you opt into
+   batch for bulk imports, `roles/storage.objectAdmin` on the batch bucket — see
+   above).
+
+#### Self-hosting note
+
+When you self-host Koji, **you** supply the `external_account` config and run
+Koji in an environment that exposes a matching OIDC token at the
+`credential_source` path. Koji's token-exchange code is generic and ships in the
+OSS engine; the source identity is entirely yours to configure.
 
 ## The default endpoint
 

@@ -56,11 +56,23 @@ vi.mock("../crypto/envelope", () => ({
   getMasterKey: vi.fn(() => "master-key"),
 }));
 
+// ── Mock the keyless WIF helper (oss-282) ────────────────────────────────────
+// Default: not WIF (readGcpWifConfig → null) so the existing static-token tests
+// are unaffected. WIF cases opt in by overriding the return value.
+vi.mock("./auth/gcp-wif", () => ({
+  readGcpWifConfig: vi.fn(() => null),
+  mintGcpAccessToken: vi.fn(async () => "minted-wif-token"),
+  gcpWifCacheKey: vi.fn(() => "cache-key"),
+}));
+
 import { resolveTenantParse, resolveTenantParseProvider } from "./resolve-tenant-parse";
 import { createParseDriver, parseDriverKind } from "./drivers";
+import { readGcpWifConfig, mintGcpAccessToken } from "./auth/gcp-wif";
 
 const mockCreateDriver = vi.mocked(createParseDriver);
 const mockDriverKind = vi.mocked(parseDriverKind);
+const mockReadWif = vi.mocked(readGcpWifConfig);
+const mockMintToken = vi.mocked(mintGcpAccessToken);
 
 const stubProvider: ParseProvider = { parse: vi.fn() };
 
@@ -68,6 +80,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   resultQueue.length = 0;
   capturedWheres = [];
+  // Re-establish defaults cleared by clearAllMocks.
+  mockReadWif.mockReturnValue(null);
+  mockMintToken.mockResolvedValue("minted-wif-token");
 });
 
 describe("resolveTenantParse — dormant paths", () => {
@@ -140,6 +155,84 @@ describe("resolveTenantParse — pin + kind", () => {
 
     expect(resolved?.kind).toBe("markdown");
     expect(mockDriverKind).toHaveBeenCalledWith("mistral-ocr");
+  });
+});
+
+describe("resolveTenantParse — keyless WIF path (oss-282)", () => {
+  const wifSettings = {
+    externalAccount: { type: "external_account", audience: "//aud" } as any,
+    impersonateServiceAccount: "docai@proj.iam.gserviceaccount.com",
+  };
+
+  it("mints a fresh token for a WIF endpoint with NO stored auth", async () => {
+    // Keyless: authJson is null, but config_json carries the WIF block.
+    resultQueue.push([
+      {
+        id: "pe_wif",
+        provider: "google-docai",
+        model: "ocr",
+        configJson: { wif: {} },
+        authJson: null,
+      },
+    ]);
+    mockReadWif.mockReturnValue(wifSettings);
+    let seenPayload: any;
+    mockCreateDriver.mockImplementation((p: any) => {
+      seenPayload = p;
+      return stubProvider;
+    });
+    mockDriverKind.mockReturnValue("structured");
+
+    const resolved = await resolveTenantParse({} as any, "tenant_1", {
+      parseProviderId: "pe_wif",
+    });
+
+    expect(resolved).toEqual({ provider: stubProvider, kind: "structured" });
+    expect(mockMintToken).toHaveBeenCalledTimes(1);
+    // The minted token rides in api_key, so the driver stays credential-agnostic.
+    expect(seenPayload.api_key).toBe("minted-wif-token");
+  });
+
+  it("uses WIF even when stored auth is also present (WIF wins)", async () => {
+    resultQueue.push([
+      {
+        id: "pe_both",
+        provider: "google-docai",
+        model: "ocr",
+        configJson: { wif: {} },
+        authJson: { key_blob: "static-blob" },
+      },
+    ]);
+    mockReadWif.mockReturnValue(wifSettings);
+    let seenPayload: any;
+    mockCreateDriver.mockImplementation((p: any) => {
+      seenPayload = p;
+      return stubProvider;
+    });
+    mockDriverKind.mockReturnValue("structured");
+
+    await resolveTenantParse({} as any, "tenant_1", { parseProviderId: "pe_both" });
+    expect(seenPayload.api_key).toBe("minted-wif-token");
+  });
+
+  it("returns null when WIF minting fails (falls back to default provider)", async () => {
+    resultQueue.push([
+      {
+        id: "pe_wif_fail",
+        provider: "google-docai",
+        model: "ocr",
+        configJson: { wif: {} },
+        authJson: null,
+      },
+    ]);
+    mockReadWif.mockReturnValue(wifSettings);
+    mockMintToken.mockRejectedValue(new Error("STS exchange failed"));
+
+    const resolved = await resolveTenantParse({} as any, "tenant_1", {
+      parseProviderId: "pe_wif_fail",
+    });
+    expect(resolved).toBeNull();
+    expect(mockCreateDriver).not.toHaveBeenCalled();
   });
 });
 
