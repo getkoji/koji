@@ -26,3 +26,12 @@ All five use the same stored-endpoint flow: credentials are entered once in the 
 - **Air-gapped network or volume-driven cost problem?** Use [on-prem](on-prem.md). Any OpenAI-compatible inference server (vLLM is the most production-ready) will work.
 
 Mixing providers is fine and common — you can pin the map step to a cheap OpenAI model and run the final extract step against Bedrock Claude, for example.
+
+## Parse / OCR is BYO too
+
+Models handle extraction; **parse / OCR** handles turning scanned PDFs and images
+into text. That cost is yours to own as well. Configure an OCR vendor key in
+*Project settings → Parse Endpoints* and the per-page parse cost stays on your
+bill — Mistral OCR, Azure Document Intelligence, Google Document AI, or AWS
+Textract. See [Parse / OCR Providers](parse.md). Digital PDFs parse for free
+in-process; with no parse endpoint configured the built-in default engine is used.

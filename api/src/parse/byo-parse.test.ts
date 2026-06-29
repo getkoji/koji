@@ -82,17 +82,24 @@ describe("createParseProvider — tenantHeavy hook", () => {
   });
 });
 
-describe("createParseDriver — registry is dormant", () => {
-  it("returns null for an unregistered provider (no drivers ship in PB-2)", () => {
-    const driver = createParseDriver({ provider: "mistral-ocr", model: "mistral-ocr-latest" });
+describe("createParseDriver — registry", () => {
+  it("returns null for a provider with no registered driver", () => {
+    const driver = createParseDriver({ provider: "textract", model: "default" });
     expect(driver).toBeNull();
   });
 
-  it("hasParseDriver is false for slugs whose driver hasn't landed yet", () => {
-    // google-docai is registered by PB-7; the rest are still pending.
-    for (const p of ["mistral-ocr", "azure-document-intel", "textract"]) {
+  it("hasParseDriver is false for slugs whose drivers haven't landed yet", () => {
+    for (const p of ["textract"]) {
       expect(hasParseDriver(p)).toBe(false);
     }
+  });
+
+  it("hasParseDriver is true for mistral-ocr (PB-4)", () => {
+    expect(hasParseDriver("mistral-ocr")).toBe(true);
+  });
+
+  it("hasParseDriver is true for azure-document-intel (PB-5)", () => {
+    expect(hasParseDriver("azure-document-intel")).toBe(true);
   });
 
   it("hasParseDriver is true for google-docai (PB-7)", () => {

@@ -464,6 +464,18 @@ function ConfigurationSection({
             <span className="text-ink-4 italic">not set</span>
           )}
         </ConfigRow>
+        <ConfigRow label="Parse engine">
+          {pipeline.parseProviderName ? (
+            <span className="text-ink">
+              {pipeline.parseProviderName}
+              {pipeline.parseProviderType && (
+                <span className="text-ink-4 ml-1">· {pipeline.parseProviderType}</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-ink-4 italic">tenant default</span>
+          )}
+        </ConfigRow>
         <ConfigRow label="Review threshold">
           <code className="font-mono text-ink-2">{pipeline.reviewThreshold}</code>
           <span className="font-mono text-[10px] text-ink-4 ml-2">
