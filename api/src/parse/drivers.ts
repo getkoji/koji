@@ -20,6 +20,7 @@
 
 import type { ParseProvider } from "./provider";
 import type { ParseEndpointPayload } from "./resolve-tenant-parse";
+import { GoogleDocAiProvider } from "./providers/google-docai";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
@@ -31,6 +32,7 @@ export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvide
 const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
   // Registered by later waves, e.g.:
   // "mistral-ocr": (payload) => new MistralOcrProvider(payload),
+  "google-docai": (payload) => new GoogleDocAiProvider(payload),
 };
 
 /**

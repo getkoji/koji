@@ -16,8 +16,10 @@ import type { ParseChunk } from "./chunk";
  * - `pdfjs`: in-process pdfjs-dist, used for digital PDFs (text-embedded)
  * - `docling`: heavy provider (Docker sidecar or Modal-hosted), used for
  *   scanned PDFs, images, and non-PDF formats (DOCX, HTML, …)
+ * - `google-docai`: BYO Google Document AI provider (JSON-native, structured
+ *   tables + chunks-with-bbox; see `parse/providers/google-docai.ts`)
  */
-export type ParseEngine = "pdfjs" | "docling";
+export type ParseEngine = "pdfjs" | "docling" | "google-docai";
 
 /** A word/segment with its spatial position on the page. */
 export interface TextMapSegment {
