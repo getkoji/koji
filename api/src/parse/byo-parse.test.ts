@@ -14,6 +14,8 @@ import type { ParseProvider, ParseResponse } from "./provider";
 
 // Mock the document classifier so we control routing deterministically.
 vi.mock("./classify", () => ({ classifyDocument: vi.fn() }));
+// Mock the content-shape classifier so doc-type routing is deterministic.
+vi.mock("./content-shape", () => ({ classifyContentShape: vi.fn() }));
 // Mock the default heavy backend so we can assert whether it was used.
 const defaultHeavyParse = vi.fn();
 vi.mock("./docker", () => ({
@@ -21,10 +23,12 @@ vi.mock("./docker", () => ({
 }));
 
 import { classifyDocument } from "./classify";
+import { classifyContentShape } from "./content-shape";
 import { createParseProvider } from "./factory";
-import { createParseDriver, hasParseDriver } from "./drivers";
+import { createParseDriver, hasParseDriver, parseDriverKind } from "./drivers";
 
 const mockClassify = vi.mocked(classifyDocument);
+const mockShape = vi.mocked(classifyContentShape);
 
 const heavyResponse: ParseResponse = {
   markdown:
@@ -46,6 +50,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Disable the ChunkedParseProvider wrapper so routing is exercised directly.
   process.env.KOJI_CHUNK_PARSE_THRESHOLD = "0";
+  // Safe default: text-heavy → never routes to a structured provider unless a
+  // test opts into table-heavy explicitly.
+  mockShape.mockResolvedValue("text_heavy");
 });
 
 describe("createParseProvider — tenantHeavy hook", () => {
@@ -82,6 +89,46 @@ describe("createParseProvider — tenantHeavy hook", () => {
   });
 });
 
+describe("createParseProvider — tenantStructured hook (PB-10)", () => {
+  it("routes table-heavy docs to the tenant structured provider", async () => {
+    mockClassify.mockResolvedValue("scanned_pdf");
+    mockShape.mockResolvedValue("table_heavy");
+    const tenantStructured: ParseProvider = {
+      parse: vi.fn().mockResolvedValue({ ...heavyResponse, chunks: [] }),
+    };
+
+    const provider = await createParseProvider(dockerConfig, { tenantStructured });
+    await provider.parse(input);
+
+    expect(tenantStructured.parse).toHaveBeenCalledWith(input);
+    expect(defaultHeavyParse).not.toHaveBeenCalled();
+  });
+
+  it("routes text-heavy docs to the default heavy provider even when structured is set", async () => {
+    mockClassify.mockResolvedValue("scanned_pdf");
+    mockShape.mockResolvedValue("text_heavy");
+    defaultHeavyParse.mockResolvedValue(heavyResponse);
+    const tenantStructured: ParseProvider = { parse: vi.fn() };
+
+    const provider = await createParseProvider(dockerConfig, { tenantStructured });
+    await provider.parse(input);
+
+    expect(defaultHeavyParse).toHaveBeenCalledWith(input);
+    expect(tenantStructured.parse).not.toHaveBeenCalled();
+  });
+
+  it("DORMANT: no tenantStructured ⇒ content shape is never classified, default heavy used", async () => {
+    mockClassify.mockResolvedValue("scanned_pdf");
+    defaultHeavyParse.mockResolvedValue(heavyResponse);
+
+    const provider = await createParseProvider(dockerConfig, { tenantStructured: null });
+    await provider.parse(input);
+
+    expect(mockShape).not.toHaveBeenCalled();
+    expect(defaultHeavyParse).toHaveBeenCalledWith(input);
+  });
+});
+
 describe("createParseDriver — registry", () => {
   it("returns null for a provider with no registered driver", () => {
     const driver = createParseDriver({ provider: "no-such-provider", model: "default" });
@@ -111,5 +158,13 @@ describe("createParseDriver — registry", () => {
     const driver = createParseDriver({ provider: "textract", region: "us-east-1" });
     expect(driver).not.toBeNull();
     expect(typeof driver?.parse).toBe("function");
+  });
+});
+
+describe("parseDriverKind — output-class seam", () => {
+  it("defaults unknown / markdown providers to the markdown slot", () => {
+    expect(parseDriverKind("mistral-ocr")).toBe("markdown");
+    expect(parseDriverKind("azure-document-intel")).toBe("markdown");
+    expect(parseDriverKind("something-new")).toBe("markdown");
   });
 });

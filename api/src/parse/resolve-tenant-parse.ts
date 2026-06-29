@@ -22,7 +22,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import type { ParseProvider } from "./provider";
-import { createParseDriver } from "./drivers";
+import { createParseDriver, parseDriverKind, type ParseDriverKind } from "./drivers";
 
 export interface ParseEndpointPayload {
   /** UUID of the source `parse_endpoints` row (for health attribution later). */
@@ -147,15 +147,29 @@ export async function resolveParseEndpoint(
   return payload;
 }
 
+/** A resolved tenant parse provider plus its output class (PB-10 routing). */
+export interface ResolvedTenantParse {
+  provider: ParseProvider;
+  /**
+   * Output class of the provider's driver. `markdown` providers fill the
+   * `heavy` slot (text-heavy docs); `structured` providers fill the
+   * `structured` slot so `SmartParseProvider` can route table-heavy docs to
+   * them (PB-10). See `drivers.ts#parseDriverKind`.
+   */
+  kind: ParseDriverKind;
+}
+
 /**
- * Resolve the tenant's parse provider and return a ready-to-use
- * ParseProvider, or null when none is configured / no driver exists.
+ * Resolve the tenant's parse provider into a ready-to-use ParseProvider plus
+ * its output class, or null when none is configured / no driver exists.
  *
- * The returned provider is meant to be passed as `tenantHeavy` to
- * `createParseProvider` — when it's null, the factory falls back to the
- * system default heavy provider, leaving production behavior unchanged.
+ * The result feeds `createParseProvider`'s `tenantHeavy` (markdown) or
+ * `tenantStructured` (structured) slot. A null return is the dormant path: the
+ * factory falls back to the system default heavy provider and doc-type routing
+ * stays off, so production behavior is unchanged until both a driver and a
+ * configured endpoint exist.
  */
-export async function resolveTenantParseProvider(
+export async function resolveTenantParse(
   db: Db,
   tenantId: string,
   opts?: {
@@ -164,7 +178,7 @@ export async function resolveTenantParseProvider(
     /** Prefer this provider slug — filters active endpoints by provider. */
     preferProvider?: string | null;
   },
-): Promise<ParseProvider | null> {
+): Promise<ResolvedTenantParse | null> {
   let payload: ParseEndpointPayload | null = null;
 
   try {
@@ -182,5 +196,25 @@ export async function resolveTenantParseProvider(
   }
 
   if (!payload) return null;
-  return createParseDriver(payload);
+  const provider = createParseDriver(payload);
+  if (!provider) return null;
+  return { provider, kind: parseDriverKind(payload.provider) };
+}
+
+/**
+ * Back-compat shim: resolve just the provider instance (no kind). Kept for the
+ * `byo-parse-providers.md` documented API; new callers that route by content
+ * type should use {@link resolveTenantParse}. Returns null when none is
+ * configured / no driver exists.
+ */
+export async function resolveTenantParseProvider(
+  db: Db,
+  tenantId: string,
+  opts?: {
+    parseProviderId?: string | null;
+    preferProvider?: string | null;
+  },
+): Promise<ParseProvider | null> {
+  const resolved = await resolveTenantParse(db, tenantId, opts);
+  return resolved?.provider ?? null;
 }

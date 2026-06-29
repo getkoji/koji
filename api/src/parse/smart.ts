@@ -1,9 +1,23 @@
 /**
  * Smart parse provider — routes documents to the best parser based on type.
  *
+ * Source-type routing (always on):
  * - Digital PDFs → in-process pdfjs (`DigitalPdfProvider`)
  * - Scanned PDFs, images, and non-PDF formats (DOCX, HTML, …) → heavy
  *   provider (Docling via Docker sidecar or Modal)
+ *
+ * Doc-type routing (PB-10, opt-in): when a tenant has configured a *structured*
+ * parse provider (one that preserves row/column structure — Google Doc AI,
+ * Textract, positional), table-heavy documents are steered to it instead of the
+ * markdown/docling path, because flattening a dec page / schedule / grid to
+ * markdown scrambles column association. Text-heavy documents keep the
+ * markdown/docling path. The table-heavy vs text-heavy decision is a geometric
+ * signal (`content-shape.ts`), not a domain classifier.
+ *
+ * Dormant by default: with no structured provider configured (every tenant
+ * today), `structured` is null and routing is byte-for-byte the previous
+ * behaviour — the content-shape classifier is never even invoked, so the hot
+ * path pays nothing.
  *
  * Two safety nets so a bad lite-provider parse can't silently poison
  * extraction:
@@ -15,12 +29,16 @@
  *    returned text items with scrambled positions and the model silently
  *    consumed the resulting garbage.
  *
+ * The structured path has the same safety net: if it throws, we fall through
+ * to the source-type routing below (digital → pdfjs, otherwise → heavy).
+ *
  * Optional methods (extractCoordinates, renderRegion, pageHeaders,
  * analyzePages, slicePdf) are proxied to the heavy provider.
  */
 
 import type { ParseProvider, ParseResponse } from "./provider";
 import { classifyDocument } from "./classify";
+import { classifyContentShape } from "./content-shape";
 
 export class SmartParseProvider implements ParseProvider {
   extractCoordinates?: ParseProvider["extractCoordinates"];
@@ -33,6 +51,13 @@ export class SmartParseProvider implements ParseProvider {
   constructor(
     private lite: ParseProvider,
     private heavy: ParseProvider,
+    /**
+     * Optional structured provider for table-heavy docs. Null/undefined (the
+     * default) disables doc-type routing entirely — behaviour is identical to
+     * pre-PB-10. When set, table-heavy docs route here; text-heavy docs and any
+     * structured-path failure fall back to the source-type routing below.
+     */
+    private structured: ParseProvider | null = null,
   ) {
     if (heavy.extractCoordinates) {
       this.extractCoordinates = heavy.extractCoordinates.bind(heavy);
@@ -65,6 +90,40 @@ export class SmartParseProvider implements ParseProvider {
       input.fileBuffer,
     );
 
+    // ── Doc-type routing (only when a structured provider is configured) ─────
+    // Table-heavy docs go to the structured provider, which preserves cell
+    // structure instead of flattening grids to markdown. This block is skipped
+    // entirely (no classifier call) when `structured` is null — the default.
+    if (this.structured) {
+      let shape: "table_heavy" | "text_heavy" = "text_heavy";
+      try {
+        shape = await classifyContentShape(
+          input.filename,
+          input.mimeType,
+          input.fileBuffer,
+        );
+      } catch (err) {
+        console.warn(
+          `[smart-parse] content-shape classification failed for ${input.filename}, treating as text-heavy:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+
+      if (shape === "table_heavy") {
+        console.log(`[smart-parse] ${input.filename}: ${docType}/table_heavy → structured provider`);
+        try {
+          return await this.structured.parse(input);
+        } catch (err) {
+          console.warn(
+            `[smart-parse] structured provider failed for ${input.filename}, falling back to source-type routing:`,
+            err instanceof Error ? err.message : err,
+          );
+          // fall through to the source-type routing below
+        }
+      }
+    }
+
+    // ── Source-type routing (always on) ──────────────────────────────────────
     // Scanned content, images, and non-PDF formats → heavy (Docling handles
     // OCR + DOCX/HTML/PPTX natively). pdfjs is PDF-only.
     if (docType !== "digital_pdf") {

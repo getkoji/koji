@@ -24,6 +24,12 @@ import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
 import type { ParseChunk } from "../parse/chunk";
+import {
+  createParseProvider,
+  type ParseConfig,
+  type ParseProviderOptions,
+} from "../parse/factory";
+import { resolveTenantParse, type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
 import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
@@ -60,6 +66,12 @@ export interface IngestionHandlerConfig {
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
 let _parseProvider: ParseProvider | null = null;
+// The ParseConfig the default provider was built from. Captured at init so the
+// ingestion path can rebuild a per-tenant provider at call time (BYO parse).
+// When absent (e.g. an edge entry point that only hands us a pre-built
+// provider), per-call resolution is disabled and the default singleton is used
+// — identical to today.
+let _parseConfig: ParseConfig | null = null;
 let _billing: BillingAdapter = new NoOpBillingAdapter();
 
 export function initIngestionHandler(
@@ -79,14 +91,67 @@ export function initBilling(adapter: BillingAdapter) {
  * Install the ParseProvider the motor should use for live parses.
  * Must be called before the first `handleIngestionProcess` invocation —
  * there's no longer a fallback since the factory requires explicit config.
+ *
+ * `config` is the {@link ParseConfig} the default provider was built from. When
+ * supplied, the ingestion path can rebuild a per-tenant provider at call time
+ * (BYO parse — `tenantHeavy` / `tenantStructured`). When omitted, per-call
+ * resolution is disabled and `provider` is used for every tenant, unchanged.
  */
-export function initParseProvider(provider: ParseProvider) {
+export function initParseProvider(provider: ParseProvider, config?: ParseConfig) {
   _parseProvider = provider;
+  _parseConfig = config ?? null;
 }
 
 /** Get the current parse provider (for step-based flows that need direct access). */
 export function getParseProvider(): ParseProvider | null {
   return _parseProvider;
+}
+
+/**
+ * Read a pipeline's pinned parse endpoint id from its `config_json`, if any.
+ * Mirrors how the legibility config is read from `config_json` — opt-in,
+ * defaults to null (no pin → resolve the tenant's active parse endpoint).
+ *
+ * Stored under `config_json.parse_provider_id` (the Parse Catalog UI's pipeline
+ * "Override parse engine" writes here; PB-9). Kept in config_json rather than a
+ * dedicated column so this lands without a migration and without colliding with
+ * the in-flight Parse Catalog work.
+ */
+export function readParseProviderPin(configJson: unknown): string | null {
+  const root =
+    configJson && typeof configJson === "object" ? (configJson as Record<string, unknown>) : null;
+  const pin = root?.parse_provider_id;
+  return typeof pin === "string" && pin.length > 0 ? pin : null;
+}
+
+/**
+ * Build the ParseProvider to use for one document, given the tenant's resolved
+ * parse provider (or null when none is configured / no driver exists).
+ *
+ * Dormant-until-configured: when `resolved` is null — every tenant today, since
+ * the driver registry is empty — this returns the **exact same** default
+ * provider instance, so behaviour is byte-for-byte identical to pre-BYO-parse.
+ * It also returns the default when `parseConfig` is absent (no way to rebuild
+ * the SmartParse/Chunked wrapper around a tenant provider).
+ *
+ * When a provider resolves, it fills the matching factory slot: `markdown`
+ * providers replace the default heavy (text path); `structured` providers
+ * enable PB-10 doc-type routing for table-heavy docs while the default heavy
+ * still serves text-heavy docs.
+ *
+ * Exported for unit testing the dormant guarantee + slot selection without a DB.
+ */
+export async function buildEffectiveParseProvider(
+  parseConfig: ParseConfig | null,
+  defaultProvider: ParseProvider,
+  resolved: ResolvedTenantParse | null,
+): Promise<ParseProvider> {
+  if (!resolved || !parseConfig) return defaultProvider;
+  const opts: ParseProviderOptions =
+    resolved.kind === "structured"
+      ? { tenantStructured: resolved.provider }
+      : { tenantHeavy: resolved.provider };
+  return createParseProvider(parseConfig, opts);
 }
 
 interface IngestionProcessPayload {
@@ -102,7 +167,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   }
   const db = _db;
   const storage = _storage;
-  const parseProvider = _parseProvider;
+  const defaultParseProvider = _parseProvider;
+  // The effective parse provider is resolved per-tenant below, once we know the
+  // pipeline (its optional pinned parse endpoint lives in config_json).
   // extractFields() runs in-process — no external URL needed
 
   const { documentId } = job.payload as unknown as IngestionProcessPayload;
@@ -195,6 +262,30 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     }
     throw new TerminalError(reason);
   }
+
+  // ── Resolve the tenant's parse provider (BYO parse) ──────────────────────
+  // Honor a pipeline-pinned parse endpoint (config_json.parse_provider_id),
+  // else the tenant's active parse endpoint. Returns null when none is
+  // configured / no driver exists → the default provider is used unchanged
+  // (dormant-until-configured). Resolution failures never block ingestion.
+  let resolvedParse: ResolvedTenantParse | null = null;
+  if (_parseConfig) {
+    try {
+      resolvedParse = await resolveTenantParse(db, tenantId, {
+        parseProviderId: readParseProviderPin(pipeline.configJson),
+      });
+    } catch (err) {
+      console.warn(
+        `[ingestion.process] parse provider resolution failed for ${documentId}, using default:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  const parseProvider = await buildEffectiveParseProvider(
+    _parseConfig,
+    defaultParseProvider,
+    resolvedParse,
+  );
 
   // ── Resolve markdown via parse_cache, falling back to live parse ─────────
   //

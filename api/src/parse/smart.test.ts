@@ -1,13 +1,25 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SmartParseProvider, detectCorruption } from "./smart";
 import type { ParseProvider, ParseResponse } from "./provider";
 
 vi.mock("./classify", () => ({
   classifyDocument: vi.fn(),
 }));
+vi.mock("./content-shape", () => ({
+  classifyContentShape: vi.fn(),
+}));
 
 import { classifyDocument } from "./classify";
+import { classifyContentShape } from "./content-shape";
 const mockClassify = vi.mocked(classifyDocument);
+const mockShape = vi.mocked(classifyContentShape);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Safe default for content-shape so the existing two-arg routing tests never
+  // touch the (unconfigured) structured path even if it were consulted.
+  mockShape.mockResolvedValue("text_heavy");
+});
 
 function mockProvider(response: ParseResponse, methods?: Partial<ParseProvider>): ParseProvider {
   return {
@@ -94,6 +106,123 @@ describe("SmartParseProvider", () => {
 
       expect(heavy.parse).toHaveBeenCalled();
       expect(lite.parse).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── PB-10 doc-type routing ────────────────────────────────────────────────
+  describe("doc-type routing (structured provider)", () => {
+    const structuredResponse: ParseResponse = {
+      markdown: "# Structured\n\nrow/col preserving output from a structured provider.",
+      pages: 2,
+      ocr_skipped: false,
+      engine: "docling",
+      chunks: [],
+    };
+
+    it("DORMANT: never classifies content shape when no structured provider is configured", async () => {
+      mockClassify.mockResolvedValue("scanned_pdf");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const smart = new SmartParseProvider(lite, heavy); // no 3rd arg
+
+      await smart.parse(input);
+
+      // The whole doc-type routing block is skipped — zero added cost/behavior.
+      expect(mockShape).not.toHaveBeenCalled();
+      expect(heavy.parse).toHaveBeenCalledWith(input);
+    });
+
+    it("routes table-heavy docs to the structured provider", async () => {
+      mockClassify.mockResolvedValue("scanned_pdf");
+      mockShape.mockResolvedValue("table_heavy");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured = mockProvider(structuredResponse);
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      const result = await smart.parse(input);
+
+      expect(structured.parse).toHaveBeenCalledWith(input);
+      expect(heavy.parse).not.toHaveBeenCalled();
+      expect(lite.parse).not.toHaveBeenCalled();
+      expect(result).toBe(structuredResponse);
+    });
+
+    it("routes table-heavy digital PDFs to the structured provider (not pdfjs)", async () => {
+      mockClassify.mockResolvedValue("digital_pdf");
+      mockShape.mockResolvedValue("table_heavy");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured = mockProvider(structuredResponse);
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      const result = await smart.parse(input);
+
+      expect(structured.parse).toHaveBeenCalledWith(input);
+      expect(lite.parse).not.toHaveBeenCalled();
+      expect(result).toBe(structuredResponse);
+    });
+
+    it("routes text-heavy scanned docs to the markdown/heavy path", async () => {
+      mockClassify.mockResolvedValue("scanned_pdf");
+      mockShape.mockResolvedValue("text_heavy");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured = mockProvider(structuredResponse);
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      const result = await smart.parse(input);
+
+      expect(heavy.parse).toHaveBeenCalledWith(input);
+      expect(structured.parse).not.toHaveBeenCalled();
+      expect(result.engine).toBe("docling");
+    });
+
+    it("routes text-heavy digital PDFs to pdfjs (unchanged)", async () => {
+      mockClassify.mockResolvedValue("digital_pdf");
+      mockShape.mockResolvedValue("text_heavy");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured = mockProvider(structuredResponse);
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      const result = await smart.parse(input);
+
+      expect(lite.parse).toHaveBeenCalledWith(input);
+      expect(structured.parse).not.toHaveBeenCalled();
+      expect(heavy.parse).not.toHaveBeenCalled();
+      expect(result.engine).toBe("pdfjs");
+    });
+
+    it("falls back to source-type routing when the structured provider throws", async () => {
+      mockClassify.mockResolvedValue("scanned_pdf");
+      mockShape.mockResolvedValue("table_heavy");
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured: ParseProvider = {
+        parse: vi.fn().mockRejectedValue(new Error("vendor 500")),
+      };
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      const result = await smart.parse(input);
+
+      expect(structured.parse).toHaveBeenCalled();
+      expect(heavy.parse).toHaveBeenCalledWith(input); // scanned → heavy fallback
+      expect(result.engine).toBe("docling");
+    });
+
+    it("treats a content-shape classification error as text-heavy (no structured call)", async () => {
+      mockClassify.mockResolvedValue("scanned_pdf");
+      mockShape.mockRejectedValue(new Error("pdfjs blew up"));
+      const lite = mockProvider(digitalResponse);
+      const heavy = mockProvider(scannedResponse);
+      const structured = mockProvider(structuredResponse);
+      const smart = new SmartParseProvider(lite, heavy, structured);
+
+      await smart.parse(input);
+
+      expect(structured.parse).not.toHaveBeenCalled();
+      expect(heavy.parse).toHaveBeenCalledWith(input);
     });
   });
 
