@@ -21,6 +21,7 @@ import {
   type ParsedPage,
   type TextItem,
 } from "./spatial-to-markdown";
+import { PositionalChunkCanonicalizer } from "./positional-chunks";
 
 // pdfjs's TextContent items expose strings, dimensions, a 6-element transform
 // matrix `[a, b, c, d, e, f]` (`(e, f)` is the position in PDF user space —
@@ -113,12 +114,19 @@ export class DigitalPdfProvider implements ParseProvider {
       await doc.destroy();
     }
 
+    // Second consumer of the same positional structure: preserve pdfjs geometry
+    // into provenance-carrying chunks (PB-6, digital-positional path). Additive
+    // — the markdown above is unchanged; tables are reconstructed via
+    // x-clustering so columns associate correctly with no cloud OCR.
+    const chunks = new PositionalChunkCanonicalizer().toChunks(pages);
+
     return {
       markdown: spatialToMarkdown(pages),
       pages: pages.length,
       ocr_skipped: true,
       engine: "pdfjs",
       text_map,
+      chunks,
     };
   }
 }
