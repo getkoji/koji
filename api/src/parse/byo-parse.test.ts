@@ -84,12 +84,12 @@ describe("createParseProvider — tenantHeavy hook", () => {
 
 describe("createParseDriver — registry", () => {
   it("returns null for a provider with no registered driver", () => {
-    const driver = createParseDriver({ provider: "textract", model: "default" });
+    const driver = createParseDriver({ provider: "no-such-provider", model: "default" });
     expect(driver).toBeNull();
   });
 
-  it("hasParseDriver is false for slugs whose drivers haven't landed yet", () => {
-    for (const p of ["textract"]) {
+  it("hasParseDriver is false for slugs with no registered driver", () => {
+    for (const p of ["no-such-provider"]) {
       expect(hasParseDriver(p)).toBe(false);
     }
   });
@@ -104,5 +104,12 @@ describe("createParseDriver — registry", () => {
 
   it("hasParseDriver is true for google-docai (PB-7)", () => {
     expect(hasParseDriver("google-docai")).toBe(true);
+  });
+
+  it("builds a TextractProvider for the textract slug (PB-8)", () => {
+    expect(hasParseDriver("textract")).toBe(true);
+    const driver = createParseDriver({ provider: "textract", region: "us-east-1" });
+    expect(driver).not.toBeNull();
+    expect(typeof driver?.parse).toBe("function");
   });
 });

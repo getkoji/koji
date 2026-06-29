@@ -23,6 +23,7 @@ import type { ParseEndpointPayload } from "./resolve-tenant-parse";
 import { MistralOcrProvider } from "./providers/mistral-ocr";
 import { AzureDocIntelProvider } from "./providers/azure-doc-intel";
 import { GoogleDocAiProvider } from "./providers/google-docai";
+import { TextractProvider } from "./providers/textract";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
@@ -46,6 +47,8 @@ const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
         : undefined,
     }),
   "google-docai": (payload) => new GoogleDocAiProvider(payload),
+  // PB-8: AWS Textract — JSON `Blocks` graph → chunks-with-bbox.
+  textract: (payload) => new TextractProvider(payload),
 };
 
 /**
