@@ -1,0 +1,1 @@
+ALTER TABLE "pipelines" ADD COLUMN "version_mode" varchar(8) DEFAULT 'auto' NOT NULL;
