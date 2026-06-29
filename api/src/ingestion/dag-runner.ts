@@ -15,6 +15,7 @@ import type { QueuedJob } from "../queue/provider";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { resolvePipelineSchemaVersion } from "./pipeline-schema-version";
 import { createProvider } from "../extract/providers";
 import { extractFields } from "../extract/pipeline";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
@@ -396,28 +397,19 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         case "extract": {
           const schemaSlug = (step.config.schema as string) || "";
           if (schemaSlug && docText && endpoint) {
-            const srRows = await withRLS(db, tenantId, (tx) =>
-              tx.select({ currentVersionId: schema.schemas.currentVersionId })
-                .from(schema.schemas).where(eq(schema.schemas.slug, schemaSlug)).limit(1),
-            );
-            const sr = srRows[0] as { currentVersionId: string | null } | undefined;
-            if (sr?.currentVersionId) {
-              const verRows = await withRLS(db, tenantId, (tx) =>
-                tx.select({ parsedJson: schema.schemaVersions.parsedJson })
-                  .from(schema.schemaVersions).where(eq(schema.schemaVersions.id, sr.currentVersionId!)).limit(1),
-              );
-              const ver = verRows[0] as { parsedJson: Record<string, unknown> | null } | undefined;
-              if (ver?.parsedJson) {
-                const provider = createProvider(endpoint.model, endpoint);
-                const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
-                const fieldNames = Object.keys(result.extracted || {});
-                const nonNull = fieldNames.filter(f => result.extracted[f] != null);
-                const scores = Object.values(result.confidence_scores || {});
-                const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-                output = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
-                finalExtraction = result.extracted;
-                finalConfidence = avgConf;
-              }
+            // Resolve the schema version honoring the pipeline's versionMode
+            // (auto = current live release; pinned = the pinned version).
+            const ver = await resolvePipelineSchemaVersion(db, tenantId, pipelineId, schemaSlug);
+            if (ver?.parsedJson) {
+              const provider = createProvider(endpoint.model, endpoint);
+              const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
+              const fieldNames = Object.keys(result.extracted || {});
+              const nonNull = fieldNames.filter(f => result.extracted[f] != null);
+              const scores = Object.values(result.confidence_scores || {});
+              const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+              output = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
+              finalExtraction = result.extracted;
+              finalConfidence = avgConf;
             }
           }
           if (!output.schema) output = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
@@ -767,28 +759,18 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
               case "extract": {
                 const schemaSlug = (branchStep.config.schema as string) || "";
                 if (schemaSlug && docText && endpoint) {
-                  const srRows = await withRLS(db, tenantId, (tx) =>
-                    tx.select({ currentVersionId: schema.schemas.currentVersionId })
-                      .from(schema.schemas).where(eq(schema.schemas.slug, schemaSlug)).limit(1),
-                  );
-                  const sr = srRows[0] as { currentVersionId: string | null } | undefined;
-                  if (sr?.currentVersionId) {
-                    const verRows = await withRLS(db, tenantId, (tx) =>
-                      tx.select({ parsedJson: schema.schemaVersions.parsedJson })
-                        .from(schema.schemaVersions).where(eq(schema.schemaVersions.id, sr.currentVersionId!)).limit(1),
-                    );
-                    const ver = verRows[0] as { parsedJson: Record<string, unknown> | null } | undefined;
-                    if (ver?.parsedJson) {
-                      const provider = createProvider(endpoint.model, endpoint);
-                      const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
-                      const fieldNames = Object.keys(result.extracted || {});
-                      const nonNull = fieldNames.filter(f => result.extracted[f] != null);
-                      const scores = Object.values(result.confidence_scores || {});
-                      const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-                      branchOutput = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
-                      finalExtraction = result.extracted;
-                      finalConfidence = avgConf;
-                    }
+                  // Resolve honoring the pipeline's versionMode (auto/pinned).
+                  const ver = await resolvePipelineSchemaVersion(db, tenantId, pipelineId, schemaSlug);
+                  if (ver?.parsedJson) {
+                    const provider = createProvider(endpoint.model, endpoint);
+                    const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
+                    const fieldNames = Object.keys(result.extracted || {});
+                    const nonNull = fieldNames.filter(f => result.extracted[f] != null);
+                    const scores = Object.values(result.confidence_scores || {});
+                    const avgConf = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+                    branchOutput = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
+                    finalExtraction = result.extracted;
+                    finalConfidence = avgConf;
                   }
                 }
                 if (!branchOutput.schema) branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };

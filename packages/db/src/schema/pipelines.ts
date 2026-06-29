@@ -24,6 +24,16 @@ export const pipelines = pgTable(
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     schemaId: uuid("schema_id"),
+    /**
+     * How this pipeline tracks schema versions:
+     *   "auto" (default) — always run the schema's current live release; picks
+     *     up a promotion immediately.
+     *   "pinned" — run the version in `activeSchemaVersionId` until explicitly
+     *     bumped (canary / cautious rollout). The pin is honored only for the
+     *     schema it belongs to; other schemas in a DAG fall back to live.
+     * See docs/schema-semver-versioning.md (Per-pipeline release mode).
+     */
+    versionMode: varchar("version_mode", { length: 8 }).notNull().default("auto"),
     activeSchemaVersionId: uuid("active_schema_version_id"),
     modelProviderId: uuid("model_provider_id"),
     // Optional pin to a tenant BYO parse endpoint (parse_endpoints.id). NULL =

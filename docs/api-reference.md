@@ -954,6 +954,10 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Defaults to the schema's draft. Auth: `schema:deploy`. Body: `{ yaml? }`. Returns `{ released, versionId }`.
 
+### Per-pipeline version mode
+
+Promoting a schema changes its live release; each pipeline chooses how to react via `pipelines.versionMode`: **`auto`** (default) always runs the schema's live release, **`pinned`** holds a specific version until bumped (staged rollout). Set it with `POST /api/pipelines/{idOrSlug}/deploy` (auth `schema:deploy`): body `{ schema_version_id }` pins that version (sets `versionMode: "pinned"`); body `{ mode: "auto" }` unpins. The runner honors a pin only for the schema the pinned version belongs to; other schemas in a DAG fall back to live.
+
 ---
 
 ## Provenance

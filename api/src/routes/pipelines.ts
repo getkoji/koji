@@ -8,6 +8,7 @@ import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
+import { formatSemver } from "../schemas/semver";
 import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
@@ -202,6 +203,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         slug: schema.pipelines.slug,
         displayName: schema.pipelines.displayName,
         schemaId: schema.pipelines.schemaId,
+        versionMode: schema.pipelines.versionMode,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         modelProviderId: schema.pipelines.modelProviderId,
         parseProviderId: schema.pipelines.parseProviderId,
@@ -250,7 +252,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
 
   // Deployed version details
   let deployedVersion:
-    | { id: string; number: number; commitMessage: string | null; deployedAt: Date }
+    | { id: string; number: number; version: string; commitMessage: string | null; deployedAt: Date }
     | null = null;
   if (pipeline.activeSchemaVersionId) {
     const activeVersionId = pipeline.activeSchemaVersionId;
@@ -259,6 +261,10 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
         .select({
           id: schema.schemaVersions.id,
           versionNumber: schema.schemaVersions.versionNumber,
+          major: schema.schemaVersions.major,
+          minor: schema.schemaVersions.minor,
+          patch: schema.schemaVersions.patch,
+          prerelease: schema.schemaVersions.prerelease,
           commitMessage: schema.schemaVersions.commitMessage,
           createdAt: schema.schemaVersions.createdAt,
         })
@@ -270,6 +276,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
       deployedVersion = {
         id: sv.id,
         number: sv.versionNumber,
+        version: formatSemver(sv),
         commitMessage: sv.commitMessage,
         deployedAt: sv.createdAt,
       };
@@ -783,10 +790,25 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
   const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  const body = await c.req.json<{ schema_version_id: string }>();
-  if (!body.schema_version_id) {
-    return c.json({ error: "schema_version_id is required" }, 400);
+  const body = await c.req.json<{ schema_version_id?: string; mode?: "auto" | "pinned" }>();
+
+  // Unpin: set the pipeline back to `auto` so it follows the schema's live
+  // release again. No specific version needed.
+  if (body.mode === "auto") {
+    const rows = await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.pipelines)
+        .set({ versionMode: "auto", updatedAt: new Date() })
+        .where(eq(schema.pipelines.id, pipelineId))
+        .returning(),
+    );
+    return c.json(rows[0]);
   }
+
+  if (!body.schema_version_id) {
+    return c.json({ error: "schema_version_id is required (or pass mode:'auto' to unpin)" }, 400);
+  }
+  const schemaVersionId: string = body.schema_version_id;
 
   const [pipeline] = await withRLS(db, tenantId, (tx) =>
     tx
@@ -808,7 +830,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
         versionNumber: schema.schemaVersions.versionNumber,
       })
       .from(schema.schemaVersions)
-      .where(eq(schema.schemaVersions.id, body.schema_version_id))
+      .where(eq(schema.schemaVersions.id, schemaVersionId))
       .limit(1),
   );
   if (!sv) return c.json({ error: "Schema version not found" }, 404);
@@ -820,8 +842,9 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
     tx
       .update(schema.pipelines)
       .set({
-        activeSchemaVersionId: body.schema_version_id,
+        activeSchemaVersionId: schemaVersionId,
         schemaId: sv.schemaId,
+        versionMode: "pinned",
         updatedAt: new Date(),
       })
       .where(eq(schema.pipelines.id, pipelineId))
@@ -830,7 +853,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
 
   await emitWebhookEvent(tenantId, "schema.deployed", {
     pipeline_id: pipelineId,
-    schema_version_id: body.schema_version_id,
+    schema_version_id: schemaVersionId,
     version_number: sv.versionNumber,
     deployed_by: principal.userId,
   });
@@ -839,7 +862,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
     type: "schema.deployed",
     title: `Schema deployed`,
     body: `Pipeline updated to schema version ${sv.versionNumber}`,
-    data: { pipelineId, schemaVersionId: body.schema_version_id, versionNumber: sv.versionNumber },
+    data: { pipelineId, schemaVersionId: schemaVersionId, versionNumber: sv.versionNumber },
   });
 
   return c.json(rows[0]);
