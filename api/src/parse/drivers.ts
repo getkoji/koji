@@ -20,6 +20,7 @@
 
 import type { ParseProvider } from "./provider";
 import type { ParseEndpointPayload } from "./resolve-tenant-parse";
+import { MistralOcrProvider } from "./providers/mistral-ocr";
 
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
@@ -29,8 +30,7 @@ export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvide
  * interface so the consumer (`SmartParseProvider`) needs no changes.
  */
 const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
-  // Registered by later waves, e.g.:
-  // "mistral-ocr": (payload) => new MistralOcrProvider(payload),
+  "mistral-ocr": (payload) => new MistralOcrProvider(payload),
 };
 
 /**
