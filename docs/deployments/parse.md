@@ -103,11 +103,22 @@ just Document AI `:process` access.
 ## Authentication (Google Document AI)
 
 Document AI authenticates with a Google Cloud OAuth2 **access token** (sent as a
-`Bearer` token). Koji supports two ways to supply it:
+`Bearer` token). When you add a Google Document AI endpoint, the form presents an
+**Authentication** selector with three options:
+
+| Method | When to use |
+|--------|-------------|
+| **Workload Identity Federation (keyless)** — *default, recommended* | Production and any enterprise GCP org. Keyless; no service-account key is stored. The only option when your org enforces `iam.disableServiceAccountKeyCreation`. See [Option 2](#option-2--keyless-workload-identity-federation-recommended-for-production). |
+| **Access token (dev / testing)** | A quick endpoint test. Short-lived (~1h); not for production. See [Option 1](#option-1--static-access-token-quick-start). |
+| **Service-account JSON (self-host fallback)** | Self-hosting where you can still download an SA key. Many enterprise org policies block SA-key creation — use WIF for those. |
+
+The keyless WIF and access-token paths are the recommended ones; the
+service-account-JSON path is a self-host fallback, deliberately demoted because
+it relies on a downloadable key that enterprise policy often forbids.
 
 ### Option 1 — static access token (quick start)
 
-Paste a short-lived access token into the endpoint's credential field. Mint one
+Choose **Access token** in the form and paste a short-lived token. Mint one
 with, e.g.:
 
 ```bash
@@ -130,8 +141,13 @@ impersonates your target service account. **No long-lived secret is ever stored
 or downloaded.** Koji mints a fresh token at call time and caches it until it
 nears expiry, refreshing automatically — you never rotate anything.
 
-Configure it by putting a standard Google `external_account` credential config in
-the endpoint's `config_json` under a `wif` block:
+In the **Add provider** form, choose **Workload Identity Federation (keyless)**,
+paste the credential config produced by
+`gcloud iam workload-identity-pools create-cred-config` into **Credential config
+(external_account JSON)**, and (optionally) set the **Impersonation service
+account**. The form stores exactly the `config_json` shape below — no secret is
+saved. You can also author it directly: put a standard Google `external_account`
+credential config in the endpoint's `config_json` under a `wif` block:
 
 ```json
 {

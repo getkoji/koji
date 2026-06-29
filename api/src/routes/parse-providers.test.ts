@@ -11,6 +11,7 @@ import {
   buildParseAuthJson,
   PARSE_PROVIDERS,
 } from "./parse-providers";
+import { readGcpWifConfig } from "../parse/auth/gcp-wif";
 
 const MASTER_KEY = randomBytes(32).toString("hex");
 
@@ -223,6 +224,38 @@ describe("validateParseCreatePayload", () => {
     ).toBeNull();
   });
 
+  it("google-docai accepts keyless WIF instead of api_key", () => {
+    expect(
+      validateParseCreatePayload({
+        provider: "google-docai",
+        project_id: "p",
+        processor_id: "proc",
+        wif: { external_account: { type: "external_account", audience: "//iam..." } },
+      }),
+    ).toBeNull();
+  });
+
+  it("google-docai rejects a WIF block whose external_account isn't type external_account", () => {
+    expect(
+      validateParseCreatePayload({
+        provider: "google-docai",
+        project_id: "p",
+        processor_id: "proc",
+        wif: { external_account: { type: "service_account" } },
+      }),
+    ).toMatch(/external_account/);
+  });
+
+  it("google-docai with neither api_key nor WIF reports both options", () => {
+    const err = validateParseCreatePayload({
+      provider: "google-docai",
+      project_id: "p",
+      processor_id: "proc",
+    });
+    expect(err).toMatch(/WIF/);
+    expect(err).toMatch(/api_key/);
+  });
+
   it("textract requires region + access key id + secret", () => {
     expect(validateParseCreatePayload({ provider: "textract" })).toMatch(/region/);
     expect(
@@ -269,6 +302,69 @@ describe("buildParseConfigJson", () => {
     expect(
       buildParseConfigJson("google-docai", { project_id: "p", processor_id: "proc" }),
     ).toEqual({ project_id: "p", processor_id: "proc", region: "us" });
+  });
+
+  it("google-docai persists a keyless WIF block in the shape resolve-tenant-parse reads", () => {
+    const externalAccount = {
+      type: "external_account",
+      audience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/p/providers/pr",
+      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      token_url: "https://sts.googleapis.com/v1/token",
+      credential_source: { file: "/var/run/secrets/oidc/token" },
+    };
+    expect(
+      buildParseConfigJson("google-docai", {
+        project_id: "p",
+        processor_id: "proc",
+        wif: {
+          external_account: externalAccount,
+          impersonate_service_account: "docai@p.iam.gserviceaccount.com",
+        },
+      }),
+    ).toEqual({
+      project_id: "p",
+      processor_id: "proc",
+      region: "us",
+      wif: {
+        external_account: externalAccount,
+        impersonate_service_account: "docai@p.iam.gserviceaccount.com",
+      },
+    });
+  });
+
+  it("google-docai ignores a malformed WIF block (no external_account type)", () => {
+    expect(
+      buildParseConfigJson("google-docai", {
+        project_id: "p",
+        processor_id: "proc",
+        wif: { external_account: { type: "service_account" } },
+      }),
+    ).toEqual({ project_id: "p", processor_id: "proc", region: "us" });
+  });
+
+  // End-to-end contract: the config_json the route persists must be exactly what
+  // the resolver (resolve-tenant-parse → readGcpWifConfig) consumes. Proves the
+  // dashboard → route → resolver shape lines up without a running cluster.
+  it("produces config_json that readGcpWifConfig accepts", () => {
+    const externalAccount = {
+      type: "external_account",
+      audience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/p/providers/pr",
+      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      token_url: "https://sts.googleapis.com/v1/token",
+      credential_source: { file: "/var/run/secrets/oidc/token" },
+    };
+    const cfg = buildParseConfigJson("google-docai", {
+      project_id: "p",
+      processor_id: "proc",
+      wif: {
+        external_account: externalAccount,
+        impersonate_service_account: "docai@p.iam.gserviceaccount.com",
+      },
+    });
+    const settings = readGcpWifConfig(cfg);
+    expect(settings).not.toBeNull();
+    expect(settings!.externalAccount).toEqual(externalAccount);
+    expect(settings!.impersonateServiceAccount).toBe("docai@p.iam.gserviceaccount.com");
   });
 
   it("textract keeps region + plaintext access key id, never the secret", () => {

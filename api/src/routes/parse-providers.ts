@@ -45,6 +45,22 @@ const DEFAULT_MODELS: Record<string, string> = {
 };
 
 /**
+ * Keyless Workload Identity Federation block (GCP providers). Lives in the
+ * (non-secret) config_json — it references the workload's OIDC identity, not a
+ * downloaded key. `resolve-tenant-parse.ts` reads exactly this shape
+ * (`config.wif = { external_account, impersonate_service_account?, scopes? }`)
+ * and mints a short-lived token via `auth/gcp-wif.ts`.
+ */
+type ParseWifConfig = {
+  /** Standard Google `external_account` credential config (type: external_account). */
+  external_account: Record<string, unknown>;
+  /** Service account to impersonate (optional if the config carries an impersonation URL). */
+  impersonate_service_account?: string;
+  /** OAuth scopes for the minted token (optional; defaults to cloud-platform). */
+  scopes?: string[];
+};
+
+/**
  * config_json shape (all plaintext, non-secret). Which subset applies depends
  * on the provider — drivers (PB-4..8) read the fields they need.
  */
@@ -58,7 +74,25 @@ type ParseConfigJson = {
   processor_id?: string;
   /** AWS access key id — an identifier, not a secret (mirrors Bedrock). */
   aws_access_key_id?: string;
+  /** Keyless WIF credential config (GCP providers). Non-secret. */
+  wif?: ParseWifConfig;
 };
+
+/** Shape of a WIF block as it arrives in a create/update request body. */
+type WifInput = {
+  external_account?: unknown;
+  impersonate_service_account?: string;
+  scopes?: string[];
+};
+
+/**
+ * A valid external-account config is an object whose `type` is
+ * `external_account`. Mirrors `auth/gcp-wif.ts#isExternalAccountConfig` —
+ * `google-auth-library` validates the full shape authoritatively at mint time.
+ */
+function isExternalAccountConfig(v: unknown): boolean {
+  return !!v && typeof v === "object" && (v as Record<string, unknown>).type === "external_account";
+}
 
 /**
  * auth_json shape. For every provider the single secret (API key, or the AWS
@@ -94,6 +128,7 @@ export function validateParseCreatePayload(body: {
   region?: string;
   aws_access_key_id?: string;
   aws_secret_access_key?: string;
+  wif?: WifInput;
 }): string | null {
   const { provider } = body;
   if (!PARSE_PROVIDERS.includes(provider as ParseProviderSlug)) {
@@ -108,12 +143,20 @@ export function validateParseCreatePayload(body: {
         return "base_url is required for azure-document-intel (e.g. https://{resource}.cognitiveservices.azure.com)";
       if (!body.api_key) return "api_key is required for azure-document-intel";
       return null;
-    case "google-docai":
+    case "google-docai": {
       if (!body.project_id) return "project_id is required for google-docai";
       if (!body.processor_id) return "processor_id is required for google-docai";
-      if (!body.api_key)
-        return "api_key is required for google-docai (service-account key or access token)";
+      // Two credential shapes: keyless WIF (recommended/enterprise — config
+      // only, no secret) OR a static api_key (access token / service-account
+      // JSON). Exactly one must be supplied.
+      const hasWif = body.wif?.external_account !== undefined;
+      if (hasWif && !isExternalAccountConfig(body.wif!.external_account)) {
+        return 'wif.external_account must be a Google external_account credential config (its "type" must be "external_account")';
+      }
+      if (!hasWif && !body.api_key)
+        return "google-docai needs either a keyless WIF credential config (recommended) or an api_key (access token / service-account JSON)";
       return null;
+    }
     case "textract":
       if (!body.region) return "region is required for textract (e.g. us-east-1)";
       if (!body.aws_access_key_id) return "aws_access_key_id is required for textract";
@@ -136,6 +179,7 @@ export function buildParseConfigJson(
     project_id?: string;
     processor_id?: string;
     aws_access_key_id?: string;
+    wif?: WifInput;
   },
 ): ParseConfigJson {
   const cfg: ParseConfigJson = {};
@@ -146,11 +190,25 @@ export function buildParseConfigJson(
     case "azure-document-intel":
       if (body.base_url) cfg.base_url = body.base_url;
       break;
-    case "google-docai":
+    case "google-docai": {
       if (body.project_id) cfg.project_id = body.project_id;
       if (body.processor_id) cfg.processor_id = body.processor_id;
       cfg.region = body.region || "us";
+      // Keyless WIF: store the external_account config + impersonation target
+      // in the exact shape resolve-tenant-parse reads (config.wif). No secret
+      // is stored for this path — auth_json stays null.
+      if (body.wif && isExternalAccountConfig(body.wif.external_account)) {
+        const wif: ParseWifConfig = {
+          external_account: body.wif.external_account as Record<string, unknown>,
+        };
+        if (body.wif.impersonate_service_account)
+          wif.impersonate_service_account = body.wif.impersonate_service_account;
+        if (Array.isArray(body.wif.scopes) && body.wif.scopes.length > 0)
+          wif.scopes = body.wif.scopes.filter((s): s is string => typeof s === "string");
+        cfg.wif = wif;
+      }
       break;
+    }
     case "textract":
       if (body.region) cfg.region = body.region;
       // The AWS access key id is an identifier, not a secret (same call Bedrock
@@ -188,6 +246,7 @@ function publicParseConfig(cfg: ParseConfigJson | null | undefined): {
   projectId: string | null;
   processorId: string | null;
   awsAccessKeyId: string | null;
+  wifConfigured: boolean;
 } {
   const c = cfg ?? {};
   return {
@@ -196,6 +255,9 @@ function publicParseConfig(cfg: ParseConfigJson | null | undefined): {
     projectId: c.project_id ?? null,
     processorId: c.processor_id ?? null,
     awsAccessKeyId: c.aws_access_key_id ?? null,
+    // Surfaces the keyless path so the UI can label it and skip key rotation
+    // (a WIF endpoint has no stored secret to rotate).
+    wifConfigured: !!c.wif?.external_account,
   };
 }
 
@@ -261,6 +323,7 @@ parseProviders.get("/", requires("endpoint:read"), async (c) => {
         projectId: pub.projectId,
         processorId: pub.processorId,
         awsAccessKeyId: pub.awsAccessKeyId,
+        wifConfigured: pub.wifConfigured,
         keyHint: auth?.key_hint ?? null,
         hasKey: hasBlob,
         credentialStatus,
@@ -303,6 +366,8 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
     project_id?: string;
     processor_id?: string;
     aws_access_key_id?: string;
+    // Keyless WIF (GCP providers) — non-secret config block.
+    wif?: WifInput;
     // Secrets
     api_key?: string;
     aws_secret_access_key?: string;
@@ -321,6 +386,7 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
     region: body.region,
     aws_access_key_id: body.aws_access_key_id,
     aws_secret_access_key: body.aws_secret_access_key,
+    wif: body.wif,
   });
   if (validationError) return c.json({ error: validationError }, 400);
 
@@ -392,6 +458,7 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
       projectId: pub.projectId,
       processorId: pub.processorId,
       awsAccessKeyId: pub.awsAccessKeyId,
+      wifConfigured: pub.wifConfigured,
       keyHint: authJson?.key_hint ?? null,
       hasKey: !!authJson?.key_blob,
       status: row.status,
@@ -445,7 +512,11 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   // Merge config — only touch keys the client sent; empty string clears.
   const cfg: ParseConfigJson = { ...((existing.configJson as ParseConfigJson | null) ?? {}) };
   let cfgTouched = false;
-  const mergeField = (key: keyof ParseConfigJson, value: string | undefined) => {
+  // Only the string-valued config keys are editable this way; the `wif` block
+  // is set at create time (delete + recreate to change it — there's no secret
+  // to rotate on a keyless endpoint).
+  type StringConfigKey = "base_url" | "region" | "project_id" | "processor_id" | "aws_access_key_id";
+  const mergeField = (key: StringConfigKey, value: string | undefined) => {
     if (value === undefined) return;
     if (value) cfg[key] = value;
     else delete cfg[key];
@@ -538,6 +609,7 @@ parseProviders.post("/:id/test", requires("endpoint:write"), async (c) => {
     tx
       .select({
         provider: schema.parseEndpoints.provider,
+        configJson: schema.parseEndpoints.configJson,
         authJson: schema.parseEndpoints.authJson,
       })
       .from(schema.parseEndpoints)
@@ -545,6 +617,20 @@ parseProviders.post("/:id/test", requires("endpoint:write"), async (c) => {
       .limit(1),
   );
   if (!endpoint) return c.json({ error: "Parse provider not found" }, 404);
+
+  // Keyless WIF endpoints store no secret — there's nothing to decrypt. Report
+  // the keyless config + driver/runtime status instead of "no credentials".
+  const cfg = endpoint.configJson as ParseConfigJson | null;
+  if (cfg?.wif?.external_account) {
+    const driverAvailable = hasParseDriver(endpoint.provider);
+    return c.json({
+      ok: true,
+      driverAvailable,
+      message: driverAvailable
+        ? "Keyless WIF configured. Koji mints a short-lived token at parse time."
+        : `Keyless WIF configured. Koji mints a short-lived token at parse time; the ${endpoint.provider} parse driver isn't available in this build yet — this endpoint activates automatically once the driver ships.`,
+    });
+  }
 
   const auth = endpoint.authJson as ParseAuthJson | null;
   if (!auth?.key_blob) {
