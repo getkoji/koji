@@ -27,6 +27,7 @@ interface ParseEndpoint {
   projectId: string | null;
   processorId: string | null;
   awsAccessKeyId: string | null;
+  wifConfigured: boolean;
   keyHint: string | null;
   hasKey: boolean;
   credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
@@ -50,7 +51,40 @@ interface ProviderDef {
   keyLabel: string;
   keyKind: "api_key" | "aws_secret_access_key";
   keyPlaceholder: string;
+  /**
+   * GCP-capable provider: render the auth-method selector (keyless WIF /
+   * access token / service-account JSON) instead of a single secret field.
+   */
+  gcpAuth?: boolean;
 }
+
+/**
+ * Auth methods for GCP-capable providers (Google Document AI). WIF is the
+ * default and recommended path: keyless, no service-account key, the one that
+ * survives enterprise org policies that block SA-key creation.
+ */
+type GcpAuthMethod = "wif" | "token" | "sa-json";
+
+const GCP_AUTH_METHODS: Array<{ value: GcpAuthMethod; label: string; blurb: string }> = [
+  {
+    value: "wif",
+    label: "Workload Identity Federation (keyless) — recommended",
+    blurb:
+      "No service-account key. Koji's workload federates into your GCP project and mints short-lived tokens automatically — the enterprise / production path, and the only option when your org blocks SA-key creation.",
+  },
+  {
+    value: "token",
+    label: "Access token (dev / testing)",
+    blurb:
+      "Paste a short-lived OAuth access token (~1h). Fine for a quick test; it expires fast, so it's not for production.",
+  },
+  {
+    value: "sa-json",
+    label: "Service-account JSON (self-host fallback)",
+    blurb:
+      "Paste a downloaded service-account key. Many enterprise org policies block SA-key creation — use WIF for those.",
+  },
+];
 
 const PROVIDER_TYPES: ProviderDef[] = [
   {
@@ -76,12 +110,15 @@ const PROVIDER_TYPES: ProviderDef[] = [
   {
     value: "google-docai",
     label: "Google Document AI",
-    blurb: "Document AI processor → structured chunks. Uses your GCP project.",
+    blurb: "Document AI processor → structured chunks. Uses your GCP project. Keyless (WIF) by default.",
     defaultModel: "documentai",
     fields: ["project_id", "processor_id", "region"],
-    keyLabel: "Service-account key / token",
+    gcpAuth: true,
+    // Used by the rotate dialog (only key-based endpoints rotate). The Add
+    // dialog uses the auth-method selector instead of this single field.
+    keyLabel: "Access token / service-account JSON",
     keyKind: "api_key",
-    keyPlaceholder: "Service-account JSON or access token",
+    keyPlaceholder: "Access token (~1h) or service-account JSON",
   },
   {
     value: "textract",
@@ -298,7 +335,11 @@ function ParseEndpointCard({
           )}
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
-          {ep.keyHint && <Meta>••••{ep.keyHint}</Meta>}
+          {ep.wifConfigured ? (
+            <Badge>keyless · WIF</Badge>
+          ) : (
+            ep.keyHint && <Meta>••••{ep.keyHint}</Meta>
+          )}
           {ep.isDefault ? (
             <Badge variant="active">default</Badge>
           ) : (
@@ -350,12 +391,14 @@ function ParseEndpointCard({
                 {busy === "default" ? "setting..." : "set as default"}
               </button>
             )}
-            <button
-              onClick={onRotate}
-              className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
-            >
-              rotate key
-            </button>
+            {!ep.wifConfigured && (
+              <button
+                onClick={onRotate}
+                className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+              >
+                rotate key
+              </button>
+            )}
             <button
               onClick={onDelete}
               className="font-mono text-[10px] text-vermillion-2 hover:text-ink transition-colors"
@@ -391,6 +434,10 @@ function AddParseProviderDialog({
   const [processorId, setProcessorId] = useState("");
   const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
   const [secret, setSecret] = useState("");
+  // GCP auth-method state (only used when def.gcpAuth).
+  const [authMethod, setAuthMethod] = useState<GcpAuthMethod>("wif");
+  const [externalAccount, setExternalAccount] = useState("");
+  const [impersonateSa, setImpersonateSa] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -405,6 +452,9 @@ function AddParseProviderDialog({
     setProcessorId("");
     setAwsAccessKeyId("");
     setSecret("");
+    setAuthMethod("wif");
+    setExternalAccount("");
+    setImpersonateSa("");
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -423,7 +473,42 @@ function AddParseProviderDialog({
       if (def.fields.includes("processor_id")) payload.processor_id = processorId.trim() || undefined;
       if (def.fields.includes("aws_access_key_id"))
         payload.aws_access_key_id = awsAccessKeyId.trim() || undefined;
-      payload[def.keyKind] = secret || undefined;
+
+      if (def.gcpAuth) {
+        // GCP providers pick an auth method. WIF is keyless (config only, no
+        // stored secret); token / sa-json reuse the api_key path.
+        if (authMethod === "wif") {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(externalAccount);
+          } catch {
+            setError(
+              "The credential config isn't valid JSON. Paste the full output of `gcloud iam workload-identity-pools create-cred-config`.",
+            );
+            setCreating(false);
+            return;
+          }
+          if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            (parsed as Record<string, unknown>).type !== "external_account"
+          ) {
+            setError(
+              'The credential config must be a Google external_account config (its "type" field should be "external_account").',
+            );
+            setCreating(false);
+            return;
+          }
+          payload.wif = {
+            external_account: parsed,
+            impersonate_service_account: impersonateSa.trim() || undefined,
+          };
+        } else {
+          payload.api_key = secret || undefined;
+        }
+      } else {
+        payload[def.keyKind] = secret || undefined;
+      }
 
       await api.post("/api/parse-providers", payload);
       onCreated(name.trim());
@@ -566,18 +651,116 @@ function AddParseProviderDialog({
             </div>
           )}
 
-          <div className="space-y-1.5">
-            <label className="text-[12.5px] font-medium text-ink">{def.keyLabel} *</label>
-            <PasswordInput
-              required
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              placeholder={def.keyPlaceholder}
-              autoComplete="off"
-              className={`${inputCls()} pr-8 font-mono`}
-            />
-            <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
-          </div>
+          {def.gcpAuth ? (
+            <div className="space-y-2.5">
+              <label className="text-[12.5px] font-medium text-ink">Authentication</label>
+              <div className="space-y-1.5">
+                {GCP_AUTH_METHODS.map((m) => (
+                  <label
+                    key={m.value}
+                    className={`flex items-start gap-2.5 cursor-pointer rounded-sm border px-2.5 py-2 transition-colors ${
+                      authMethod === m.value
+                        ? "border-ring bg-cream-2"
+                        : "border-input hover:border-ink-4"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="gcp-auth-method"
+                      value={m.value}
+                      checked={authMethod === m.value}
+                      onChange={() => setAuthMethod(m.value)}
+                      className="mt-0.5 flex-shrink-0"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[12.5px] text-ink">{m.label}</span>
+                      <span className="block text-[11px] text-ink-4 mt-0.5">{m.blurb}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {authMethod === "wif" && (
+                <div className="space-y-3 pt-1">
+                  <div className="space-y-1.5">
+                    <label className="text-[12.5px] font-medium text-ink">
+                      Credential config (external_account JSON) *
+                    </label>
+                    <textarea
+                      required
+                      value={externalAccount}
+                      onChange={(e) => setExternalAccount(e.target.value)}
+                      rows={6}
+                      placeholder={'{\n  "type": "external_account",\n  "audience": "//iam.googleapis.com/projects/...",\n  ...\n}'}
+                      className="w-full rounded-sm border border-input bg-transparent px-2.5 py-2 text-[12px] font-mono leading-snug outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4 resize-y"
+                    />
+                    <p className="text-[11px] text-ink-4">
+                      Paste the JSON from{" "}
+                      <span className="font-mono">
+                        gcloud iam workload-identity-pools create-cred-config
+                      </span>
+                      . Keyless — it references your workload&apos;s OIDC identity, not a downloaded
+                      secret. Nothing here is stored as a credential.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[12.5px] font-medium text-ink">
+                      Impersonation service account
+                    </label>
+                    <input
+                      value={impersonateSa}
+                      onChange={(e) => setImpersonateSa(e.target.value)}
+                      placeholder="docai@my-project.iam.gserviceaccount.com"
+                      autoComplete="off"
+                      className={`${inputCls()} font-mono`}
+                    />
+                    <p className="text-[11px] text-ink-4">
+                      The service account Koji impersonates to call Document AI. Optional if your
+                      credential config already includes an impersonation URL.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {authMethod !== "wif" && (
+                <div className="space-y-1.5 pt-1">
+                  <label className="text-[12.5px] font-medium text-ink">
+                    {authMethod === "token" ? "Access token" : "Service-account JSON"} *
+                  </label>
+                  <PasswordInput
+                    required
+                    value={secret}
+                    onChange={(e) => setSecret(e.target.value)}
+                    placeholder={
+                      authMethod === "token"
+                        ? "Short-lived OAuth access token (~1h)"
+                        : "Paste the service-account JSON key"
+                    }
+                    autoComplete="off"
+                    className={`${inputCls()} pr-8 font-mono`}
+                  />
+                  <p className="text-[11px] text-ink-4">
+                    {authMethod === "token"
+                      ? "Encrypted at rest. Expires in ~1 hour — for dev / testing, not production."
+                      : "Encrypted at rest. Cannot be retrieved — only rotated. Prefer WIF where SA-key creation is blocked."}
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">{def.keyLabel} *</label>
+              <PasswordInput
+                required
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder={def.keyPlaceholder}
+                autoComplete="off"
+                className={`${inputCls()} pr-8 font-mono`}
+              />
+              <p className="text-[11px] text-ink-4">Encrypted at rest. Cannot be retrieved — only rotated.</p>
+            </div>
+          )}
 
           {error && (
             <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
