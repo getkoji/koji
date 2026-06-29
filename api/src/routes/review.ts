@@ -10,6 +10,15 @@ import { requireFeature } from "../billing/middleware";
 export const review = new Hono<Env>();
 
 /**
+ * Review item ids are `uuid` columns; comparing a non-UUID string throws at the
+ * Postgres layer (uncaught → 500). Callers sometimes pass a truncated/typo'd id
+ * (e.g. the 8-char prefix shown in `koji review ls`), so validate the shape and
+ * treat anything malformed as "not found" instead of crashing.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid = (s: string): boolean => UUID_RE.test(s);
+
+/**
  * Decide how a review item may be promoted into the corpus.
  *
  * This encodes the safety-critical invariant of the review → corpus loop:
@@ -121,6 +130,7 @@ review.get("/:id", requires("review:read"), async (c) => {
   const tenantId = getTenantId(c);
   const storage = c.get("storage");
   const id = c.req.param("id")!;
+  if (!isUuid(id)) return c.json({ error: "Review item not found" }, 404);
 
   const [row] = await withRLS(db, tenantId, (tx) =>
     tx
@@ -348,6 +358,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   const principal = getPrincipal(c);
   const storage = c.get("storage");
   const id = c.req.param("id")!;
+  if (!isUuid(id)) return c.json({ error: "Review item not found" }, 404);
 
   const body = await c.req
     .json<{ provisional?: boolean; to?: string; groundTruth?: Record<string, unknown> }>()
