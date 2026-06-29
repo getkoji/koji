@@ -25,7 +25,7 @@ endpoints) and can never be retrieved — only rotated.
 |----------|----------|---------------|
 | **Mistral OCR** | SMB / cost-sensitive — markdown-native, self-serve, cheap per page | API key |
 | **Azure Document Intelligence** | Teams already on Azure — runs under your existing MSA | Resource endpoint URL + key |
-| **Google Document AI** | Teams already on GCP — structured tables, handles large docs via batch | Project ID + processor ID + region + an access credential — a short-lived OAuth token *or* keyless Workload Identity Federation (see [Authentication](#authentication-google-document-ai)) (+ a GCS bucket for documents over 30 pages — see below) |
+| **Google Document AI** | Teams already on GCP — structured tables, handles large docs by slicing (no GCS needed) | Project ID + processor ID + region + an access credential — a short-lived OAuth token *or* keyless Workload Identity Federation (see [Authentication](#authentication-google-document-ai)) |
 | **AWS Textract** | Teams already on AWS — structured tables | Region + access key ID + secret access key |
 
 The model / processor field defaults sensibly per provider (`mistral-ocr-latest`,
@@ -33,26 +33,48 @@ The model / processor field defaults sensibly per provider (`mistral-ocr-latest`
 
 ## Large documents (Google Document AI)
 
-Google Document AI's synchronous API caps at **15 pages** (30 with imageless
-mode). Most real-world documents — multi-hundred-page policies, large SOV/COPE
-schedules, wrap-up specs — are bigger, so Koji routes by page count
-automatically; you don't pick a mode:
+Google Document AI's synchronous `:process` API caps at **15 pages**. Most
+real-world documents — multi-hundred-page policies, large SOV/COPE schedules,
+wrap-up specs — are bigger, so Koji handles them automatically; you don't pick a
+mode.
 
-| Document size | Path |
-|---------------|------|
-| ≤ 15 pages | Synchronous `:process` |
-| 16–30 pages | Synchronous `:process` with imageless mode |
-| > 30 pages | **Batch** (`:batchProcess`) — asynchronous, via Google Cloud Storage |
+**By default, Koji slices large documents and processes the slices in parallel
+on the synchronous endpoint — no Google Cloud Storage required.**
 
-Batch processing is the primary path for large documents, not an edge case. It
-uploads the source to a GCS bucket you own, runs Document AI's asynchronous
-batch operation, reads the structured output back, and **deletes the temporary
-objects it created**. Koji never retains your documents in your bucket.
+| Document size | Default path |
+|---------------|--------------|
+| ≤ 15 pages | A single synchronous `:process` call. |
+| > 15 pages | Sliced into ≤ 15-page segments, each sent to `:process` **in parallel** (bounded by a concurrency cap), then merged back into one result with page numbers and bounding boxes renumbered globally. |
 
-### Required configuration
+Slicing at page boundaries is quality-neutral for a page-local OCR processor:
+each page is processed exactly as it would be on its own, and parallel
+synchronous calls are typically faster per document than the asynchronous batch
+API. No bucket, no IAM grant for storage, no temporary objects to clean up.
 
-For documents over 30 pages, add a **GCS bucket** to the Google Document AI
-endpoint config (alongside project ID / processor ID / region):
+If a segment is rejected as too large (e.g. very image-heavy pages), Koji
+automatically bisects it into smaller slices and retries; a segment that still
+can't be processed surfaces a clear error rather than silently dropping pages.
+
+### Tuning (optional)
+
+| Config field | Default | Meaning |
+|--------------|---------|---------|
+| `slice_pages` | `15` | Pages per slice for the slice-and-merge path. Clamped to 1–30 (the synchronous endpoint can't exceed 30 pages even with imageless mode). |
+| `online_concurrency` | `6` | Maximum number of slices processed in parallel. Lower it if you hit Document AI online QPS quotas. |
+
+### Bulk imports: opt-in batch processing
+
+For high-volume historical imports, you can opt into Document AI's asynchronous
+**batch** API instead of slicing. Set `parse_mode: "batch"` (or
+`use_batch: true`) in the endpoint config. Batch uploads the source to a GCS
+bucket you own, runs the asynchronous batch operation, reads the structured
+output back, and **deletes the temporary objects it created** — Koji never
+retains your documents in your bucket.
+
+Batch is **opt-in**, not the default. Use it for bulk back-fills; the default
+slice-and-merge path is the better choice for interactive, per-document parsing.
+
+When `parse_mode: "batch"` is set, add a **GCS bucket** to the endpoint config:
 
 | Config field | Meaning |
 |--------------|---------|
@@ -61,10 +83,10 @@ endpoint config (alongside project ID / processor ID / region):
 | `gcs_output_uri` *(optional)* | Override the output prefix with an explicit `gs://…` location. |
 
 Supplying `gcs_bucket` alone is enough; the explicit URIs are for teams that
-want batch I/O under a specific path. If no bucket is configured, documents
-over 30 pages fail with a clear error (smaller documents are unaffected).
+want batch I/O under a specific path. With batch opted in but no bucket
+configured, large documents fail with a clear error.
 
-### Required IAM
+#### Required IAM for batch
 
 The service account behind your endpoint's access token needs, in addition to
 Document AI access:
@@ -74,6 +96,9 @@ Document AI access:
   read the output shards, and delete both afterward. (A narrower split of
   object create / view / delete also works; `objectAdmin` is the simplest
   correct grant.)
+
+The default slice-and-merge path needs **neither** of these storage grants —
+just Document AI `:process` access.
 
 ## Authentication (Google Document AI)
 
@@ -147,8 +172,9 @@ empty.
    ask Koji for the exact issuer/audience values).
 2. Grant Koji's federated identity permission to impersonate your target SA:
    `roles/iam.serviceAccountTokenCreator` on that service account.
-3. Grant the target SA Document AI access (and `roles/storage.objectAdmin` on the
-   batch bucket if you process documents over 30 pages — see above).
+3. Grant the target SA Document AI `:process` access (and, only if you opt into
+   batch for bulk imports, `roles/storage.objectAdmin` on the batch bucket — see
+   above).
 
 #### Self-hosting note
 

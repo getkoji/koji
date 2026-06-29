@@ -21,6 +21,7 @@ import type {
   ParseResponse,
   TextMapSegment,
 } from "./provider";
+import { slicePdfPages, mapWithConcurrency } from "./pdf-slice";
 
 /**
  * Sentinel for pdf-lib slice failures. Wrapping these distinguishes
@@ -152,10 +153,10 @@ export class ChunkedParseProvider implements ParseProvider {
     // a successful slice should bubble up unchanged.
     let results;
     try {
-      results = await this.runWithConcurrency(chunks, async (chunk) => {
+      results = await mapWithConcurrency(chunks, this.concurrency, async (chunk) => {
         let chunkBuffer: Buffer;
         try {
-          chunkBuffer = await this.sliceWithPdfLib(
+          chunkBuffer = await slicePdfPages(
             input.fileBuffer, chunk.startPage, chunk.endPage,
           );
         } catch (err) {
@@ -183,45 +184,6 @@ export class ChunkedParseProvider implements ParseProvider {
 
     // Merge results in order
     return this.mergeResults(results, pageCount);
-  }
-
-  /** Slice a page range using pdf-lib locally. Handles corrupt xref tables. */
-  private async sliceWithPdfLib(
-    fileBuffer: Buffer,
-    startPage: number,
-    endPage: number,
-  ): Promise<Buffer> {
-    const srcDoc = await PDFDocument.load(fileBuffer, {
-      ignoreEncryption: true,
-    });
-    const newDoc = await PDFDocument.create();
-    const indices: number[] = [];
-    for (let i = startPage - 1; i < endPage; i++) indices.push(i);
-    const pages = await newDoc.copyPages(srcDoc, indices);
-    for (const page of pages) newDoc.addPage(page);
-    return Buffer.from(await newDoc.save());
-  }
-
-  private async runWithConcurrency<T, R>(
-    items: T[],
-    fn: (item: T) => Promise<R>,
-  ): Promise<R[]> {
-    const results: R[] = new Array(items.length);
-    let nextIndex = 0;
-
-    const worker = async () => {
-      while (nextIndex < items.length) {
-        const idx = nextIndex++;
-        results[idx] = await fn(items[idx]!);
-      }
-    };
-
-    const workers = Array.from(
-      { length: Math.min(this.concurrency, items.length) },
-      () => worker(),
-    );
-    await Promise.all(workers);
-    return results;
   }
 
   private mergeResults(

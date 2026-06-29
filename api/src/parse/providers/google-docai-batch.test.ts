@@ -54,6 +54,9 @@ const CONFIG = {
   project_id: "proj",
   processor_id: "proc",
   gcs_bucket: "tenant-bucket",
+  // Batch is opt-in now (default is slice+online) — these tests exercise the
+  // opt-in batch path, so they enable it explicitly.
+  parse_mode: "batch",
   // Make the poll loop instant in tests.
   batch_poll_interval_ms: 0,
 };
@@ -161,14 +164,14 @@ describe("mergeShardChunks", () => {
 // Size routing through parse().
 // ---------------------------------------------------------------------------
 
-describe("GoogleDocAiProvider.parse — size routing", () => {
+describe("GoogleDocAiProvider.parse — size routing (batch opted in)", () => {
   function onlineFetch(): void {
     fetchMock.mockResolvedValue(
       jsonResponse({ document: { text: "hi", pages: [{ pageNumber: 1 }] } }),
     );
   }
 
-  it("routes a small doc (<=15pg) to online :process WITHOUT imagelessMode", async () => {
+  it("keeps a doc within one slice (<=15pg) on a single online :process, no batch", async () => {
     onlineFetch();
     const provider = new GoogleDocAiProvider(payload());
     await provider.parse({ filename: "a.pdf", mimeType: "application/pdf", fileBuffer: await makePdf(10) });
@@ -176,21 +179,22 @@ describe("GoogleDocAiProvider.parse — size routing", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toContain(":process");
+    expect(url).not.toContain(":batchProcess");
     expect(JSON.parse(init.body as string).imagelessMode).toBeUndefined();
   });
 
-  it("routes a 16–30pg doc to online :process WITH imagelessMode", async () => {
-    onlineFetch();
+  it("routes a doc larger than the slice size to batch (not online) when opted in", async () => {
+    installBatchRouter([paraDoc("Alpha", 1, 0)]);
     const provider = new GoogleDocAiProvider(payload());
+    // 20pg > the 15pg slice size → batch, because parse_mode="batch" is set.
     await provider.parse({ filename: "a.pdf", mimeType: "application/pdf", fileBuffer: await makePdf(20) });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toContain(":process");
-    expect(JSON.parse(init.body as string).imagelessMode).toBe(true);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes(":batchProcess"))).toBe(true);
+    expect(urls.some((u) => u.includes(":process"))).toBe(false);
   });
 
-  it("falls back to online :process when the page count is unknown (non-PDF)", async () => {
+  it("falls back to a single online :process when the page count is unknown (non-PDF)", async () => {
     onlineFetch();
     const provider = new GoogleDocAiProvider(payload());
     await provider.parse({ filename: "a.png", mimeType: "image/png", fileBuffer: Buffer.from("PNGDATA") });
@@ -327,9 +331,9 @@ describe("GoogleDocAiProvider.parse — full batch flow", () => {
     expect(deletes.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("throws when batch requires a bucket but none is configured", async () => {
+  it("throws when batch is opted in but no bucket is configured", async () => {
     const provider = new GoogleDocAiProvider(
-      payload({ config: { project_id: "p", processor_id: "q" } }),
+      payload({ config: { project_id: "p", processor_id: "q", parse_mode: "batch" } }),
     );
     await expect(
       provider.parse({ filename: "p.pdf", mimeType: "application/pdf", fileBuffer: await makePdf(40) }),
