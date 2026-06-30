@@ -905,17 +905,27 @@ function resolveScalar(
       // Numeric strings: use bounded matching to avoid "$1,000" inside "$1,000,000"
       result = findNumericBounded(markdown, value);
       if (!result) result = findDollarAmount(markdown, value);
+    } else if (value.length <= 4) {
+      // Short codes (2-letter state abbreviations, etc.) must ONLY match at a
+      // word boundary. An unbounded substring search matches the code inside a
+      // longer word — the classic "NC" inside "I·nc·orporation", which then
+      // highlights "Articles of Incorporation" for a state field. So: try a
+      // word-boundary match, then expand a 2-letter state code to its full name
+      // (NC → "North Carolina") and match that. Never fall through to the
+      // substring matchers below — better no highlight than a confidently wrong
+      // one (findExact/findCaseInsensitive/findNormalized are all unbounded).
+      // The date/multi-line/fuzzy fallbacks below are no-ops for ≤4-char values
+      // anyway (date needs ≥8 chars, multi-line needs a comma, fuzzy needs ≥6).
+      result = findWordBoundary(markdown, value);
+      if (!result && /^[A-Z]{2}$/i.test(value)) {
+        result = findStateName(markdown, value);
+      }
     } else {
-      if (value.length <= 4) {
-        result = findWordBoundary(markdown, value);
-      }
-      if (!result) {
-        result =
-          findExact(markdown, value) ??
-          findWithEntities(markdown, value) ??
-          findCaseInsensitive(markdown, value) ??
-          findNormalized(markdown, value);
-      }
+      result =
+        findExact(markdown, value) ??
+        findWithEntities(markdown, value) ??
+        findCaseInsensitive(markdown, value) ??
+        findNormalized(markdown, value);
       if (!result && /^[A-Z]{2}$/.test(value)) {
         result = findStateName(markdown, value);
       }
