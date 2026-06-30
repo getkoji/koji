@@ -460,6 +460,9 @@ def run_doc(
     schema: str = typer.Argument(..., help="Schema slug or path to a local schema YAML."),
     entry: str = typer.Argument(..., help="Corpus entry id or filename to extract."),
     model: str = typer.Option(None, "--model", help="Override the extraction model."),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Force a fresh parse, bypassing (and refreshing) the parse cache."
+    ),
     provenance: bool = typer.Option(False, "--provenance", help="Show the source snippet each value came from."),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
@@ -468,6 +471,7 @@ def run_doc(
 
     Uses the LOCAL schema YAML if a file is found (so you can iterate without
     pushing); otherwise the server's latest version. Mirrors the Build tab's Run.
+    Pass --no-cache to re-parse from scratch (e.g. after switching parse providers).
     """
     base_url, headers = resolve_api(profile_name)
     slug, local_yaml, _ = _load_schema_arg(schema)
@@ -488,6 +492,8 @@ def run_doc(
         body: dict = {"corpus_entry_id": matched["id"], "schema_yaml": local_yaml}
         if model:
             body["model"] = model
+        if no_cache:
+            body["skip_cache"] = True
         resp = client.post(
             f"{base_url}/api/extract/run",
             json=body,

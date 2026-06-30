@@ -284,11 +284,13 @@ export function resolveNextSteps(edges: TestEdge[], output: Record<string, unkno
 export async function handleDagRun(job: QueuedJob): Promise<void> {
   const db = _db!;
   const storage = _storage!;
-  const { documentId, pipelineId, startStepId, inheritedOutputs } = job.payload as {
+  const { documentId, pipelineId, startStepId, inheritedOutputs, skipCache } = job.payload as {
     documentId: string;
     pipelineId: string;
     startStepId?: string | null;
     inheritedOutputs?: Record<string, Record<string, unknown>>;
+    /** Force a fresh parse, bypassing + refreshing the parse cache (rerun --no-cache). */
+    skipCache?: boolean;
   };
   const tenantId = job.tenantId;
 
@@ -385,6 +387,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           contentHash: doc.contentHash,
         },
         parseFingerprint,
+        { skipCache },
       );
       docText = parseResult.markdown;
       pageCount = parseResult.pages ?? undefined;

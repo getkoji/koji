@@ -258,12 +258,14 @@ Run one corpus document through a schema and show the extraction — the Build t
 koji run insurance_policy "10th street townes.pdf"   # match a doc by filename
 koji run insurance_policy 561c6e69                    # …or by id (prefix is fine)
 koji run insurance_policy 561c6e69 --provenance       # show the source snippet per value
+koji run insurance_policy 561c6e69 --no-cache         # force a fresh parse (bypass the parse cache)
 koji run insurance_policy 561c6e69 --json             # raw extraction for an agent
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--model` | Override the extraction model. |
+| `--no-cache` | Force a fresh parse, bypassing **and refreshing** the parse cache. The cache is keyed per parse provider, so switching providers already re-parses — this is the belt-and-suspenders override (e.g. re-parse the same provider from scratch). |
 | `--provenance` | Show the source snippet each value came from. |
 | `--json` | Emit raw JSON. |
 | `--profile`, `-p` | CLI profile to use. |
