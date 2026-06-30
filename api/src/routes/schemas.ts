@@ -8,7 +8,7 @@ import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
 import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
-import { extractFields } from "../extract";
+import { extractFields, toProvenanceTextMap } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues, type ValueDiff } from "../extract/value-compare";
 import { and, isNull, isNotNull } from "drizzle-orm";
@@ -1114,13 +1114,11 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         continue;
       }
 
-      // Extract — pass text_map for bounding box resolution
-      // Convert flat coords to TextMap format (bbox object)
-      const provenanceTextMap = textMap?.map((seg) => ({
-        text: seg.text,
-        page: seg.page,
-        bbox: { x: seg.x, y: seg.y, w: seg.w, h: seg.h },
-      }));
+      // Extract — pass text_map for bounding box resolution.
+      // Convert flat parse-layer coords to the nested provenance TextMap via
+      // the shared converter (same one the build path uses — keeps them from
+      // drifting).
+      const provenanceTextMap = textMap ? toProvenanceTextMap(textMap) : undefined;
       const extractResult = await extractFields(markdown, schemaDef, provider, extractModel, provenanceTextMap);
 
       results.push({

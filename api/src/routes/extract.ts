@@ -6,7 +6,8 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
-import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
+import { createProvider, extractFields, extractKVPairs, kvPairsSummary, toProvenanceTextMap } from "../extract";
+import type { FlatTextMapSegment } from "../extract";
 import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
 import { buildEffectiveParseProvider } from "../ingestion/process";
 import {
@@ -215,7 +216,9 @@ extract.post("/process", requires("job:run"), async (c) => {
     schemaDef,
     provider,
     modelStr,
-    (parseResult.text_map as any[]) ?? undefined,
+    parseResult.text_map
+      ? toProvenanceTextMap(parseResult.text_map as FlatTextMapSegment[])
+      : undefined,
     (parseResult.chunks as any[]) ?? undefined,
   );
 
@@ -493,7 +496,9 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         schemaDef,
         extractProvider,
         extractModel,
-        (parseResult.text_map as any[]) ?? undefined,
+        parseResult.text_map
+          ? toProvenanceTextMap(parseResult.text_map as FlatTextMapSegment[])
+          : undefined,
         (parseResult.chunks as any[]) ?? undefined,
       );
 
@@ -664,7 +669,9 @@ async function handleExtractRunJSON(
       schemaDef,
       extractProvider,
       extractModel,
-      (parseResult.text_map as any[]) ?? undefined,
+      parseResult.text_map
+        ? toProvenanceTextMap(parseResult.text_map as FlatTextMapSegment[])
+        : undefined,
       (parseResult.chunks as any[]) ?? undefined,
     ) as unknown as Record<string, unknown>;
 
