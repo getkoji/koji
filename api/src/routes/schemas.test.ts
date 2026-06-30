@@ -13,6 +13,15 @@
 import { describe, it, expect } from "vitest";
 import { resolvePermissions } from "../auth/roles";
 import { extractFieldMetas } from "../schemas/field-meta";
+import { computeValidateResult } from "./schemas";
+
+type Result = {
+  entryId: string;
+  filename: string;
+  groundTruth: Record<string, unknown>;
+  extracted: Record<string, unknown>;
+  confidenceScores: Record<string, number>;
+};
 
 describe("schema field-metadata route — permissions", () => {
   it("viewer can read schema fields (schema:read)", () => {
@@ -73,5 +82,54 @@ fields:
   it("each FieldMeta carries name + type at minimum", () => {
     const response = fieldMetaResponse("fields:\n  a:\n    type: string\n");
     expect(response.fields[0]).toMatchObject({ name: "a", type: "string" });
+  });
+});
+
+describe("computeValidateResult — parse failures are surfaced, not silently dropped (oss-308)", () => {
+  // A doc that perfectly matches ground truth (one field, exact value) → passes.
+  const passingDoc: Result = {
+    entryId: "entry_pass",
+    filename: "good.pdf",
+    groundTruth: { policy_number: "ABC-123" },
+    extracted: { policy_number: "ABC-123" },
+    confidenceScores: { policy_number: 1 },
+  };
+
+  it("a doc that failed to parse appears in `parseFailures` and is NOT silently absent", () => {
+    const failures = [
+      { entryId: "entry_fail", filename: "scanned.pdf", error: "parse returned empty markdown" },
+    ];
+    const out = computeValidateResult([passingDoc], new Map(), 1, Date.now() - 5, failures);
+
+    // The failed doc is visible — not vanished.
+    expect(out.parseFailures).toHaveLength(1);
+    expect(out.parseFailures[0]).toMatchObject({
+      entryId: "entry_fail",
+      filename: "scanned.pdf",
+      error: "parse returned empty markdown",
+    });
+    // It is NOT counted among the scored/passing docs.
+    expect(out.docsPassed).toBe(1); // only the genuinely-passing doc
+    expect(out.failingDocs.find((d) => d.id === "entry_fail")).toBeUndefined();
+  });
+
+  it("docsTotal counts attempted docs (results + failures) so accuracy isn't inflated", () => {
+    const failures = [
+      { entryId: "entry_fail", filename: "scanned.pdf", error: "file not found in storage" },
+    ];
+    const out = computeValidateResult([passingDoc], new Map(), 1, Date.now(), failures);
+
+    // 1 scored + 1 failed = 2 attempted. A dropped doc can't shrink the denominator.
+    expect(out.docsTotal).toBe(2);
+    expect(out.docsPassed).toBe(1);
+    // Field-level accuracy is computed only over docs that produced an extraction,
+    // but the failure remains visible in docsTotal + parseFailures for honesty.
+    expect(out.overallAccuracy).toBe(100);
+  });
+
+  it("is backward-compatible: omitting parseFailures yields [] and docsTotal == results.length", () => {
+    const out = computeValidateResult([passingDoc], new Map(), 1, Date.now());
+    expect(out.parseFailures).toEqual([]);
+    expect(out.docsTotal).toBe(1);
   });
 });

@@ -15,6 +15,8 @@ import { and, isNull, isNotNull } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { resolveMimeType } from "../ingestion/mime";
+import { resolveBuildParse } from "./extract";
+import { getOrParse } from "../ingestion/process";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -924,6 +926,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       filename: schema.corpusEntries.filename,
       storageKey: schema.corpusEntries.storageKey,
       mimeType: schema.corpusEntries.mimeType,
+      contentHash: schema.corpusEntries.contentHash,
       groundTruthJson: schema.corpusEntries.groundTruthJson,
     })
       .from(schema.corpusEntries)
@@ -1049,28 +1052,67 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     }
   }
 
+  // Resolve the tenant's BYO parse provider ONCE before the loop. Validate must
+  // parse with the SAME provider production (`run`/ingestion) uses, not the
+  // global default (`c.get("parseProvider")`) — otherwise scanned/degraded docs
+  // that only the tenant's Doc AI handles parse empty here and get silently
+  // dropped, surfacing downstream as expected=None/got=None (oss-308). Falls
+  // back to the default provider when no endpoint is configured. `resolveBuildParse`
+  // is the same helper the run path uses (resolveTenantParse + buildEffectiveParseProvider).
+  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveBuildParse(
+    db,
+    tenantId,
+    c.get("parseProvider"),
+    c.get("parseConfig"),
+  );
+
+  // Per-doc parse failures — surfaced in the response instead of being silently
+  // dropped from `results` (which masqueraded as "no ground truth"). Each entry
+  // lands in exactly one of `results` or `parseFailures` (oss-308).
+  const parseFailures: Array<{ entryId: string; filename: string; error: string }> = [];
+
   // Run extractions directly (no HTTP loopback — works on Vercel)
   for (const entry of entriesWithGT) {
     try {
       // Get file from storage
       const fileResult = await storage.getBuffer(entry.storageKey);
-      if (!fileResult) continue;
-
-      // Parse the document (use parse provider)
-      const parseProvider = c.get("parseProvider") as any;
-      let markdown = "";
-      let textMap: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> | undefined;
-      if (parseProvider) {
-        const parseResult = await parseProvider.parse({
-          filename: entry.filename,
-          mimeType: entry.mimeType ?? "application/pdf",
-          fileBuffer: fileResult.data,
-        });
-        markdown = parseResult.markdown;
-        textMap = parseResult.text_map;
+      if (!fileResult) {
+        const error = "file not found in storage";
+        console.warn(`[validate] ${entry.filename}: ${error}`);
+        parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
+        continue;
       }
 
-      if (!markdown) continue;
+      // Parse via the resolved tenant provider + the shared parse cache so a doc
+      // already parsed by `run`/ingestion is reused (run/validate cache parity)
+      // and no redundant re-parse cost/timeout is incurred. MIME is normalized
+      // with the buffer so a sloppy stored value never hard-fails the parse (#401).
+      const mimeType = resolveMimeType(entry.mimeType, entry.filename, fileResult.data);
+      const parsed = await getOrParse(
+        db,
+        storage,
+        parseProvider,
+        tenantId,
+        {
+          id: entry.id,
+          storageKey: entry.storageKey,
+          filename: entry.filename,
+          mimeType,
+          contentHash: entry.contentHash,
+        },
+        parseFingerprint,
+      );
+      const markdown = parsed.markdown;
+      const textMap = parsed.textMap as
+        | Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>
+        | undefined;
+
+      if (!markdown) {
+        const error = "parse returned empty markdown";
+        console.warn(`[validate] ${entry.filename}: ${error}`);
+        parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
+        continue;
+      }
 
       // Extract — pass text_map for bounding box resolution
       // Convert flat coords to TextMap format (bbox object)
@@ -1089,7 +1131,9 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         confidenceScores: (extractResult.confidence_scores as Record<string, number>) ?? {},
       });
     } catch (err) {
-      console.warn(`[validate] Failed to extract ${entry.filename}:`, err instanceof Error ? err.message : err);
+      const error = err instanceof Error ? err.message : String(err);
+      console.warn(`[validate] Failed to extract ${entry.filename}:`, error);
+      parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
     }
   }
 
@@ -1099,10 +1143,12 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       tx.update(schema.schemaRuns).set({ status: "failed", completedAt: new Date(), errorMessage: "All extractions failed" })
         .where(eq(schema.schemaRuns.id, schemaRun.id))
     );
-    return c.json({ error: "All extractions failed" }, 502);
+    // Surface the per-doc reasons so an all-failed run is debuggable instead of
+    // an opaque 502 (oss-308).
+    return c.json({ error: "All extractions failed", parseFailures }, 502);
   }
 
-  const validateResult = computeValidateResult(results, prevExtractedMap, versionNumber, startTime);
+  const validateResult = computeValidateResult(results, prevExtractedMap, versionNumber, startTime, parseFailures);
 
   // Update schema_run with results
   await withRLS(db, tenantId, (tx) =>
@@ -1138,11 +1184,18 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 });
 
 /** Compare extraction results against ground truth and compute accuracy/regressions. */
-function computeValidateResult(
+export function computeValidateResult(
   results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number> }>,
   prevExtractedMap: Map<string, Record<string, unknown>>,
   schemaVersion: number,
   startTime: number,
+  /**
+   * Docs that failed to parse/extract and never made it into `results`. Threaded
+   * through so they're visible in the response (`parseFailures`) and counted in
+   * `docsTotal` — a dropped doc must not silently inflate accuracy (oss-308).
+   * Defaults to `[]` for the GET (read-only) caller that has no failure list.
+   */
+  parseFailures: Array<{ entryId: string; filename: string; error: string }> = [],
 ) {
   const allFields = new Set<string>();
   for (const r of results) {
@@ -1194,7 +1247,10 @@ function computeValidateResult(
   return {
     overallAccuracy,
     prevAccuracy: null,
-    docsTotal: results.length,
+    // Attempted docs = scored docs + docs that failed to parse/extract. Counting
+    // failures keeps accuracy honest — a dropped doc can't silently shrink the
+    // denominator (oss-308).
+    docsTotal: results.length + parseFailures.length,
     docsPassed: results.length - failingDocsMap.size,
     fieldCount: fieldResults.length,
     durationMs: Date.now() - startTime,
@@ -1205,6 +1261,9 @@ function computeValidateResult(
     regressions: fieldResults.filter((f) => f.status === "regressed"),
     fields: fieldResults,
     failingDocs: Array.from(failingDocsMap.values()),
+    // Docs that never produced an extraction (parse/storage/extract failure).
+    // Additive field — read-only callers omit it and get [].
+    parseFailures,
   };
 }
 
