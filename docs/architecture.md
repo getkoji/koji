@@ -78,7 +78,9 @@ The API automatically routes documents to the fastest parser that can handle the
 | Images (JPEG, PNG, TIFF, etc.) | **Docling** | Slow | Detected by MIME type or extension |
 | Other formats (DOCX, HTML, etc.) | **Docling** | Slow | Everything that isn't a PDF or image |
 
-This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt (heavy 1-2 character fragmentation, as seen historically on some carrier PDFs), the request falls back to Docling automatically with zero caller-side changes.
+This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt (heavy 1-2 character fragmentation, as seen historically on some carrier PDFs), the request falls back to Docling automatically with zero caller-side changes. When the text layer can't be determined at all (corrupt or encrypted header, unexpected parse error), the document is treated conservatively as scanned and routed to the heavy provider — which reads both scanned and digital PDFs — so it never silently ships empty markdown.
+
+> **Serverless note.** pdfjs-dist's Node build references the browser globals `DOMMatrix`, `ImageData`, and `Path2D` at import time and tries to source them from its optional native dependency `@napi-rs/canvas`. That native binary fails to load in some serverless runtimes (e.g. Vercel functions), which would make every digital PDF crash the pdfjs path. Koji loads pdfjs through a single wrapper (`api/src/parse/pdfjs-loader.ts`) that installs pure-JS polyfills for those globals first, so text extraction works without the native module — no canvas binary is shipped.
 
 #### Bring-your-own parse (per-tenant providers)
 

@@ -27,6 +27,8 @@
  * current behaviour, never a surprise structured-provider call.
  */
 
+import { loadPdfjs } from "./pdfjs-loader";
+
 export type ContentShape = "table_heavy" | "text_heavy";
 
 /** A positioned text run sampled from a page (pdfjs item geometry). */
@@ -160,7 +162,7 @@ export async function classifyContentShape(
   if (!isPdf) return "text_heavy";
 
   try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const pdfjsLib = await loadPdfjs();
     const doc = await pdfjsLib.getDocument({
       data: new Uint8Array(fileBuffer),
       verbosity: 0,
