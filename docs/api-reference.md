@@ -929,6 +929,8 @@ Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a
 
 **Response** `200 OK` — the validate result plus `version` (semver label), `bump`, and `deduped`. Requires corpus ground truth (`400` otherwise). The candidate is **not** activated.
 
+Documents are parsed with the tenant's configured parse provider (the same one the live extraction path uses), falling back to the system default when none is configured, and reuse the shared parse cache. Any corpus entry that fails to parse or extract is reported in a `parseFailures` array (`[{ entryId, filename, error }]`) rather than being silently dropped, and `docsTotal` counts every attempted document (scored + failed) so accuracy is not inflated by dropped docs.
+
 ### `GET /api/schemas/{slug}/versions`
 
 The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
