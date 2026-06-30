@@ -8,8 +8,14 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
+import { buildEffectiveParseProvider } from "../ingestion/process";
 import {
-  DEFAULT_PARSE_FINGERPRINT,
+  resolveTenantParse,
+  type ResolvedTenantParse,
+} from "../parse/resolve-tenant-parse";
+import type { ParseProvider } from "../parse/provider";
+import {
+  parseCacheFingerprint,
   parseCacheStorageKey,
 } from "../parse/cache-fingerprint";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
@@ -71,6 +77,52 @@ async function checkPreflightLimits(
   );
 
   return checkPreflight(limits, pages, fileSizeMb);
+}
+
+/**
+ * Resolve the parse provider build/test mode should use for one tenant.
+ *
+ * Test mode must match production: the dashboard build page parses through the
+ * *same* BYO parse provider the production ingestion path would use, instead of
+ * always falling back to the system default (docling). This mirrors
+ * `handleIngestionProcess` — `resolveTenantParse` (the tenant's active parse
+ * endpoint) wrapped by `buildEffectiveParseProvider`.
+ *
+ * Dormant-until-configured: when the tenant has no parse endpoint (or no driver
+ * is registered, or `parseConfig` is absent), `resolveTenantParse` returns null
+ * and `buildEffectiveParseProvider` hands back the exact default provider — so
+ * behavior is byte-for-byte identical to before BYO parse.
+ *
+ * Resolution failures never block the build run; we log and fall back to the
+ * default provider.
+ *
+ * Returns the effective provider plus its parse-cache fingerprint, so the build
+ * path keys/caches under the resolved provider — matching production (oss-298).
+ *
+ * `parseProviderId` honors a pipeline-pinned parse endpoint when the build is
+ * scoped to a pipeline. The current build page is schema-scoped and sends no
+ * pipeline, so it resolves the tenant's active endpoint (pin = null).
+ */
+export async function resolveBuildParse(
+  db: any,
+  tenantId: string,
+  defaultProvider: ParseProvider,
+  parseConfig: Env["Variables"]["parseConfig"],
+  parseProviderId: string | null = null,
+): Promise<{ provider: ParseProvider; fingerprint: string }> {
+  let resolved: ResolvedTenantParse | null = null;
+  if (parseConfig) {
+    try {
+      resolved = await resolveTenantParse(db, tenantId, { parseProviderId });
+    } catch (err) {
+      console.warn(
+        "[extract/run] parse provider resolution failed, using default:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  const provider = await buildEffectiveParseProvider(parseConfig, defaultProvider, resolved);
+  return { provider, fingerprint: parseCacheFingerprint(resolved) };
 }
 
 
@@ -231,10 +283,19 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   }
   const fileBuffer = fileResult.data;
 
-  // Check parse cache. Build mode parses with the default provider, so the
-  // cache is keyed under the default fingerprint (oss-298). `skip_cache` (the
-  // build page's "Re-parse" affordance) bypasses the lookup to force a fresh
-  // parse for iterative testing.
+  // Resolve the tenant's BYO parse provider — test mode must match production.
+  // Falls back to the default provider when none is configured (oss-299).
+  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveBuildParse(
+    db,
+    tenantId,
+    c.get("parseProvider"),
+    c.get("parseConfig"),
+  );
+
+  // Check parse cache. Build mode now parses with the tenant's resolved
+  // provider, so the cache is keyed under that provider's fingerprint — matching
+  // production (oss-298/oss-299). `skip_cache` (the build page's "Re-parse"
+  // affordance) bypasses the lookup to force a fresh parse for iterative testing.
   const skipCache = body.skip_cache === true;
   const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
   const [cached] = skipCache
@@ -249,7 +310,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           .where(and(
             eq(schema.parseCache.tenantId, tenantId),
             eq(schema.parseCache.fileHash, fileHash),
-            eq(schema.parseCache.providerFingerprint, DEFAULT_PARSE_FINGERPRINT),
+            eq(schema.parseCache.providerFingerprint, parseFingerprint),
           ))
           .limit(1),
       );
@@ -274,7 +335,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   const accept = c.req.header("accept") ?? "";
   if (!accept.includes("text/event-stream")) {
     // Non-streaming JSON path
-    return handleExtractRunJSON(c, entry, fileBuffer, body.schema_yaml, body.model, tenantId, db, storage, fileHash, parseResult, body.corpus_entry_id, principal.userId, body.schema_run_id);
+    return handleExtractRunJSON(c, entry, fileBuffer, body.schema_yaml, body.model, tenantId, db, storage, fileHash, parseResult, body.corpus_entry_id, principal.userId, parseProvider, parseFingerprint, body.schema_run_id);
   }
 
   // ── SSE streaming path ──
@@ -303,7 +364,6 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         });
       } else {
         try {
-          const parseProvider = c.get("parseProvider");
           const parsed = await parseProvider.parse({
             filename: entry.filename,
             mimeType: entry.mimeType,
@@ -316,10 +376,10 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
             text_map: parsed.text_map ?? [],
             chunks: parsed.chunks ?? undefined,
           };
-          // Cache the fresh parse under the default fingerprint (build mode uses
-          // the default provider). Upsert so a forced re-parse refreshes it.
+          // Cache the fresh parse under the resolved provider's fingerprint
+          // (oss-299). Upsert so a forced re-parse refreshes it.
           try {
-            const cacheKey = parseCacheStorageKey(tenantId, fileHash, DEFAULT_PARSE_FINGERPRINT);
+            const cacheKey = parseCacheStorageKey(tenantId, fileHash, parseFingerprint);
             const cacheData = Buffer.from(JSON.stringify({
               markdown: parsed.markdown,
               pages: parsed.pages,
@@ -333,7 +393,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
               tx.insert(schema.parseCache).values({
                 tenantId,
                 fileHash,
-                providerFingerprint: DEFAULT_PARSE_FINGERPRINT,
+                providerFingerprint: parseFingerprint,
                 storageKey: cacheKey,
                 pages: (parsed.pages as number) ?? 0,
                 ocrSkipped: parsed.ocr_skipped ? "true" : "false",
@@ -469,6 +529,8 @@ async function handleExtractRunJSON(
   cachedParse: Record<string, unknown> | null,
   corpusEntryId: string,
   userId: string,
+  parseProvider: ParseProvider,
+  parseFingerprint: string,
   schemaRunId?: string,
 ) {
   let parseResult: Record<string, unknown>;
@@ -477,9 +539,9 @@ async function handleExtractRunJSON(
     // Cache hit
     parseResult = cachedParse;
   } else {
-    // Cache miss — parse via ParseProvider (smart routing, text_map, etc.)
+    // Cache miss — parse via the resolved ParseProvider (smart routing,
+    // text_map, etc.). Provider was resolved by the caller (oss-299).
     try {
-      const parseProvider = c.get("parseProvider");
       const parsed = await parseProvider.parse({
         filename: entry.filename,
         mimeType: entry.mimeType,
@@ -498,10 +560,10 @@ async function handleExtractRunJSON(
       }, 502);
     }
 
-    // Store in cache (provider-aware key; build mode uses the default
-    // provider → default fingerprint). Upsert so a forced re-parse refreshes.
+    // Store in cache (provider-aware key; build mode keys under the resolved
+    // provider's fingerprint — oss-299). Upsert so a forced re-parse refreshes.
     try {
-      const cacheKey = parseCacheStorageKey(tenantId, fileHash, DEFAULT_PARSE_FINGERPRINT);
+      const cacheKey = parseCacheStorageKey(tenantId, fileHash, parseFingerprint);
       const cacheData = Buffer.from(JSON.stringify({
         markdown: parseResult.markdown,
         pages: parseResult.pages,
@@ -519,7 +581,7 @@ async function handleExtractRunJSON(
         tx.insert(schema.parseCache).values({
           tenantId,
           fileHash,
-          providerFingerprint: DEFAULT_PARSE_FINGERPRINT,
+          providerFingerprint: parseFingerprint,
           storageKey: cacheKey,
           pages: parseResult.pages as number ?? 0,
           ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
