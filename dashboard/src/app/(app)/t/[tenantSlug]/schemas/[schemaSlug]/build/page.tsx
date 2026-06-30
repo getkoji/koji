@@ -190,6 +190,7 @@ export default function BuildPage() {
       checks: Array<{ name: string; ok: boolean; detail?: Record<string, unknown> }>;
     };
     error?: string;
+    detail?: string;
   } | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
@@ -429,7 +430,8 @@ export default function BuildPage() {
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        setExtractionResult({ extracted: {}, confidence: 0, error: (err as { error?: string }).error ?? `HTTP ${resp.status}` });
+        const errBody = err as { error?: string; detail?: string };
+        setExtractionResult({ extracted: {}, confidence: 0, error: errBody.error ?? `HTTP ${resp.status}`, detail: errBody.detail });
         setExtracting(false);
         setParseProgress(null);
         return;
@@ -496,7 +498,7 @@ export default function BuildPage() {
         // JSON fallback path
         const result = await resp.json();
         if (result.error) {
-          setExtractionResult({ extracted: {}, confidence: 0, error: result.error });
+          setExtractionResult({ extracted: {}, confidence: 0, error: result.error, detail: result.detail });
         } else {
           setExtractionResult(result);
           setEditorTab("results");
@@ -888,7 +890,12 @@ export default function BuildPage() {
                   <div className="p-3">
                     {extractionResult.error ? (
                       <div className="text-[12px] text-vermillion-2 font-mono bg-vermillion-3/20 p-3 rounded-sm">
-                        {extractionResult.error}
+                        <div>{extractionResult.error}</div>
+                        {extractionResult.detail && extractionResult.detail !== extractionResult.error && (
+                          <div className="mt-2 text-[11px] text-vermillion-2/80 whitespace-pre-wrap break-words">
+                            {extractionResult.detail}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>

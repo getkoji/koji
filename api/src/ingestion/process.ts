@@ -593,6 +593,16 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       throw err;
     }
 
+    // Terminal failure: log the full error + stack server-side so parse/extract
+    // crashes are diagnosable (the doc only ends up with a short `msg`).
+    const te = err as { stack?: string; status?: number; detail?: string };
+    console.error(
+      `[ingestion.process] terminal failure for ${documentId}:`,
+      msg,
+      "| status:", te?.status ?? "n/a",
+      "| detail:", te?.detail ?? "n/a",
+      "\n", te?.stack ?? "(no stack)",
+    );
     await markDocFailed(db, tenantId, documentId, jobId, `Extraction failed: ${msg}`);
     // Best-effort: persist the partial trace so users can see exactly where
     // the run died. Swallow errors here — extraction failure is the thing
