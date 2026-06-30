@@ -14,6 +14,7 @@ import type { Db } from "@koji/db";
 import type { QueuedJob } from "../queue/provider";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
+import type { ParseConfig } from "../parse/factory";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { resolvePipelineSchemaVersion } from "./pipeline-schema-version";
 import { createProvider } from "../extract/providers";
@@ -21,18 +22,66 @@ import { extractFields } from "../extract/pipeline";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
+import { buildEffectiveParseProvider, readParseProviderPin, getOrParse } from "./process";
+import { resolveTenantParse, type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
+import { parseCacheFingerprint } from "../parse/cache-fingerprint";
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
 let _parseProvider: ParseProvider | null = null;
+// The ParseConfig the default provider was built from. Captured at init so the
+// DAG path can rebuild a per-tenant provider at call time (BYO parse), exactly
+// like `handleIngestionProcess`. When absent, per-call resolution is disabled
+// and the default provider is used for every tenant — identical to today.
+let _parseConfig: ParseConfig | null = null;
 
 export function initDagRunner(db: Db, storage: StorageProvider) {
   _db = db;
   _storage = storage;
 }
 
-export function setDagParseProvider(provider: ParseProvider) {
+export function setDagParseProvider(provider: ParseProvider, config?: ParseConfig) {
   _parseProvider = provider;
+  _parseConfig = config ?? null;
+}
+
+/**
+ * Resolve the parse provider the DAG runner should use for one tenant.
+ *
+ * Parity with `handleIngestionProcess` / `resolveBuildParse`: walk the tenant's
+ * BYO parse endpoint (honoring a pipeline-pinned `parse_provider_id`) and wrap
+ * it via `buildEffectiveParseProvider`. Dormant-until-configured — when the
+ * tenant has no parse endpoint (or no driver is registered, or `parseConfig` is
+ * absent), `resolveTenantParse` returns null and `buildEffectiveParseProvider`
+ * hands back the exact default provider, so behavior is byte-for-byte identical
+ * to pre-BYO-parse. Resolution failures never block the run; we log and fall
+ * back to the default provider.
+ *
+ * Returns the effective provider plus its parse-cache fingerprint, so the DAG
+ * path keys/caches under the resolved provider — matching production (oss-298).
+ *
+ * Exported for unit testing the dormant fallback + pinned resolution.
+ */
+export async function resolveDagParse(
+  db: Db,
+  tenantId: string,
+  defaultProvider: ParseProvider,
+  parseConfig: ParseConfig | null,
+  parseProviderId: string | null = null,
+): Promise<{ provider: ParseProvider; fingerprint: string }> {
+  let resolved: ResolvedTenantParse | null = null;
+  if (parseConfig) {
+    try {
+      resolved = await resolveTenantParse(db, tenantId, { parseProviderId });
+    } catch (err) {
+      console.warn(
+        "[dag-runner] parse provider resolution failed, using default:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  const provider = await buildEffectiveParseProvider(parseConfig, defaultProvider, resolved);
+  return { provider, fingerprint: parseCacheFingerprint(resolved) };
 }
 
 /** Shared split execution — used by both main path and branch fan-out. */
@@ -251,6 +300,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       filename: schema.documents.filename,
       storageKey: schema.documents.storageKey,
       mimeType: schema.documents.mimeType,
+      contentHash: schema.documents.contentHash,
       fileSize: schema.documents.fileSize,
       groupKey: schema.documents.groupKey,
     })
@@ -272,6 +322,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
     tx.select({
       yamlSource: schema.pipelines.yamlSource,
       modelProviderId: schema.pipelines.modelProviderId,
+      configJson: schema.pipelines.configJson,
     })
     .from(schema.pipelines)
     .where(eq(schema.pipelines.id, pipelineId))
@@ -306,24 +357,45 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   let chunks: Chunk[] = [];
   try {
     if (_parseProvider) {
-      const file = await storage.getBuffer(doc.storageKey);
-      if (file) {
-        const parseResult = await _parseProvider.parse({
+      // Resolve the tenant's BYO parse provider — DAG pipelines must honor the
+      // tenant's configured parse engine (and a pipeline-pinned override) the
+      // same way the single-doc ingestion path does. Falls back to the default
+      // provider when none is configured (dormant-until-configured).
+      const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveDagParse(
+        db,
+        tenantId,
+        _parseProvider,
+        _parseConfig,
+        readParseProviderPin(pipeline.configJson),
+      );
+      // Provider-aware parse cache (oss-298): keyed under the resolved provider's
+      // fingerprint, so switching/editing the parse provider re-parses instead of
+      // serving a stale cache from a different provider. Shared with production
+      // ingestion + build mode via the same `getOrParse` helper.
+      const parseResult = await getOrParse(
+        db,
+        storage,
+        parseProvider,
+        tenantId,
+        {
+          id: doc.id,
+          storageKey: doc.storageKey,
           filename: doc.filename,
           mimeType: doc.mimeType,
-          fileBuffer: file.data,
-        });
-        docText = parseResult.markdown;
-        pageCount = parseResult.pages ?? undefined;
-        // Searchable PDFs are no longer written here — see process.ts.
-        // Chunk the parsed markdown and persist
-        chunks = chunkMarkdown(docText);
-        await withRLS(db, tenantId, (tx) =>
-          tx.update(schema.documents)
-            .set({ chunksJson: chunks, pageCount })
-            .where(eq(schema.documents.id, documentId)),
-        );
-      }
+          contentHash: doc.contentHash,
+        },
+        parseFingerprint,
+      );
+      docText = parseResult.markdown;
+      pageCount = parseResult.pages ?? undefined;
+      // Searchable PDFs are no longer written here — see process.ts.
+      // Chunk the parsed markdown and persist
+      chunks = chunkMarkdown(docText);
+      await withRLS(db, tenantId, (tx) =>
+        tx.update(schema.documents)
+          .set({ chunksJson: chunks, pageCount })
+          .where(eq(schema.documents.id, documentId)),
+      );
     }
   } catch (err) {
     console.error(`[dag-runner] Parse failed for ${doc.filename}:`, (err as Error).message);

@@ -1040,7 +1040,7 @@ async function overwriteParseCache(
  *
  * For large digital PDFs this turns repeat runs from minutes into milliseconds.
  */
-async function getOrParse(
+export async function getOrParse(
   db: Db,
   storage: StorageProvider,
   parseProvider: ParseProvider,
@@ -1054,7 +1054,7 @@ async function getOrParse(
   },
   parseFingerprint: string = DEFAULT_PARSE_FINGERPRINT,
   opts?: { skipCache?: boolean },
-): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[] }> {
+): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[]; pages?: number }> {
   const fileHash = document.contentHash;
   const skipCache = opts?.skipCache ?? false;
 
@@ -1083,6 +1083,7 @@ async function getOrParse(
             text_map?: any[];
             engine?: string;
             chunks?: ParseChunk[];
+            pages?: number;
             parser_version?: number;
           };
           // Stale parser version → treat as a miss and re-parse (the live-parse
@@ -1094,7 +1095,7 @@ async function getOrParse(
             // OCR overlay Inngest function — it checks the cache and copies
             // to the per-doc storage key as its first step. Doing it again
             // here would race for no benefit.
-            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks };
+            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks, pages: payload.pages };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.
@@ -1179,6 +1180,7 @@ async function getOrParse(
     textMap: (parseResult.text_map as any[]) ?? undefined,
     engine: parseResult.engine,
     chunks: parseResult.chunks,
+    pages: parseResult.pages ?? undefined,
   };
 }
 

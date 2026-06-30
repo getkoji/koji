@@ -164,7 +164,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider, deps.parseConfig);
   initDagRunner(deps.db, deps.storage);
-  setDagParseProvider(deps.parseProvider);
+  setDagParseProvider(deps.parseProvider, deps.parseConfig);
   initBilling(billing);
 
   const app = new Hono<Env>();
