@@ -22,9 +22,8 @@ import { extractFields } from "../extract/pipeline";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
-import { buildEffectiveParseProvider, readParseProviderPin, getOrParse } from "./process";
-import { resolveTenantParse, type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
-import { parseCacheFingerprint } from "../parse/cache-fingerprint";
+import { readParseProviderPin, getOrParse } from "./process";
+import { resolveParse } from "./seam";
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
@@ -60,7 +59,11 @@ export function setDagParseProvider(provider: ParseProvider, config?: ParseConfi
  * Returns the effective provider plus its parse-cache fingerprint, so the DAG
  * path keys/caches under the resolved provider — matching production (oss-298).
  *
- * Exported for unit testing the dormant fallback + pinned resolution.
+ * Thin adapter over the shared {@link resolveParse} seam helper (oss-310) —
+ * `resolveBuildParse`, `resolveDagParse`, and the inline block in
+ * `handleIngestionProcess` were byte-for-byte identical and now share one
+ * implementation. Kept as a positional shim so existing call sites don't change
+ * during the incremental migration.
  */
 export async function resolveDagParse(
   db: Db,
@@ -69,19 +72,7 @@ export async function resolveDagParse(
   parseConfig: ParseConfig | null,
   parseProviderId: string | null = null,
 ): Promise<{ provider: ParseProvider; fingerprint: string }> {
-  let resolved: ResolvedTenantParse | null = null;
-  if (parseConfig) {
-    try {
-      resolved = await resolveTenantParse(db, tenantId, { parseProviderId });
-    } catch (err) {
-      console.warn(
-        "[dag-runner] parse provider resolution failed, using default:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  const provider = await buildEffectiveParseProvider(parseConfig, defaultProvider, resolved);
-  return { provider, fingerprint: parseCacheFingerprint(resolved) };
+  return resolveParse(db, tenantId, { parseProviderId, defaultProvider, parseConfig });
 }
 
 /** Shared split execution — used by both main path and branch fan-out. */
