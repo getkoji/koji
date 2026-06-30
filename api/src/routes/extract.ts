@@ -373,6 +373,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
             markdown: parsed.markdown,
             pages: parsed.pages,
             ocr_skipped: parsed.ocr_skipped,
+            engine: parsed.engine,
             text_map: parsed.text_map ?? [],
             chunks: parsed.chunks ?? undefined,
           };
@@ -384,6 +385,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
               markdown: parsed.markdown,
               pages: parsed.pages,
               ocr_skipped: parsed.ocr_skipped,
+              engine: parsed.engine,
               text_map: parsed.text_map ?? [],
               ...(parsed.chunks ? { chunks: parsed.chunks } : {}),
               parser_version: PARSE_VERSION,
@@ -494,6 +496,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           pages: parseResult.pages,
           parse_seconds: parseResult.elapsed_seconds,
           ocr_skipped: parseResult.ocr_skipped,
+          engine: parseResult.engine,
           model: extractResult.model,
           elapsed_ms: extractResult.elapsed_ms,
           extracted: extractResult.extracted,
@@ -551,6 +554,7 @@ async function handleExtractRunJSON(
         markdown: parsed.markdown,
         pages: parsed.pages,
         ocr_skipped: parsed.ocr_skipped,
+        engine: parsed.engine,
         text_map: parsed.text_map ?? [],
       };
     } catch (err: unknown) {
@@ -569,6 +573,7 @@ async function handleExtractRunJSON(
         pages: parseResult.pages,
         elapsed_seconds: parseResult.elapsed_seconds,
         ocr_skipped: parseResult.ocr_skipped,
+        engine: parseResult.engine,
         text_map: parseResult.text_map ?? [],
         parser_version: PARSE_VERSION,
       }));
@@ -669,6 +674,7 @@ async function handleExtractRunJSON(
         parse_seconds: parseResult.elapsed_seconds,
         ocr_skipped: parseResult.ocr_skipped,
         cached: !!cachedParse,
+        engine: parseResult.engine,
         model: extractResult.model,
         elapsed_ms: extractResult.elapsed_ms,
         extracted: extractResult.extracted,
@@ -687,6 +693,7 @@ async function handleExtractRunJSON(
         parse_seconds: parseResult.elapsed_seconds,
         ocr_skipped: parseResult.ocr_skipped,
         cached: !!cachedParse,
+        engine: parseResult.engine,
         model: extractResult.model,
         elapsed_ms: extractResult.elapsed_ms,
         extracted: extractResult.extracted,

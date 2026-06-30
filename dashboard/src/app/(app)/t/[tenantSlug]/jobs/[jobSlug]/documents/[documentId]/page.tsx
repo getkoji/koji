@@ -329,6 +329,13 @@ export default function TraceViewPage() {
     : data.schemaName ?? "—";
   const startedLabel = formatTimestamp(data.trace?.startedAt ?? data.startedAt ?? data.createdAt);
   const traceIdLabel = data.trace?.traceExternalId ?? "—";
+  // Parser engine that produced this document's markdown — read from the parse
+  // stage's recorded summary (`parse.summary_json.engine`). Surfacing only.
+  const parseStageRow = mergedStageRows.find((s) => s.stageName === "parse");
+  const parserLabel =
+    parseStageRow?.summaryJson && typeof parseStageRow.summaryJson === "object"
+      ? ((parseStageRow.summaryJson as Record<string, unknown>).engine as string | undefined) ?? null
+      : null;
 
   const header = (
     <>
@@ -356,6 +363,12 @@ export default function TraceViewPage() {
             <MetaItem label="Started" value={startedLabel} />
             <MetaDot />
             <MetaItem label="Schema" value={schemaLabel} />
+            {parserLabel && (
+              <>
+                <MetaDot />
+                <MetaItem label="Parser" value={parserLabel} />
+              </>
+            )}
           </>
         }
         actions={

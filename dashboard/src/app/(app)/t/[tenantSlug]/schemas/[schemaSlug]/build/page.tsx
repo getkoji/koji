@@ -176,6 +176,7 @@ export default function BuildPage() {
     provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; items?: Array<{ offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; properties?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> } | null> }> } | null>;
     markdown?: string;
     model?: string;
+    engine?: string;
     elapsed_ms?: number;
     parse_seconds?: number;
     ocr_skipped?: boolean;
@@ -896,6 +897,7 @@ export default function BuildPage() {
                           <span>{Object.keys(extractionResult.extracted).length} fields</span>
                           {extractionResult.elapsed_ms && <span>{(extractionResult.elapsed_ms / 1000).toFixed(1)}s</span>}
                           {extractionResult.model && <span>{extractionResult.model}</span>}
+                          {extractionResult.engine && <span>{extractionResult.engine}</span>}
                           {extractionResult.confidence > 0 && (
                             <span className={extractionResult.confidence >= 0.9 ? "text-green" : "text-vermillion-2"}>
                               {(extractionResult.confidence * 100).toFixed(0)}%
