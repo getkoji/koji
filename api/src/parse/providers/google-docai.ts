@@ -764,7 +764,7 @@ export class GoogleDocAiProvider implements ParseProvider {
       const errText = await resp.text().catch(() => "");
       throw new GoogleDocAiRequestError(
         resp.status,
-        `google-docai process ${resp.status}: ${errText.slice(0, 300)}`,
+        `google-docai process ${resp.status}: ${errText}`,
       );
     }
 
@@ -978,7 +978,7 @@ export class GoogleDocAiProvider implements ParseProvider {
     });
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
-      throw new Error(`google-docai batchProcess ${resp.status}: ${errText.slice(0, 300)}`);
+      throw new Error(`google-docai batchProcess ${resp.status}: ${errText}`);
     }
     const json = (await resp.json()) as BatchOperationHandle;
     if (!json.name) {
@@ -1005,7 +1005,7 @@ export class GoogleDocAiProvider implements ParseProvider {
       });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => "");
-        throw new Error(`google-docai operation poll ${resp.status}: ${errText.slice(0, 300)}`);
+        throw new Error(`google-docai operation poll ${resp.status}: ${errText}`);
       }
       const op = (await resp.json()) as LongRunningOperation;
       if (op.done) {

@@ -423,6 +423,14 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
             }),
           });
         } catch (err: unknown) {
+          const e = err as { message?: string; stack?: string; status?: number; detail?: string };
+          console.error(
+            "[extract/run] Parse failed (SSE path):",
+            e?.message ?? err,
+            "| status:", e?.status ?? "n/a",
+            "| detail:", e?.detail ?? "n/a",
+            "\n", e?.stack ?? "(no stack)",
+          );
           await stream.writeSSE({
             event: "error",
             data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
@@ -508,6 +516,14 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         }),
       });
     } catch (err: unknown) {
+      const e = err as { message?: string; stack?: string; status?: number; detail?: string };
+      console.error(
+        "[extract/run] Run failed (SSE path):",
+        e?.message ?? err,
+        "| status:", e?.status ?? "n/a",
+        "| detail:", e?.detail ?? "n/a",
+        "\n", e?.stack ?? "(no stack)",
+      );
       await stream.writeSSE({
         event: "error",
         data: JSON.stringify({
@@ -558,6 +574,14 @@ async function handleExtractRunJSON(
         text_map: parsed.text_map ?? [],
       };
     } catch (err: unknown) {
+      const e = err as { message?: string; stack?: string; status?: number; detail?: string };
+      console.error(
+        "[extract/run] Parse failed (JSON path):",
+        e?.message ?? err,
+        "| status:", e?.status ?? "n/a",
+        "| detail:", e?.detail ?? "n/a",
+        "\n", e?.stack ?? "(no stack)",
+      );
       return c.json({
         error: "Parse service unreachable",
         detail: err instanceof Error ? err.message : "Connection refused",
