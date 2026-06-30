@@ -83,6 +83,7 @@ import {
 } from "../chunk";
 import { GcsClient, joinGcsPath, parseGcsUri, toGcsUri } from "./gcs";
 import { slicePdfPages, mapWithConcurrency } from "../pdf-slice";
+import { resolveMimeType } from "../../ingestion/mime";
 
 // ---------------------------------------------------------------------------
 // Google Document AI `Document` JSON — the subset we consume.
@@ -671,6 +672,22 @@ export class GoogleDocAiProvider implements ParseProvider {
     const token = this.payload.api_key;
     if (!token) {
       throw new Error("google-docai: missing access token (api_key)");
+    }
+
+    // Defense-in-depth: Doc AI's `rawDocument.mime_type` rejects a bare/invalid
+    // MIME with 400 INVALID_ARGUMENT. SmartParseProvider already normalizes
+    // centrally, but this provider can also be invoked directly, so re-resolve
+    // here (claimed → filename → magic bytes) before any request is built.
+    const resolvedMime = resolveMimeType(
+      input.mimeType,
+      input.filename,
+      input.fileBuffer,
+    );
+    if (resolvedMime !== input.mimeType) {
+      console.log(
+        `[google-docai] ${input.filename}: normalized mimeType "${input.mimeType}" → "${resolvedMime}"`,
+      );
+      input = { ...input, mimeType: resolvedMime };
     }
 
     // Slice size divides "one online call" from the large-doc strategy. Clamp

@@ -86,12 +86,19 @@ def _auth_error(resp: httpx.Response, base_url: str) -> bool:
 
 def _api_error(resp: httpx.Response, context: str) -> None:
     """Print an API error and exit. Call when a response is not a success."""
+    detail = None
     try:
         body = resp.json()
         msg = body.get("error") or body.get("details") or json_mod.dumps(body)
+        # The server attaches `detail` with the underlying cause (e.g. the raw
+        # upstream parse error). Surface it — dropping it is what made the
+        # bare-MIME Doc AI failure invisible from the CLI.
+        detail = body.get("detail")
     except Exception:
         msg = resp.text[:300]
     console.print(f"[red]✗[/red] {context} — HTTP {resp.status_code}: {msg}")
+    if detail:
+        console.print(f"  [dim]detail:[/dim] {detail}")
     raise typer.Exit(1)
 
 

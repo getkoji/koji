@@ -39,6 +39,7 @@
 import type { ParseProvider, ParseResponse } from "./provider";
 import { classifyDocument } from "./classify";
 import { classifyContentShape } from "./content-shape";
+import { resolveMimeType } from "../ingestion/mime";
 
 export class SmartParseProvider implements ParseProvider {
   extractCoordinates?: ParseProvider["extractCoordinates"];
@@ -84,6 +85,25 @@ export class SmartParseProvider implements ParseProvider {
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
+    // Normalize the MIME once, centrally, before any provider sees it. A bare
+    // or invalid stored MIME (e.g. "pdf" instead of "application/pdf") would
+    // otherwise hard-fail strict upstream APIs like Google Doc AI's
+    // `rawDocument.mime_type` (400 INVALID_ARGUMENT → wrapped as a 502). We
+    // upgrade from the claimed value → filename extension → magic bytes, so
+    // every downstream provider (pdfjs, docling, Doc AI, Textract, Mistral …)
+    // receives a real MIME.
+    const resolvedMime = resolveMimeType(
+      input.mimeType,
+      input.filename,
+      input.fileBuffer,
+    );
+    if (resolvedMime !== input.mimeType) {
+      console.log(
+        `[smart-parse] ${input.filename}: normalized mimeType "${input.mimeType}" → "${resolvedMime}"`,
+      );
+      input = { ...input, mimeType: resolvedMime };
+    }
+
     const docType = await classifyDocument(
       input.filename,
       input.mimeType,

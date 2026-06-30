@@ -14,6 +14,7 @@ import { compareValues, type ValueDiff } from "../extract/value-compare";
 import { and, isNull, isNotNull } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
+import { resolveMimeType } from "../ingestion/mime";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -508,10 +509,17 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
   const { createHash } = await import("node:crypto");
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
+  // Normalize the claimed Content-Type before it touches storage or the DB.
+  // Browsers/SDKs sometimes send a bare extension ("pdf") or nothing at all;
+  // persisting that verbatim is what poisoned downstream parses (Doc AI 400 →
+  // 502). Resolve claimed → filename → magic bytes so the corpus row always
+  // carries a real MIME.
+  const mimeType = resolveMimeType(file.type, file.name, fileBuffer);
+
   // Store to S3
   const storageKey = `corpus/${tenantId}/${s.id}/${Date.now()}-${file.name}`;
   await storage.put(storageKey, fileBuffer, {
-    contentType: file.type || "application/octet-stream",
+    contentType: mimeType,
   });
 
   // Check if this file already exists in the corpus for this schema
@@ -540,7 +548,7 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
       filename: file.name,
       storageKey,
       fileSize: file.size,
-      mimeType: file.type || "application/octet-stream",
+      mimeType,
       contentHash,
       source: "upload",
       groundTruthJson: {}, // empty until promoted
