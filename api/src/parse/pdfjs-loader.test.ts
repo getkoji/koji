@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { loadPdfjs, __test__ } from "./pdfjs-loader";
 
-const { DOMMatrixPolyfill, ImageDataPolyfill, Path2DPolyfill, installPdfjsGlobals } = __test__;
+const { DOMMatrixPolyfill, ImageDataPolyfill, Path2DPolyfill, installPdfjsGlobals, installPdfjsWorker } =
+  __test__;
 
 describe("pdfjs-loader polyfills", () => {
   it("DOMMatrixPolyfill defaults to identity", () => {
@@ -44,6 +45,28 @@ describe("pdfjs-loader polyfills", () => {
     expect(typeof (globalThis as Record<string, unknown>).DOMMatrix).toBe("function");
     expect(typeof (globalThis as Record<string, unknown>).ImageData).toBe("function");
     expect(typeof (globalThis as Record<string, unknown>).Path2D).toBe("function");
+  });
+
+  it("installPdfjsWorker registers a main-thread WorkerMessageHandler on globalThis", async () => {
+    // Regression for oss-305: without globalThis.pdfjsWorker, pdfjs in Node does
+    // `await import(this.workerSrc)` to spin up its "fake worker". That dynamic
+    // import is untraceable by @vercel/nft, so pdf.worker.mjs never ships into
+    // /var/task and the runtime dies with `Setting up fake worker failed:
+    // "Cannot find module .../pdf.worker.mjs"`. Registering the handler here
+    // makes pdfjs use the main-thread path and skip that import entirely.
+    await installPdfjsWorker();
+    const g = globalThis as { pdfjsWorker?: { WorkerMessageHandler?: unknown } };
+    expect(g.pdfjsWorker).toBeDefined();
+    expect(typeof g.pdfjsWorker?.WorkerMessageHandler).toBe("function");
+  });
+
+  it("loadPdfjs registers the worker before pdf.mjs is loaded", async () => {
+    await loadPdfjs();
+    // After loadPdfjs, the worker handler must be present so pdfjs's
+    // _setupFakeWorkerGlobal short-circuits on globalThis.pdfjsWorker instead of
+    // importing the worker module by (runtime-variable) path.
+    const g = globalThis as { pdfjsWorker?: { WorkerMessageHandler?: unknown } };
+    expect(typeof g.pdfjsWorker?.WorkerMessageHandler).toBe("function");
   });
 
   it("loadPdfjs imports pdfjs without throwing and exposes getDocument", async () => {

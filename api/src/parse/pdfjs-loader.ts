@@ -30,7 +30,7 @@
  *     `digital_pdf` by default, so image-only scans were misrouted to the
  *     (broken) pdfjs path instead of OCR (oss-301).
  *
- * ── The fix ───────────────────────────────────────────────────────────────────
+ * ── The fix (part 1: DOMMatrix) ───────────────────────────────────────────────
  * Install pure-JS polyfills for the three globals *before* pdfjs is imported, so
  * pdfjs's `if (!globalThis.DOMMatrix)` checks short-circuit and it never needs
  * the native `@napi-rs/canvas` binary. We only ever call `getTextContent()` /
@@ -39,6 +39,48 @@
  * `Path2D` stubs are sufficient. This is deterministic across platforms (Mac and
  * Linux behave identically) and avoids shipping a fragile ~50 MB native module
  * into a serverless function.
+ *
+ * ── The remaining bug (the worker) — oss-305 ──────────────────────────────────
+ * Fixing DOMMatrix unblocked pdfjs's *import*, but pdfjs then failed at runtime
+ * in the Vercel `/var/task` bundle with:
+ *
+ *   Setting up fake worker failed: "Cannot find module
+ *   '/var/task/node_modules/.pnpm/pdfjs-dist@.../legacy/build/pdf.worker.mjs'
+ *   imported from .../pdf.mjs"
+ *
+ * Why: in Node, pdfjs forces the "fake worker" (main-thread) path and sets
+ * `GlobalWorkerOptions.workerSrc ||= "./pdf.worker.mjs"`. To actually run, it
+ * lazily does `await import(this.workerSrc)` — a dynamic import whose specifier
+ * is a *runtime variable*. Two things break in the serverless bundle:
+ *   1. `@vercel/nft` (the file tracer that decides which files ship into
+ *      `/var/task`) cannot statically see `import(this.workerSrc)`, so it never
+ *      includes `pdf.worker.mjs` in the deployed function. (`pdfjs-dist` is
+ *      marked `external` in platform/apps/api/build.mjs, so the worker would have
+ *      to be traced from node_modules — and it isn't.)
+ *   2. Even if shipped, that internal import is the only thing standing between
+ *      us and a clean main-thread run.
+ *
+ * The text-extraction code we need actually *lives in the worker module*
+ * (`WorkerMessageHandler` is the PDF engine); the "fake worker" just runs it on
+ * the main thread via a LoopbackPort. So the worker module is genuinely required
+ * — we can't drop it, we have to make it resolvable.
+ *
+ * pdfjs gives us an escape hatch: `_setupFakeWorkerGlobal` first checks
+ * `globalThis.pdfjsWorker?.WorkerMessageHandler` and, if present, uses it
+ * directly — skipping the untraceable `import(this.workerSrc)` entirely. So we:
+ *   - import the worker ourselves with a **static string-literal specifier**
+ *     (`pdfjs-dist/legacy/build/pdf.worker.mjs`). nft *can* trace this, so the
+ *     file ships into `/var/task`; and esbuild keeps it external (matching the
+ *     build's `pdfjs-dist/*` external rule) so it resolves from node_modules.
+ *   - assign the module to `globalThis.pdfjsWorker` before pdfjs needs it.
+ * pdfjs then runs main-thread with zero dynamic worker resolution.
+ *
+ * Ordering matters: the worker module also touches the browser globals at
+ * evaluation time, so we install the DOMMatrix polyfills first, then import the
+ * worker, then import `pdf.mjs` — all inside `loadPdfjs()`.
+ *
+ * (The worker entry has no upstream types — see pdfjs-worker.d.ts for the
+ * ambient module declaration that lets us import it.)
  */
 
 /**
@@ -153,19 +195,41 @@ function installPdfjsGlobals(): void {
   if (typeof g.Path2D === "undefined") g.Path2D = Path2DPolyfill;
 }
 
+/**
+ * Register the pdfjs worker module on `globalThis.pdfjsWorker` so pdfjs runs the
+ * PDF engine on the main thread and never reaches its untraceable
+ * `import(this.workerSrc)` (see the file header for the full rationale).
+ *
+ * The specifier is a static string literal precisely so `@vercel/nft` traces it
+ * and ships `pdf.worker.mjs` into the serverless function. Must run AFTER
+ * `installPdfjsGlobals()` — the worker module references the browser globals at
+ * evaluation time. Idempotent: a runtime that already provides a worker handler
+ * (or a repeat call) is left untouched.
+ */
+async function installPdfjsWorker(): Promise<void> {
+  const g = globalThis as { pdfjsWorker?: { WorkerMessageHandler?: unknown } };
+  if (g.pdfjsWorker?.WorkerMessageHandler) return;
+  g.pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+}
+
 type PdfjsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 /**
- * Load pdfjs with the serverless-safe globals installed first. The import is
- * memoised so the polyfills are installed exactly once and the (relatively
- * heavy) module is parsed once per process.
+ * Load pdfjs with the serverless-safe globals + worker installed first. The
+ * import is memoised so setup runs exactly once and the (relatively heavy)
+ * module is parsed once per process.
+ *
+ * Order is load-bearing: DOMMatrix polyfills → worker registration → pdf.mjs.
  */
 export function loadPdfjs(): Promise<PdfjsModule> {
   if (!pdfjsPromise) {
-    installPdfjsGlobals();
-    pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjsPromise = (async () => {
+      installPdfjsGlobals();
+      await installPdfjsWorker();
+      return import("pdfjs-dist/legacy/build/pdf.mjs");
+    })();
   }
   return pdfjsPromise;
 }
@@ -176,4 +240,5 @@ export const __test__ = {
   ImageDataPolyfill,
   Path2DPolyfill,
   installPdfjsGlobals,
+  installPdfjsWorker,
 };
