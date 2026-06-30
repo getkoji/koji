@@ -161,6 +161,8 @@ export async function buildEffectiveParseProvider(
 
 interface IngestionProcessPayload {
   documentId: string;
+  /** Force a fresh parse, bypassing + refreshing the parse cache (rerun --no-cache). */
+  skipCache?: boolean;
 }
 
 export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
@@ -177,7 +179,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   // pipeline (its optional pinned parse endpoint lives in config_json).
   // extractFields() runs in-process — no external URL needed
 
-  const { documentId } = job.payload as unknown as IngestionProcessPayload;
+  const { documentId, skipCache } = job.payload as unknown as IngestionProcessPayload;
   const tenantId = job.tenantId;
 
   // ── Resolve document → job → pipeline → schema version in one query ───────
@@ -318,6 +320,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
           tenantId,
           document,
           parseFingerprint,
+          { skipCache },
         );
         const summary: Record<string, unknown> = {
           markdown_chars: result.markdown.length,

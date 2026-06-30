@@ -699,6 +699,11 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const docId = c.req.param("docId")!;
+  // `skip_cache` forces a fresh parse on the rerun (bypass + refresh the parse
+  // cache) — e.g. to reprocess with the same provider, or belt-and-suspenders
+  // after switching BYO parse providers.
+  const body = await c.req.json<{ skip_cache?: boolean }>().catch(() => ({}) as { skip_cache?: boolean });
+  const skipCache = body.skip_cache === true;
 
   const [doc] = await withRLS(db, tenantId, (tx) =>
     tx
@@ -770,13 +775,13 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
   if (pipeline?.pipelineType === "dag") {
     await queue.enqueue(
       "pipeline.dag.run",
-      { documentId: doc.documentId, pipelineId: doc.pipelineId },
+      { documentId: doc.documentId, pipelineId: doc.pipelineId, skipCache },
       { tenantId },
     );
   } else {
     await queue.enqueue(
       "ingestion.process",
-      { documentId: doc.documentId },
+      { documentId: doc.documentId, skipCache },
       { tenantId },
     );
   }
