@@ -1239,6 +1239,11 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
           eq(schema.parseCache.fileHash, doc.contentHash),
         ),
       )
+      // Since oss-298 a file can have multiple cache rows (one per parse
+      // provider fingerprint). The document itself doesn't record which
+      // fingerprint produced its parse, so show the most recent — it reflects
+      // the latest parse provider the tenant ran this file under.
+      .orderBy(desc(schema.parseCache.createdAt))
       .limit(1),
   );
 

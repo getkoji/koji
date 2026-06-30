@@ -8,6 +8,10 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary } from "../extract";
 import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
+import {
+  DEFAULT_PARSE_FINGERPRINT,
+  parseCacheStorageKey,
+} from "../parse/cache-fingerprint";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
 import type { PlanId } from "../billing/adapter";
 
@@ -189,6 +193,8 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
     schema_yaml: string;
     model?: string;
     schema_run_id?: string;
+    /** Force a fresh parse, bypassing + refreshing the parse cache (oss-298). */
+    skip_cache?: boolean;
   }>();
 
   if (!body.corpus_entry_id || !body.schema_yaml) {
@@ -225,21 +231,28 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   }
   const fileBuffer = fileResult.data;
 
-  // Check parse cache
+  // Check parse cache. Build mode parses with the default provider, so the
+  // cache is keyed under the default fingerprint (oss-298). `skip_cache` (the
+  // build page's "Re-parse" affordance) bypasses the lookup to force a fresh
+  // parse for iterative testing.
+  const skipCache = body.skip_cache === true;
   const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-  const [cached] = await withRLS(db, tenantId, (tx) =>
-    tx.select({
-      storageKey: schema.parseCache.storageKey,
-      pages: schema.parseCache.pages,
-      ocrSkipped: schema.parseCache.ocrSkipped,
-    })
-      .from(schema.parseCache)
-      .where(and(
-        eq(schema.parseCache.tenantId, tenantId),
-        eq(schema.parseCache.fileHash, fileHash),
-      ))
-      .limit(1),
-  );
+  const [cached] = skipCache
+    ? [undefined]
+    : await withRLS(db, tenantId, (tx) =>
+        tx.select({
+          storageKey: schema.parseCache.storageKey,
+          pages: schema.parseCache.pages,
+          ocrSkipped: schema.parseCache.ocrSkipped,
+        })
+          .from(schema.parseCache)
+          .where(and(
+            eq(schema.parseCache.tenantId, tenantId),
+            eq(schema.parseCache.fileHash, fileHash),
+            eq(schema.parseCache.providerFingerprint, DEFAULT_PARSE_FINGERPRINT),
+          ))
+          .limit(1),
+      );
 
   let parseResult: Record<string, unknown> | null = null;
   if (cached) {
@@ -268,41 +281,94 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 
   return streamSSE(c, async (stream) => {
     try {
-      // Step 1: Parse via ParseProvider (smart routing, text_map, etc.)
-      let parseResult: Record<string, unknown> | null = null;
+      // Step 1: Parse — reuse the provider-aware parse cache (unless skip_cache
+      // forced a fresh parse), else parse via ParseProvider and cache it so the
+      // next build iteration is fast and the "Re-parse" affordance has a cache
+      // to bust (oss-298).
+      let sseParseResult: Record<string, unknown> | null = parseResult;
 
       await stream.writeSSE({
         event: "parse_started",
-        data: JSON.stringify({ message: "Parsing document..." }),
+        data: JSON.stringify({ message: sseParseResult ? "Loading cached parse..." : "Parsing document..." }),
       });
 
-      try {
-        const parseProvider = c.get("parseProvider");
-        const parsed = await parseProvider.parse({
-          filename: entry.filename,
-          mimeType: entry.mimeType,
-          fileBuffer,
-        });
-        parseResult = {
-          markdown: parsed.markdown,
-          pages: parsed.pages,
-          ocr_skipped: parsed.ocr_skipped,
-          text_map: parsed.text_map ?? [],
-        };
+      if (sseParseResult) {
         await stream.writeSSE({
           event: "parse_complete",
           data: JSON.stringify({
-            pages: parsed.pages,
-            ocr_skipped: parsed.ocr_skipped,
+            pages: sseParseResult.pages,
+            ocr_skipped: sseParseResult.ocr_skipped,
+            cached: true,
           }),
         });
-      } catch (err: unknown) {
-        await stream.writeSSE({
-          event: "error",
-          data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
-        });
-        return;
+      } else {
+        try {
+          const parseProvider = c.get("parseProvider");
+          const parsed = await parseProvider.parse({
+            filename: entry.filename,
+            mimeType: entry.mimeType,
+            fileBuffer,
+          });
+          sseParseResult = {
+            markdown: parsed.markdown,
+            pages: parsed.pages,
+            ocr_skipped: parsed.ocr_skipped,
+            text_map: parsed.text_map ?? [],
+            chunks: parsed.chunks ?? undefined,
+          };
+          // Cache the fresh parse under the default fingerprint (build mode uses
+          // the default provider). Upsert so a forced re-parse refreshes it.
+          try {
+            const cacheKey = parseCacheStorageKey(tenantId, fileHash, DEFAULT_PARSE_FINGERPRINT);
+            const cacheData = Buffer.from(JSON.stringify({
+              markdown: parsed.markdown,
+              pages: parsed.pages,
+              ocr_skipped: parsed.ocr_skipped,
+              text_map: parsed.text_map ?? [],
+              ...(parsed.chunks ? { chunks: parsed.chunks } : {}),
+              parser_version: PARSE_VERSION,
+            }));
+            await storage.put(cacheKey, cacheData, { contentType: "application/json" });
+            await withRLS(db, tenantId, (tx) =>
+              tx.insert(schema.parseCache).values({
+                tenantId,
+                fileHash,
+                providerFingerprint: DEFAULT_PARSE_FINGERPRINT,
+                storageKey: cacheKey,
+                pages: (parsed.pages as number) ?? 0,
+                ocrSkipped: parsed.ocr_skipped ? "true" : "false",
+              }).onConflictDoUpdate({
+                target: [
+                  schema.parseCache.tenantId,
+                  schema.parseCache.fileHash,
+                  schema.parseCache.providerFingerprint,
+                ],
+                set: {
+                  storageKey: cacheKey,
+                  pages: (parsed.pages as number) ?? 0,
+                  ocrSkipped: parsed.ocr_skipped ? "true" : "false",
+                },
+              }),
+            );
+          } catch (cacheErr) {
+            console.warn("[extract/run] Failed to cache parse result:", cacheErr);
+          }
+          await stream.writeSSE({
+            event: "parse_complete",
+            data: JSON.stringify({
+              pages: parsed.pages,
+              ocr_skipped: parsed.ocr_skipped,
+            }),
+          });
+        } catch (err: unknown) {
+          await stream.writeSSE({
+            event: "error",
+            data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
+          });
+          return;
+        }
       }
+      parseResult = sseParseResult;
 
       if (!parseResult?.markdown) {
         await stream.writeSSE({
@@ -432,9 +498,10 @@ async function handleExtractRunJSON(
       }, 502);
     }
 
-    // Store in cache
+    // Store in cache (provider-aware key; build mode uses the default
+    // provider → default fingerprint). Upsert so a forced re-parse refreshes.
     try {
-      const cacheKey = `cache/${tenantId}/${fileHash}.json`;
+      const cacheKey = parseCacheStorageKey(tenantId, fileHash, DEFAULT_PARSE_FINGERPRINT);
       const cacheData = Buffer.from(JSON.stringify({
         markdown: parseResult.markdown,
         pages: parseResult.pages,
@@ -445,15 +512,31 @@ async function handleExtractRunJSON(
       }));
       await storage.put(cacheKey, cacheData, { contentType: "application/json" });
 
+      const cacheDurationMs = parseResult.elapsed_seconds
+        ? Math.round((parseResult.elapsed_seconds as number) * 1000)
+        : null;
       await withRLS(db, tenantId, (tx) =>
         tx.insert(schema.parseCache).values({
           tenantId,
           fileHash,
+          providerFingerprint: DEFAULT_PARSE_FINGERPRINT,
           storageKey: cacheKey,
           pages: parseResult.pages as number ?? 0,
           ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
-          parseDurationMs: parseResult.elapsed_seconds ? Math.round((parseResult.elapsed_seconds as number) * 1000) : null,
-        }).onConflictDoNothing()
+          parseDurationMs: cacheDurationMs,
+        }).onConflictDoUpdate({
+          target: [
+            schema.parseCache.tenantId,
+            schema.parseCache.fileHash,
+            schema.parseCache.providerFingerprint,
+          ],
+          set: {
+            storageKey: cacheKey,
+            pages: parseResult.pages as number ?? 0,
+            ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
+            parseDurationMs: cacheDurationMs,
+          },
+        })
       );
     } catch (cacheErr) {
       // Cache write failure is non-fatal
