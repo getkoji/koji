@@ -205,6 +205,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     c.set("authAdapterKind", deps.authAdapterKind);
     c.set("billing", billing);
     c.set("parseProvider", deps.parseProvider);
+    c.set("parseConfig", deps.parseConfig ?? null);
     await next();
   };
   app.use("*", injectContext);

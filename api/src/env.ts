@@ -5,6 +5,7 @@ import type { BillingAdapter } from "./billing/adapter";
 import type { EmailSender } from "./email/provider";
 import type { QueueProvider } from "./queue/provider";
 import type { ParseProvider } from "./parse/provider";
+import type { ParseConfig } from "./parse/factory";
 import type { StorageProvider } from "./storage/provider";
 
 /**
@@ -48,6 +49,14 @@ export type Env = {
     billing: BillingAdapter;
     /** Parse provider for direct parsing (Workers) or sidecar proxy (Node). */
     parseProvider: ParseProvider;
+    /**
+     * The {@link ParseConfig} the default `parseProvider` was built from. When
+     * present, routes can rebuild a per-tenant parse provider at call time (BYO
+     * parse) — mirrors how `handleIngestionProcess` resolves the tenant's parse
+     * provider so test/build mode matches production. Null when the caller only
+     * supplied a pre-built provider (per-tenant resolution disabled → default
+     * provider used unchanged). */
+    parseConfig: ParseConfig | null;
     /** Tenant ID resolved from an API key (set by auth middleware). */
     apiKeyTenantId: string | undefined;
   };
