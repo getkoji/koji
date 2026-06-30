@@ -1080,7 +1080,7 @@ export async function getOrParse(
   },
   parseFingerprint: string = DEFAULT_PARSE_FINGERPRINT,
   opts?: { skipCache?: boolean },
-): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[]; pages?: number }> {
+): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[]; pages?: number; ocr_skipped?: boolean; cached?: boolean }> {
   const fileHash = document.contentHash;
   const skipCache = opts?.skipCache ?? false;
 
@@ -1110,6 +1110,7 @@ export async function getOrParse(
             engine?: string;
             chunks?: ParseChunk[];
             pages?: number;
+            ocr_skipped?: boolean;
             parser_version?: number;
           };
           // Stale parser version → treat as a miss and re-parse (the live-parse
@@ -1121,7 +1122,7 @@ export async function getOrParse(
             // OCR overlay Inngest function — it checks the cache and copies
             // to the per-doc storage key as its first step. Doing it again
             // here would race for no benefit.
-            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks, pages: payload.pages };
+            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks, pages: payload.pages, ocr_skipped: payload.ocr_skipped, cached: true };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.
@@ -1207,6 +1208,8 @@ export async function getOrParse(
     engine: parseResult.engine,
     chunks: parseResult.chunks,
     pages: parseResult.pages ?? undefined,
+    ocr_skipped: parseResult.ocr_skipped,
+    cached: false,
   };
 }
 

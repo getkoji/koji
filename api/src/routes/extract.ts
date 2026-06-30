@@ -9,16 +9,9 @@ import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolv
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary, toProvenanceTextMap } from "../extract";
 import type { FlatTextMapSegment } from "../extract";
 import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
-import { buildEffectiveParseProvider } from "../ingestion/process";
-import {
-  resolveTenantParse,
-  type ResolvedTenantParse,
-} from "../parse/resolve-tenant-parse";
+import { resolveParse } from "../ingestion/seam";
 import type { ParseProvider } from "../parse/provider";
-import {
-  parseCacheFingerprint,
-  parseCacheStorageKey,
-} from "../parse/cache-fingerprint";
+import { parseCacheStorageKey } from "../parse/cache-fingerprint";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
 import type { PlanId } from "../billing/adapter";
 
@@ -103,6 +96,12 @@ async function checkPreflightLimits(
  * `parseProviderId` honors a pipeline-pinned parse endpoint when the build is
  * scoped to a pipeline. The current build page is schema-scoped and sends no
  * pipeline, so it resolves the tenant's active endpoint (pin = null).
+ *
+ * Thin adapter over the shared {@link resolveParse} seam helper (oss-310) — the
+ * three resolvers (`resolveBuildParse`, `resolveDagParse`, the inline block in
+ * `handleIngestionProcess`) were byte-for-byte identical and now share one
+ * implementation. Kept as a positional shim so existing call sites don't change
+ * during the incremental migration.
  */
 export async function resolveBuildParse(
   db: any,
@@ -111,19 +110,7 @@ export async function resolveBuildParse(
   parseConfig: Env["Variables"]["parseConfig"],
   parseProviderId: string | null = null,
 ): Promise<{ provider: ParseProvider; fingerprint: string }> {
-  let resolved: ResolvedTenantParse | null = null;
-  if (parseConfig) {
-    try {
-      resolved = await resolveTenantParse(db, tenantId, { parseProviderId });
-    } catch (err) {
-      console.warn(
-        "[extract/run] parse provider resolution failed, using default:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  const provider = await buildEffectiveParseProvider(parseConfig, defaultProvider, resolved);
-  return { provider, fingerprint: parseCacheFingerprint(resolved) };
+  return resolveParse(db, tenantId, { parseProviderId, defaultProvider, parseConfig });
 }
 
 
