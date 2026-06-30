@@ -22,6 +22,7 @@ import {
   type TextItem,
 } from "./spatial-to-markdown";
 import { PositionalChunkCanonicalizer } from "./positional-chunks";
+import { loadPdfjs } from "./pdfjs-loader";
 
 // pdfjs's TextContent items expose strings, dimensions, a 6-element transform
 // matrix `[a, b, c, d, e, f]` (`(e, f)` is the position in PDF user space —
@@ -59,7 +60,7 @@ export class DigitalPdfProvider implements ParseProvider {
       );
     }
 
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const pdfjs = await loadPdfjs();
     const doc = await pdfjs.getDocument({
       data: new Uint8Array(input.fileBuffer),
       // Suppress noisy console.warn from pdfjs about missing standard fonts.
