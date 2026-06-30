@@ -183,6 +183,13 @@
       "when": 1782744550047,
       "tag": "0025_mighty_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1782779162010,
+      "tag": "0026_previous_blue_blade",
+      "breakpoints": true
     }
   ]
 }

@@ -377,7 +377,10 @@ export default function BuildPage() {
 
   const hasModelEndpoint = (catalogModels ?? []).length > 0;
 
-  async function handleRun() {
+  // `forceReparse` sends skip_cache so the run bypasses + refreshes the parse
+  // cache — for iterative testing after editing/switching a parse provider
+  // (oss-298), without hunting for an uncached document.
+  async function handleRun(forceReparse = false) {
     const currentYaml = yamlRef.current;
     if (!selectedDocId || !currentYaml || !hasModelEndpoint) return;
     setExtracting(true);
@@ -419,7 +422,7 @@ export default function BuildPage() {
       const resp = await fetch(`${API_BASE}/api/extract/run`, {
         method: "POST",
         headers: fetchHeaders,
-        body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: currentYaml, ...(selectedModel ? { model: selectedModel } : {}) }),
+        body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: currentYaml, ...(selectedModel ? { model: selectedModel } : {}), ...(forceReparse ? { skip_cache: true } : {}) }),
         ...(tokenProvider ? {} : { credentials: "include" as RequestCredentials }),
       });
 
@@ -781,7 +784,7 @@ export default function BuildPage() {
                     setTimeout(() => handleRun(), 200);
                   }
                 }}
-                onRunExtraction={handleRun}
+                onRunExtraction={() => handleRun()}
               />
             )}
 
@@ -1118,7 +1121,13 @@ export default function BuildPage() {
                     <option key={m.id} value={m.modelId}>{m.displayName} ({m.provider})</option>
                   ))}
                 </select>
-                <button onClick={handleRun} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}
+                <button onClick={() => handleRun(true)} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}
+                  title="Re-parse: bypass the parse cache and parse this document fresh (e.g. after editing or switching a parse provider)"
+                  className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-sm text-[12px] font-medium border border-border text-ink-3 hover:text-ink transition-colors disabled:opacity-30">
+                  <RotateCcw className="w-3 h-3" />
+                  Re-parse
+                </button>
+                <button onClick={() => handleRun()} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}
                   title={(catalogModels ?? []).length === 0 ? "Configure a model endpoint in Settings → Model Endpoints first" : undefined}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] font-medium bg-vermillion-2 text-cream transition-colors disabled:opacity-30">
                   <Play className="w-3 h-3" />

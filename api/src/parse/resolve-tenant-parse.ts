@@ -28,6 +28,12 @@ import { readGcpWifConfig, mintGcpAccessToken, gcpWifCacheKey } from "./auth/gcp
 export interface ParseEndpointPayload {
   /** UUID of the source `parse_endpoints` row (for health attribution later). */
   endpoint_id?: string;
+  /**
+   * ISO timestamp of the source endpoint's last update. Part of the parse-cache
+   * fingerprint so editing an endpoint's output-affecting config busts the
+   * cache (oss-298).
+   */
+  endpoint_updated_at?: string;
   /** Provider slug, e.g. "mistral-ocr", "azure-document-intel", "textract". */
   provider: string;
   /** Provider model/processor, e.g. "mistral-ocr-latest", "prebuilt-layout". */
@@ -121,6 +127,7 @@ export async function resolveParseEndpoint(
         model: schema.parseEndpoints.model,
         configJson: schema.parseEndpoints.configJson,
         authJson: schema.parseEndpoints.authJson,
+        updatedAt: schema.parseEndpoints.updatedAt,
       })
       .from(schema.parseEndpoints)
       .where(eq(schema.parseEndpoints.id, parseProviderId))
@@ -143,6 +150,7 @@ export async function resolveParseEndpoint(
 
   const payload: ParseEndpointPayload = {
     endpoint_id: endpoint.id,
+    endpoint_updated_at: endpoint.updatedAt?.toISOString(),
     provider: endpoint.provider,
     model: endpoint.model,
     config: cfg,
@@ -203,6 +211,12 @@ export interface ResolvedTenantParse {
    * them (PB-10). See `drivers.ts#parseDriverKind`.
    */
   kind: ParseDriverKind;
+  /** Provider slug of the resolved endpoint (for the parse-cache fingerprint). */
+  providerSlug?: string;
+  /** Source `parse_endpoints.id` (for the parse-cache fingerprint). */
+  endpointId?: string;
+  /** Source endpoint's `updatedAt` ISO string (for the parse-cache fingerprint). */
+  endpointUpdatedAt?: string;
 }
 
 /**
@@ -244,7 +258,13 @@ export async function resolveTenantParse(
   if (!payload) return null;
   const provider = createParseDriver(payload);
   if (!provider) return null;
-  return { provider, kind: parseDriverKind(payload.provider) };
+  return {
+    provider,
+    kind: parseDriverKind(payload.provider),
+    providerSlug: payload.provider,
+    endpointId: payload.endpoint_id,
+    endpointUpdatedAt: payload.endpoint_updated_at,
+  };
 }
 
 /**

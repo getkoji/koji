@@ -30,6 +30,11 @@ import {
   type ParseProviderOptions,
 } from "../parse/factory";
 import { resolveTenantParse, type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
+import {
+  parseCacheFingerprint,
+  parseCacheStorageKey,
+  DEFAULT_PARSE_FINGERPRINT,
+} from "../parse/cache-fingerprint";
 import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
 import type { QueuedJob } from "../queue/provider";
 import { TerminalError } from "../queue/worker";
@@ -286,6 +291,10 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     defaultParseProvider,
     resolvedParse,
   );
+  // Provider-aware parse-cache key: switching/editing the resolved parse
+  // provider yields a new fingerprint, so a previously-cached parse from a
+  // different provider misses and re-parses (oss-298).
+  const parseFingerprint = parseCacheFingerprint(resolvedParse);
 
   // ── Resolve markdown via parse_cache, falling back to live parse ─────────
   //
@@ -302,7 +311,14 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     const parseOutput = await recorder.run(
       "parse",
       async () => {
-        const result = await getOrParse(db, storage, parseProvider, tenantId, document);
+        const result = await getOrParse(
+          db,
+          storage,
+          parseProvider,
+          tenantId,
+          document,
+          parseFingerprint,
+        );
         const summary: Record<string, unknown> = {
           markdown_chars: result.markdown.length,
         };
@@ -1013,7 +1029,14 @@ async function overwriteParseCache(
  * falling back to a live parse on miss. The cache write happens
  * best-effort — a write failure shouldn't fail the extraction. Mirrors the
  * pattern in routes/extract.ts (handleExtractRunJSON) so build mode and
- * the worker share the same cache entries by (tenantId, fileHash).
+ * the worker share the same cache entries by (tenantId, fileHash,
+ * providerFingerprint).
+ *
+ * The `parseFingerprint` identifies the resolved parse provider — switching or
+ * editing a parse provider yields a new fingerprint, so the lookup misses and
+ * re-parses instead of returning the previous provider's stale markdown
+ * (oss-298). `opts.skipCache` forces a fresh parse (bypass lookup, overwrite
+ * the cache) for iterative testing.
  *
  * For large digital PDFs this turns repeat runs from minutes into milliseconds.
  */
@@ -1029,11 +1052,14 @@ async function getOrParse(
     mimeType: string | null;
     contentHash: string;
   },
+  parseFingerprint: string = DEFAULT_PARSE_FINGERPRINT,
+  opts?: { skipCache?: boolean },
 ): Promise<{ markdown: string; textMap?: any[]; engine?: string; chunks?: ParseChunk[] }> {
   const fileHash = document.contentHash;
+  const skipCache = opts?.skipCache ?? false;
 
-  // 1. Cache lookup
-  if (fileHash) {
+  // 1. Cache lookup (provider-aware; skipped on force re-parse)
+  if (fileHash && !skipCache) {
     const [cached] = await withRLS(db, tenantId, (tx) =>
       tx
         .select({ storageKey: schema.parseCache.storageKey })
@@ -1042,6 +1068,7 @@ async function getOrParse(
           and(
             eq(schema.parseCache.tenantId, tenantId),
             eq(schema.parseCache.fileHash, fileHash),
+            eq(schema.parseCache.providerFingerprint, parseFingerprint),
           ),
         )
         .limit(1),
@@ -1096,9 +1123,10 @@ async function getOrParse(
   // generate them at all — the previous rough pytesseract overlay was deleted
   // along with its consumers in oss-224.
 
-  // 3. Cache write (best-effort)
+  // 3. Cache write (best-effort, provider-aware key). Upsert so a forced
+  //    re-parse refreshes an existing entry rather than no-op'ing.
   if (fileHash) {
-    const cacheKey = `cache/${tenantId}/${fileHash}.json`;
+    const cacheKey = parseCacheStorageKey(tenantId, fileHash, parseFingerprint);
     const cachePayload = Buffer.from(
       JSON.stringify({
         markdown: parseResult.markdown,
@@ -1118,12 +1146,25 @@ async function getOrParse(
           .values({
             tenantId,
             fileHash,
+            providerFingerprint: parseFingerprint,
             storageKey: cacheKey,
             pages: parseResult.pages ?? 0,
             ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
             parseDurationMs: parseElapsedMs,
           })
-          .onConflictDoNothing(),
+          .onConflictDoUpdate({
+            target: [
+              schema.parseCache.tenantId,
+              schema.parseCache.fileHash,
+              schema.parseCache.providerFingerprint,
+            ],
+            set: {
+              storageKey: cacheKey,
+              pages: parseResult.pages ?? 0,
+              ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
+              parseDurationMs: parseElapsedMs,
+            },
+          }),
       );
     } catch (err) {
       console.warn(
