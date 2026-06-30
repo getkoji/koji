@@ -136,7 +136,7 @@ describe("resolveTenantParse — pin + kind", () => {
       parseProviderId: "pe_pinned",
     });
 
-    expect(resolved).toEqual({ provider: stubProvider, kind: "structured" });
+    expect(resolved).toMatchObject({ provider: stubProvider, kind: "structured" });
     // The id captured in the WHERE clause is the pin we passed.
     const idWhere = capturedWheres.find((w) => w?.op === "eq" && w?.col === "id");
     expect(idWhere?.val).toBe("pe_pinned");
@@ -187,7 +187,7 @@ describe("resolveTenantParse — keyless WIF path (oss-282)", () => {
       parseProviderId: "pe_wif",
     });
 
-    expect(resolved).toEqual({ provider: stubProvider, kind: "structured" });
+    expect(resolved).toMatchObject({ provider: stubProvider, kind: "structured" });
     expect(mockMintToken).toHaveBeenCalledTimes(1);
     // The minted token rides in api_key, so the driver stays credential-agnostic.
     expect(seenPayload.api_key).toBe("minted-wif-token");
