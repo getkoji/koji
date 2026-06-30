@@ -4,7 +4,9 @@ import {
   estimatePageFromOffset,
   hasOffsetAnnotations,
   locateWordsByOffset,
+  toProvenanceTextMap,
   type TextMap,
+  type FlatTextMapSegment,
 } from "./provenance";
 
 // ---------------------------------------------------------------------------
@@ -1500,5 +1502,116 @@ describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
     expect(propSpan).not.toBeNull();
     expect(propSpan!.bbox).toEqual(valueWrongCol.bbox);
     expect(propSpan!.column_mismatch).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toProvenanceTextMap — flat parse-layer coords → nested provenance TextMap
+// (oss-309: the build path crashed because it skipped this conversion)
+// ---------------------------------------------------------------------------
+
+describe("toProvenanceTextMap", () => {
+  it("maps flat {x,y,w,h} segments to nested bbox, preserving text/page/offsets", () => {
+    const flat: FlatTextMapSegment[] = [
+      { text: "Invoice", page: 1, x: 0.1, y: 0.1, w: 0.15, h: 0.03, md_offset: 0, md_length: 7 },
+      { text: "INV-001", page: 2, x: 0.42, y: 0.1, w: 0.15, h: 0.03, md_offset: 8, md_length: 7 },
+    ];
+    const result = toProvenanceTextMap(flat);
+    expect(result).toEqual([
+      { text: "Invoice", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.15, h: 0.03 }, md_offset: 0, md_length: 7 },
+      { text: "INV-001", page: 2, bbox: { x: 0.42, y: 0.1, w: 0.15, h: 0.03 }, md_offset: 8, md_length: 7 },
+    ]);
+  });
+
+  it("omits bbox (rather than zero-filling) when coords are missing/non-finite", () => {
+    const flat = [
+      { text: "ok", page: 1, x: 0.1, y: 0.2, w: 0.3, h: 0.04 },
+      // undefined coords (e.g. a malformed segment)
+      { text: "bad", page: 1, x: undefined, y: undefined, w: undefined, h: undefined },
+      // NaN coords
+      { text: "nan", page: 1, x: NaN, y: 0.2, w: 0.3, h: 0.04 },
+    ] as unknown as FlatTextMapSegment[];
+    const result = toProvenanceTextMap(flat);
+    expect(result[0]!.bbox).toEqual({ x: 0.1, y: 0.2, w: 0.3, h: 0.04 });
+    expect(result[1]!.bbox).toBeUndefined();
+    expect(result[2]!.bbox).toBeUndefined();
+    // text/page still carried even without geometry
+    expect(result[1]!.text).toBe("bad");
+    expect(result[2]!.page).toBe(1);
+  });
+
+  it("returns an empty array for an empty input", () => {
+    expect(toProvenanceTextMap([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Build-path provenance: flat text_map converted via toProvenanceTextMap must
+// resolve bounding boxes without throwing (oss-309 regression guard)
+// ---------------------------------------------------------------------------
+
+describe("build-path text_map (flat coords → converted) resolves provenance", () => {
+  const flat: FlatTextMapSegment[] = [
+    { text: "Invoice", page: 1, x: 0.1, y: 0.1, w: 0.1, h: 0.02 },
+    { text: "Number:", page: 1, x: 0.2, y: 0.1, w: 0.1, h: 0.02 },
+    { text: "INV-2024-001", page: 1, x: 0.3, y: 0.1, w: 0.15, h: 0.02 },
+  ];
+
+  it("does not throw and surfaces correct bbox coordinates", () => {
+    const textMap = toProvenanceTextMap(flat);
+    const markdown = "Invoice Number: INV-2024-001";
+    const result = resolveProvenance({ invoice_number: "INV-2024-001" }, markdown, textMap);
+    expect(result.invoice_number).not.toBeNull();
+    expect(result.invoice_number!.words).toBeDefined();
+    expect(result.invoice_number!.words!.length).toBe(1);
+    const word = result.invoice_number!.words![0]!;
+    expect(word.text).toBe("INV-2024-001");
+    expect(word.x).toBe(0.3);
+    expect(word.y).toBe(0.1);
+    expect(word.w).toBe(0.15);
+    expect(word.h).toBe(0.02);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degenerate text_map: a segment with missing coords must be skipped, not crash
+// ---------------------------------------------------------------------------
+
+describe("provenance tolerates bbox-less segments", () => {
+  it("does not throw on a converted text_map containing a coord-less segment", () => {
+    const flat = [
+      { text: "Total:", page: 1, x: 0.1, y: 0.2, w: 0.08, h: 0.02 },
+      // malformed: no usable coordinates → bbox omitted by the converter
+      { text: "1500", page: 1, x: undefined, y: undefined, w: undefined, h: undefined },
+    ] as unknown as FlatTextMapSegment[];
+    const textMap = toProvenanceTextMap(flat);
+    const markdown = "Total: 1500";
+    expect(() =>
+      resolveProvenance({ total: 1500 }, markdown, textMap),
+    ).not.toThrow();
+  });
+
+  it("locateWordsByOffset skips a bbox-less segment without throwing", () => {
+    const textMap: TextMap = [
+      { text: "A", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.05, h: 0.02 }, md_offset: 0, md_length: 1 },
+      // no bbox — must be skipped, never read .x on undefined
+      { text: "B", page: 1, md_offset: 2, md_length: 1 },
+    ];
+    expect(() => locateWordsByOffset(textMap, 0, 3)).not.toThrow();
+    const words = locateWordsByOffset(textMap, 0, 3);
+    expect(words!.map((w) => w.text)).toEqual(["A"]);
+  });
+
+  it("findBbox path (no offsets) skips a bbox-less segment without throwing", () => {
+    // No md_offset → resolveProvenance falls back to fuzzy findBbox/locateWords,
+    // which must guard against a segment with no bbox.
+    const textMap: TextMap = [
+      { text: "Acme", page: 1, bbox: { x: 0.1, y: 0.3, w: 0.06, h: 0.02 } },
+      { text: "Corp", page: 1 }, // bbox-less
+    ];
+    const markdown = "Acme Corp";
+    expect(() =>
+      resolveProvenance({ company: "Acme" }, markdown, textMap),
+    ).not.toThrow();
   });
 });

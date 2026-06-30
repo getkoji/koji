@@ -45,7 +45,14 @@ export interface WordBox {
 export interface TextSegment {
   text: string;
   page: number;
-  bbox: BBox;
+  /**
+   * Spatial position of this word on the page. Optional: provenance/geometry
+   * is additive — a segment whose coordinates are missing or non-finite still
+   * participates in text matching, it just can't contribute a bounding box.
+   * Consumers MUST guard `bbox` before reading `.x/.y/.w/.h` (a bbox-less
+   * segment is skipped for highlighting, never crashes extraction).
+   */
+  bbox?: BBox;
   level?: "word";
   /** Character offset of this word in the exported markdown (L3 provenance). */
   md_offset?: number;
@@ -54,6 +61,54 @@ export interface TextSegment {
 }
 
 export type TextMap = TextSegment[];
+
+/**
+ * Flat-coordinate segment shape emitted by the parse layer
+ * (`TextMapSegment` in `parse/provider.ts`): geometry lives at the top level
+ * (`x/y/w/h`) rather than nested under `bbox`.
+ */
+export interface FlatTextMapSegment {
+  text: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  md_offset?: number;
+  md_length?: number;
+}
+
+/**
+ * Convert the parse layer's FLAT text-map segments (`{text, page, x, y, w, h}`)
+ * into the provenance layer's NESTED `TextMap` (`{text, page, bbox:{x,y,w,h}}`).
+ *
+ * This is the single shared converter for both the build path
+ * (`routes/extract.ts`) and the validate path (`routes/schemas.ts`) so the two
+ * can't drift. It preserves `md_offset`/`md_length` for L3 offset lookup.
+ *
+ * A segment whose coordinates are missing or non-finite gets NO `bbox` (the
+ * property is omitted, not zero-filled) — a zero bbox would render a bogus
+ * highlight. Downstream provenance guards `bbox` before reading it, so a
+ * bbox-less segment still matches text but contributes no bounding box.
+ */
+export function toProvenanceTextMap(
+  segments: ReadonlyArray<FlatTextMapSegment>,
+): TextMap {
+  return segments.map((seg) => {
+    const out: TextSegment = { text: seg.text, page: seg.page };
+    if (
+      Number.isFinite(seg.x) &&
+      Number.isFinite(seg.y) &&
+      Number.isFinite(seg.w) &&
+      Number.isFinite(seg.h)
+    ) {
+      out.bbox = { x: seg.x, y: seg.y, w: seg.w, h: seg.h };
+    }
+    if (seg.md_offset != null) out.md_offset = seg.md_offset;
+    if (seg.md_length != null) out.md_length = seg.md_length;
+    return out;
+  });
+}
 
 export interface ProvenanceSpan {
   offset: number;
@@ -517,6 +572,7 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
   // First pass: exact substring match (case-insensitive) — collect all matches
   const exactMatches: { page: number; bbox: BBox }[] = [];
   for (const seg of textMap) {
+    if (!seg.bbox) continue;
     if (seg.text.toLowerCase().includes(lowerNeedle)) {
       exactMatches.push({ page: seg.page, bbox: seg.bbox });
     }
@@ -530,6 +586,7 @@ function findBbox(needle: string, textMap: TextMap, preferredPage?: number): { p
   if (normNeedle) {
     const normMatches: { page: number; bbox: BBox }[] = [];
     for (const seg of textMap) {
+      if (!seg.bbox) continue;
       if (normalizeWhitespace(seg.text).toLowerCase().includes(normNeedle)) {
         normMatches.push({ page: seg.page, bbox: seg.bbox });
       }
@@ -587,7 +644,11 @@ function locateWords(
     for (let i = 0; i <= textMap.length - needleWords.length; i++) {
       let matched = true;
       for (let j = 0; j < needleWords.length; j++) {
-        const segText = textMap[i + j]!.text.toLowerCase().replace(/[,.$()]/g, "");
+        const seg = textMap[i + j]!;
+        // A segment without geometry can't yield a word box — exclude any
+        // window that covers one so the matched run is always highlightable.
+        if (!seg.bbox) { matched = false; break; }
+        const segText = seg.text.toLowerCase().replace(/[,.$()]/g, "");
         const needleWord = needleWords[j]!.replace(/[,.$()]/g, "");
         // Empty-after-strip segments — typically standalone punctuation like
         // bare "$" in a premium-summary column — would otherwise pass the
@@ -611,13 +672,16 @@ function locateWords(
           startIdx: i,
           words: needleWords.map((_, j) => {
             const seg = textMap[i + j]!;
+            // Guaranteed present: the matching loop above skips windows with a
+            // bbox-less segment.
+            const bbox = seg.bbox!;
             return {
               text: seg.text,
               page: seg.page,
-              x: seg.bbox.x,
-              y: seg.bbox.y,
-              w: seg.bbox.w,
-              h: seg.bbox.h,
+              x: bbox.x,
+              y: bbox.y,
+              w: bbox.w,
+              h: bbox.h,
             };
           }),
         });
@@ -672,6 +736,8 @@ export function locateWordsByOffset(
 
   for (const seg of textMap) {
     if (seg.md_offset == null || seg.md_length == null) continue;
+    // No geometry → no word box; skip (still best-effort, never crashes).
+    if (!seg.bbox) continue;
     const segEnd = seg.md_offset + seg.md_length;
     // Overlap check: segment overlaps [offset, end)
     if (seg.md_offset < end && segEnd > offset) {
