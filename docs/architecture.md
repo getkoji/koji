@@ -84,7 +84,9 @@ This is transparent — callers don't choose a parser. If pdfjs throws or return
 
 The "heavy" parser above is resolved **per document at ingestion time**, not fixed at boot. When a tenant has configured a parse endpoint (Settings → Parse Catalog, or a pipeline-pinned override stored in the pipeline's `config_json.parse_provider_id`), that provider replaces Docling for the document's scanned/image/non-PDF path. The credential is decrypted at call time, mirroring how BYO model endpoints work for extraction — the customer pays the parse vendor directly.
 
-**Dormant until configured.** A tenant with no parse endpoint configured gets exactly the default behavior described above (Docling for the heavy path). The resolver returns nothing when there's no endpoint, no driver, or no decryptable credential, and ingestion falls back to the same default provider instance — so existing deployments are unaffected.
+This resolution is uniform across every execution path that parses a document: the single-document ingestion worker, the DAG pipeline runner, and build/test mode all resolve the tenant's parse provider the same way (honoring the pipeline pin) and key the provider-aware parse cache under the resolved provider's fingerprint — so a pipeline run, a manual upload, and a test run all parse a given document identically.
+
+**Dormant until configured.** A tenant with no parse endpoint configured gets exactly the default behavior described above (Docling for the heavy path). The resolver returns nothing when there's no endpoint, no driver, or no decryptable credential, and every path falls back to the same default provider instance — so existing deployments are unaffected.
 
 #### Doc-type routing (table-heavy → structured)
 
