@@ -8,10 +8,8 @@ import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary, toProvenanceTextMap } from "../extract";
 import type { FlatTextMapSegment } from "../extract";
-import { PARSE_VERSION, isParseCacheFresh } from "../ingestion/parse-version";
-import { resolveParse } from "../ingestion/seam";
+import { resolveParse, parseDocument } from "../ingestion/seam";
 import type { ParseProvider } from "../parse/provider";
-import { parseCacheStorageKey } from "../parse/cache-fingerprint";
 import { checkPreflight, getEffectivePreflightLimits, type PreflightOverrides } from "../billing/plans";
 import type { PlanId } from "../billing/adapter";
 
@@ -253,6 +251,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         storageKey: schema.corpusEntries.storageKey,
         filename: schema.corpusEntries.filename,
         mimeType: schema.corpusEntries.mimeType,
+        contentHash: schema.corpusEntries.contentHash,
         schemaId: schema.corpusEntries.schemaId,
       })
       .from(schema.corpusEntries)
@@ -266,12 +265,13 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 
   const principal = getPrincipal(c);
 
-  // Fetch file from S3
+  // Existence check — a corpus row whose file was removed from storage 404s
+  // before we stream (preserves the prior pre-stream 404 instead of surfacing
+  // as a mid-stream parse error).
   const fileResult = await storage.getBuffer(entry.storageKey);
   if (!fileResult) {
     return c.json({ error: "File not found in storage" }, 404);
   }
-  const fileBuffer = fileResult.data;
 
   // Resolve the tenant's BYO parse provider — test mode must match production.
   // Falls back to the default provider when none is configured (oss-299).
@@ -282,155 +282,65 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
     c.get("parseConfig"),
   );
 
-  // Check parse cache. Build mode now parses with the tenant's resolved
-  // provider, so the cache is keyed under that provider's fingerprint — matching
-  // production (oss-298/oss-299). `skip_cache` (the build page's "Re-parse"
-  // affordance) bypasses the lookup to force a fresh parse for iterative testing.
+  // Parsing (resolve→parse→cache→flat→nested text_map) runs through the shared
+  // seam `parseDocument` (oss-310): one provider-fingerprinted cache for build,
+  // ingestion, and validate alike — no more build-private cache copy. `skip_cache`
+  // (the build page's "Re-parse" affordance) forces a fresh parse (oss-298).
   const skipCache = body.skip_cache === true;
-  const fileHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-  const [cached] = skipCache
-    ? [undefined]
-    : await withRLS(db, tenantId, (tx) =>
-        tx.select({
-          storageKey: schema.parseCache.storageKey,
-          pages: schema.parseCache.pages,
-          ocrSkipped: schema.parseCache.ocrSkipped,
-        })
-          .from(schema.parseCache)
-          .where(and(
-            eq(schema.parseCache.tenantId, tenantId),
-            eq(schema.parseCache.fileHash, fileHash),
-            eq(schema.parseCache.providerFingerprint, parseFingerprint),
-          ))
-          .limit(1),
-      );
-
-  let parseResult: Record<string, unknown> | null = null;
-  if (cached) {
-    // Cache hit — load parsed result from S3
-    const cacheResult = await storage.getBuffer(cached.storageKey);
-    if (cacheResult) {
-      const payload = JSON.parse(cacheResult.data.toString()) as Record<string, unknown>;
-      // Stale parser version → ignore (re-parse below with the current pipeline).
-      if (isParseCacheFresh(payload)) {
-        parseResult = payload;
-        (parseResult as any).cached = true;
-        (parseResult as any).pages = cached.pages;
-        (parseResult as any).ocr_skipped = cached.ocrSkipped === "true";
-      }
-    }
-  }
 
   // Check Accept header — stream SSE if requested, otherwise JSON
   const accept = c.req.header("accept") ?? "";
   if (!accept.includes("text/event-stream")) {
     // Non-streaming JSON path
-    return handleExtractRunJSON(c, entry, fileBuffer, body.schema_yaml, body.model, tenantId, db, storage, fileHash, parseResult, body.corpus_entry_id, principal.userId, parseProvider, parseFingerprint, body.schema_run_id);
+    return handleExtractRunJSON(c, entry, body.schema_yaml, body.model, tenantId, db, storage, body.corpus_entry_id, principal.userId, parseProvider, parseFingerprint, skipCache, body.schema_run_id);
   }
 
   // ── SSE streaming path ──
 
   return streamSSE(c, async (stream) => {
     try {
-      // Step 1: Parse — reuse the provider-aware parse cache (unless skip_cache
-      // forced a fresh parse), else parse via ParseProvider and cache it so the
-      // next build iteration is fast and the "Re-parse" affordance has a cache
-      // to bust (oss-298).
-      let sseParseResult: Record<string, unknown> | null = parseResult;
-
+      // Step 1: Parse via the shared seam (oss-310) — resolve→parse→cache→shape
+      // text_map in one call, the same provider-fingerprinted cache ingestion and
+      // validate use (no build-private cache copy, no flat-text_map footgun).
       await stream.writeSSE({
         event: "parse_started",
-        data: JSON.stringify({ message: sseParseResult ? "Loading cached parse..." : "Parsing document..." }),
+        data: JSON.stringify({ message: "Parsing document..." }),
       });
 
-      if (sseParseResult) {
-        await stream.writeSSE({
-          event: "parse_complete",
-          data: JSON.stringify({
-            pages: sseParseResult.pages,
-            ocr_skipped: sseParseResult.ocr_skipped,
-            cached: true,
-          }),
-        });
-      } else {
-        try {
-          const parsed = await parseProvider.parse({
+      let parsed;
+      try {
+        parsed = await parseDocument({
+          db,
+          storage,
+          tenantId,
+          document: {
+            id: body.corpus_entry_id,
+            storageKey: entry.storageKey,
             filename: entry.filename,
             mimeType: entry.mimeType,
-            fileBuffer,
-          });
-          sseParseResult = {
-            markdown: parsed.markdown,
-            pages: parsed.pages,
-            ocr_skipped: parsed.ocr_skipped,
-            engine: parsed.engine,
-            text_map: parsed.text_map ?? [],
-            chunks: parsed.chunks ?? undefined,
-          };
-          // Cache the fresh parse under the resolved provider's fingerprint
-          // (oss-299). Upsert so a forced re-parse refreshes it.
-          try {
-            const cacheKey = parseCacheStorageKey(tenantId, fileHash, parseFingerprint);
-            const cacheData = Buffer.from(JSON.stringify({
-              markdown: parsed.markdown,
-              pages: parsed.pages,
-              ocr_skipped: parsed.ocr_skipped,
-              engine: parsed.engine,
-              text_map: parsed.text_map ?? [],
-              ...(parsed.chunks ? { chunks: parsed.chunks } : {}),
-              parser_version: PARSE_VERSION,
-            }));
-            await storage.put(cacheKey, cacheData, { contentType: "application/json" });
-            await withRLS(db, tenantId, (tx) =>
-              tx.insert(schema.parseCache).values({
-                tenantId,
-                fileHash,
-                providerFingerprint: parseFingerprint,
-                storageKey: cacheKey,
-                pages: (parsed.pages as number) ?? 0,
-                ocrSkipped: parsed.ocr_skipped ? "true" : "false",
-              }).onConflictDoUpdate({
-                target: [
-                  schema.parseCache.tenantId,
-                  schema.parseCache.fileHash,
-                  schema.parseCache.providerFingerprint,
-                ],
-                set: {
-                  storageKey: cacheKey,
-                  pages: (parsed.pages as number) ?? 0,
-                  ocrSkipped: parsed.ocr_skipped ? "true" : "false",
-                },
-              }),
-            );
-          } catch (cacheErr) {
-            console.warn("[extract/run] Failed to cache parse result:", cacheErr);
-          }
-          await stream.writeSSE({
-            event: "parse_complete",
-            data: JSON.stringify({
-              pages: parsed.pages,
-              ocr_skipped: parsed.ocr_skipped,
-            }),
-          });
-        } catch (err: unknown) {
-          const e = err as { message?: string; stack?: string; status?: number; detail?: string };
-          console.error(
-            "[extract/run] Parse failed (SSE path):",
-            e?.message ?? err,
-            "| status:", e?.status ?? "n/a",
-            "| detail:", e?.detail ?? "n/a",
-            "\n", e?.stack ?? "(no stack)",
-          );
-          await stream.writeSSE({
-            event: "error",
-            data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
-          });
-          return;
-        }
+            contentHash: entry.contentHash,
+          },
+          provider: parseProvider,
+          fingerprint: parseFingerprint,
+          skipCache,
+        });
+      } catch (err: unknown) {
+        const e = err as { message?: string; stack?: string; status?: number; detail?: string };
+        console.error(
+          "[extract/run] Parse failed (SSE path):",
+          e?.message ?? err,
+          "| status:", e?.status ?? "n/a",
+          "| detail:", e?.detail ?? "n/a",
+          "\n", e?.stack ?? "(no stack)",
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ error: err instanceof Error ? err.message : "Parse failed" }),
+        });
+        return;
       }
-      parseResult = sseParseResult;
 
-      if (!parseResult?.markdown) {
+      if (!parsed.markdown) {
         await stream.writeSSE({
           event: "error",
           data: JSON.stringify({ error: "Parse returned no markdown" }),
@@ -438,11 +348,20 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
         return;
       }
 
+      await stream.writeSSE({
+        event: "parse_complete",
+        data: JSON.stringify({
+          pages: parsed.pages,
+          ocr_skipped: parsed.ocr_skipped,
+          cached: parsed.cached,
+        }),
+      });
+
       // Enforce preflight limits
       const preflightErr = await checkPreflightLimits(
         db,
         tenantId,
-        parseResult.pages as number | null,
+        parsed.pages,
       );
       if (preflightErr) {
         await stream.writeSSE({
@@ -479,24 +398,22 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
       const extractModel = body.model ?? ep2?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
       const extractProvider = createProvider(extractModel, ep2);
       const extractResult = await extractFields(
-        parseResult.markdown as string,
+        parsed.markdown,
         schemaDef,
         extractProvider,
         extractModel,
-        parseResult.text_map
-          ? toProvenanceTextMap(parseResult.text_map as FlatTextMapSegment[])
-          : undefined,
-        (parseResult.chunks as any[]) ?? undefined,
+        parsed.textMap,
+        parsed.chunks,
       );
 
       await stream.writeSSE({
         event: "complete",
         data: JSON.stringify({
           filename: entry.filename,
-          pages: parseResult.pages,
-          parse_seconds: parseResult.elapsed_seconds,
-          ocr_skipped: parseResult.ocr_skipped,
-          engine: parseResult.engine,
+          pages: parsed.pages,
+          parse_seconds: null,
+          ocr_skipped: parsed.ocr_skipped,
+          engine: parsed.engine,
           model: extractResult.model,
           elapsed_ms: extractResult.elapsed_ms,
           extracted: extractResult.extracted,
@@ -504,7 +421,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
           confidence_scores: extractResult.confidence_scores,
           fit: extractResult.fit,
           provenance: extractResult.provenance,
-          markdown: parseResult.markdown,
+          markdown: parsed.markdown,
         }),
       });
     } catch (err: unknown) {
@@ -529,102 +446,52 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 /** Non-streaming extract/run — used when client doesn't request SSE */
 async function handleExtractRunJSON(
   c: any,
-  entry: { storageKey: string; filename: string; mimeType: string; schemaId: string },
-  fileBuffer: Buffer,
+  entry: { storageKey: string; filename: string; mimeType: string; contentHash: string; schemaId: string },
   schemaYaml: string,
   model: string | undefined,
   tenantId: string,
   db: any,
   storage: any,
-  fileHash: string,
-  cachedParse: Record<string, unknown> | null,
   corpusEntryId: string,
   userId: string,
   parseProvider: ParseProvider,
   parseFingerprint: string,
+  skipCache: boolean,
   schemaRunId?: string,
 ) {
-  let parseResult: Record<string, unknown>;
-
-  if (cachedParse) {
-    // Cache hit
-    parseResult = cachedParse;
-  } else {
-    // Cache miss — parse via the resolved ParseProvider (smart routing,
-    // text_map, etc.). Provider was resolved by the caller (oss-299).
-    try {
-      const parsed = await parseProvider.parse({
+  // Parse via the shared seam (oss-310) — provider-aware cache + flat→nested
+  // text_map shaping, the same path ingestion/validate use. No build-private
+  // cache copy. `skipCache` forces a fresh parse (oss-298).
+  let parsed;
+  try {
+    parsed = await parseDocument({
+      db,
+      storage,
+      tenantId,
+      document: {
+        id: corpusEntryId,
+        storageKey: entry.storageKey,
         filename: entry.filename,
         mimeType: entry.mimeType,
-        fileBuffer,
-      });
-      parseResult = {
-        markdown: parsed.markdown,
-        pages: parsed.pages,
-        ocr_skipped: parsed.ocr_skipped,
-        engine: parsed.engine,
-        text_map: parsed.text_map ?? [],
-      };
-    } catch (err: unknown) {
-      const e = err as { message?: string; stack?: string; status?: number; detail?: string };
-      console.error(
-        "[extract/run] Parse failed (JSON path):",
-        e?.message ?? err,
-        "| status:", e?.status ?? "n/a",
-        "| detail:", e?.detail ?? "n/a",
-        "\n", e?.stack ?? "(no stack)",
-      );
-      return c.json({
-        error: "Parse service unreachable",
-        detail: err instanceof Error ? err.message : "Connection refused",
-      }, 502);
-    }
-
-    // Store in cache (provider-aware key; build mode keys under the resolved
-    // provider's fingerprint — oss-299). Upsert so a forced re-parse refreshes.
-    try {
-      const cacheKey = parseCacheStorageKey(tenantId, fileHash, parseFingerprint);
-      const cacheData = Buffer.from(JSON.stringify({
-        markdown: parseResult.markdown,
-        pages: parseResult.pages,
-        elapsed_seconds: parseResult.elapsed_seconds,
-        ocr_skipped: parseResult.ocr_skipped,
-        engine: parseResult.engine,
-        text_map: parseResult.text_map ?? [],
-        parser_version: PARSE_VERSION,
-      }));
-      await storage.put(cacheKey, cacheData, { contentType: "application/json" });
-
-      const cacheDurationMs = parseResult.elapsed_seconds
-        ? Math.round((parseResult.elapsed_seconds as number) * 1000)
-        : null;
-      await withRLS(db, tenantId, (tx) =>
-        tx.insert(schema.parseCache).values({
-          tenantId,
-          fileHash,
-          providerFingerprint: parseFingerprint,
-          storageKey: cacheKey,
-          pages: parseResult.pages as number ?? 0,
-          ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
-          parseDurationMs: cacheDurationMs,
-        }).onConflictDoUpdate({
-          target: [
-            schema.parseCache.tenantId,
-            schema.parseCache.fileHash,
-            schema.parseCache.providerFingerprint,
-          ],
-          set: {
-            storageKey: cacheKey,
-            pages: parseResult.pages as number ?? 0,
-            ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
-            parseDurationMs: cacheDurationMs,
-          },
-        })
-      );
-    } catch (cacheErr) {
-      // Cache write failure is non-fatal
-      console.warn("[extract/run] Failed to cache parse result:", cacheErr);
-    }
+        contentHash: entry.contentHash,
+      },
+      provider: parseProvider,
+      fingerprint: parseFingerprint,
+      skipCache,
+    });
+  } catch (err: unknown) {
+    const e = err as { message?: string; stack?: string; status?: number; detail?: string };
+    console.error(
+      "[extract/run] Parse failed (JSON path):",
+      e?.message ?? err,
+      "| status:", e?.status ?? "n/a",
+      "| detail:", e?.detail ?? "n/a",
+      "\n", e?.stack ?? "(no stack)",
+    );
+    return c.json({
+      error: "Parse service unreachable",
+      detail: err instanceof Error ? err.message : "Connection refused",
+    }, 502);
   }
 
   // Extract
@@ -652,14 +519,12 @@ async function handleExtractRunJSON(
     const extractModel = model ?? endpointPayload?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
     const extractProvider = createProvider(extractModel, endpointPayload);
     const extractResult = await extractFields(
-      parseResult.markdown as string,
+      parsed.markdown,
       schemaDef,
       extractProvider,
       extractModel,
-      parseResult.text_map
-        ? toProvenanceTextMap(parseResult.text_map as FlatTextMapSegment[])
-        : undefined,
-      (parseResult.chunks as any[]) ?? undefined,
+      parsed.textMap,
+      parsed.chunks,
     ) as unknown as Record<string, unknown>;
 
     // Persist the run
@@ -676,11 +541,11 @@ async function handleExtractRunJSON(
           confidenceJson: extractResult.confidence,
           confidenceScoresJson: extractResult.confidence_scores,
           provenanceJson: extractResult.provenance ?? null,
-          markdownText: (parseResult.markdown as string) ?? null,
-          parseSeconds: parseResult.elapsed_seconds != null ? String(parseResult.elapsed_seconds) : null,
+          markdownText: parsed.markdown ?? null,
+          parseSeconds: null,
           extractMs: extractResult.elapsed_ms as number ?? null,
-          ocrSkipped: parseResult.ocr_skipped ? "true" : "false",
-          cached: cachedParse ? "true" : "false",
+          ocrSkipped: parsed.ocr_skipped ? "true" : "false",
+          cached: parsed.cached ? "true" : "false",
           triggeredBy: userId,
           schemaRunId: schemaRunId ?? null,
         }).returning({ id: schema.extractionRuns.id })
@@ -688,11 +553,11 @@ async function handleExtractRunJSON(
       return c.json({
         id: run!.id,
         filename: entry.filename,
-        pages: parseResult.pages,
-        parse_seconds: parseResult.elapsed_seconds,
-        ocr_skipped: parseResult.ocr_skipped,
-        cached: !!cachedParse,
-        engine: parseResult.engine,
+        pages: parsed.pages,
+        parse_seconds: null,
+        ocr_skipped: parsed.ocr_skipped,
+        cached: parsed.cached,
+        engine: parsed.engine,
         model: extractResult.model,
         elapsed_ms: extractResult.elapsed_ms,
         extracted: extractResult.extracted,
@@ -700,18 +565,18 @@ async function handleExtractRunJSON(
         confidence_scores: extractResult.confidence_scores,
         fit: extractResult.fit,
         provenance: extractResult.provenance,
-        markdown: parseResult.markdown,
+        markdown: parsed.markdown,
       });
     } catch (saveErr) {
       console.warn("[extract/run] Failed to save extraction run:", saveErr);
       // Still return results even if save fails
       return c.json({
         filename: entry.filename,
-        pages: parseResult.pages,
-        parse_seconds: parseResult.elapsed_seconds,
-        ocr_skipped: parseResult.ocr_skipped,
-        cached: !!cachedParse,
-        engine: parseResult.engine,
+        pages: parsed.pages,
+        parse_seconds: null,
+        ocr_skipped: parsed.ocr_skipped,
+        cached: parsed.cached,
+        engine: parsed.engine,
         model: extractResult.model,
         elapsed_ms: extractResult.elapsed_ms,
         extracted: extractResult.extracted,
@@ -719,7 +584,7 @@ async function handleExtractRunJSON(
         confidence_scores: extractResult.confidence_scores,
         fit: extractResult.fit,
         provenance: extractResult.provenance,
-        markdown: parseResult.markdown,
+        markdown: parsed.markdown,
       });
     }
   } catch (err: unknown) {
