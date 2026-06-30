@@ -6,6 +6,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, generatePreviewToken } from "../auth/middleware";
 import { requireFeature } from "../billing/middleware";
+import { resolveMimeType } from "../ingestion/mime";
 
 export const review = new Hono<Env>();
 
@@ -415,6 +416,12 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   if (!file) return c.json({ error: "Source document file not found in storage" }, 404);
   const contentHash = createHash("sha256").update(file.data).digest("hex");
 
+  // Normalize the MIME we carry into the corpus. The source document's stored
+  // mimeType may predate upload-time normalization (a bare "pdf"), so resolve
+  // it (claimed → filename → magic bytes) rather than copying a bad value
+  // forward — a corpus entry with an invalid MIME would 502 on re-parse.
+  const corpusMime = resolveMimeType(item.mimeType, item.filename, file.data);
+
   const reviewStatus = decision.reviewStatus;
   const tags = body.to ? [body.to] : [];
 
@@ -442,14 +449,14 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   } else {
     const safeName = item.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const corpusKey = `corpus/${tenantId}/${item.schemaId}/${Date.now()}-${safeName}`;
-    await storage.put(corpusKey, file.data, { contentType: file.contentType });
+    await storage.put(corpusKey, file.data, { contentType: corpusMime });
     const entryValues: typeof schema.corpusEntries.$inferInsert = {
       tenantId,
       schemaId: item.schemaId,
       filename: item.filename,
       storageKey: corpusKey,
       fileSize: file.data.length,
-      mimeType: item.mimeType,
+      mimeType: corpusMime,
       contentHash,
       source: "review",
       sourceRef: item.reviewId,

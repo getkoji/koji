@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { normalizeMimeType, normalizeMimeTypeWithWarning, mimeTypeFor } from "./process";
+import { resolveMimeType, sniffMimeFromBytes } from "./mime";
+
+// Minimal magic-byte fixtures for the sniffer.
+const PDF_BYTES = Buffer.from("%PDF-1.7\n...", "latin1");
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+const TIFF_LE_BYTES = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08]);
+const TIFF_BE_BYTES = Buffer.from([0x4d, 0x4d, 0x00, 0x2a, 0x08]);
+const GARBAGE_BYTES = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]);
 
 describe("normalizeMimeType", () => {
   it("passes through a valid MIME type unchanged", () => {
@@ -88,5 +97,70 @@ describe("mimeTypeFor (regression — unchanged by this PR)", () => {
   it("returns octet-stream for null / no extension", () => {
     expect(mimeTypeFor(null)).toBe("application/octet-stream");
     expect(mimeTypeFor("no-extension")).toBe("application/octet-stream");
+  });
+});
+
+describe("sniffMimeFromBytes", () => {
+  it("sniffs PDF from the %PDF signature", () => {
+    expect(sniffMimeFromBytes(PDF_BYTES)).toBe("application/pdf");
+  });
+  it("sniffs PNG from its 8-byte signature", () => {
+    expect(sniffMimeFromBytes(PNG_BYTES)).toBe("image/png");
+  });
+  it("sniffs JPEG from FF D8 FF", () => {
+    expect(sniffMimeFromBytes(JPEG_BYTES)).toBe("image/jpeg");
+  });
+  it("sniffs TIFF in both byte orders", () => {
+    expect(sniffMimeFromBytes(TIFF_LE_BYTES)).toBe("image/tiff");
+    expect(sniffMimeFromBytes(TIFF_BE_BYTES)).toBe("image/tiff");
+  });
+  it("returns null for unrecognized bytes, empty, or missing buffers", () => {
+    expect(sniffMimeFromBytes(GARBAGE_BYTES)).toBeNull();
+    expect(sniffMimeFromBytes(Buffer.from([]))).toBeNull();
+    expect(sniffMimeFromBytes(null)).toBeNull();
+    expect(sniffMimeFromBytes(undefined)).toBeNull();
+  });
+});
+
+describe("resolveMimeType (parse-path: claimed → filename → magic bytes)", () => {
+  it("trusts a real, specific claimed MIME", () => {
+    expect(resolveMimeType("application/pdf", "doc.pdf", PDF_BYTES)).toBe("application/pdf");
+    // Trusts even when it disagrees with the filename — sniffing renamed files
+    // is the parser's job, not ours.
+    expect(resolveMimeType("application/zip", "weird.pdf", PDF_BYTES)).toBe("application/zip");
+  });
+
+  it("upgrades a bare extension via the filename — the arts.pdf 502 root cause", () => {
+    expect(resolveMimeType("pdf", "arts.pdf", PDF_BYTES)).toBe("application/pdf");
+    expect(resolveMimeType("png", "shot.png", PNG_BYTES)).toBe("image/png");
+  });
+
+  it("infers from the filename when the claimed MIME is missing/empty", () => {
+    expect(resolveMimeType(null, "doc.pdf")).toBe("application/pdf");
+    expect(resolveMimeType("", "doc.pdf")).toBe("application/pdf");
+    expect(resolveMimeType(undefined, "doc.pdf")).toBe("application/pdf");
+  });
+
+  it("treats application/octet-stream as unknown and upgrades it", () => {
+    // Filename wins first.
+    expect(resolveMimeType("application/octet-stream", "doc.pdf")).toBe("application/pdf");
+    // Then bytes, when the filename can't help.
+    expect(resolveMimeType("application/octet-stream", "blob", PDF_BYTES)).toBe("application/pdf");
+  });
+
+  it("sniffs magic bytes when neither claimed MIME nor filename help", () => {
+    expect(resolveMimeType("pdf", null, PDF_BYTES)).toBe("application/pdf");
+    expect(resolveMimeType(null, "no-extension", PNG_BYTES)).toBe("image/png");
+    expect(resolveMimeType(null, "scan", JPEG_BYTES)).toBe("image/jpeg");
+  });
+
+  it("falls back to octet-stream when nothing identifies the file", () => {
+    expect(resolveMimeType(null, null)).toBe("application/octet-stream");
+    expect(resolveMimeType("pdf", null)).toBe("application/octet-stream");
+    expect(resolveMimeType(null, "no-extension", GARBAGE_BYTES)).toBe("application/octet-stream");
+  });
+
+  it("trims surrounding whitespace before validating", () => {
+    expect(resolveMimeType("  application/pdf  ", "doc.pdf")).toBe("application/pdf");
   });
 });
