@@ -8,7 +8,7 @@ import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
 import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
-import { extractFields, toProvenanceTextMap } from "../extract";
+import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues, type ValueDiff } from "../extract/value-compare";
 import { and, isNull, isNotNull } from "drizzle-orm";
@@ -16,7 +16,7 @@ import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/
 import { formatSemver, type Bump } from "../schemas/semver";
 import { resolveMimeType } from "../ingestion/mime";
 import { resolveBuildParse } from "./extract";
-import { getOrParse } from "../ingestion/process";
+import { parseDocument } from "../ingestion/seam";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -1083,29 +1083,29 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         continue;
       }
 
-      // Parse via the resolved tenant provider + the shared parse cache so a doc
-      // already parsed by `run`/ingestion is reused (run/validate cache parity)
-      // and no redundant re-parse cost/timeout is incurred. MIME is normalized
-      // with the buffer so a sloppy stored value never hard-fails the parse (#401).
+      // Parse via the shared seam (oss-310): `parseDocument` runs the resolved
+      // tenant provider through the same parse cache `run`/ingestion uses (cache
+      // parity — a doc already parsed is reused, no redundant re-parse), and
+      // shapes the flat parse-layer text_map into the nested provenance TextMap
+      // with the one shared converter so this path can't drift from build's
+      // (the oss-309 footgun). MIME is normalized with the buffer first so a
+      // sloppy stored value never hard-fails the parse (#401).
       const mimeType = resolveMimeType(entry.mimeType, entry.filename, fileResult.data);
-      const parsed = await getOrParse(
+      const parsed = await parseDocument({
         db,
         storage,
-        parseProvider,
         tenantId,
-        {
+        document: {
           id: entry.id,
           storageKey: entry.storageKey,
           filename: entry.filename,
           mimeType,
           contentHash: entry.contentHash,
         },
-        parseFingerprint,
-      );
+        provider: parseProvider,
+        fingerprint: parseFingerprint,
+      });
       const markdown = parsed.markdown;
-      const textMap = parsed.textMap as
-        | Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>
-        | undefined;
 
       if (!markdown) {
         const error = "parse returned empty markdown";
@@ -1114,12 +1114,17 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         continue;
       }
 
-      // Extract — pass text_map for bounding box resolution.
-      // Convert flat parse-layer coords to the nested provenance TextMap via
-      // the shared converter (same one the build path uses — keeps them from
-      // drifting).
-      const provenanceTextMap = textMap ? toProvenanceTextMap(textMap) : undefined;
-      const extractResult = await extractFields(markdown, schemaDef, provider, extractModel, provenanceTextMap);
+      // Extract — forward the nested text_map (bbox provenance) AND chunks, so
+      // validate produces the same provenance as build/ingestion (it previously
+      // dropped `chunks`). `parseDocument` already nested the text_map.
+      const extractResult = await extractFields(
+        markdown,
+        schemaDef,
+        provider,
+        extractModel,
+        parsed.textMap,
+        parsed.chunks,
+      );
 
       results.push({
         entryId: entry.id,
