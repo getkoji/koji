@@ -47,6 +47,19 @@ export type { Chunk };
 
 // ── Section-level extraction ────────────────────────────────────────
 
+/**
+ * Per-field routing record for debug/diagnosis. `chunks` is the ordered set of
+ * chunks the field was routed to (index + heading for display); `text` is those
+ * chunks' concatenated content, used downstream (e.g. validate) to check whether
+ * a field's expected answer was even present in what the model saw — a routing
+ * miss no model upgrade can fix. Generic — no document-type logic.
+ */
+export interface RoutingPlanEntry {
+  source: string;
+  chunks: Array<{ index: number; title: string }>;
+  text: string;
+}
+
 interface SectionResult {
   extracted: Record<string, unknown>;
   confidence: Record<string, string>;
@@ -56,6 +69,7 @@ interface SectionResult {
   source_texts: Record<string, string[]>;
   scalar_source_texts: Record<string, string>;
   source_contexts: Record<string, string>;
+  routing_plan: Record<string, RoutingPlanEntry>;
 }
 
 /**
@@ -82,6 +96,10 @@ async function extractOneSection(
 
   const allRoutes: Array<{ fieldName: string; chunks: Chunk[] }> = [];
   const allGroups: Array<{ fields: string[]; chunkCount: number }> = [];
+  // Per-field routing record, accumulated across waves and gap-fill so it
+  // reflects every chunk the field was ever shown. Keyed by field; chunks are
+  // de-duped by index. Feeds `routing_plan` for debug/diagnosis.
+  const routePlan = new Map<string, { source: string; chunks: Map<number, Chunk> }>();
   const allSourceTexts: Record<string, string[]> = {};
   const allScalarSourceTexts: Record<string, string> = {};
   const allSourceContexts: Record<string, string> = {};
@@ -109,6 +127,14 @@ async function extractOneSection(
       : routeFields(waveSchema, sectionChunks);
     for (const r of waveRoutes) {
       allRoutes.push({ fieldName: r.fieldName, chunks: r.chunks });
+      // Record the initial route (source + chunks) for the debug plan. Fields
+      // are partitioned across waves, so first-seen is the field's own route.
+      if (!routePlan.has(r.fieldName)) {
+        routePlan.set(r.fieldName, {
+          source: r.source,
+          chunks: new Map(r.chunks.map((c) => [c.index, c])),
+        });
+      }
     }
 
     const waveGroups = groupRoutes(waveRoutes);
@@ -245,6 +271,14 @@ async function extractOneSection(
     );
 
     for (const { fieldName, result, broadenedChunks } of gapResults) {
+      // Fold the broadened chunk set into the routing record — for a field that
+      // still fails, the plan should reflect everything the model was shown, so
+      // "answer never reached the model" can be distinguished from "model missed
+      // it." Keep the original `source` (the initial routing decision).
+      const entry = routePlan.get(fieldName);
+      if (entry) {
+        for (const c of broadenedChunks) entry.chunks.set(c.index, c);
+      }
       const value = result[fieldName];
       if (value != null) {
         accumulated.extracted[fieldName] = value;
@@ -271,6 +305,18 @@ async function extractOneSection(
     }
   }
 
+  // Materialize the per-field routing plan: chunks ordered by document position,
+  // with their concatenated content for downstream answer-presence checks.
+  const routing_plan: Record<string, RoutingPlanEntry> = {};
+  for (const [fieldName, entry] of routePlan) {
+    const chunks = [...entry.chunks.values()].sort((a, b) => a.index - b.index);
+    routing_plan[fieldName] = {
+      source: entry.source,
+      chunks: chunks.map((c) => ({ index: c.index, title: c.title })),
+      text: chunks.map((c) => c.content).join("\n\n"),
+    };
+  }
+
   return {
     extracted: accumulated.extracted,
     confidence: accumulated.confidence,
@@ -280,6 +326,7 @@ async function extractOneSection(
     source_texts: allSourceTexts,
     scalar_source_texts: allScalarSourceTexts,
     source_contexts: allSourceContexts,
+    routing_plan,
   };
 }
 
@@ -413,7 +460,7 @@ export async function intelligentExtract(
     provenance,
     gap_filled: sectionResult.gap_filled,
     document_map_summary: { total_chunks: chunks.length },
-    routing_plan: {},
+    routing_plan: sectionResult.routing_plan,
     groups: sectionResult.groups,
     ...(fit ? { fit } : {}),
     ...(Object.keys(sectionResult.source_texts).length > 0
@@ -470,7 +517,7 @@ async function classifierPath(
   );
 
   // Extract each matching section
-  const sectionResults: Array<Record<string, unknown>> = [];
+  const sectionResults: Array<SectionResult & { section_type: string; section_confidence: number }> = [];
   for (const section of classifyResult.sections) {
     if (!sectionMatchesSchema(section, schemaDef, applyTo)) {
       continue;
@@ -506,7 +553,7 @@ async function classifierPath(
   // For now, return the first matching section's results.
   // The Python pipeline returns a sections list; callers that need
   // multi-section support can read the sections array.
-  const first = sectionResults[0]! as SectionResult & { section_type: string };
+  const first = sectionResults[0]!;
   return {
     model,
     strategy: "intelligent",
@@ -517,7 +564,7 @@ async function classifierPath(
     confidence_scores: first.confidence_scores,
     gap_filled: first.gap_filled,
     document_map_summary: { total_chunks: chunks.length },
-    routing_plan: {},
+    routing_plan: first.routing_plan,
     groups: first.groups,
     ...(fit ? { fit } : {}),
     ...(Object.keys(first.source_texts).length > 0
