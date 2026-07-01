@@ -366,6 +366,89 @@ export const schemas = {
   delete: (slug: string) => api.delete(`/api/schemas/${slug}`),
 };
 
+// ── Classifiers ──
+
+export interface ClassifierRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  draftYaml: string | null;
+  createdAt: string;
+  /** Latest version number (list route), or null if none committed. */
+  latestVersion: number | null;
+}
+
+export interface ClassifierDetail {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  draftYaml: string | null;
+  createdAt: string;
+  currentVersionId: string | null;
+  latestVersion: {
+    versionNumber: number;
+    yamlSource: string;
+    commitMessage: string | null;
+    createdAt: string;
+  } | null;
+}
+
+export interface ClassifierVersion {
+  id: string;
+  versionNumber: number;
+  version: string;
+  prerelease: string | null;
+  released: boolean;
+  active: boolean;
+  commitMessage: string | null;
+  committedByName: string | null;
+  createdAt: string;
+}
+
+/** Response of POST /api/classify. */
+export interface ClassifyResult {
+  label: string;
+  confidence: number;
+  method: string;
+  tier_used: number;
+  evidence_page: number | null;
+  scores?: Array<{ id: string; score: number; hits: number; total: number; evidence_page: number | null }>;
+  /** Present on a 422 reject (on_unknown: reject). */
+  error?: string;
+}
+
+export const classifiers = {
+  list: () => api.get<{ data: ClassifierRow[] }>("/api/classifiers").then((r) => r.data),
+  get: (slug: string) => api.get<ClassifierDetail>(`/api/classifiers/${slug}`),
+  create: (body: { slug: string; display_name: string; description?: string; initial_yaml?: string }) =>
+    api.post<ClassifierRow>("/api/classifiers", body),
+  update: (slug: string, body: { display_name?: string; description?: string; draft_yaml?: string }) =>
+    api.patch<ClassifierDetail>(`/api/classifiers/${slug}`, body),
+  delete: (slug: string) => api.delete(`/api/classifiers/${slug}`),
+  versions: (slug: string) =>
+    api.get<{ data: ClassifierVersion[] }>(`/api/classifiers/${slug}/versions`).then((r) => r.data),
+  commit: (slug: string, body: { yaml_source: string; commit_message?: string }) =>
+    api.post<{ id: string; version: string; released: boolean; bump: string; deduped: boolean }>(
+      `/api/classifiers/${slug}/versions`,
+      body,
+    ),
+  promote: (slug: string) => api.post<{ released: string }>(`/api/classifiers/${slug}/promote`, {}),
+  release: (slug: string, body?: { yaml_source?: string }) =>
+    api.post<{ released: string; versionId: string }>(`/api/classifiers/${slug}/release`, body ?? {}),
+  /**
+   * Classify one document against an inline config (the current editor YAML),
+   * non-persisting. Mirrors the schema Build-tab "Run" but for classification.
+   */
+  classify: (file: File, config: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("config", config);
+    return api.postForm<ClassifyResult>("/api/classify", form);
+  },
+};
+
 export const jobs = {
   list: (params?: {
     status?: string;

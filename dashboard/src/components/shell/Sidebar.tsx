@@ -37,6 +37,7 @@ import {
   Play,
   MessageSquare,
   ArrowDownToLine,
+  Tags,
   ArrowLeftRight,
   ClipboardList,
   FileCode,
@@ -288,6 +289,11 @@ export function AppSidebar({
                 href={`${base}/sources`}
                 icon={<ArrowDownToLine className={ICON} />}
                 label="Sources"
+              />
+              <NavItemLink
+                href={`${base}/classifiers`}
+                icon={<Tags className={ICON} />}
+                label="Classifiers"
               />
 
               {/* Project settings — expands with sub-items when on a settings route */}
