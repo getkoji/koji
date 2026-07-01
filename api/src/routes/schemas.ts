@@ -15,8 +15,7 @@ import { and, isNull, isNotNull } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { resolveMimeType } from "../ingestion/mime";
-import { resolveBuildParse } from "./extract";
-import { parseDocument } from "../ingestion/seam";
+import { resolveParse, parseDocument } from "../ingestion/seam";
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -1057,13 +1056,16 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   // global default (`c.get("parseProvider")`) — otherwise scanned/degraded docs
   // that only the tenant's Doc AI handles parse empty here and get silently
   // dropped, surfacing downstream as expected=None/got=None (oss-308). Falls
-  // back to the default provider when no endpoint is configured. `resolveBuildParse`
-  // is the same helper the run path uses (resolveTenantParse + buildEffectiveParseProvider).
-  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveBuildParse(
+  // back to the default provider when no endpoint is configured. `resolveParse`
+  // is the one shared resolver every surface uses (oss-310).
+  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
     tenantId,
-    c.get("parseProvider"),
-    c.get("parseConfig"),
+    {
+      parseProviderId: null,
+      defaultProvider: c.get("parseProvider"),
+      parseConfig: c.get("parseConfig"),
+    },
   );
 
   // Per-doc parse failures — surfaced in the response instead of being silently

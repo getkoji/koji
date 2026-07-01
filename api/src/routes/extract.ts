@@ -71,47 +71,6 @@ async function checkPreflightLimits(
   return checkPreflight(limits, pages, fileSizeMb);
 }
 
-/**
- * Resolve the parse provider build/test mode should use for one tenant.
- *
- * Test mode must match production: the dashboard build page parses through the
- * *same* BYO parse provider the production ingestion path would use, instead of
- * always falling back to the system default (docling). This mirrors
- * `handleIngestionProcess` — `resolveTenantParse` (the tenant's active parse
- * endpoint) wrapped by `buildEffectiveParseProvider`.
- *
- * Dormant-until-configured: when the tenant has no parse endpoint (or no driver
- * is registered, or `parseConfig` is absent), `resolveTenantParse` returns null
- * and `buildEffectiveParseProvider` hands back the exact default provider — so
- * behavior is byte-for-byte identical to before BYO parse.
- *
- * Resolution failures never block the build run; we log and fall back to the
- * default provider.
- *
- * Returns the effective provider plus its parse-cache fingerprint, so the build
- * path keys/caches under the resolved provider — matching production (oss-298).
- *
- * `parseProviderId` honors a pipeline-pinned parse endpoint when the build is
- * scoped to a pipeline. The current build page is schema-scoped and sends no
- * pipeline, so it resolves the tenant's active endpoint (pin = null).
- *
- * Thin adapter over the shared {@link resolveParse} seam helper (oss-310) — the
- * three resolvers (`resolveBuildParse`, `resolveDagParse`, the inline block in
- * `handleIngestionProcess`) were byte-for-byte identical and now share one
- * implementation. Kept as a positional shim so existing call sites don't change
- * during the incremental migration.
- */
-export async function resolveBuildParse(
-  db: any,
-  tenantId: string,
-  defaultProvider: ParseProvider,
-  parseConfig: Env["Variables"]["parseConfig"],
-  parseProviderId: string | null = null,
-): Promise<{ provider: ParseProvider; fingerprint: string }> {
-  return resolveParse(db, tenantId, { parseProviderId, defaultProvider, parseConfig });
-}
-
-
 // ── Simple proxy endpoints ──────────────────────────────────────────────
 
 extract.post("/parse", requires("job:run"), async (c) => {
@@ -275,11 +234,16 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
 
   // Resolve the tenant's BYO parse provider — test mode must match production.
   // Falls back to the default provider when none is configured (oss-299).
-  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveBuildParse(
+  // Test mode must match production: resolve the tenant's BYO parse provider
+  // (the build page is schema-scoped, so no pinned override — pin = null).
+  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
     tenantId,
-    c.get("parseProvider"),
-    c.get("parseConfig"),
+    {
+      parseProviderId: null,
+      defaultProvider: c.get("parseProvider"),
+      parseConfig: c.get("parseConfig"),
+    },
   );
 
   // Parsing (resolve→parse→cache→flat→nested text_map) runs through the shared
