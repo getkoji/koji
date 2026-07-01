@@ -77,6 +77,44 @@ describe("short state-code provenance (no substring match inside words)", () => 
 
     expect(result.state).toBeNull();
   });
+
+  it("guards the PRIMARY source-text path too when the LLM echoes the code 'NC' with a context line", () => {
+    // The LLM often returns the canonical code ("NC") as __source_text rather
+    // than the verbatim "North Carolina". Within the correct context region the
+    // bare "NC" still substring-matches "…Incorporation…" unless guarded.
+    const markdown = "ARTICLES OF INCORPORATION\nThe corporation is organized under the laws of North Carolina.";
+    const scalarSourceTexts = { state: "NC" };
+    const sourceContexts = { state: "organized under the laws of North Carolina" };
+    const result = resolveProvenance(
+      { state: "NC" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      scalarSourceTexts,
+      sourceContexts,
+    );
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("North Carolina");
+    expect(result.state!.offset).toBe(markdown.indexOf("North Carolina"));
+  });
+
+  it("guards the PRIMARY source-text path with an echoed code and no context (Strategy 2)", () => {
+    const markdown = "ARTICLES OF INCORPORATION\nOrganized under the laws of North Carolina.";
+    const result = resolveProvenance(
+      { state: "NC" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      { state: "NC" }, // scalarSourceTexts — echoed code, no context provided
+    );
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("North Carolina");
+    expect(result.state!.offset).toBe(markdown.indexOf("North Carolina"));
+  });
 });
 
 // ---------------------------------------------------------------------------

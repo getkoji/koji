@@ -507,6 +507,27 @@ function findStateName(haystack: string, code: string): { offset: number; length
 }
 
 /**
+ * Locate a SHORT code (≤4 chars — state abbreviations and the like) safely.
+ *
+ * A bare substring search matches the code INSIDE a longer word — the classic
+ * "NC" inside "I·nc·orporation", which then highlights "Articles of
+ * Incorporation" for a state field. So short codes must match at a word
+ * boundary; if the bare code has no standalone token, expand a 2-letter state
+ * code to its full name (NC → "North Carolina") and match that. Returns null
+ * rather than an unbounded substring match — better no highlight than a
+ * confidently-wrong one.
+ *
+ * Used by every matcher that searches a short value against the full markdown
+ * (the fallback `resolveScalar`) OR against an LLM-provided source-text/context
+ * region (the primary `resolveScalarViaSourceText`) — so the substring trap
+ * can't sneak in through either path.
+ */
+function findShortCode(haystack: string, needle: string): { offset: number; length: number } | null {
+  return findWordBoundary(haystack, needle)
+    ?? (/^[A-Z]{2}$/i.test(needle) ? findStateName(haystack, needle) : null);
+}
+
+/**
  * Search for a number in the markdown. Tries the plain number and
  * comma-formatted variants.
  */
@@ -907,19 +928,11 @@ function resolveScalar(
       if (!result) result = findDollarAmount(markdown, value);
     } else if (value.length <= 4) {
       // Short codes (2-letter state abbreviations, etc.) must ONLY match at a
-      // word boundary. An unbounded substring search matches the code inside a
-      // longer word — the classic "NC" inside "I·nc·orporation", which then
-      // highlights "Articles of Incorporation" for a state field. So: try a
-      // word-boundary match, then expand a 2-letter state code to its full name
-      // (NC → "North Carolina") and match that. Never fall through to the
-      // substring matchers below — better no highlight than a confidently wrong
-      // one (findExact/findCaseInsensitive/findNormalized are all unbounded).
-      // The date/multi-line/fuzzy fallbacks below are no-ops for ≤4-char values
-      // anyway (date needs ≥8 chars, multi-line needs a comma, fuzzy needs ≥6).
-      result = findWordBoundary(markdown, value);
-      if (!result && /^[A-Z]{2}$/i.test(value)) {
-        result = findStateName(markdown, value);
-      }
+      // word boundary (see findShortCode) — never as an unbounded substring,
+      // which matches "NC" inside "I·nc·orporation". The date/multi-line/fuzzy
+      // fallbacks below are no-ops for ≤4-char values anyway (date needs ≥8
+      // chars, multi-line needs a comma, fuzzy needs ≥6).
+      result = findShortCode(markdown, value);
     } else {
       result =
         findExact(markdown, value) ??
@@ -1358,6 +1371,13 @@ function resolveScalarViaSourceText(
 
   let result: { offset: number; length: number } | null = null;
 
+  // Short source texts (e.g. a state code the LLM echoed as "NC" instead of the
+  // verbatim "North Carolina") must be located with the word-boundary guard, or
+  // they substring-match inside a longer word — even within a correct context
+  // region ("nc" in "…Incorporation…") or in the full markdown. Long source
+  // texts keep ordinary substring matching, which is more permissive.
+  const isShort = sourceText.length <= 4;
+
   // Strategy 1: find context in haystack, then source text within context region
   if (sourceContext) {
     const ctxHit = findExact(markdown, sourceContext)
@@ -1365,8 +1385,9 @@ function resolveScalarViaSourceText(
       ?? findNormalized(markdown, sourceContext);
     if (ctxHit) {
       const region = markdown.slice(ctxHit.offset, ctxHit.offset + ctxHit.length);
-      const localHit = findExact(region, sourceText)
-        ?? findCaseInsensitive(region, sourceText);
+      const localHit = isShort
+        ? findShortCode(region, sourceText)
+        : (findExact(region, sourceText) ?? findCaseInsensitive(region, sourceText));
       if (localHit) {
         result = {
           offset: ctxHit.offset + localHit.offset,
@@ -1378,9 +1399,11 @@ function resolveScalarViaSourceText(
 
   // Strategy 2: find source text directly in the full haystack
   if (!result) {
-    result = findExact(markdown, sourceText)
-      ?? findCaseInsensitive(markdown, sourceText)
-      ?? findNormalized(markdown, sourceText);
+    result = isShort
+      ? findShortCode(markdown, sourceText)
+      : (findExact(markdown, sourceText)
+        ?? findCaseInsensitive(markdown, sourceText)
+        ?? findNormalized(markdown, sourceText));
   }
 
   if (!result) return null;
