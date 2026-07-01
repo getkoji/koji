@@ -1760,10 +1760,20 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
                   } catch {}
                 }
                 let childText: string | undefined;
+                let childTextMap: any;
+                let childParseChunks: any;
                 if (childBuffer && sliceCtx?.parseProvider?.parse && nextIds.some((id) => pSteps.find((s) => s.id === id)?.type === "extract")) {
-                  try { childText = (await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer })).markdown; } catch {}
+                  try {
+                    const childParse = await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
+                    childText = childParse.markdown;
+                    // Each child carries ITS OWN provenance — override the parent's
+                    // text_map/chunks (inherited via the spread below), else child
+                    // values would highlight against the parent doc's boxes (oss-319).
+                    childTextMap = childParse.text_map ? toProvenanceTextMap(childParse.text_map) : undefined;
+                    childParseChunks = childParse.chunks;
+                  } catch {}
                 }
-                const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
+                const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, textMap: childTextMap, parseChunks: childParseChunks, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
                 const childStepOutputs = { ...stepOutputs };
                 childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl };
                 Object.assign(stepOutputs, childStepOutputs);
@@ -1843,17 +1853,23 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
 
           // Lazy parse: only if downstream has an extract step
           let childText: string | undefined;
+          let childTextMap: any;
+          let childParseChunks: any;
           if (childBuffer && sliceCtx?.parseProvider?.parse) {
             const hasExtractStep = childBranches.some((id) => pSteps.find((s) => s.id === id)?.type === "extract");
             if (hasExtractStep) {
               try {
                 const parseResult = await sliceCtx.parseProvider.parse({ filename: childFilename, mimeType: "application/pdf", fileBuffer: childBuffer });
                 childText = parseResult.markdown;
+                // Child-specific provenance — override the parent's, inherited via
+                // the spread below (see oss-319).
+                childTextMap = parseResult.text_map ? toProvenanceTextMap(parseResult.text_map) : undefined;
+                childParseChunks = parseResult.chunks;
               } catch {}
             }
           }
 
-          const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
+          const childDocInfo = { ...activeDocInfo, filename: childFilename, text: childText, textMap: childTextMap, parseChunks: childParseChunks, pageCount: childPageCount, fileBuffer: (childBuffer ?? activeDocInfo.fileBuffer) as Buffer<ArrayBuffer> };
           const childStepOutputs = { ...stepOutputs };
           childStepOutputs[step.id] = { ...result.output, current_group: group, document_url: previewUrl, storage_key: storageKey };
 
