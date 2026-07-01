@@ -143,7 +143,8 @@ export default function CorpusPage() {
       if (r.data.length > 0) {
         const latest = r.data[0]!;
         const vals: Record<string, string> = {};
-        for (const [k, v] of Object.entries(latest.payloadJson)) vals[k] = String(v ?? "");
+        for (const [k, v] of Object.entries(latest.payloadJson))
+          vals[k] = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
         setGtValues(vals);
         setLatestGt({ id: latest.id, reviewStatus: latest.reviewStatus });
       } else {
