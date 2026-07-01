@@ -1152,6 +1152,7 @@ Each field maps to a provenance span (or `null` if the value couldn't be located
 | `words` | array | Per-word bounding boxes for precise multi-word highlighting. |
 | `reasoning` | string | LLM-provided reasoning for why this value was selected (when available). |
 | `column_mismatch` | boolean | Set only when chunk geometry is available and a column header for the field is found. `true` flags a likely wrong-column association — the value's bounding box does not sit horizontally under its column header's bounding box (a common failure mode when a table is flattened with garbled reading order). `false` means the value sits under its header; omitted when not checked. |
+| `resolution` | string | How the span's **geometry** (`bbox`) was resolved — the durable provenance rung: `"offset"` (exact `md_offset` overlap lookup), `"chunk"` (authoritative structured/positional chunk bbox), `"fuzzy"` (best-effort text/value matching), or `"none"` (value located but no geometry — nothing to highlight). Lets a viewer distinguish an exact locate from a best guess. |
 | `items` | array | Per-item provenance for array fields. See below. |
 
 ### Array field provenance

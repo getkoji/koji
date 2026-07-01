@@ -29,8 +29,10 @@
 import {
   unionBBox,
   normalizeBBox,
+  assignUnitIds,
   type BBox,
   type ParseChunk,
+  type ParseUnitDraft,
   type ChunkCanonicalizer,
 } from "./chunk";
 import {
@@ -145,12 +147,12 @@ export class PositionalChunkCanonicalizer
   implements ChunkCanonicalizer<ParsedPage[]>
 {
   toChunks(pages: ParsedPage[]): ParseChunk[] {
-    const chunks: ParseChunk[] = [];
+    const drafts: ParseUnitDraft[] = [];
 
     for (const page of pages) {
       if (page.textItems.length === 0) {
         const fallback = page.text.trim();
-        if (fallback) chunks.push({ text: fallback, page: page.pageNum });
+        if (fallback) drafts.push({ text: fallback, page: page.pageNum, role: "line" });
         continue;
       }
 
@@ -174,7 +176,11 @@ export class PositionalChunkCanonicalizer
             for (const row of rows) {
               const text = renderRow(row.cells);
               if (text.replace(/[|\s]/g, "")) {
-                chunks.push({ text, page: page.pageNum, bbox: row.bbox });
+                // Row-granular reconstruction, not true cells — the positional
+                // path has no cell identity, so `role`/`table` are left off
+                // (best-effort per Decision 2). The row text and bbox still ride
+                // along as an addressable line-level unit.
+                drafts.push({ text, page: page.pageNum, bbox: row.bbox });
               }
             }
             i = tableEnd + 1;
@@ -182,16 +188,18 @@ export class PositionalChunkCanonicalizer
           }
         }
 
-        // Plain line → one chunk with its own bbox.
-        chunks.push({
+        // Plain line → one unit with its own bbox.
+        drafts.push({
           text: line.text,
           page: page.pageNum,
           bbox: lineBBox(line, page),
+          role: "line",
         });
         i++;
       }
     }
 
-    return chunks;
+    // Stamp parse-scoped, reading-order ids in one deterministic pass.
+    return assignUnitIds(drafts);
   }
 }

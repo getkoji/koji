@@ -140,6 +140,28 @@ describe("PositionalChunkCanonicalizer — table page", () => {
   });
 });
 
+describe("PositionalChunkCanonicalizer — parse-spine enrichment", () => {
+  it("stamps parse-scoped reading-order ids, deterministic across runs", () => {
+    const canon = new PositionalChunkCanonicalizer();
+    const a = canon.toChunks([page(tableItems)]);
+    const b = canon.toChunks([page(tableItems)]);
+    expect(a.map((c) => c.id)).toEqual(a.map((_, i) => `p1-u${i}`));
+    // Same input -> same ids (Decision 1: stable within a parse run).
+    expect(b.map((c) => c.id)).toEqual(a.map((c) => c.id));
+  });
+
+  it("tags plain lines role \"line\"; table rows carry no cell structure", () => {
+    const chunks = new PositionalChunkCanonicalizer().toChunks([
+      page([item("Certificate of Insurance", 72, 100, 18)]),
+    ]);
+    expect(chunks[0]!.role).toBe("line");
+    expect(chunks[0]!.table).toBeUndefined();
+    // Row-granular table reconstruction has no true cells -> no role/table.
+    const rows = new PositionalChunkCanonicalizer().toChunks([page(tableItems)]);
+    for (const r of rows) expect(r.table).toBeUndefined();
+  });
+});
+
 describe("PositionalChunkCanonicalizer — non-table content", () => {
   it("emits one bbox-carrying chunk per plain line", () => {
     const items = [

@@ -355,6 +355,35 @@ function extractSourceContexts(parsed: Record<string, unknown>): Record<string, 
   return result;
 }
 
+/**
+ * Recursively delete every `__`-prefixed key from an extracted value.
+ *
+ * The model emits provenance inline (`__source_text` on array items,
+ * `__source_context` maps). Those are harvested to the separate provenance
+ * channel upstream (`extractSourceTexts`/`extractSourceContexts`), but that
+ * harvest is shallow — it only reaches top-level array items. Nested items
+ * (e.g. `coverages[].limits[]`) keep their `__source_text`, and no path strips
+ * `__source_context` off array items at all. Left inline they pollute the
+ * persisted output and the API response, and — because ground truth never
+ * carries them — they cap array/object scores in Validate. This sweep is the
+ * single point that guarantees `extracted` is free of provenance keys at any
+ * depth, regardless of what the harvest reached.
+ */
+export function stripProvenanceKeys(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) stripProvenanceKeys(item);
+  } else if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (key.startsWith("__")) {
+        delete obj[key];
+      } else {
+        stripProvenanceKeys(obj[key]);
+      }
+    }
+  }
+}
+
 function buildConfidence(
   extracted: Record<string, unknown>,
   fields: Record<string, Record<string, unknown>>,
@@ -615,6 +644,12 @@ export async function extractFields(
   // This replaces the old single-shot approach that stuffed the entire document into one LLM call.
   const { intelligentExtract } = await import("./intelligent-pipeline");
   const result = await intelligentExtract(markdown, schemaDef, provider, model, textMap, chunks);
+
+  // Provenance is harvested to `result.source_texts` inside the pipeline, but
+  // that harvest is shallow. Sweep any `__`-prefixed key left inline (nested
+  // array items, `__source_context` on array items) so the persisted output,
+  // the API response, and Validate scoring never see provenance as a data key.
+  stripProvenanceKeys(result.extracted);
 
   // A fit gate with `on_misfit: reject` short-circuits extraction — there is
   // nothing to validate or normalize. The `fit` block already explains why.

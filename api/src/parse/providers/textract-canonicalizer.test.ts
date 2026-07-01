@@ -160,36 +160,53 @@ function parseMarkdownTable(md: string): string[][] {
 describe("TextractCanonicalizer", () => {
   const chunks = new TextractCanonicalizer().toChunks(buildFixture());
 
-  it("emits free text and the table in reading order (by page, then top)", () => {
-    expect(chunks).toHaveLength(3);
+  it("emits free text and per-cell table units in reading order (by page, then top)", () => {
+    // Spine: title + 6 table cells (3x2) + footer = 8 units.
+    expect(chunks).toHaveLength(8);
     expect(chunks[0]!.text).toBe("Insurance Summary");
-    expect(chunks[1]!.text).toContain("Policy"); // the table chunk
-    expect(chunks[2]!.text).toBe("Thank you");
+    expect(chunks[1]!.role).toBe("table_cell"); // first table cell
+    expect(chunks[1]!.text).toBe("Policy");
+    expect(chunks.at(-1)!.text).toBe("Thank you");
+  });
+
+  it("stamps parse-scoped reading-order ids", () => {
+    expect(chunks.map((c) => c.id)).toEqual([
+      "p1-u0", "p1-u1", "p1-u2", "p1-u3", "p1-u4", "p1-u5", "p1-u6", "p1-u7",
+    ]);
   });
 
   it("suppresses LINEs whose words are entirely inside a table", () => {
-    // "Policy Premium" must NOT appear as its own loose text chunk.
-    const looseTexts = chunks.filter((c) => !c.text.includes("|")).map((c) => c.text);
+    // "Policy Premium" must NOT appear as its own loose text unit.
+    const looseTexts = chunks.filter((c) => c.role !== "table_cell").map((c) => c.text);
     expect(looseTexts).toEqual(["Insurance Summary", "Thank you"]);
   });
 
-  it("reconstructs the table with correct column association", () => {
-    const grid = parseMarkdownTable(chunks[1]!.text);
+  it("emits table cells carrying correct {tableId, row, col}", () => {
+    const cells = chunks.filter((c) => c.role === "table_cell");
+    expect(cells).toHaveLength(6);
+    expect(cells[0]).toMatchObject({ text: "Policy", table: { tableId: "p1-t0", row: 1, col: 1 } });
+    expect(cells[1]).toMatchObject({ text: "Premium", table: { tableId: "p1-t0", row: 1, col: 2 } });
+    // The premium values land under the Premium column (col 2), never Policy.
+    expect(cells[3]).toMatchObject({ text: "$1,000", table: { tableId: "p1-t0", row: 2, col: 2 } });
+    expect(cells[5]).toMatchObject({ text: "$2,500", table: { tableId: "p1-t0", row: 3, col: 2 } });
+  });
+
+  it("reconstructs the table with correct column association via markdown projection", () => {
+    const grid = parseMarkdownTable(chunksToMarkdown(chunks));
     expect(grid).toEqual([
       ["Policy", "Premium"],
       ["ABC-123", "$1,000"],
       ["XYZ-789", "$2,500"],
     ]);
-    // The premium values land under the Premium column, never under Policy.
     expect(grid[1]![1]).toBe("$1,000");
     expect(grid[2]![1]).toBe("$2,500");
     expect(grid[1]![0]).toBe("ABC-123");
   });
 
-  it("carries the table bbox from the TABLE block geometry", () => {
-    const table = chunks[1]!;
-    expect(table.bbox).toEqual({ x: 0.1, y: 0.2, w: 0.6, h: 0.15 });
-    expect(table.page).toBe(1);
+  it("carries each cell's bbox from its CELL block geometry", () => {
+    const policy = chunks[1]!; // r1c1
+    expect(policy.bbox).toEqual({ x: 0.1, y: 0.2, w: 0.3, h: 0.05 });
+    expect(policy.page).toBe(1);
   });
 
   it("carries normalized bbox on free-text chunks", () => {

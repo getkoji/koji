@@ -77,7 +77,11 @@ import type { ParseEndpointPayload } from "../resolve-tenant-parse";
 import {
   type BBox,
   type ParseChunk,
+  type ParseUnitDraft,
+  type ParseUnitRole,
   type ChunkCanonicalizer,
+  assignUnitIds,
+  spineToMarkdown,
   normalizeBBox,
   unionBBox,
 } from "../chunk";
@@ -278,67 +282,71 @@ function rangesOverlap(a: [number, number], b: [number, number]): boolean {
   return a[0] < b[1] && b[0] < a[1];
 }
 
-/** Escape a cell value for inclusion in a markdown table cell. */
-function escapeCell(text: string): string {
-  return text.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
-}
-
-/** Flatten a table row into ordered cell strings, expanding colSpan as blanks. */
-function rowCells(fullText: string, row: GoogleTableRow): string[] {
-  const out: string[] = [];
-  for (const cell of row.cells ?? []) {
-    out.push(escapeCell(textFromAnchor(fullText, cell.layout?.textAnchor)));
-    // A colSpan>1 cell occupies extra grid columns; pad with blanks so every
-    // downstream column stays aligned with its header.
-    const span = Math.max(1, toInt(cell.colSpan, 1));
-    for (let i = 1; i < span; i++) out.push("");
-  }
-  return out;
+/** A cell's display text: whitespace-collapsed and trimmed, pipes left raw
+ * (the markdown projector escapes them). */
+function cellDisplayText(fullText: string, cell: GoogleTableCell): string {
+  return textFromAnchor(fullText, cell.layout?.textAnchor).replace(/\s+/g, " ").trim();
 }
 
 /**
- * Serialize a Document AI table to GitHub-flavored markdown from the KNOWN
- * cell grid. Because every cell's column is its index in `cells[]` (not an
- * inference over flattened text), column association is preserved exactly —
- * this is the wrong-column fix.
+ * Flatten a Document AI table into per-cell `table_cell` units from the KNOWN
+ * cell grid. Because every cell's column is its index in `cells[]` (colSpan
+ * expanded to blank grid slots), column association is preserved exactly — the
+ * wrong-column fix, now carried as addressable cells rather than a pre-rendered
+ * markdown string. Header rows are numbered first (row 1..), then body rows;
+ * {@link spineToMarkdown} reprojects the identical markdown table, treating
+ * row 1 as the header (which also promotes the first body row when there are no
+ * header rows).
  *
- * If the table has no `headerRows`, the first body row is promoted to the
- * header so the output is still valid markdown.
+ * Each real cell carries `{ tableId, row, col }`, `role: "table_cell"`, its
+ * bbox, and its text; colSpan padding is emitted as empty cells so the grid
+ * keeps its full width.
  */
-function serializeTable(fullText: string, table: GoogleTable): string {
-  const headerRows = (table.headerRows ?? []).map((r) => rowCells(fullText, r));
-  const bodyRows = (table.bodyRows ?? []).map((r) => rowCells(fullText, r));
+function tableCells(
+  fullText: string,
+  table: GoogleTable,
+  dim: GoogleDimension | undefined,
+  pageNum: number,
+  tableId: string,
+): ParseUnitDraft[] {
+  const rows = [...(table.headerRows ?? []), ...(table.bodyRows ?? [])];
+  if (rows.length === 0) return [];
 
-  let header: string[];
-  let rest: string[][];
-  if (headerRows.length > 0) {
-    header = headerRows[0]!;
-    rest = [...headerRows.slice(1), ...bodyRows];
-  } else if (bodyRows.length > 0) {
-    header = bodyRows[0]!;
-    rest = bodyRows.slice(1);
-  } else {
-    return "";
-  }
-
-  // Square the grid: every row padded to the widest row's column count.
-  const cols = Math.max(header.length, ...rest.map((r) => r.length), 1);
-  const pad = (r: string[]): string[] => {
-    const copy = r.slice(0, cols);
-    while (copy.length < cols) copy.push("");
-    return copy;
-  };
-
-  const lines: string[] = [];
-  lines.push(`| ${pad(header).join(" | ")} |`);
-  lines.push(`| ${Array(cols).fill("---").join(" | ")} |`);
-  for (const r of rest) lines.push(`| ${pad(r).join(" | ")} |`);
-  return lines.join("\n");
+  const units: ParseUnitDraft[] = [];
+  rows.forEach((row, rIdx) => {
+    const rowNum = rIdx + 1;
+    let col = 1;
+    for (const cell of row.cells ?? []) {
+      const text = cellDisplayText(fullText, cell);
+      const bbox = bboxFromPoly(cell.layout?.boundingPoly, dim);
+      units.push({
+        text,
+        page: pageNum,
+        ...(bbox ? { bbox } : {}),
+        role: "table_cell",
+        table: { tableId, row: rowNum, col },
+      });
+      // A colSpan>1 cell occupies extra grid columns; emit blank cells so the
+      // projected grid stays aligned with its header.
+      const span = Math.max(1, toInt(cell.colSpan, 1));
+      for (let k = 1; k < span; k++) {
+        units.push({
+          text: "",
+          page: pageNum,
+          role: "table_cell",
+          table: { tableId, row: rowNum, col: col + k },
+        });
+      }
+      col += span;
+    }
+  });
+  return units;
 }
 
-/** An emitted chunk paired with a sort key for page reading order. */
-interface OrderedChunk {
-  chunk: ParseChunk;
+/** A contiguous group of units paired with a sort key for page reading order. */
+interface OrderedGroup {
+  /** Units emitted contiguously (a text unit, or a table's cells). */
+  units: ParseUnitDraft[];
   /** Original index — stable tie-break when geometry is missing. */
   order: number;
   /** Top edge (normalized) for vertical reading order; Infinity when unknown. */
@@ -348,18 +356,20 @@ interface OrderedChunk {
 }
 
 /**
- * Converts a Google `Document` into ordered, provenance-carrying chunks.
+ * Converts a Google `Document` into an ordered, provenance-carrying parse spine.
  *
- * Text paragraphs (falling back to lines, then blocks) become text chunks;
+ * Text paragraphs (falling back to lines, then blocks) become text units;
  * paragraphs whose text falls inside a table's span are dropped so table text
- * isn't emitted twice. Each table becomes one chunk holding a clean markdown
- * table. Chunks are ordered top-to-bottom, left-to-right within a page by their
- * bbox, with original order as a stable fallback.
+ * isn't emitted twice. Each table becomes a contiguous run of `table_cell`
+ * units carrying `{ tableId, row, col }` (markdown is reprojected from them by
+ * {@link spineToMarkdown}). Units are ordered top-to-bottom, left-to-right
+ * within a page by their bbox, with original order as a stable fallback, then
+ * stamped with parse-scoped reading-order ids.
  */
 export class GoogleDocAiCanonicalizer implements ChunkCanonicalizer<GoogleDocument> {
   toChunks(structured: GoogleDocument): ParseChunk[] {
     const fullText = structured.text ?? "";
-    const chunks: ParseChunk[] = [];
+    const drafts: ParseUnitDraft[] = [];
 
     const pages = structured.pages ?? [];
     pages.forEach((page, pageIdx) => {
@@ -370,37 +380,42 @@ export class GoogleDocAiCanonicalizer implements ChunkCanonicalizer<GoogleDocume
         .map(tableTextRange)
         .filter((r): r is [number, number] => r !== null);
 
-      const ordered: OrderedChunk[] = [];
+      const groups: OrderedGroup[] = [];
       let order = 0;
 
-      // Text elements: prefer paragraphs; fall back to lines, then blocks.
+      // Text elements: prefer paragraphs; fall back to lines, then blocks. The
+      // role hint reflects which family we're reading (best-effort per Decision 2).
+      const usingParagraphs = !!page.paragraphs?.length;
+      const usingLines = !usingParagraphs && !!page.lines?.length;
       const textElements =
         (page.paragraphs?.length ? page.paragraphs : undefined) ??
         (page.lines?.length ? page.lines : undefined) ??
         page.blocks ??
         [];
+      const textRole: ParseUnitRole = usingLines ? "line" : "paragraph";
 
       for (const el of textElements) {
         const range = elementTextRange(el);
-        // Skip text that belongs to a table — the table chunk carries it.
+        // Skip text that belongs to a table — the table cells carry it.
         if (range && tableRanges.some((tr) => rangesOverlap(range, tr))) continue;
 
         const text = textFromAnchor(fullText, el.layout?.textAnchor).trim();
         if (!text) continue;
 
         const bbox = bboxFromPoly(el.layout?.boundingPoly, dim);
-        ordered.push({
-          chunk: { text, page: pageNum, ...(bbox ? { bbox } : {}) },
+        groups.push({
+          units: [{ text, page: pageNum, ...(bbox ? { bbox } : {}), role: textRole }],
           order: order++,
           top: bbox ? bbox.y : Infinity,
           left: bbox ? bbox.x : Infinity,
         });
       }
 
-      // Tables → one markdown chunk each.
-      for (const table of tables) {
-        const md = serializeTable(fullText, table);
-        if (!md) continue;
+      // Tables → a contiguous run of per-cell units each.
+      tables.forEach((table, tableIdx) => {
+        const tableId = `p${pageNum}-t${tableIdx}`;
+        const cells = tableCells(fullText, table, dim, pageNum, tableId);
+        if (cells.length === 0) return;
         // Prefer the table's own layout box; else union the cell boxes.
         let bbox = bboxFromPoly(table.layout?.boundingPoly, dim);
         if (!bbox) {
@@ -413,26 +428,26 @@ export class GoogleDocAiCanonicalizer implements ChunkCanonicalizer<GoogleDocume
           }
           bbox = unionBBox(cellBoxes);
         }
-        ordered.push({
-          chunk: { text: md, page: pageNum, ...(bbox ? { bbox } : {}) },
+        groups.push({
+          units: cells,
           order: order++,
           top: bbox ? bbox.y : Infinity,
           left: bbox ? bbox.x : Infinity,
         });
-      }
+      });
 
       // Reading order: top-to-bottom, then left-to-right; stable on ties / when
       // geometry is missing (preserves the provider's emitted order).
-      ordered.sort((a, b) => {
+      groups.sort((a, b) => {
         if (a.top !== b.top) return a.top - b.top;
         if (a.left !== b.left) return a.left - b.left;
         return a.order - b.order;
       });
 
-      for (const o of ordered) chunks.push(o.chunk);
+      for (const g of groups) drafts.push(...g.units);
     });
 
-    return chunks;
+    return assignUnitIds(drafts);
   }
 }
 
@@ -635,7 +650,10 @@ export function mergeShardChunks(
     }
     offset += shard.pageCount;
   }
-  return merged;
+  // Ids were parse-scoped WITHIN each shard's local page numbers; after
+  // rebasing pages onto the global range they must be restamped so the merged
+  // spine's `p<page>-u<index>` handles are correct per global page.
+  return assignUnitIds(merged);
 }
 
 /**
@@ -835,7 +853,7 @@ export class GoogleDocAiProvider implements ParseProvider {
     const merged = mergeShardChunks(shards);
     const totalPages = shards.reduce((sum, s) => sum + s.pageCount, 0);
     return {
-      markdown: merged.map((c) => c.text).join("\n\n"),
+      markdown: spineToMarkdown(merged),
       pages: totalPages || null,
       ocr_skipped: false,
       engine: "google-docai",
@@ -1082,7 +1100,7 @@ export class GoogleDocAiProvider implements ParseProvider {
    */
   buildResponse(document: GoogleDocument): ParseResponse {
     const chunks = this.canonicalizer.toChunks(document);
-    const markdown = chunks.map((c) => c.text).join("\n\n");
+    const markdown = spineToMarkdown(chunks);
     return {
       markdown,
       pages: document.pages?.length ?? null,
@@ -1113,7 +1131,7 @@ export class GoogleDocAiProvider implements ParseProvider {
     const merged = mergeShardChunks(shards);
     const totalPages = shards.reduce((sum, s) => sum + s.pageCount, 0);
     return {
-      markdown: merged.map((c) => c.text).join("\n\n"),
+      markdown: spineToMarkdown(merged),
       pages: totalPages || null,
       ocr_skipped: false,
       engine: "google-docai",

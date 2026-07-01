@@ -1034,6 +1034,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     groundTruth: Record<string, unknown>;
     extracted: Record<string, unknown>;
     confidenceScores: Record<string, number>;
+    routingPlan?: RoutingPlan;
   }> = [];
 
   // Get previous extraction runs for regression detection
@@ -1134,6 +1135,10 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         groundTruth: entry.groundTruthJson as Record<string, unknown>,
         extracted: (extractResult.extracted as Record<string, unknown>) ?? {},
         confidenceScores: (extractResult.confidence_scores as Record<string, number>) ?? {},
+        // Per-field chunk routing — powers the `routingDiagnosis` on failing
+        // fields (was the answer even in the chunks the model saw?). Transient:
+        // consumed by computeValidateResult, never persisted or returned raw.
+        routingPlan: (extractResult.routing_plan as RoutingPlan) ?? undefined,
       });
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -1188,9 +1193,63 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   return c.json({ ...validateResult, version: versionLabel, bump, deduped });
 });
 
+/** Per-field chunk-routing record produced by the intelligent pipeline. */
+type RoutingPlan = Record<
+  string,
+  { source: string; chunks: Array<{ index: number; title: string }>; text: string }
+>;
+
+/** Diagnosis attached to a failing (field, doc) pair to explain *why* it failed. */
+interface RoutingDiagnosis {
+  /** How the chunks were selected: hint | signal_inferred | broadened | fallback | full_document. */
+  source: string | null;
+  /**
+   * Whether the ground-truth answer's text appears in the chunks the model was
+   * shown. `false` ⇒ a routing miss — the model never saw the answer, so no
+   * prompt or model change can fix it; fix the schema `hints`. `true` ⇒ the
+   * answer reached the model and it still got it wrong — a prompt/description
+   * (or, last resort, model) problem. `null` ⇒ couldn't determine (no routing
+   * data, or a non-scalar expected value the heuristic doesn't score).
+   */
+  answerInRoutedChunks: boolean | null;
+  /** The chunks the field was routed to (index + heading), for display. */
+  chunks: Array<{ index: number; title: string }>;
+}
+
+/**
+ * Heuristic: does the ground-truth `expected` value appear in `text` (the
+ * concatenated content of the chunks the field was routed to)? Numbers match on
+ * their digit sequence (tolerating `$`, commas, decimals); strings match as a
+ * normalized substring or ≥60% of their significant word tokens. Booleans and
+ * complex values return `null` — the routing `source` still applies. Intended as
+ * a diagnostic hint, not a hard gate.
+ */
+export function answerPresentInText(expected: unknown, text: string | undefined): boolean | null {
+  if (!text) return null;
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const hay = norm(text);
+  if (!hay) return null;
+
+  if (typeof expected === "number") {
+    const digits = String(expected).replace(/[^0-9]/g, "");
+    if (!digits) return null;
+    return hay.replace(/[^0-9]/g, "").includes(digits);
+  }
+  if (typeof expected === "string") {
+    const needle = norm(expected);
+    if (!needle) return null;
+    if (hay.includes(needle)) return true;
+    const tokens = needle.split(" ").filter((t) => t.length > 2);
+    if (tokens.length === 0) return hay.includes(needle);
+    const hits = tokens.filter((t) => hay.includes(t)).length;
+    return hits / tokens.length >= 0.6;
+  }
+  return null;
+}
+
 /** Compare extraction results against ground truth and compute accuracy/regressions. */
 export function computeValidateResult(
-  results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number> }>,
+  results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number>; routingPlan?: RoutingPlan }>,
   prevExtractedMap: Map<string, Record<string, unknown>>,
   schemaVersion: number,
   startTime: number,
@@ -1207,14 +1266,14 @@ export function computeValidateResult(
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> }> = [];
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
   let totalScore = 0;
   let totalChecked = 0;
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
     let scoreSum = 0, checked = 0, prevScoreSum = 0, prevChecked = 0;
-    const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number }> = [];
+    const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> = [];
 
     for (const r of results) {
       const expected = r.groundTruth[fieldName];
@@ -1225,7 +1284,18 @@ export function computeValidateResult(
 
       if (!cmp.match) {
         const conf = r.confidenceScores[fieldName] ?? 0;
-        failing.push({ id: r.entryId, filename: r.filename, diff: cmp.diff, score: cmp.score, confidence: conf });
+        // Explain the failure: did the answer even reach the model? A routing
+        // miss (answerInRoutedChunks=false) is schema-fixable via hints and no
+        // model change helps; a hit points at prompt/description instead.
+        const route = r.routingPlan?.[fieldName];
+        const routingDiagnosis: RoutingDiagnosis | undefined = route
+          ? {
+              source: route.source,
+              answerInRoutedChunks: answerPresentInText(expected, route.text),
+              chunks: route.chunks,
+            }
+          : undefined;
+        failing.push({ id: r.entryId, filename: r.filename, diff: cmp.diff, score: cmp.score, confidence: conf, ...(routingDiagnosis ? { routingDiagnosis } : {}) });
         const existing = failingDocsMap.get(r.entryId);
         if (existing) { existing.failedFields.push(fieldName); existing.worstConfidence = Math.min(existing.worstConfidence, conf); }
         else { failingDocsMap.set(r.entryId, { id: r.entryId, filename: r.filename, failedFields: [fieldName], worstConfidence: conf }); }
