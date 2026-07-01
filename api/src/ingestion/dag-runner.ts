@@ -19,11 +19,13 @@ import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { resolvePipelineSchemaVersion } from "./pipeline-schema-version";
 import { createProvider } from "../extract/providers";
 import { extractFields } from "../extract/pipeline";
+import type { TextMap } from "../extract/provenance";
+import type { ParseChunk } from "../parse/chunk";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
-import { readParseProviderPin, getOrParse } from "./process";
-import { resolveParse } from "./seam";
+import { readParseProviderPin } from "./process";
+import { resolveParse, parseDocument } from "./seam";
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
@@ -348,6 +350,11 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   let docText: string | undefined;
   let pageCount: number | undefined;
   let chunks: Chunk[] = [];
+  // Parse-layer provenance carried into extraction so pipeline results get bbox
+  // highlights like ingestion/build/validate (oss-310). Distinct from `chunks`
+  // above, which is the DAG's markdown chunking persisted to documents.chunksJson.
+  let parseTextMap: TextMap | undefined;
+  let parseChunks: readonly ParseChunk[] | undefined;
   try {
     if (_parseProvider) {
       // Resolve the tenant's BYO parse provider — DAG pipelines must honor the
@@ -364,24 +371,27 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       // Provider-aware parse cache (oss-298): keyed under the resolved provider's
       // fingerprint, so switching/editing the parse provider re-parses instead of
       // serving a stale cache from a different provider. Shared with production
-      // ingestion + build mode via the same `getOrParse` helper.
-      const parseResult = await getOrParse(
+      // ingestion + build mode via the same seam (`parseDocument`), which also
+      // shapes the flat text_map into the nested provenance form.
+      const parseResult = await parseDocument({
         db,
         storage,
-        parseProvider,
         tenantId,
-        {
+        document: {
           id: doc.id,
           storageKey: doc.storageKey,
           filename: doc.filename,
           mimeType: doc.mimeType,
           contentHash: doc.contentHash,
         },
-        parseFingerprint,
-        { skipCache },
-      );
+        provider: parseProvider,
+        fingerprint: parseFingerprint,
+        skipCache,
+      });
       docText = parseResult.markdown;
       pageCount = parseResult.pages ?? undefined;
+      parseTextMap = parseResult.textMap;
+      parseChunks = parseResult.chunks;
       // Searchable PDFs are no longer written here — see process.ts.
       // Chunk the parsed markdown and persist
       chunks = chunkMarkdown(docText);
@@ -468,7 +478,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
             const ver = await resolvePipelineSchemaVersion(db, tenantId, pipelineId, schemaSlug);
             if (ver?.parsedJson) {
               const provider = createProvider(endpoint.model, endpoint);
-              const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
+              const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model, parseTextMap, parseChunks);
               const fieldNames = Object.keys(result.extracted || {});
               const nonNull = fieldNames.filter(f => result.extracted[f] != null);
               const scores = Object.values(result.confidence_scores || {});
@@ -829,7 +839,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                   const ver = await resolvePipelineSchemaVersion(db, tenantId, pipelineId, schemaSlug);
                   if (ver?.parsedJson) {
                     const provider = createProvider(endpoint.model, endpoint);
-                    const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model);
+                    const result = await extractFields(docText, ver.parsedJson, provider, endpoint.model, parseTextMap, parseChunks);
                     const fieldNames = Object.keys(result.extracted || {});
                     const nonNull = fieldNames.filter(f => result.extracted[f] != null);
                     const scores = Object.values(result.confidence_scores || {});
