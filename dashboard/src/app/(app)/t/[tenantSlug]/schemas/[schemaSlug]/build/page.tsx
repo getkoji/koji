@@ -1005,7 +1005,7 @@ export default function BuildPage() {
                                   </span>
                                   <span className="flex flex-col items-end min-w-0">
                                     <span className="text-[12px] text-ink text-right break-words min-w-0">
-                                      {String(value ?? "\u2014")}
+                                      {formatLeafValue(value)}
                                     </span>
                                     {topRawByField[key] != null && (
                                       <span className="font-mono text-[10px] text-ink-4 text-right break-words min-w-0" title={topRawByField[key]}>
@@ -1271,6 +1271,15 @@ export default function BuildPage() {
 
 const BUILD_INDENT = 24;
 
+// Render a non-expandable leaf value. Objects/arrays only reach here when empty
+// (non-empty ones are expandable), so JSON.stringify keeps {}/[] readable
+// instead of coercing to "[object Object]".
+function formatLeafValue(value: unknown): string {
+  if (value == null) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function BuildNestedValue({
   value,
   keyPath,
@@ -1379,7 +1388,7 @@ function BuildNestedValue({
                 <span className="font-mono text-[10px] text-ink-4 shrink-0">{propName}</span>
                 <span className="flex flex-col min-w-0">
                   <span className="text-[11px] text-ink-2 truncate min-w-0">
-                    {expandable ? (Array.isArray(propValue) ? `${(propValue as unknown[]).length} items` : `${Object.keys(propValue as object).length} fields`) : String(propValue ?? "\u2014")}
+                    {expandable ? (Array.isArray(propValue) ? `${(propValue as unknown[]).length} items` : `${Object.keys(propValue as object).length} fields`) : formatLeafValue(propValue)}
                   </span>
                   {!expandable && rawByField[propName] != null && (
                     <span className="font-mono text-[9.5px] text-ink-4 truncate min-w-0" title={rawByField[propName]}>
