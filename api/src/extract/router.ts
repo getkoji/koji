@@ -362,9 +362,29 @@ export function routeAllChunks(
  */
 export function groupRoutes(routes: FieldRoute[]): RouteGroup[] {
   const groups: RouteGroup[] = [];
+
+  // per_section fields extract in isolation. Their chunk set is deliberately
+  // expanded to one chunk per section — potentially spanning the whole
+  // document. Folding that union into a shared group would make every sibling
+  // field in the group extract against all those sections, so a scalar that
+  // shares even one section chunk with a per_section array would inherit the
+  // rest and mis-extract (e.g. picking the carrier name stamped on each
+  // coverage-part header instead of the named insured). Each per_section field
+  // is therefore its own singleton group and takes no part in the overlap-based
+  // grouping below — as either a seed or a candidate.
+  const groupableRoutes = routes.filter((r) => r.source !== "per_section");
+  for (const route of routes) {
+    if (route.source !== "per_section") continue;
+    groups.push({
+      fields: [route.fieldName],
+      fieldSpecs: { [route.fieldName]: route.fieldSpec },
+      chunks: [...route.chunks],
+    });
+  }
+
   const usedFields = new Set<string>();
 
-  const sorted = [...routes].sort((a, b) => {
+  const sorted = [...groupableRoutes].sort((a, b) => {
     const aIndices = a.chunks.map((c) => c.index);
     const bIndices = b.chunks.map((c) => c.index);
     for (let i = 0; i < Math.max(aIndices.length, bIndices.length); i++) {
@@ -382,7 +402,7 @@ export function groupRoutes(routes: FieldRoute[]): RouteGroup[] {
 
     // Find other fields that share the same chunks
     const groupFields: FieldRoute[] = [route];
-    for (const other of routes) {
+    for (const other of groupableRoutes) {
       if (usedFields.has(other.fieldName) || other.fieldName === route.fieldName) {
         continue;
       }
