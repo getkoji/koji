@@ -210,3 +210,12 @@ export function parseClassifierYaml(src: string): ClassifierConfig {
   }
   return normalizeConfig(parsed);
 }
+
+/**
+ * Load a classifier config from either a YAML/JSON string (as sent in a
+ * multipart `config` field) or an already-parsed object (as sent in a JSON
+ * body). YAML is a JSON superset, so string inputs go through the YAML parser.
+ */
+export function loadClassifierConfig(raw: unknown): ClassifierConfig {
+  return typeof raw === "string" ? parseClassifierYaml(raw) : normalizeConfig(raw);
+}

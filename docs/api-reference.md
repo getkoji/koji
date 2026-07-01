@@ -212,6 +212,83 @@ The `trace` object describes the pipeline run — its shape is locked and docume
 
 ---
 
+## Classify
+
+### `POST /api/classify`
+
+Classify a document into one of a user-defined set of classes. Runs a cost
+cascade — cheap deterministic signals first, paid model calls only for the hard
+tail — and stops at the first confident tier. Non-persisting, so it also serves
+as the test surface. Config is inline; classes, keywords, and windows are all
+yours (the engine ships no built-in classes).
+
+**Request** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | Yes | The document to classify. |
+| `config` | string | Yes | Classifier config as YAML or JSON (see below). |
+
+Or `application/json` with a stored document:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `storage_key` | string | Yes | Key of a previously uploaded document. |
+| `config` | object | Yes | Classifier config. |
+| `filename` | string | No | Overrides the name inferred from `storage_key`. |
+| `mime_type` | string | No | Overrides the inferred content type. |
+
+**Config**
+
+```yaml
+classify:
+  window: 3            # default leading pages to consider
+  scan: head           # head | head_and_tail
+  max_tier: 4          # cost ceiling: 0 meta · 1 text · 2 keyword · 3 llm · 4 vision
+  on_unknown: return   # return unknown, or reject (422)
+classes:
+  invoice:
+    description: "a vendor bill"
+    keywords: ["invoice", "amount due", "remit to"]
+    window: 2          # per-class cost dial
+  policy:
+    keywords: ["declarations", "insuring agreement"]
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "label": "invoice",
+  "confidence": 0.9,
+  "method": "keyword",
+  "tier_used": 2,
+  "evidence_page": 2,
+  "scores": [
+    { "id": "invoice", "score": 0.9, "hits": 3, "total": 3, "evidence_page": 2 }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `label` | string | Winning class id, or `"unknown"`. |
+| `confidence` | number | Confidence in the label (0–1). Semantics vary by `method`. |
+| `method` | string | Tier that produced the label: `keyword`, `llm`, `vision`, or `unknown`. |
+| `tier_used` | integer | Numeric tier reached (0 metadata … 4 vision). Conveys the cost paid. |
+| `evidence_page` | integer\|null | Page the label was keyed on — helps debug cover-sheet misses. |
+| `scores` | array | Per-class deterministic scores, when the keyword tier ran. |
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Missing file/config, or an invalid classifier config. |
+| `404` | `storage_key` not found. |
+| `422` | No class matched and the config set `on_unknown: reject`. |
+
+---
+
 ## Content-Type and Ingestion Warnings
 
 Every ingestion endpoint expects an RFC-compliant `Content-Type` (`type/subtype`) — for example `application/pdf`, `image/png`, `text/csv`. The server uses it as the canonical document type for downstream parsing and rendering.

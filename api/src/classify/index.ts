@@ -11,6 +11,7 @@ export type { CascadeDeps, DocumentInput, RenderPageImages } from "./cascade";
 export {
   normalizeConfig,
   parseClassifierYaml,
+  loadClassifierConfig,
   ClassifierConfigError,
   DEFAULTS,
 } from "./config";

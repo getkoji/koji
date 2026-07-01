@@ -64,6 +64,7 @@ import { review } from "./routes/review";
 import { overview } from "./routes/overview";
 import { billing as billingRoutes } from "./routes/billing";
 import { forms as formsRouter } from "./routes/forms";
+import { classify } from "./routes/classify";
 import { upload } from "./routes/upload";
 import { logs } from "./routes/logs";
 import { notifications as notificationsRouter } from "./routes/notifications";
@@ -240,6 +241,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/review", review);
   app.route("/api/overview", overview);
   app.route("/api/forms", formsRouter);
+  app.route("/api/classify", classify);
   app.route("/api/billing", billingRoutes);
   app.route("/api/upload", upload);
   app.route("/api/projects", logs);
