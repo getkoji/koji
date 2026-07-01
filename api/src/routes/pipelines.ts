@@ -13,7 +13,9 @@ import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
 import { createNotification } from "../notifications/emit";
-import { createExtractionJob, addDocumentToJob, normalizeMimeTypeWithWarning } from "../ingestion/process";
+import { createExtractionJob, addDocumentToJob, normalizeMimeTypeWithWarning, readParseProviderPin } from "../ingestion/process";
+import { resolveParse } from "../ingestion/seam";
+import { toProvenanceTextMap } from "../extract";
 
 /**
  * Helper for ingestion endpoints — runs mime normalization, logs a
@@ -1223,7 +1225,7 @@ function resolveTestNextSteps(edges: TestEdge[], output: Record<string, unknown>
 
 async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
-  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; fileBuffer?: Buffer; parseProvider?: any; storage?: any },
+  docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; textMap?: any; parseChunks?: any; fileBuffer?: Buffer; parseProvider?: any; storage?: any },
   priorOutputs: Record<string, unknown>,
   ctx?: { db: unknown; tenantId: string; pipelineId: string },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
@@ -1342,7 +1344,10 @@ async function executeTestStep(
         }
         const provider = createProvider(endpoint.model, endpoint);
         const schemaDef = version.parsedJson as Record<string, unknown>;
-        const result = await extractFields(docInfo.text, schemaDef, provider, endpoint.model);
+        // Test mode must match production: pass the parse-layer provenance
+        // (nested text_map + positional chunks) so test extraction produces the
+        // same bbox highlights the real pipeline path does (oss-310).
+        const result = await extractFields(docInfo.text, schemaDef, provider, endpoint.model, docInfo.textMap, docInfo.parseChunks);
         const fieldNames = Object.keys(result.extracted || {});
         const nonNullFields = fieldNames.filter(f => (result.extracted as Record<string, unknown>)[f] != null);
         return {
@@ -1574,6 +1579,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       id: schema.pipelines.id,
       yamlSource: schema.pipelines.yamlSource,
       pipelineType: schema.pipelines.pipelineType,
+      configJson: schema.pipelines.configJson,
       schemaSlug: schema.schemas.slug,
     })
     .from(schema.pipelines)
@@ -1618,9 +1624,19 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
 
   // ── Implicit parse step: extract text from document ──
   // Every pipeline starts with parsing. This runs before any user-defined steps.
-  const parseProvider = (c as any).get("parseProvider");
+  // Test mode must match production: resolve the tenant's BYO parse provider
+  // (honoring a pipeline-pinned override) via the shared seam, instead of the
+  // global default `c.get("parseProvider")` — otherwise a scanned/degraded doc
+  // that only the tenant's Doc AI handles parses empty here (oss-308/oss-310).
+  const { provider: parseProvider } = await resolveParse(db, tenantId, {
+    parseProviderId: readParseProviderPin(pipeline.configJson),
+    defaultProvider: (c as any).get("parseProvider"),
+    parseConfig: c.get("parseConfig"),
+  });
   let docText: string | undefined;
   let pageCount: number | undefined;
+  let docTextMap: any;
+  let docParseChunks: any;
   try {
     if (parseProvider?.parse) {
       const parseResult = await parseProvider.parse({
@@ -1630,6 +1646,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
       });
       docText = parseResult.markdown;
       pageCount = parseResult.pages ?? undefined;
+      // Shape the flat parse text_map into the nested provenance form (same
+      // shared converter build/validate use) so test highlights match prod.
+      docTextMap = parseResult.text_map ? toProvenanceTextMap(parseResult.text_map) : undefined;
+      docParseChunks = parseResult.chunks;
     }
   } catch (err) {
     // Parse failed — fall back to basic text extraction
@@ -1649,7 +1669,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   // Copy fileBytes into a new Buffer — Buffer.from(ArrayBuffer) creates a view
   // that shares memory, which can be detached after the first fetch call consumes it.
   const fileBufferCopy: Buffer = Buffer.from(new Uint8Array(fileBytes));
-  const docInfo = { filename, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
+  const docInfo = { filename, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, textMap: docTextMap, parseChunks: docParseChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
   const testCtx = { db, tenantId, pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
