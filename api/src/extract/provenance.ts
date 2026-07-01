@@ -133,6 +133,20 @@ export interface ProvenanceSpan {
    * value sits under its header"; `undefined` means "not checked / no header."
    */
   column_mismatch?: boolean;
+  /**
+   * How this span's **geometry** (bbox) was resolved — the resolution "rung"
+   * (`docs/parse-spine-model.md`, Decision 3). The durable provenance artifact
+   * is the resolved bbox PLUS this rung, so the UI can distinguish an exact
+   * locate from a best guess and honestly show "no source" instead of a wrong
+   * box:
+   *   - `"offset"` — direct md_offset overlap lookup (L3, exact);
+   *   - `"chunk"`  — authoritative structured/positional chunk bbox (PB-11);
+   *   - `"fuzzy"`  — best-effort fuzzy text/value matching;
+   *   - `"none"`   — no geometry resolved (no bbox to render).
+   * `"anchored"` is RESERVED for the future anchored-extraction move (the LLM
+   * citing a source unit id) and is intentionally not populated here.
+   */
+  resolution?: "anchored" | "offset" | "chunk" | "fuzzy" | "none";
 }
 
 export type ProvenanceMap = Record<string, ProvenanceSpan | null>;
@@ -830,20 +844,29 @@ function expandChunkFromMarkdown(
   return [...wordsBefore, chunk, ...wordsAfter].join(" ");
 }
 
+/** A resolved bbox plus the rung recording HOW it was located. */
+type BboxHit = {
+  page: number;
+  bbox: BBox;
+  words?: WordBox[];
+  /** "offset" = exact md_offset lookup (L3); "fuzzy" = best-effort matching. */
+  resolution: "offset" | "fuzzy";
+};
+
 function resolveBbox(
   value: unknown,
   chunk: string | undefined,
   textMap: TextMap,
   markdown?: string,
   offset?: number,
-): { page: number; bbox: BBox; words?: WordBox[] } | null {
+): BboxHit | null {
   // L3 path: direct offset lookup when md_offset annotations are present
   if (offset != null && chunk != null && hasOffsetAnnotations(textMap)) {
     const words = locateWordsByOffset(textMap, offset, chunk.length);
     if (words && words.length > 0) {
       const enclosing = enclosingBbox(words);
       if (enclosing) {
-        return { ...enclosing, words };
+        return { ...enclosing, words, resolution: "offset" };
       }
     }
   }
@@ -858,14 +881,14 @@ function resolveBbox(
   if (words && words.length > 0) {
     const enclosing = enclosingBbox(words);
     if (enclosing) {
-      return { ...enclosing, words };
+      return { ...enclosing, words, resolution: "fuzzy" };
     }
   }
 
   // Try paragraph-level segment matching with the chunk
   if (chunk) {
     const hit = findBbox(chunk, textMap, preferredPage);
-    if (hit) return hit;
+    if (hit) return { ...hit, resolution: "fuzzy" };
   }
 
   // Context expansion: when chunk alone fails, expand with surrounding words
@@ -879,12 +902,12 @@ function resolveBbox(
       if (expandedWords && expandedWords.length > 0) {
         const enclosing = enclosingBbox(expandedWords);
         if (enclosing) {
-          return { ...enclosing, words: expandedWords };
+          return { ...enclosing, words: expandedWords, resolution: "fuzzy" };
         }
       }
       // Try findBbox with expanded string
       const expandedHit = findBbox(expanded, textMap, preferredPage);
-      if (expandedHit) return expandedHit;
+      if (expandedHit) return { ...expandedHit, resolution: "fuzzy" };
     }
   }
 
@@ -893,7 +916,7 @@ function resolveBbox(
   const strValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
   if (strValue && strValue !== chunk) {
     const hit = findBbox(strValue, textMap, preferredPage);
-    if (hit) return hit;
+    if (hit) return { ...hit, resolution: "fuzzy" };
   }
 
   // No reliable match found — return null rather than guess wrong.
@@ -993,6 +1016,7 @@ function resolveScalar(
     if (bboxHit) {
       span.page = bboxHit.page;
       span.bbox = bboxHit.bbox;
+      span.resolution = bboxHit.resolution;
       if (bboxHit.words) {
         span.words = bboxHit.words;
       }
@@ -1033,6 +1057,7 @@ function resolveObjectItemFromSourceText(
     const bboxHit = resolveBbox(sourceText, chunk, textMap, markdown, result.offset);
     if (bboxHit) {
       span.bbox = bboxHit.bbox;
+      span.resolution = bboxHit.resolution;
       span.page = bboxHit.page;
       if (bboxHit.words) span.words = bboxHit.words;
     }
@@ -1195,6 +1220,7 @@ function resolveArray(
                 if (bboxHit) {
                   propSpan.page = bboxHit.page;
                   propSpan.bbox = bboxHit.bbox;
+                  propSpan.resolution = bboxHit.resolution;
                   if (bboxHit.words) propSpan.words = bboxHit.words;
                 }
               }
@@ -1228,6 +1254,7 @@ function resolveArray(
     page: first.page,
     bbox: first.bbox,
     words: first.words,
+    resolution: first.resolution,
     items: resolved,
   };
 }
@@ -1258,6 +1285,7 @@ function resolveObjectField(
     page: anchor.page,
     bbox: anchor.bbox,
     words: anchor.words,
+    resolution: anchor.resolution,
     properties,
   };
 }
@@ -1352,6 +1380,7 @@ function resolveBoolean(
         if (bboxHit) {
           result.page = bboxHit.page;
           result.bbox = bboxHit.bbox;
+          result.resolution = bboxHit.resolution;
           if (bboxHit.words) result.words = bboxHit.words;
         }
       }
@@ -1425,6 +1454,7 @@ function resolveScalarViaSourceText(
     if (bboxHit) {
       span.page = bboxHit.page;
       span.bbox = bboxHit.bbox;
+      span.resolution = bboxHit.resolution;
       if (bboxHit.words) span.words = bboxHit.words;
     }
   }
@@ -1567,6 +1597,7 @@ function applyChunkToSpan(
   // Chunk geometry is authoritative — replace the text-derived bbox/page.
   span.bbox = vc.bbox;
   span.page = vc.page;
+  span.resolution = "chunk";
 
   const header = findHeaderChunk(headerCandidates(fieldName, fieldSpec), vc, chunks);
   if (header?.bbox) {
@@ -1619,6 +1650,27 @@ function applyChunkProvenance(
           applyChunkToSpan(propSpan, propVal, prop, itemSpecs?.[prop], chunks);
         }
       }
+    }
+  }
+}
+
+/**
+ * Recursively stamp `resolution: "none"` on any span (and its array items /
+ * object properties) that resolved no bbox and carries no rung yet. Leaves
+ * spans that already have geometry (and thus an "offset"/"chunk"/"fuzzy" rung)
+ * untouched.
+ */
+function stampUnresolvedRung(span: ProvenanceSpan | null | undefined): void {
+  if (!span) return;
+  if (span.bbox === undefined && span.resolution === undefined) {
+    span.resolution = "none";
+  }
+  if (span.items) {
+    for (const item of span.items) stampUnresolvedRung(item);
+  }
+  if (span.properties) {
+    for (const key of Object.keys(span.properties)) {
+      stampUnresolvedRung(span.properties[key]);
     }
   }
 }
@@ -1684,6 +1736,14 @@ export function resolveProvenance(
   // at least one chunk carrying a bbox, so markdown-native parses are untouched.
   if (chunks && chunks.some((c) => c.bbox)) {
     applyChunkProvenance(provenance, extracted, chunks, fieldSpecs);
+  }
+
+  // Record the resolution rung on every span that resolved NO geometry: the
+  // durable contract is "bbox + rung", so a bbox-less span is stamped "none"
+  // (honest "no source") rather than left ambiguous. Spans with a bbox already
+  // carry their rung ("offset" / "chunk" / "fuzzy") from resolution time.
+  for (const field of Object.keys(provenance)) {
+    stampUnresolvedRung(provenance[field]);
   }
 
   return provenance;

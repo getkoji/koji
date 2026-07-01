@@ -65,23 +65,173 @@ export interface BBox {
 }
 
 /**
- * A unit of parsed text carrying provenance — the convergence point of every
- * parse path. The keystone type for the pluggable-parse work.
+ * The role a {@link ParseUnit} plays in the document — a light, best-effort
+ * classification, NOT a document AST. Canonicalizers set it only where they
+ * trivially know (a Doc AI paragraph, a Textract table cell, a positional
+ * line); it is omitted otherwise. Consumers must treat a missing role as
+ * "unknown," never as an error.
+ */
+export type ParseUnitRole =
+  | "heading"
+  | "paragraph"
+  | "list_item"
+  | "table_cell"
+  | "line";
+
+/**
+ * The **parse spine** unit — an *addressable* piece of parsed text carrying
+ * provenance. The convergence point of every parse path and the keystone type
+ * for anchored extraction / deterministic provenance.
+ *
+ * **`id` is parse-scoped** (Decision 1, `docs/parse-spine-model.md`): it is a
+ * stable handle WITHIN a single parse result only — `p<page>-u<index>`, the
+ * unit's 0-based position in reading order on its page. It is deterministic for
+ * a given ordered set of units (same units -> same ids across runs) but carries
+ * **no** cross-provider or cross-re-parse guarantee: re-parsing the same bytes
+ * with a different provider segments differently and yields different ids. The
+ * durable provenance artifact is the resolved **bbox** (+ resolution rung),
+ * never the id — see {@link assignUnitIds} and `extract/provenance.ts`.
  *
  * `bbox` is **optional** by design: markdown-native providers cannot supply
- * geometry, while positional/structured providers can. Consumers must treat a
- * missing bbox as "provenance unavailable for this chunk," never as an error.
+ * geometry, while positional/structured providers can. It uses the one
+ * canonical convention (normalized `[0,1]`, top-left origin — see {@link BBox}).
+ * `md_offset`/`md_length` locate the unit in the projected markdown (oss-317).
+ * `role`/`table` are best-effort structure (Decision 2).
  */
-export interface ParseChunk {
-  /** The chunk's text content. */
-  text: string;
-  /** 1-based page number this chunk's text appears on. */
-  page: number;
+export interface ParseUnit {
   /**
-   * Bounding box of the chunk on its page, in normalized coordinates. Present
-   * only when the source path carries geometry (positional / JSON-native).
+   * Parse-scoped, reading-order identifier (`p<page>-u<index>`). Stable within
+   * one parse result only; assign deterministically via {@link assignUnitIds}.
+   */
+  id: string;
+  /** 1-based page number this unit's text appears on. */
+  page: number;
+  /** The unit's text content. */
+  text: string;
+  /**
+   * Bounding box of the unit on its page, in the canonical normalized `[0,1]`
+   * top-left convention. Present only when the source path carries geometry
+   * (positional / JSON-native).
    */
   bbox?: BBox;
+  /** Character offset of this unit's text in the projected markdown (oss-317). */
+  md_offset?: number;
+  /** Character length of this unit's text in the projected markdown (oss-317). */
+  md_length?: number;
+  /** Best-effort role; omitted when the canonicalizer doesn't trivially know it. */
+  role?: ParseUnitRole;
+  /**
+   * Table cell coordinates — present only on `role: "table_cell"` units emitted
+   * by a provider with true cell structure (Doc AI, Textract). 1-based
+   * `row`/`col`; `tableId` is parse-scoped (`p<page>-t<index>`).
+   */
+  table?: { tableId: string; row: number; col: number };
+}
+
+/** The flat, reading-order parse spine — the ordered list of {@link ParseUnit}s. */
+export type ParseSpine = ParseUnit[];
+
+/**
+ * `ParseChunk` is an **alias** of {@link ParseUnit} (Decision: no rename churn).
+ * Historically the parse<->extract boundary was the "chunk"; the spine is the
+ * same array, now enriched with `id`/`role`/`table`/offsets. Existing
+ * `ParseChunk` consumers keep compiling — the type is a superset of the old
+ * `{ text, page, bbox? }` shape (with `id` now required on constructed units).
+ */
+export type ParseChunk = ParseUnit;
+
+/**
+ * A {@link ParseUnit} before its parse-scoped `id` is assigned. Canonicalizers
+ * build these in reading order, then hand the list to {@link assignUnitIds} to
+ * stamp ids in one deterministic pass.
+ */
+export type ParseUnitDraft = Omit<ParseUnit, "id">;
+
+/**
+ * Stamp parse-scoped ids onto units in reading order, per page. The `id` of the
+ * i-th unit on page P (in the given array order) is `p${P}-u${i}` where `i`
+ * restarts at 0 for each page.
+ *
+ * Deterministic and pure: the same ordered drafts always produce the same ids,
+ * which is what "stable within a parse run" (Decision 1) means. Re-running it on
+ * already-id'd units (e.g. after page renumbering in a shard merge) simply
+ * reassigns fresh, correct ids — the durable artifact is the bbox, not the id,
+ * so overwriting ids across a re-id pass is safe.
+ */
+export function assignUnitIds(drafts: readonly ParseUnitDraft[]): ParseUnit[] {
+  const perPage = new Map<number, number>();
+  return drafts.map((d) => {
+    const i = perPage.get(d.page) ?? 0;
+    perPage.set(d.page, i + 1);
+    return { ...d, id: `p${d.page}-u${i}` };
+  });
+}
+
+/**
+ * Render one table's cells as a GitHub-flavored markdown table. Cells carry
+ * 1-based `row`/`col`; the grid is squared to the widest column seen and missing
+ * cells are rendered blank. A `| --- |` separator is emitted after the first
+ * row (the header). Pipes in cell text are escaped so they can't break the grid.
+ *
+ * This is the single grid renderer shared by the markdown projection of every
+ * structured provider — the column math lives once, in each canonicalizer's
+ * cell-coordinate assignment, and this function is a dumb projector over it.
+ */
+export function renderTableGrid(
+  cells: ReadonlyArray<{ row: number; col: number; text: string }>,
+): string {
+  if (cells.length === 0) return "";
+  let maxRow = 0;
+  let maxCol = 0;
+  const grid = new Map<string, string>();
+  for (const c of cells) {
+    if (c.row > maxRow) maxRow = c.row;
+    if (c.col > maxCol) maxCol = c.col;
+    grid.set(`${c.row},${c.col}`, c.text.replace(/\|/g, "\\|"));
+  }
+  const lines: string[] = [];
+  for (let r = 1; r <= maxRow; r++) {
+    const cols: string[] = [];
+    for (let c = 1; c <= maxCol; c++) cols.push(grid.get(`${r},${c}`) ?? "");
+    lines.push(`| ${cols.join(" | ")} |`);
+    if (r === 1) {
+      lines.push(`| ${Array.from({ length: maxCol }, () => "---").join(" | ")} |`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Project a parse spine to a single markdown document — markdown demoted to a
+ * *projection* of the spine (`docs/parse-spine-model.md`). Contiguous
+ * `table_cell` units sharing a `tableId` are reassembled into one markdown grid
+ * via {@link renderTableGrid}; every other unit contributes its text. Blocks are
+ * joined with a blank line, exactly as the pre-spine `chunks.map(text).join`
+ * did, so the projected markdown is byte-identical for non-table content and
+ * reconstructs the same table a single markdown-table chunk used to hold.
+ */
+export function spineToMarkdown(units: readonly ParseUnit[]): string {
+  const blocks: string[] = [];
+  let i = 0;
+  while (i < units.length) {
+    const u = units[i]!;
+    if (u.role === "table_cell" && u.table) {
+      const { tableId } = u.table;
+      const cells: { row: number; col: number; text: string }[] = [];
+      while (i < units.length) {
+        const c = units[i]!;
+        if (c.role !== "table_cell" || c.table?.tableId !== tableId) break;
+        cells.push({ row: c.table.row, col: c.table.col, text: c.text });
+        i++;
+      }
+      const md = renderTableGrid(cells);
+      if (md) blocks.push(md);
+      continue;
+    }
+    blocks.push(u.text);
+    i++;
+  }
+  return blocks.join("\n\n");
 }
 
 /**

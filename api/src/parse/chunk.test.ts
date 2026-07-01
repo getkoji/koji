@@ -2,8 +2,13 @@ import { describe, it, expect } from "vitest";
 import {
   unionBBox,
   normalizeBBox,
+  assignUnitIds,
+  renderTableGrid,
+  spineToMarkdown,
   type BBox,
   type ParseChunk,
+  type ParseUnit,
+  type ParseUnitDraft,
   type ChunkCanonicalizer,
 } from "./chunk";
 import type { ParseResponse } from "./provider";
@@ -90,7 +95,7 @@ type SampleStructured = SamplePage[];
 
 class SampleCanonicalizer implements ChunkCanonicalizer<SampleStructured> {
   toChunks(structured: SampleStructured): ParseChunk[] {
-    const chunks: ParseChunk[] = [];
+    const drafts: ParseUnitDraft[] = [];
     for (const page of structured) {
       for (const block of page.blocks) {
         const text = block.words.map((w) => w.text).join(" ");
@@ -103,14 +108,14 @@ class SampleCanonicalizer implements ChunkCanonicalizer<SampleStructured> {
             ),
           )
           .filter((b): b is BBox => b !== undefined);
-        chunks.push({
+        drafts.push({
           text,
           page: page.pageNum,
           bbox: unionBBox(wordBoxes),
         });
       }
     }
-    return chunks;
+    return assignUnitIds(drafts);
   }
 }
 
@@ -197,7 +202,7 @@ describe("ParseResponse.chunks is additive and dormant", () => {
 
   it("a structured response can attach canonicalized chunks", () => {
     const chunks: ParseChunk[] = [
-      { text: "hello", page: 1, bbox: { x: 0, y: 0, w: 0.1, h: 0.05 } },
+      { id: "p1-u0", text: "hello", page: 1, bbox: { x: 0, y: 0, w: 0.1, h: 0.05 } },
     ];
     const resp: ParseResponse = {
       markdown: "hello",
@@ -208,5 +213,63 @@ describe("ParseResponse.chunks is additive and dormant", () => {
     };
     expect(resp.chunks).toHaveLength(1);
     expect(resp.chunks![0]!.bbox).toBeDefined();
+  });
+});
+
+describe("assignUnitIds — parse-scoped, reading-order ids", () => {
+  const drafts: ParseUnitDraft[] = [
+    { text: "a", page: 1 },
+    { text: "b", page: 1 },
+    { text: "c", page: 2 },
+    { text: "d", page: 2 },
+    { text: "e", page: 1 }, // out-of-order page revisit
+  ];
+
+  it("numbers units p<page>-u<index>, index restarting per page", () => {
+    expect(assignUnitIds(drafts).map((u) => u.id)).toEqual([
+      "p1-u0", "p1-u1", "p2-u0", "p2-u1", "p1-u2",
+    ]);
+  });
+
+  it("is deterministic: same input -> same ids across runs", () => {
+    expect(assignUnitIds(drafts).map((u) => u.id)).toEqual(
+      assignUnitIds(drafts).map((u) => u.id),
+    );
+  });
+
+  it("re-stamps ids when run on already-id'd units (shard-merge case)", () => {
+    const once = assignUnitIds([{ text: "x", page: 5 }]);
+    // Page rebased to 1; ids must be recomputed for the new page.
+    const rebased = assignUnitIds(once.map((u) => ({ ...u, page: 1 })));
+    expect(rebased[0]!.id).toBe("p1-u0");
+  });
+});
+
+describe("renderTableGrid + spineToMarkdown", () => {
+  it("renders a squared grid with a header separator after row 1", () => {
+    const md = renderTableGrid([
+      { row: 1, col: 1, text: "A" },
+      { row: 1, col: 2, text: "B" },
+      { row: 2, col: 1, text: "C" }, // col 2 missing -> blank
+    ]);
+    expect(md).toBe(["| A | B |", "| --- | --- |", "| C |  |"].join("\n"));
+  });
+
+  it("escapes pipes in cell text", () => {
+    expect(renderTableGrid([{ row: 1, col: 1, text: "a|b" }])).toContain("a\\|b");
+  });
+
+  it("projects contiguous table_cell runs into grids, other units as text", () => {
+    const units: ParseUnit[] = [
+      { id: "p1-u0", page: 1, text: "Title", role: "paragraph" },
+      { id: "p1-u1", page: 1, text: "H1", role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 1 } },
+      { id: "p1-u2", page: 1, text: "H2", role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 2 } },
+      { id: "p1-u3", page: 1, text: "v1", role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 1 } },
+      { id: "p1-u4", page: 1, text: "v2", role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 2 } },
+      { id: "p1-u5", page: 1, text: "Footer", role: "paragraph" },
+    ];
+    expect(spineToMarkdown(units)).toBe(
+      ["Title", "| H1 | H2 |\n| --- | --- |\n| v1 | v2 |", "Footer"].join("\n\n"),
+    );
   });
 });

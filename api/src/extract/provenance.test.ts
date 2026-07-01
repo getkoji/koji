@@ -8,6 +8,7 @@ import {
   type TextMap,
   type FlatTextMapSegment,
 } from "./provenance";
+import { assignUnitIds } from "../parse/chunk";
 
 // ---------------------------------------------------------------------------
 // Exact string match
@@ -1521,10 +1522,10 @@ describe("resolveProvenance — array per-property alias fallback", () => {
 describe("resolveProvenance — chunk-level bbox (PB-11)", () => {
   it("maps an extracted scalar to its source chunk's bbox", () => {
     const markdown = "Invoice Total: $1,000";
-    const chunks = [
+    const chunks = assignUnitIds([
       { text: "Invoice Total:", page: 2, bbox: { x: 0.1, y: 0.3, w: 0.2, h: 0.02 } },
       { text: "$1,000", page: 2, bbox: { x: 0.5, y: 0.3, w: 0.1, h: 0.02 } },
-    ];
+    ]);
     const result = resolveProvenance(
       { total: "$1,000" }, markdown, undefined, undefined, undefined, undefined, undefined, chunks,
     );
@@ -1539,9 +1540,9 @@ describe("resolveProvenance — chunk-level bbox (PB-11)", () => {
       { text: "ACME", page: 1, bbox: { x: 0.01, y: 0.01, w: 0.05, h: 0.02 } },
       { text: "CORP", page: 1, bbox: { x: 0.07, y: 0.01, w: 0.05, h: 0.02 } },
     ];
-    const chunks = [
+    const chunks = assignUnitIds([
       { text: "ACME CORP", page: 1, bbox: { x: 0.4, y: 0.6, w: 0.2, h: 0.03 } },
-    ];
+    ]);
     const result = resolveProvenance(
       { company: "ACME CORP" }, markdown, textMap, undefined, undefined, undefined, undefined, chunks,
     );
@@ -1552,9 +1553,9 @@ describe("resolveProvenance — chunk-level bbox (PB-11)", () => {
 
   it("degrades gracefully when chunks carry no bbox (markdown-native path)", () => {
     const markdown = "Invoice Total: $1,000";
-    const chunks = [
+    const chunks = assignUnitIds([
       { text: "Invoice Total: $1,000", page: 1 }, // no bbox
-    ];
+    ]);
     const result = resolveProvenance(
       { total: "$1,000" }, markdown, undefined, undefined, undefined, undefined, undefined, chunks,
     );
@@ -1576,13 +1577,14 @@ describe("resolveProvenance — chunk-level bbox (PB-11)", () => {
 describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
   // A header at the top of one column; the value sits under a DIFFERENT column.
   const headerChunk = { text: "Premium", page: 1, bbox: { x: 0.60, y: 0.10, w: 0.10, h: 0.02 } };
+  const chunkify = assignUnitIds;
 
   it("flags a value whose bbox is not under its column header", () => {
     const markdown = "Premium\n5000";
     const valueWrongColumn = { text: "5000", page: 1, bbox: { x: 0.20, y: 0.40, w: 0.08, h: 0.02 } };
     const result = resolveProvenance(
       { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
-      [headerChunk, valueWrongColumn],
+      chunkify([headerChunk, valueWrongColumn]),
     );
     expect(result.premium!.bbox).toEqual(valueWrongColumn.bbox);
     expect(result.premium!.column_mismatch).toBe(true);
@@ -1593,7 +1595,7 @@ describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
     const valueRightColumn = { text: "5000", page: 1, bbox: { x: 0.62, y: 0.40, w: 0.06, h: 0.02 } };
     const result = resolveProvenance(
       { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
-      [headerChunk, valueRightColumn],
+      chunkify([headerChunk, valueRightColumn]),
     );
     expect(result.premium!.column_mismatch).toBe(false);
   });
@@ -1604,7 +1606,7 @@ describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
     // Header text "Amount" does not match field name "premium".
     const result = resolveProvenance(
       { premium: 5000 }, markdown, undefined, undefined, undefined, undefined, undefined,
-      [{ text: "Amount", page: 1, bbox: { x: 0.6, y: 0.1, w: 0.1, h: 0.02 } }, valueChunk],
+      chunkify([{ text: "Amount", page: 1, bbox: { x: 0.6, y: 0.1, w: 0.1, h: 0.02 } }, valueChunk]),
     );
     expect(result.premium!.column_mismatch).toBeUndefined();
   });
@@ -1616,12 +1618,53 @@ describe("resolveProvenance — column-mismatch flag (PB-11)", () => {
     const result = resolveProvenance(
       { rows: [{ premium: 1200 }] }, markdown,
       undefined, { rows: ["1200"] }, undefined, undefined, undefined,
-      [headerCol, valueWrongCol],
+      chunkify([headerCol, valueWrongCol]),
     );
     const propSpan = result.rows!.items![0]!.properties!.premium;
     expect(propSpan).not.toBeNull();
     expect(propSpan!.bbox).toEqual(valueWrongCol.bbox);
     expect(propSpan!.column_mismatch).toBe(true);
+  });
+});
+
+describe("resolveProvenance — resolution rung (parse-spine Decision 3)", () => {
+  const markdown = "Invoice Number: INV-001";
+
+  it("records \"offset\" when geometry resolves via md_offset lookup (L3)", () => {
+    const textMap: TextMap = [
+      { text: "Invoice", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, md_offset: 0, md_length: 7 },
+      { text: "Number:", page: 1, bbox: { x: 0.2, y: 0.1, w: 0.1, h: 0.02 }, md_offset: 8, md_length: 7 },
+      { text: "INV-001", page: 1, bbox: { x: 0.3, y: 0.1, w: 0.1, h: 0.02 }, md_offset: 16, md_length: 7 },
+    ];
+    const result = resolveProvenance({ invoice_number: "INV-001" }, markdown, textMap);
+    expect(result.invoice_number!.bbox).toBeDefined();
+    expect(result.invoice_number!.resolution).toBe("offset");
+  });
+
+  it("records \"fuzzy\" when geometry resolves via text matching (no offsets)", () => {
+    const textMap: TextMap = [
+      { text: "INV-001", page: 1, bbox: { x: 0.3, y: 0.1, w: 0.1, h: 0.02 } },
+    ];
+    const result = resolveProvenance({ invoice_number: "INV-001" }, markdown, textMap);
+    expect(result.invoice_number!.bbox).toBeDefined();
+    expect(result.invoice_number!.resolution).toBe("fuzzy");
+  });
+
+  it("records \"chunk\" when a structured chunk bbox is authoritative (PB-11)", () => {
+    const chunks = assignUnitIds([
+      { text: "INV-001", page: 1, bbox: { x: 0.4, y: 0.5, w: 0.1, h: 0.02 } },
+    ]);
+    const result = resolveProvenance(
+      { invoice_number: "INV-001" }, markdown, undefined, undefined, undefined, undefined, undefined, chunks,
+    );
+    expect(result.invoice_number!.bbox).toEqual({ x: 0.4, y: 0.5, w: 0.1, h: 0.02 });
+    expect(result.invoice_number!.resolution).toBe("chunk");
+  });
+
+  it("records \"none\" when the value is located but no geometry resolves", () => {
+    const result = resolveProvenance({ invoice_number: "INV-001" }, markdown);
+    expect(result.invoice_number!.bbox).toBeUndefined();
+    expect(result.invoice_number!.resolution).toBe("none");
   });
 });
 
