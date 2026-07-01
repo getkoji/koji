@@ -1442,6 +1442,49 @@ describe("L3 offset-based provenance resolution", () => {
     expect(result.renewal_date!.words).toBeDefined();
     expect(result.renewal_date!.page).toBeDefined();
   });
+
+  it("resolves the correct occurrence via offset even when text_map order disagrees", () => {
+    // Same value twice. The text_map lists the SECOND occurrence's word FIRST,
+    // so the fuzzy word-slider (which returns the first array match) would pick
+    // the wrong box. The deterministic offset path keys off the markdown offset
+    // resolveScalar found (the first textual occurrence) and must return that
+    // occurrence's box regardless of text_map ordering.
+    const md = "A 2024-03-15 B\n\nC 2024-03-15 D";
+    const first = md.indexOf("2024-03-15"); // 2
+    const second = md.indexOf("2024-03-15", first + 1); // 18
+
+    const tm: TextMap = [
+      // Deliberately out of document order: second occurrence first.
+      { text: "2024-03-15", page: 2, bbox: { x: 0.9, y: 0.9, w: 0.1, h: 0.02 }, md_offset: second, md_length: 10 },
+      { text: "2024-03-15", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, md_offset: first, md_length: 10 },
+    ];
+
+    const result = resolveProvenance({ issued: "2024-03-15" }, md, tm);
+
+    expect(result.issued).not.toBeNull();
+    // resolveScalar matched the first textual occurrence (offset 2) → the L3
+    // path maps that to page-1's box, NOT the array-first (page-2) box.
+    expect(result.issued!.page).toBe(1);
+    expect(result.issued!.bbox!.x).toBeCloseTo(0.1);
+    expect(result.issued!.bbox!.y).toBeCloseTo(0.1);
+  });
+
+  it("still resolves markdown-native docs (no offsets) via fuzzy matching", () => {
+    // A parse with a text_map but no md_offset (e.g. docling/Modal) must be
+    // unaffected: hasOffsetAnnotations is false, so fuzzy resolution runs.
+    const md = "Policy Number: POL-98765";
+    const tm: TextMap = [
+      { text: "Policy", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 } },
+      { text: "Number:", page: 1, bbox: { x: 0.21, y: 0.1, w: 0.1, h: 0.02 } },
+      { text: "POL-98765", page: 1, bbox: { x: 0.32, y: 0.1, w: 0.15, h: 0.02 } },
+    ];
+    expect(hasOffsetAnnotations(tm)).toBe(false);
+    const result = resolveProvenance({ policy_number: "POL-98765" }, md, tm);
+    expect(result.policy_number).not.toBeNull();
+    expect(result.policy_number!.words![0]!.text).toBe("POL-98765");
+    expect(result.policy_number!.bbox!.x).toBeCloseTo(0.32);
+    expect(result.policy_number!.bbox!.y).toBeCloseTo(0.1);
+  });
 });
 
 describe("resolveProvenance — standalone object fields", () => {

@@ -736,10 +736,14 @@ function locateWords(
 
 /**
  * Check whether the text_map has L3 offset annotations (md_offset/md_length).
- * Returns true if at least one segment has md_offset.
+ * Returns true if at least one segment carries an offset. Uses `.some` rather
+ * than only inspecting the first segment: serializers can annotate most items
+ * while leaving a few unset (e.g. a leading raw-text fallback or an item that
+ * trimmed to empty), and the L3 path should still run for the annotated majority
+ * (unannotated values fall through to fuzzy matching in `resolveBbox`).
  */
 export function hasOffsetAnnotations(textMap: TextMap): boolean {
-  return textMap.length > 0 && textMap[0]!.md_offset != null;
+  return textMap.some((seg) => seg.md_offset != null);
 }
 
 /**

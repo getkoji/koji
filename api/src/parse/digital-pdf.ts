@@ -17,7 +17,7 @@ import type {
   TextMapSegment,
 } from "./provider";
 import {
-  spatialToMarkdown,
+  spatialToMarkdownWithOffsets,
   type ParsedPage,
   type TextItem,
 } from "./spatial-to-markdown";
@@ -121,8 +121,30 @@ export class DigitalPdfProvider implements ParseProvider {
     // x-clustering so columns associate correctly with no cloud OCR.
     const chunks = new PositionalChunkCanonicalizer().toChunks(pages);
 
+    // Build markdown AND the per-item markdown offsets in one pass, then stamp
+    // md_offset/md_length onto text_map (L3 deterministic provenance). text_map
+    // was pushed by iterating `pages` in order (one entry per text item), so a
+    // matching re-walk lines each entry up with its source item's offset. Items
+    // that never surfaced in the markdown (e.g. dropped) keep offsets unset and
+    // fall back to fuzzy matching. Bbox values above are left untouched.
+    const { markdown, offsets } = spatialToMarkdownWithOffsets(pages);
+    const offsetByItem = new Map<TextItem, { offset: number; length: number }>();
+    for (const o of offsets) offsetByItem.set(o.item, { offset: o.offset, length: o.length });
+
+    let segIdx = 0;
+    for (const page of pages) {
+      for (const item of page.textItems) {
+        const off = offsetByItem.get(item);
+        if (off) {
+          text_map[segIdx]!.md_offset = off.offset;
+          text_map[segIdx]!.md_length = off.length;
+        }
+        segIdx++;
+      }
+    }
+
     return {
-      markdown: spatialToMarkdown(pages),
+      markdown,
       pages: pages.length,
       ocr_skipped: true,
       engine: "pdfjs",

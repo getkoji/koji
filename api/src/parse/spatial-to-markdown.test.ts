@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { spatialToMarkdown, type ParsedPage, type TextItem } from "./spatial-to-markdown";
+import {
+  spatialToMarkdown,
+  spatialToMarkdownWithOffsets,
+  type ParsedPage,
+  type TextItem,
+} from "./spatial-to-markdown";
 
 // Helper to create text items at specific positions
 function item(text: string, x: number, y: number, opts?: Partial<TextItem>): TextItem {
@@ -316,5 +321,99 @@ describe("spatialToMarkdown", () => {
       ]);
       expect(result).toBe("No font info");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L3 offset annotations: md_offset/md_length carriers for deterministic
+// provenance. The markdown must stay byte-identical to the offset-free path.
+// ---------------------------------------------------------------------------
+
+describe("spatialToMarkdownWithOffsets", () => {
+  it("returns markdown byte-identical to spatialToMarkdown", () => {
+    const pages = [
+      page([
+        item("Main Title", 72, 60, { fontSize: 24 }),
+        item("Body one.", 72, 120),
+        item("Body two.", 72, 134),
+      ]),
+      page(
+        [
+          item("Name", 72, 100),
+          item("Age", 250, 100),
+          item("Alice", 72, 120),
+          item("30", 250, 120),
+          item("Bob", 72, 140),
+          item("25", 250, 140),
+        ],
+        2,
+      ),
+    ];
+    const { markdown } = spatialToMarkdownWithOffsets(pages);
+    expect(markdown).toBe(spatialToMarkdown(pages));
+  });
+
+  it("stamps every offset so it slices back to the source item text", () => {
+    const pages = [
+      page([
+        item("Purchase Order", 72, 60, { fontSize: 24 }),
+        item("Hello", 72, 120),
+        item("world", 120, 120),
+        item("Bold important notice text here.", 72, 160, {
+          fontName: "Helvetica-Bold",
+        }),
+      ]),
+    ];
+    const { markdown, offsets } = spatialToMarkdownWithOffsets(pages);
+    expect(offsets.length).toBeGreaterThan(0);
+    for (const o of offsets) {
+      expect(markdown.slice(o.offset, o.offset + o.length)).toBe(o.item.text);
+    }
+  });
+
+  it("stamps offsets for reconstructed table cells (wrong-column path)", () => {
+    const pages = [
+      page([
+        // header
+        item("Name", 72, 100),
+        item("Age", 250, 100),
+        item("City", 400, 100),
+        // rows
+        item("Alice", 72, 120),
+        item("30", 250, 120),
+        item("NYC", 400, 120),
+        item("Bob", 72, 140),
+        item("25", 250, 140),
+        item("LA", 400, 140),
+        item("Carol", 72, 160),
+        item("35", 250, 160),
+        item("Chicago", 400, 160),
+      ]),
+    ];
+    const { markdown, offsets } = spatialToMarkdownWithOffsets(pages);
+    // The table path must be exercised (pipes present) and cells annotated.
+    expect(markdown).toContain("|");
+    for (const o of offsets) {
+      expect(markdown.slice(o.offset, o.offset + o.length)).toBe(o.item.text);
+    }
+    // A specific cell value lands on its own text, not a pipe/whitespace.
+    const chicago = offsets.find((o) => o.item.text === "Chicago");
+    expect(chicago).toBeDefined();
+    expect(markdown.slice(chicago!.offset, chicago!.offset + chicago!.length)).toBe(
+      "Chicago",
+    );
+  });
+
+  it("carries no offsets for empty-page raw-text fallback", () => {
+    const p: ParsedPage = {
+      pageNum: 1,
+      width: 612,
+      height: 792,
+      text: "Fallback text",
+      textItems: [],
+    };
+    const { markdown, offsets } = spatialToMarkdownWithOffsets([p]);
+    expect(markdown).toBe("Fallback text");
+    expect(offsets).toEqual([]);
   });
 });

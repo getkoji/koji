@@ -204,17 +204,26 @@ export class ChunkedParseProvider implements ParseProvider {
       ? chunks[0]!.response.engine
       : "docling";
 
-    // Text map: concatenate with page offset
+    // Text map: concatenate with page offset. When a chunk carries L3 offset
+    // annotations (md_offset), those are relative to that chunk's own markdown,
+    // so they must also shift by the chunk's start position in the concatenated
+    // markdown (cumulative prior lengths + the "\n\n" separators). mdCursor
+    // advances for every chunk — even those without a text_map — because the
+    // markdown join above includes every chunk's markdown.
     let text_map: TextMapSegment[] | undefined;
     const hasAnyTextMap = chunks.some((c) => c.response.text_map?.length);
     if (hasAnyTextMap) {
       text_map = [];
+      let mdCursor = 0;
       for (const chunk of chunks) {
-        if (!chunk.response.text_map) continue;
+        const mdBase = mdCursor;
         const offset = chunk.startPage - 1;
-        for (const seg of chunk.response.text_map) {
-          text_map.push({ ...seg, page: seg.page + offset });
+        for (const seg of chunk.response.text_map ?? []) {
+          const shifted: TextMapSegment = { ...seg, page: seg.page + offset };
+          if (seg.md_offset != null) shifted.md_offset = seg.md_offset + mdBase;
+          text_map.push(shifted);
         }
+        mdCursor += chunk.response.markdown.length + 2; // +2 for the "\n\n" join
       }
     }
 

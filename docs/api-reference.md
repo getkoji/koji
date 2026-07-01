@@ -968,6 +968,8 @@ When extraction runs with a `text_map` (returned by the parse service), Koji res
 
 When the parse provider instead emits structured/positional **chunks** carrying geometry (the positional and JSON-native parse paths), Koji uses each chunk's bounding box directly as authoritative geometry rather than re-deriving coordinates from the flattened markdown. Markdown-native parses (no chunk geometry) are unaffected and continue to resolve highlights via the `text_map`.
 
+When the `text_map` carries **offset annotations** (`md_offset`/`md_length` — see [`text_map` format](#text_map-format)), Koji resolves a field's bounding box deterministically: it maps the value to its character range in the markdown, then looks up the covering word boxes by offset overlap instead of fuzzily re-scanning the `text_map` text. This is more precise for repeated values (the same date on two pages resolves to the correct occurrence). Parses without offset annotations fall back to fuzzy text matching, unchanged. The digital-PDF (pdfjs) parser emits these offsets today; OCR/markdown-native parses do not.
+
 ### Provenance span
 
 Each field maps to a provenance span (or `null` if the value couldn't be located in the source):
@@ -1046,7 +1048,9 @@ The `text_map` array returned by `POST /api/parse` contains word-level position 
   "text": "Invoice",
   "page": 1,
   "bbox": { "x": 0.12, "y": 0.06, "w": 0.2, "h": 0.02 },
-  "level": "word"
+  "level": "word",
+  "md_offset": 0,
+  "md_length": 7
 }
 ```
 
@@ -1056,5 +1060,7 @@ The `text_map` array returned by `POST /api/parse` contains word-level position 
 | `page` | integer | Page number (1-indexed). |
 | `bbox` | object | Bounding box in **normalized page fractions** — `x`/`w` as a fraction of page width, `y`/`h` as a fraction of page height, each in `[0, 1]`. Origin is the **top-left** of the page (y increases downward). This is the one canonical coordinate convention every parse provider emits. |
 | `level` | string | Always `"word"` for word-level segments. |
+| `md_offset` | integer | Optional. Character offset of this segment's text in the parse `markdown`. Present for parsers that stamp offsets (digital-PDF / pdfjs); enables deterministic (offset-based) provenance resolution. |
+| `md_length` | integer | Optional. Character length of the segment's text as it appears in the `markdown`. Paired with `md_offset`. |
 
 The `text_map` is threaded automatically from parse → extract when using `POST /api/process`. When using `POST /api/extract` with pre-parsed content, pass the `text_map` from the parse response to enable provenance resolution.

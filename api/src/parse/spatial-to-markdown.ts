@@ -27,6 +27,33 @@ export interface ParsedPage {
   textItems: TextItem[];
 }
 
+/**
+ * The markdown character range a single source {@link TextItem} occupies in the
+ * emitted markdown. Produced by {@link spatialToMarkdownWithOffsets} so the
+ * digital-PDF path can stamp `md_offset`/`md_length` onto its `text_map` (L3
+ * deterministic provenance): once a value's markdown offset is known, its word
+ * boxes become a direct offset-overlap lookup instead of a second fuzzy hop.
+ */
+export interface ItemOffset {
+  item: TextItem;
+  /** Absolute char offset of the item's text in the final markdown. */
+  offset: number;
+  /** Char length of the item's text as emitted. */
+  length: number;
+}
+
+/**
+ * A rendered markdown fragment paired with the source-item spans it contains
+ * (spans' offsets are relative to `text`). Fragments compose via
+ * {@link concatSegs}/{@link prefixSeg} so offsets stay correct as fragments are
+ * joined into the final markdown — the emitted string is byte-identical to the
+ * offset-free path.
+ */
+interface Segmented {
+  text: string;
+  spans: ItemOffset[];
+}
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -41,6 +68,12 @@ export interface Line {
   fontSize: number;  // median font size
   isBold: boolean;
   indent: number;    // minX relative to page left margin
+  /**
+   * Per-item markdown spans relative to `text` (L3 offset provenance). Each
+   * entry maps a source {@link TextItem} to the `[offset, offset+length)` range
+   * its text occupies inside `text` (after the line's leading-whitespace trim).
+   */
+  segments: ItemOffset[];
 }
 
 interface TableCell {
@@ -58,12 +91,30 @@ interface TableRow {
 // ---------------------------------------------------------------------------
 
 export function spatialToMarkdown(pages: ParsedPage[]): string {
-  const parts: string[] = [];
+  return spatialToMarkdownWithOffsets(pages).markdown;
+}
+
+/**
+ * Same reconstruction as {@link spatialToMarkdown}, but also returns the
+ * markdown span each source {@link TextItem} occupies in the output. The
+ * `markdown` string is byte-identical to `spatialToMarkdown(pages)`; the
+ * `offsets` array is what lets the digital-PDF provider stamp
+ * `md_offset`/`md_length` onto its `text_map` for deterministic (L3) provenance.
+ *
+ * Offsets are attached for paragraph, heading, list, and table-cell text — the
+ * word-level paths. Empty-page raw-text fallbacks carry no offsets (no source
+ * geometry), so those items fall back to fuzzy matching, unchanged.
+ */
+export function spatialToMarkdownWithOffsets(
+  pages: ParsedPage[],
+): { markdown: string; offsets: ItemOffset[] } {
+  const parts: Segmented[] = [];
 
   for (const page of pages) {
     if (page.textItems.length === 0) {
-      // Empty page — use the raw text fallback if available
-      if (page.text.trim()) parts.push(page.text.trim());
+      // Empty page — use the raw text fallback if available. No item geometry
+      // to map, so this fragment carries no spans.
+      if (page.text.trim()) parts.push({ text: page.text.trim(), spans: [] });
       continue;
     }
 
@@ -74,7 +125,39 @@ export function spatialToMarkdown(pages: ParsedPage[]): string {
     parts.push(blocks);
   }
 
-  return parts.join("\n\n---\n\n"); // page breaks
+  const joined = concatSegs(parts, "\n\n---\n\n"); // page breaks
+  return { markdown: joined.text, offsets: joined.spans };
+}
+
+// ---------------------------------------------------------------------------
+// Segmented-fragment composition (offset bookkeeping)
+// ---------------------------------------------------------------------------
+
+/**
+ * Join fragments with `sep`, rebasing each fragment's spans to their absolute
+ * position in the concatenated text. The resulting `text` equals
+ * `segs.map(s => s.text).join(sep)`.
+ */
+function concatSegs(segs: Segmented[], sep: string): Segmented {
+  let text = "";
+  const spans: ItemOffset[] = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (i > 0) text += sep;
+    const base = text.length;
+    for (const s of segs[i]!.spans) {
+      spans.push({ item: s.item, offset: base + s.offset, length: s.length });
+    }
+    text += segs[i]!.text;
+  }
+  return { text, spans };
+}
+
+/** Prepend a raw (non-item) prefix, shifting the fragment's spans by its length. */
+function prefixSeg(prefix: string, seg: Segmented): Segmented {
+  return {
+    text: prefix + seg.text,
+    spans: seg.spans.map((s) => ({ ...s, offset: s.offset + prefix.length })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +205,10 @@ function createLine(items: TextItem[]): Line {
   const avgY = items.reduce((s, i) => s + i.y, 0) / items.length;
   const avgHeight = items.reduce((s, i) => s + i.height, 0) / items.length;
 
-  // Reconstruct text with spacing: insert space when gap between items > 0.3 * avg char width
-  let text = "";
+  // Reconstruct text with spacing: insert space when gap between items > 0.3 * avg char width.
+  // Track each item's char span in the pre-trim buffer so we can carry offsets.
+  let raw = "";
+  const rawSpans: ItemOffset[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
     if (i > 0) {
@@ -131,11 +216,18 @@ function createLine(items: TextItem[]): Line {
       const gap = item.x - (prev.x + prev.width);
       const avgCharWidth = prev.width / Math.max(prev.text.length, 1);
       if (gap > avgCharWidth * 0.3) {
-        text += " ";
+        raw += " ";
       }
     }
-    text += item.text;
+    rawSpans.push({ item, offset: raw.length, length: item.text.length });
+    raw += item.text;
   }
+
+  const text = raw.trim();
+  // `line.text` is the trimmed buffer; shift item spans by the leading
+  // whitespace that trim removed and clip them to the trimmed bounds.
+  const lead = raw.length - raw.trimStart().length;
+  const segments = clipSpans(rawSpans, lead, text.length);
 
   const isBold = items.some((i) =>
     i.fontName?.toLowerCase().includes("bold") ||
@@ -148,11 +240,30 @@ function createLine(items: TextItem[]): Line {
     height: avgHeight,
     minX: items[0]!.x,
     maxX: items[items.length - 1]!.x + items[items.length - 1]!.width,
-    text: text.trim(),
+    text,
     fontSize: medianFontSize,
     isBold,
     indent: items[0]!.x,
+    segments,
   };
+}
+
+/**
+ * Shift spans left by `lead` (whitespace removed by a leading trim) and clip
+ * them to `[0, maxLen)`. Spans fully outside the range are dropped; a span that
+ * straddles a boundary is truncated so it still points at real value text.
+ */
+function clipSpans(spans: ItemOffset[], lead: number, maxLen: number): ItemOffset[] {
+  const out: ItemOffset[] = [];
+  for (const s of spans) {
+    const start = s.offset - lead;
+    const end = start + s.length;
+    if (end <= 0 || start >= maxLen) continue;
+    const cs = Math.max(0, start);
+    const ce = Math.min(maxLen, end);
+    if (ce > cs) out.push({ item: s.item, offset: cs, length: ce - cs });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +321,8 @@ function detectBlocks(
   bodyFontSize: number,
   leftMargin: number,
   pageWidth: number,
-): string {
-  const output: string[] = [];
+): Segmented {
+  const output: Segmented[] = [];
   let i = 0;
 
   while (i < lines.length) {
@@ -232,10 +343,13 @@ function detectBlocks(
     const listMatch = line.text.match(/^(\s*)([-•●○▪]\s+|\d+[.)]\s+|[a-zA-Z][.)]\s+)/);
     if (listMatch) {
       const bullet = listMatch[2]!;
-      const content = line.text.slice(listMatch[0].length);
+      const sliceStart = listMatch[0].length;
+      const content = line.text.slice(sliceStart);
       const isOrdered = /^\d+[.)]/.test(bullet);
       const prefix = isOrdered ? `${bullet.trim()} ` : "- ";
-      output.push(`${prefix}${formatInline(content, line)}`);
+      // Spans come from the sliced content; the bullet chars (before sliceStart)
+      // are dropped so offsets land on the value text, not the marker.
+      output.push(prefixSeg(prefix, formatInline(content, line, sliceStart)));
       i++;
       continue;
     }
@@ -243,14 +357,14 @@ function detectBlocks(
     // Check for heading (larger font or bold + short)
     if (isHeading(line, bodyFontSize)) {
       const level = headingLevel(line.fontSize, bodyFontSize);
-      const prefix = "#".repeat(level);
-      output.push(`${prefix} ${line.text}`);
+      const prefix = "#".repeat(level) + " ";
+      output.push(prefixSeg(prefix, { text: line.text, spans: line.segments }));
       i++;
       continue;
     }
 
     // Regular paragraph — collect consecutive body-sized lines
-    const paraLines: string[] = [];
+    const paraLines: Segmented[] = [];
     while (i < lines.length) {
       const l = lines[i]!;
       if (!l.text) break;
@@ -265,16 +379,16 @@ function detectBlocks(
         if (gap > prev.height * 0.8) break; // paragraph break
       }
 
-      paraLines.push(formatInline(l.text, l));
+      paraLines.push(formatInline(l.text, l, 0));
       i++;
     }
 
     if (paraLines.length > 0) {
-      output.push(paraLines.join(" "));
+      output.push(concatSegs(paraLines, " "));
     }
   }
 
-  return output.join("\n\n");
+  return concatSegs(output, "\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +414,20 @@ function headingLevel(fontSize: number, bodyFontSize: number): number {
 // Inline formatting
 // ---------------------------------------------------------------------------
 
-function formatInline(text: string, line: Line): string {
+function formatInline(text: string, line: Line, sliceStart: number): Segmented {
+  // Collect the line's item spans that fall within [sliceStart, sliceStart+len),
+  // rebased to this slice. (sliceStart is 0 for a whole-line paragraph, or the
+  // bullet length for list content.)
+  const spans = clipSpans(line.segments, sliceStart, text.length);
+
   // If the entire line is bold and it's body-sized (not a heading), wrap in **
-  if (line.isBold) return `**${text}**`;
-  return text;
+  if (line.isBold) {
+    return {
+      text: `**${text}**`,
+      spans: spans.map((s) => ({ ...s, offset: s.offset + 2 })),
+    };
+  }
+  return { text, spans };
 }
 
 // ---------------------------------------------------------------------------
@@ -422,40 +546,58 @@ export function findColumn(x: number, columns: number[]): number {
 /**
  * Render a set of lines as a markdown table.
  */
-function renderTable(lines: Line[], pageWidth: number): string {
+function renderTable(lines: Line[], pageWidth: number): Segmented {
   const columns = detectColumns(lines, pageWidth);
   if (columns.length < 2) {
-    // Fallback: just join lines as text
-    return lines.map((l) => l.text).join("\n");
+    // Fallback: just join lines as text (spans carried from each line)
+    return concatSegs(
+      lines.map((l) => ({ text: l.text, spans: l.segments })),
+      "\n",
+    );
   }
 
-  // Assign each text item to a column, build rows
-  const rows: string[][] = [];
+  // Assign each text item to a column, build per-cell fragments so each cell's
+  // item spans ride along into the rendered row.
+  const rows: Segmented[][] = [];
   for (const line of lines) {
-    const row = new Array(columns.length).fill("") as string[];
+    const cellText = new Array(columns.length).fill("") as string[];
+    const cellSpans: ItemOffset[][] = columns.map(() => []);
     for (const item of line.items) {
       const col = findColumn(item.x, columns);
       if (col >= 0) {
-        if (row[col]) row[col] += " ";
-        row[col] += item.text;
+        if (cellText[col]) cellText[col] += " ";
+        cellSpans[col]!.push({ item, offset: cellText[col]!.length, length: item.text.length });
+        cellText[col] += item.text;
       }
     }
-    rows.push(row.map((c) => c.trim()));
+    const cells: Segmented[] = cellText.map((c, ci) => {
+      const trimmed = c.trim();
+      const lead = c.length - c.trimStart().length;
+      return { text: trimmed, spans: clipSpans(cellSpans[ci]!, lead, trimmed.length) };
+    });
+    rows.push(cells);
   }
 
-  if (rows.length === 0) return "";
+  if (rows.length === 0) return { text: "", spans: [] };
 
   // First row is the header
   const header = rows[0]!;
-  const separator = header.map(() => "---");
+  const separator: Segmented = {
+    text: header.map(() => "---").join(" | "),
+    spans: [],
+  };
   const body = rows.slice(1);
 
-  const lines_out: string[] = [];
-  lines_out.push("| " + header.join(" | ") + " |");
-  lines_out.push("| " + separator.join(" | ") + " |");
-  for (const row of body) {
-    lines_out.push("| " + row.join(" | ") + " |");
-  }
+  const rowSegs: Segmented[] = [];
+  rowSegs.push(renderRow(header));
+  rowSegs.push({ text: `| ${separator.text} |`, spans: [] });
+  for (const row of body) rowSegs.push(renderRow(row));
 
-  return lines_out.join("\n");
+  return concatSegs(rowSegs, "\n");
+}
+
+/** Render one table row as `| a | b | c |`, rebasing each cell's spans. */
+function renderRow(cells: Segmented[]): Segmented {
+  const inner = concatSegs(cells, " | ");
+  return prefixSeg("| ", { text: `${inner.text} |`, spans: inner.spans });
 }
