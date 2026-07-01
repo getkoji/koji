@@ -141,6 +141,36 @@ describe("ChunkedParseProvider", () => {
     expect(result.text_map![3]!.page).toBe(52);
   });
 
+  // 5b. Text map md_offset shift (L3 provenance)
+  it("shifts md_offset by each chunk's start in the merged markdown", async () => {
+    __pageCount = 100;
+    // Two chunks, each with markdown of length 6 ("abcdef"). Merged markdown is
+    // "abcdef\n\nabcdef", so chunk 2's content starts at offset 8 (6 + "\n\n").
+    const inner = makeMockProvider({
+      parseResponses: [
+        makeParseResponse({
+          markdown: "abcdef",
+          text_map: [{ text: "abc", page: 1, x: 0, y: 0, w: 1, h: 1, md_offset: 0, md_length: 3 }],
+        }),
+        makeParseResponse({
+          markdown: "abcdef",
+          text_map: [{ text: "abc", page: 1, x: 0, y: 0, w: 1, h: 1, md_offset: 0, md_length: 3 }],
+        }),
+      ],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    expect(result.markdown).toBe("abcdef\n\nabcdef");
+    // Chunk 1 offset unchanged; chunk 2 offset shifted by 6 + 2 (the "\n\n").
+    expect(result.text_map![0]!.md_offset).toBe(0);
+    expect(result.text_map![1]!.md_offset).toBe(8);
+    // The shifted offset still slices back to the right text in merged markdown.
+    const seg = result.text_map![1]!;
+    expect(result.markdown.slice(seg.md_offset!, seg.md_offset! + seg.md_length!)).toBe("abc");
+  });
+
   // 6. OCR skip merge
   it("sets ocr_skipped true only when ALL chunks skip OCR", async () => {
     __pageCount = 100;

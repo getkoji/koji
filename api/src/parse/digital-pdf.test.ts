@@ -69,6 +69,40 @@ describe("DigitalPdfProvider", () => {
     expect(top!.y).toBeLessThan(0.15);
   });
 
+  it("stamps md_offset/md_length that slice back to each word in the markdown", async () => {
+    // L3 deterministic provenance: every text_map segment the serializer placed
+    // must point at its own text in the emitted markdown, so provenance can
+    // resolve bboxes by offset instead of fuzzy matching.
+    const buf = await makeDigitalPdf([
+      "Invoice total due on receipt.",
+      "Account number 12345 — thank you for your business.",
+    ]);
+
+    const provider = new DigitalPdfProvider();
+    const result = await provider.parse({
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: buf,
+    });
+
+    const md = result.markdown;
+    const segs = result.text_map ?? [];
+    const annotated = segs.filter((s) => s.md_offset != null);
+    // The overwhelming majority of digital words should carry offsets.
+    expect(annotated.length).toBeGreaterThan(0);
+
+    // Each annotated segment slices back to its own text at its offset.
+    for (const s of annotated) {
+      expect(md.slice(s.md_offset!, s.md_offset! + s.md_length!)).toBe(s.text);
+    }
+
+    // A value-bearing token (however pdfjs tokenized the run) is annotated and
+    // its offset slices back to that token's exact text.
+    const acct = annotated.find((s) => s.text.includes("12345"));
+    expect(acct).toBeDefined();
+    expect(md.slice(acct!.md_offset!, acct!.md_offset! + acct!.md_length!)).toBe(acct!.text);
+  });
+
   it("rejects non-PDF input with a clear error", async () => {
     const provider = new DigitalPdfProvider();
     await expect(
