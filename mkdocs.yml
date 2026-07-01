@@ -51,6 +51,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Schemas: schema-guide.md
+  - Classifiers: classifiers.md
   - Configuration: configuration.md
   - Integration: integration.md
   - Architecture: architecture.md
