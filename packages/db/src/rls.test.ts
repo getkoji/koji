@@ -244,6 +244,8 @@ describe("per-table isolation", () => {
   const pipelineBId = randomUUID();
   const jobAId = randomUUID();
   const jobBId = randomUUID();
+  const classifierAId = randomUUID();
+  const classifierBId = randomUUID();
 
   beforeAll(async () => {
     // Seed dependency chain via superuser: project → schema → pipeline → job
@@ -304,6 +306,22 @@ describe("per-table isolation", () => {
              ('${jobBId}', '${tenantB}', 'job-b', '${pipelineBId}', 'completed', 'api')
     `));
 
+    // Classifiers (schema-sibling artifact) + a version each. Isolation of a
+    // tenant's classifier configs is as critical as its schemas — the config is
+    // proprietary IP and drives what documents get routed where.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO classifiers (id, tenant_id, slug, display_name, created_by)
+      VALUES ('${classifierAId}', '${tenantA}', 'clf-a', 'Classifier A', '${userA}'),
+             ('${classifierBId}', '${tenantB}', 'clf-b', 'Classifier B', '${userB}')
+    `));
+    await rootDb.execute(sql.raw(`
+      INSERT INTO classifier_versions
+        (tenant_id, classifier_id, version_number, yaml_source, yaml_hash, parsed_json, committed_by)
+      VALUES
+        ('${tenantA}', '${classifierAId}', 1, 'classes:\\n  a: {}', repeat('a', 64), '{"classes":[{"id":"a"}]}', '${userA}'),
+        ('${tenantB}', '${classifierBId}', 1, 'classes:\\n  b: {}', repeat('b', 64), '{"classes":[{"id":"b"}]}', '${userB}')
+    `));
+
     // NOTE: Additional tables (webhook_targets, api_keys, extraction_runs, etc.)
     // are not seeded here due to complex NOT NULL constraints. Their RLS policies
     // are verified by the "every table with tenant_id has a policy" meta-test below.
@@ -324,6 +342,8 @@ describe("per-table isolation", () => {
     "parse_endpoints",
     "provider_credentials",
     "tenant_models",
+    "classifiers",
+    "classifier_versions",
   ];
 
   for (const table of tablesToTest) {

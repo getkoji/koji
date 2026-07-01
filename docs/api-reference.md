@@ -1039,6 +1039,80 @@ Promoting a schema changes its live release; each pipeline chooses how to react 
 
 ---
 
+## Classifiers
+
+A **classifier** is a config artifact — the schema-sibling of an extraction schema. Where a schema stores YAML defining `fields` to extract, a classifier stores YAML defining `classes` a document can be assigned to, plus the cost controls the [`POST /api/classify`](#post-apiclassify) cascade obeys. Classifiers use the same CRUD shape, the same semver versioning (released + `rc.N` candidates), and the same permissions as schemas: read is `schema:read`, create/update is `schema:write`, promote/release is `schema:deploy`. The engine ships no built-in classes — every class is user config.
+
+Committing or creating a classifier validates the YAML with the classifier engine and stores the normalized config as the version's `parsedJson`. Invalid YAML (or a config that isn't a valid classifier — e.g. no `classes`) returns `400` with the validation message in `error`/`details`.
+
+### `GET /api/classifiers`
+
+List the tenant's classifiers. Each row carries `id`, `slug`, `displayName`, `description`, `currentVersionId`, `createdAt`, and `latestVersion` (the highest committed version number, or `null`). Auth: `schema:read`.
+
+### `GET /api/classifiers/{slug}`
+
+The classifier plus its `latestVersion` (`{ versionNumber, yamlSource, commitMessage, createdAt }` or `null`). `404` for an unknown slug. Auth: `schema:read`.
+
+### `POST /api/classifiers`
+
+Create a classifier. Auth: `schema:write`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slug` | string | Required. Unique per tenant. |
+| `display_name` | string | Required. |
+| `description` | string? | Optional. |
+| `initial_yaml` | string? | Classifier YAML for v1. Defaults to a minimal one-class template. |
+
+Creates the classifier and commits **v1** (released), then returns the classifier with `latestVersion: 1`. `400` when `slug`/`display_name` are missing or the YAML is not a valid classifier config.
+
+### `PATCH /api/classifiers/{slug}`
+
+Update metadata or the working draft. Body: `{ display_name?, description?, draft_yaml? }`. Setting `draft_yaml` also stamps `draftUpdatedAt`. `404` for an unknown slug. Auth: `schema:write`.
+
+### `DELETE /api/classifiers/{slug}`
+
+Soft-delete (sets `deletedAt`; the row is filtered from every read path). Returns `204`. Auth: `schema:write`.
+
+## Classifier versions
+
+Versions use semver, identical to schema versions. **Candidates** carry a prerelease tag (`v0.0.4-rc.7`) and are never live; **releases** (`v0.0.4`) are activatable, and `classifiers.currentVersionId` points at the live release. The bump is auto-derived by diffing the candidate's **label set** against the active release: a removed class = **major**, an added class = **minor**, tuning only (descriptions, keywords, patterns, windows, cost controls) = **patch**. Override with `bump` in the request.
+
+### `GET /api/classifiers/{slug}/versions`
+
+The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), plus `versionNumber`, `major`/`minor`/`patch`/`prerelease`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
+
+### `GET /api/classifiers/{slug}/versions/{v}`
+
+A single version by its `versionNumber`, including `yamlSource` and the normalized `parsedJson`. `404` if the version doesn't exist. Auth: `schema:read`.
+
+### `POST /api/classifiers/{slug}/versions`
+
+Commit a version. Auth: `schema:write`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `yaml_source` | string | Required. Classifier YAML (`yaml` is accepted as an alias). |
+| `commit_message` | string? | Message for the version. |
+| `candidate` | boolean? | `true` snapshots a non-active candidate (dedup by content hash); otherwise releases directly and activates. |
+| `bump` | `"major"\|"minor"\|"patch"`? | Override the auto-derived bump. |
+
+Returns `{ id, version, released, ... }` (`201`). `400` on invalid YAML; `409` if a release already occupies that `x.y.z`.
+
+### `POST /api/classifiers/{slug}/promote`
+
+Graduate a candidate to a release and make it live — **manual, gated by `schema:deploy`**. Body: `{ versionId? }` (defaults to the latest candidate). Returns `{ released: "v0.0.4" }`. `400` if there's no candidate; `409` if a release already occupies that `x.y.z`.
+
+### `POST /api/classifiers/{slug}/release`
+
+Release YAML directly (skip the rc loop) and make it live — the early-stage path. Defaults to the classifier's draft. Auth: `schema:deploy`. Body: `{ yaml_source? }` (`yaml` accepted as an alias). Returns `{ released, versionId }`.
+
+---
+
 ## Provenance
 
 When extraction runs with a `text_map` (returned by the parse service), Koji resolves **provenance** for each extracted field — the exact location in the source document where the value was found. Provenance is returned in the `provenance` field of extraction responses and used by the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer) to render highlights.

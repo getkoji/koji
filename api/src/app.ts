@@ -65,6 +65,7 @@ import { overview } from "./routes/overview";
 import { billing as billingRoutes } from "./routes/billing";
 import { forms as formsRouter } from "./routes/forms";
 import { classify } from "./routes/classify";
+import { classifiers } from "./routes/classifiers";
 import { upload } from "./routes/upload";
 import { logs } from "./routes/logs";
 import { notifications as notificationsRouter } from "./routes/notifications";
@@ -221,6 +222,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/auth", passwordReset);
   app.route("/api/schemas", schemas);
   app.route("/api/schemas", agentRouter);
+  app.route("/api/classifiers", classifiers);
   app.route("/api/jobs", jobs);
   app.route("/api", extractRoutes);
   app.route("/api/me", me);

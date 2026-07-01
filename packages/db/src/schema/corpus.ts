@@ -14,6 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { createdAt, deletedAt, primaryKey, tenantId, updatedAt } from "./_shared";
+import { classifiers } from "./classifiers";
 import { schemaVersions, schemas } from "./schemas";
 import { tenants, users } from "./tenants";
 
@@ -25,6 +26,15 @@ export const corpusEntries = pgTable(
     schemaId: uuid("schema_id")
       .notNull()
       .references(() => schemas.id, { onDelete: "cascade" }),
+    /**
+     * Optional owning classifier. A corpus entry belongs to a schema (the
+     * existing NOT NULL `schemaId`) and MAY additionally be associated with a
+     * classifier artifact so the same document store can back classifier
+     * validation later. Nullable — schema-owned entries leave it NULL.
+     */
+    classifierId: uuid("classifier_id").references(() => classifiers.id, {
+      onDelete: "cascade",
+    }),
     filename: varchar("filename", { length: 500 }).notNull(),
     storageKey: varchar("storage_key", { length: 500 }).notNull(),
     fileSize: bigint("file_size", { mode: "number" }).notNull(),
