@@ -21,9 +21,12 @@ test.describe("classifiers", () => {
     await expect(page).toHaveURL(/\/classifiers$/);
 
     await page.getByRole("button", { name: /new classifier/i }).first().click();
-    await expect(page.getByText("Create classifier")).toBeVisible();
+    // "Create classifier" is both the dialog heading and the submit button —
+    // target the heading specifically to avoid a strict-mode match.
+    const dialogTitle = page.getByRole("heading", { name: "Create classifier" });
+    await expect(dialogTitle).toBeVisible();
     await page.getByRole("button", { name: /cancel/i }).click();
-    await expect(page.getByText("Create classifier")).not.toBeVisible();
+    await expect(dialogTitle).not.toBeVisible();
   });
 
   test("classifier detail shows the config editor and test panel", async ({ page }) => {
