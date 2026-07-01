@@ -16,7 +16,7 @@ export interface FieldRoute {
   fieldName: string;
   fieldSpec: Record<string, unknown>;
   chunks: Chunk[];
-  source: "hint" | "signal_inferred" | "broadened" | "fallback" | "full_document";
+  source: "hint" | "signal_inferred" | "broadened" | "fallback" | "full_document" | "per_section";
 }
 
 export interface RouteGroup {
@@ -183,6 +183,54 @@ function fieldMaxChunks(fieldSpec: Record<string, unknown>, defaultMax: number):
 }
 
 // ---------------------------------------------------------------------------
+// Coverage-maximizing selection (per_section)
+// ---------------------------------------------------------------------------
+
+/** Default cap on distinct sections a `per_section` field will pull. */
+const DEFAULT_MAX_SECTIONS = 24;
+
+/**
+ * The section a chunk belongs to, for coverage-maximizing selection. Generic:
+ * the heading text (`title`) identifies a section — distinct parts of a large
+ * package carry distinct headings. Falls back to `category`, then a shared
+ * bucket, so untitled chunks don't each become their own "section".
+ */
+function sectionKey(chunk: Chunk): string {
+  const title = (chunk.title ?? "").trim().toLowerCase();
+  if (title) return `t:${title}`;
+  if (chunk.category) return `c:${chunk.category}`;
+  return "__untitled";
+}
+
+/**
+ * Coverage-maximizing selection for an array field: instead of the globally
+ * top-N chunks (which collapse onto the highest-scoring few and starve whole
+ * sections on large multi-part documents), take the best-scoring chunk from
+ * EACH distinct section so every qualifying section reaches the extractor.
+ *
+ * `scored` must be sorted by score descending — so the first chunk seen per
+ * section is that section's best, and the Map preserves score-descending
+ * section order for the safety cap. Returns chunks in document order (by
+ * index) for a stable, readable prompt.
+ */
+function selectCoverageMax(
+  scored: Array<[number, Chunk]>,
+  maxSections: number,
+): { chunks: Chunk[]; sectionsFound: number } {
+  const bySection = new Map<string, Chunk>();
+  for (const [, chunk] of scored) {
+    const key = sectionKey(chunk);
+    if (!bySection.has(key)) bySection.set(key, chunk);
+  }
+  const sectionsFound = bySection.size;
+  // Map iteration order = insertion order = score-descending, so slicing keeps
+  // the highest-scoring sections when there are more sections than the cap.
+  const reps = [...bySection.values()].slice(0, maxSections);
+  reps.sort((a, b) => a.index - b.index);
+  return { chunks: reps, sectionsFound };
+}
+
+// ---------------------------------------------------------------------------
 // Route fields
 // ---------------------------------------------------------------------------
 
@@ -226,10 +274,33 @@ export function routeFields(
     }
 
     scored.sort((a, b) => b[0] - a[0]);
-    const topChunks = scored.slice(0, fieldCap).map(([, c]) => c);
+
+    // `per_section`: coverage-maximizing selection. For an array field on a
+    // large multi-part document, one chunk per distinct section reaches the
+    // extractor — not just the globally top-N (which collapse onto the few
+    // highest-scoring chunks and drop whole sections). Opt-in per field, so
+    // small/monoline docs are unaffected (they simply have fewer sections).
+    const perSection = hints.per_section === true;
+    let topChunks: Chunk[];
+    if (perSection && scored.length > 0) {
+      const maxSections =
+        typeof hints.max_sections === "number" && hints.max_sections > 0
+          ? hints.max_sections
+          : DEFAULT_MAX_SECTIONS;
+      const sel = selectCoverageMax(scored, maxSections);
+      topChunks = sel.chunks;
+      if (sel.sectionsFound > maxSections) {
+        console.warn(
+          `[koji-extract] Route: field '${fieldName}' per_section capped ` +
+            `${sel.sectionsFound} sections to ${maxSections} (raise hints.max_sections to include all).`,
+        );
+      }
+    } else {
+      topChunks = scored.slice(0, fieldCap).map(([, c]) => c);
+    }
 
     if (topChunks.length > 0) {
-      const source = hasHints ? "hint" : "signal_inferred";
+      const source = perSection ? "per_section" : hasHints ? "hint" : "signal_inferred";
       routes.push({
         fieldName,
         fieldSpec,
