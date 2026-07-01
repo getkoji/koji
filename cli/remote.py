@@ -1358,3 +1358,240 @@ def pipeline_deploy(
         console.print(f"[green]✓[/green] {pipeline} pinned to [cyan]{version}[/cyan]")
     else:
         console.print(f"[green]✓[/green] {pipeline} set to [cyan]auto[/cyan] — follows the live release")
+
+
+# ── Classifiers: run / versions / promote / release ───────────────────
+#
+# Mirrors the schema group (versions / promote / release) plus a `run` verb
+# that drives the standalone POST /api/classify primitive. A classifier gets
+# the same lifecycle CLI as a schema: iterate, snapshot candidates, promote a
+# candidate to a live release, or release directly.
+
+
+def _find_local_classifier(slug: str) -> Path | None:
+    """Look for a local classifier config file matching a slug (cwd or classifiers/)."""
+    for cand in (
+        Path(f"{slug}.yaml"),
+        Path(f"{slug}.yml"),
+        Path("classifiers") / f"{slug}.yaml",
+        Path("classifiers") / f"{slug}.yml",
+    ):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _load_classifier_arg(classifier: str) -> tuple[str, str | None, Path | None]:
+    """Resolve the `classifier` argument to (slug, local_yaml_or_None, local_path_or_None).
+
+    Accepts either a path to a YAML file or a bare slug. For a bare slug we try to
+    locate a matching local file so the loop can edit a file and push it; if none
+    is found, the slug is used to fetch the server-side config.
+    """
+    if _looks_like_path(classifier):
+        path = Path(classifier)
+        if not path.is_file():
+            console.print(f"[red]Classifier file not found: {classifier}[/red]")
+            raise typer.Exit(1)
+        text = path.read_text()
+        try:
+            doc = yaml_mod.safe_load(text) or {}
+        except yaml_mod.YAMLError as e:
+            console.print(f"[red]Invalid YAML in {classifier}: {e}[/red]")
+            raise typer.Exit(1) from e
+        slug = doc.get("name") or doc.get("slug") or path.stem
+        return slug, text, path
+
+    local = _find_local_classifier(classifier)
+    if local is not None:
+        return classifier, local.read_text(), local
+    return classifier, None, None
+
+
+def _fetch_classifier(client: httpx.Client, base_url: str, headers: dict, slug: str) -> dict:
+    """Fetch a classifier's record (draft + released version)."""
+    resp = client.get(f"{base_url}/api/classifiers/{slug}", headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code == 404:
+        console.print(f"[red]Classifier '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"fetch classifier {slug}")
+    return resp.json()
+
+
+def _fetch_classifier_versions(client: httpx.Client, base_url: str, headers: dict, slug: str) -> list[dict]:
+    resp = client.get(f"{base_url}/api/classifiers/{slug}/versions", headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"list versions for {slug}")
+    body = resp.json()
+    return body.get("versions") or body.get("data") or []
+
+
+def _resolve_classifier_config(client: httpx.Client, base_url: str, headers: dict, slug: str) -> str:
+    """Return the classifier's active config YAML: released version, else draft."""
+    record = _fetch_classifier(client, base_url, headers, slug)
+    latest = record.get("latestVersion") or {}
+    config = latest.get("yamlSource") or record.get("draftYaml")
+    if not config:
+        console.print(f"[red]Classifier '{slug}' has no released version or draft to run.[/red]")
+        raise typer.Exit(1)
+    return config
+
+
+def _render_classify(filename: str, r: dict) -> None:
+    """Pretty-print a classify outcome."""
+    label = r.get("label", "?")
+    conf = r.get("confidence")
+    conf_disp = f"{float(conf) * 100:.1f}%" if conf is not None else "[dim]—[/dim]"
+    tier = r.get("tier_used")
+    tier_disp = str(tier) if tier is not None else "[dim]—[/dim]"
+    page = r.get("evidence_page")
+    page_disp = f"page {page}" if page is not None else "[dim]—[/dim]"
+
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="dim")
+    table.add_column()
+    table.add_row("Document", filename)
+    table.add_row("Label", f"[cyan]{label}[/cyan]")
+    table.add_row("Confidence", conf_disp)
+    table.add_row("Method", str(r.get("method") or "[dim]—[/dim]"))
+    table.add_row("Tier", tier_disp)
+    table.add_row("Evidence", page_disp)
+    console.print(table)
+
+
+classify_app = typer.Typer(
+    help="Run and manage classifiers — classify a document, list versions, promote a candidate, or release.",
+    no_args_is_help=True,
+)
+
+
+@classify_app.command("run")
+def classify_run(
+    classifier: str = typer.Argument(..., help="Classifier slug, or path to a local classifier YAML."),
+    document: Path = typer.Argument(..., exists=True, dir_okay=False, help="Document to classify."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Classify one document and show the label, confidence, method, and tier.
+
+    Uses the LOCAL classifier YAML if a file is found (so you can iterate without
+    pushing); otherwise the server's released version (falling back to the draft).
+    Drives the standalone POST /api/classify primitive — nothing is persisted.
+    """
+    base_url, headers = resolve_api(profile_name)
+    slug, local_yaml, _ = _load_classifier_arg(classifier)
+    with httpx.Client(timeout=300) as client:
+        config = local_yaml or _resolve_classifier_config(client, base_url, headers, slug)
+        content_type = mimetypes.guess_type(document.name)[0] or "application/octet-stream"
+        with open(document, "rb") as fh:
+            resp = client.post(
+                f"{base_url}/api/classify",
+                files={"file": (document.name, fh, content_type)},
+                data={"config": config},
+                headers={**headers, "Accept": "application/json"},
+            )
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 422):
+            _api_error(resp, f"classify {document.name}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    _render_classify(document.name, result)
+    if result.get("label") == "unknown":
+        console.print("[yellow]No class matched (unknown).[/yellow]")
+
+
+@classify_app.command("versions")
+def classify_versions(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List a classifier's versions — released lineage + candidates."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        versions = _fetch_classifier_versions(client, base_url, headers, slug)
+
+    if as_json:
+        console.print_json(json_mod.dumps(versions))
+        return
+    if not versions:
+        console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Version")
+    table.add_column("Kind")
+    table.add_column("Message")
+    table.add_column("By")
+    for v in versions:
+        kind = "[magenta]candidate[/magenta]" if v.get("prerelease") else "[green]released[/green]"
+        table.add_row(
+            str(v.get("versionNumber", "")),
+            kind,
+            v.get("commitMessage") or "[dim]—[/dim]",
+            v.get("committedByName") or "[dim]—[/dim]",
+        )
+    console.print(table)
+    console.print(f"\n[dim]{len(versions)} version(s)[/dim]")
+
+
+@classify_app.command("promote")
+def classify_promote(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Graduate the latest candidate to a release and make it live (gated by deploy)."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(f"{base_url}/api/classifiers/{slug}/promote", json={}, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"promote {slug}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    released = result.get("released") or result.get("versionNumber")
+    console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
+
+
+@classify_app.command("release")
+def classify_release(
+    classifier: str = typer.Argument(..., help="Classifier slug, or path to a local classifier YAML to release."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Release a classifier directly to a full version, skipping the rc loop.
+
+    Sends your local YAML if given a path; otherwise releases the server-side
+    draft. Makes the new version live (gated by the deploy permission).
+    """
+    base_url, headers = resolve_api(profile_name)
+    slug, local_yaml, _ = _load_classifier_arg(classifier)
+    body: dict = {}
+    if local_yaml:
+        body["yaml"] = local_yaml
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(f"{base_url}/api/classifiers/{slug}/release", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"release {slug}")
+        result = resp.json()
+
+    if as_json:
+        console.print_json(json_mod.dumps(result))
+        return
+    released = result.get("released") or result.get("versionNumber")
+    console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
