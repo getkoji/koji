@@ -86,6 +86,21 @@ CREATE POLICY schema_samples_tenant_isolation ON schema_samples FOR ALL
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
+-- Classifier config artifact (schema-sibling) + its version log.
+ALTER TABLE classifiers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE classifiers FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS classifiers_tenant_isolation ON classifiers;
+CREATE POLICY classifiers_tenant_isolation ON classifiers FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+ALTER TABLE classifier_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE classifier_versions FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS classifier_versions_tenant_isolation ON classifier_versions;
+CREATE POLICY classifier_versions_tenant_isolation ON classifier_versions FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 ALTER TABLE corpus_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corpus_entries FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS corpus_entries_tenant_isolation ON corpus_entries;

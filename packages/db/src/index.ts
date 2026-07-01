@@ -44,6 +44,8 @@ export const RLS_POLICIES: readonly string[] = [
   "schemas",
   "schema_versions",
   "schema_samples",
+  "classifiers",
+  "classifier_versions",
   "corpus_entries",
   "corpus_entry_ground_truth",
   "corpus_entry_tags",

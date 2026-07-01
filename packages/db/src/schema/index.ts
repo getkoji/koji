@@ -2,6 +2,7 @@ export * from "./_shared";
 export * from "./tenants";
 export * from "./invites";
 export * from "./schemas";
+export * from "./classifiers";
 export * from "./corpus";
 export * from "./pipelines";
 export * from "./endpoints";
