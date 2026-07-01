@@ -131,12 +131,12 @@ describe("resolveBatchUris", () => {
 describe("mergeShardChunks", () => {
   it("rebases each shard's pages onto a running global offset", () => {
     const a: ParseChunk[] = [
-      { text: "A", page: 1 },
-      { text: "B", page: 2 },
+      { id: "a-u0", text: "A", page: 1 },
+      { id: "a-u1", text: "B", page: 2 },
     ];
     const b: ParseChunk[] = [
-      { text: "C", page: 1 }, // per-shard numbering restarts at 1
-      { text: "D", page: 2 },
+      { id: "b-u0", text: "C", page: 1 }, // per-shard numbering restarts at 1
+      { id: "b-u1", text: "D", page: 2 },
     ];
     const merged = mergeShardChunks([
       { chunks: a, pageCount: 2, basePage: 1 },
@@ -151,9 +151,9 @@ describe("mergeShardChunks", () => {
   });
 
   it("is correct when shards carry global page numbers too", () => {
-    const b: ParseChunk[] = [{ text: "C", page: 31 }];
+    const b: ParseChunk[] = [{ id: "b-u0", text: "C", page: 31 }];
     const merged = mergeShardChunks([
-      { chunks: [{ text: "A", page: 1 }], pageCount: 30, basePage: 1 },
+      { chunks: [{ id: "a-u0", text: "A", page: 1 }], pageCount: 30, basePage: 1 },
       { chunks: b, pageCount: 1, basePage: 31 },
     ]);
     expect(merged.map((c) => c.page)).toEqual([1, 31]);
