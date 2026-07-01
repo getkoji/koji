@@ -608,3 +608,48 @@ class TestArrayOfDictsStructuralSimilarity:
         ]
         r = compare_field("items", expected, actual, fuzzy_threshold=0.7)
         assert not r.passed
+
+
+class TestProvenanceKeysExcludedFromScoring:
+    """`__`-prefixed provenance keys (`__source_text`, `__source_context`) are
+    emitted inline by the extraction model but never appear in ground truth.
+    Scoring them as unexpected keys silently caps every array item and nested
+    object below its true accuracy — so the comparator drops them."""
+
+    def test_provenance_keys_do_not_penalize_array_items(self):
+        expected = [
+            {"coverage": "each_occurrence", "limit": 1000000},
+            {"coverage": "aggregate", "limit": 2000000},
+        ]
+        # Same correct data plus the two inline provenance keys per item.
+        actual = [
+            {
+                "coverage": "each_occurrence",
+                "limit": 1000000,
+                "__source_text": "Each Occurrence $1,000,000",
+                "__source_context": "Limits of Insurance — Each Occurrence $1,000,000",
+            },
+            {
+                "coverage": "aggregate",
+                "limit": 2000000,
+                "__source_text": "Aggregate $2,000,000",
+                "__source_context": "Limits of Insurance — General Aggregate $2,000,000",
+            },
+        ]
+        # 100% correct data must score a full structural match, not 2/4 per item.
+        r = compare_field("coverages", expected, actual, fuzzy_threshold=0.95)
+        assert r.passed
+
+    def test_provenance_keys_stripped_at_nested_depth(self):
+        expected = [{"coverage": "GL", "limits": [{"name": "each_occurrence", "amount": 1000000}]}]
+        actual = [
+            {
+                "coverage": "GL",
+                "__source_text": "COMMERCIAL GENERAL LIABILITY",
+                "limits": [
+                    {"name": "each_occurrence", "amount": 1000000, "__source_text": "Each Occurrence $1,000,000"},
+                ],
+            }
+        ]
+        r = compare_field("coverages", expected, actual, fuzzy_threshold=0.95)
+        assert r.passed

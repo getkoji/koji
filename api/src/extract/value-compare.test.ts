@@ -124,3 +124,40 @@ describe("compareValues — nested objects", () => {
     expect(compareValues(o, { a: 1, b: { c: 2 } }).match).toBe(true);
   });
 });
+
+describe("compareValues — provenance keys are not scored", () => {
+  it("ignores `__source_text`/`__source_context` on an object (5/5, not 5/7)", () => {
+    const expected = { coverage: "A", each: 1000, agg: 2000, ded: 500, per: "occ" };
+    // Model emits the same 5 correct values plus 2 inline provenance keys.
+    const got = {
+      coverage: "A",
+      each: 1000,
+      agg: 2000,
+      ded: 500,
+      per: "occ",
+      __source_text: "Each Occurrence $1,000",
+      __source_context: "Limits of Insurance — Each Occurrence $1,000",
+    };
+    const r = compareValues(expected, got);
+    expect(r.match).toBe(true);
+    expect(r.score).toBe(1);
+  });
+
+  it("ignores provenance keys on nested array items (coverages[].limits[])", () => {
+    const limit = { name: "Each Occurrence", amount: 1000 };
+    const expected = [{ coverage: "GL", limits: [limit, { name: "Aggregate", amount: 2000 }] }];
+    const got = [
+      {
+        coverage: "GL",
+        __source_text: "COMMERCIAL GENERAL LIABILITY",
+        limits: [
+          { ...limit, __source_text: "Each Occurrence $1,000" },
+          { name: "Aggregate", amount: 2000, __source_text: "Aggregate $2,000" },
+        ],
+      },
+    ];
+    const r = compareValues(expected, got);
+    expect(r.match).toBe(true);
+    expect(r.score).toBe(1);
+  });
+});
