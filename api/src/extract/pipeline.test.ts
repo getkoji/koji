@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, validateFields, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, stripProvenanceKeys, validateFields, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,60 @@ describe("extractFields", () => {
     expect(result).toHaveProperty("normalization");
     expect(result).toHaveProperty("validation");
     expect(typeof result.elapsed_ms).toBe("number");
+  });
+
+  it("strips inline `__`-provenance keys from extracted output at every depth", async () => {
+    // The model emits provenance inline, including on a nested array item that
+    // the shallow top-level harvest never reaches.
+    const provider = mockProvider(
+      JSON.stringify({
+        insured: "Acme",
+        __source_text: { insured: "ACME CORP" },
+        __source_context: { insured: "Named Insured: ACME CORP" },
+        coverages: [
+          {
+            coverage: "GL",
+            __source_text: "COMMERCIAL GENERAL LIABILITY",
+            limits: [{ name: "Each Occurrence", amount: 1000, __source_text: "Each Occurrence $1,000" }],
+          },
+        ],
+      }),
+    );
+    const schema = {
+      name: "policy",
+      fields: {
+        insured: { type: "string" },
+        coverages: { type: "array" },
+      },
+    };
+
+    const result = await extractFields("policy text", schema, provider, "gpt-4o");
+
+    const json = JSON.stringify(result.extracted);
+    expect(json).not.toContain("__source_text");
+    expect(json).not.toContain("__source_context");
+    expect(result.extracted.insured).toBe("Acme");
+    const cov = (result.extracted.coverages as Array<Record<string, unknown>>)[0]!;
+    expect(cov.coverage).toBe("GL");
+    expect((cov.limits as Array<Record<string, unknown>>)[0]).toEqual({ name: "Each Occurrence", amount: 1000 });
+  });
+});
+
+describe("stripProvenanceKeys", () => {
+  it("recursively deletes `__`-prefixed keys and leaves data untouched", () => {
+    const v = {
+      a: 1,
+      __source_text: "x",
+      nested: { b: 2, __source_context: "y", arr: [{ c: 3, __source_text: "z" }] },
+    };
+    stripProvenanceKeys(v);
+    expect(v).toEqual({ a: 1, nested: { b: 2, arr: [{ c: 3 }] } });
+  });
+
+  it("is a no-op on scalars, null, and undefined", () => {
+    expect(() => stripProvenanceKeys(null)).not.toThrow();
+    expect(() => stripProvenanceKeys(undefined)).not.toThrow();
+    expect(() => stripProvenanceKeys(42)).not.toThrow();
   });
 });
 

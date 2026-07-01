@@ -151,6 +151,12 @@ function compareObjects(
   let sum = 0;
   let n = 0;
   for (const key of keys) {
+    // Skip `__`-prefixed provenance metadata (`__source_text`,
+    // `__source_context`). The model emits these inline on extracted objects;
+    // ground truth never carries them, so scoring them as unexpected keys
+    // silently caps every array item and nested object below its true accuracy.
+    // They belong on the separate provenance channel, not the scored value.
+    if (key.startsWith("__")) continue;
     // Skip keys absent (or empty) on both sides — they carry no signal.
     if (isNullish(expected[key]) && isNullish(got[key])) continue;
     const sub = compareValues(expected[key], got[key]);
