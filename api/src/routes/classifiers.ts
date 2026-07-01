@@ -354,7 +354,9 @@ classifiers.post("/:slug/versions", requires("schema:write"), async (c) => {
       409,
     );
   }
-  return c.json({ id: res.id, version: res.label, released: true }, 201);
+  // Match the schema `release` route + the `koji classify release` CLI: 200 with
+  // `released` = the version label (not a boolean), plus versionId.
+  return c.json({ released: res.label, versionId: res.id });
 });
 
 /**
