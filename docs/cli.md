@@ -234,6 +234,7 @@ koji validate insurance_policy --bump minor          # override the auto-derived
 koji validate insurance_policy --no-push             # validate the version already live on the server
 koji validate insurance_policy --watch               # re-run whenever the local file changes
 koji validate insurance_policy --check               # exit non-zero if any field regressed (CI / loops)
+koji validate insurance_policy --explain             # show WHY each field failed (routing diagnosis)
 koji validate insurance_policy --json                # raw result for an agent to read
 ```
 
@@ -245,10 +246,19 @@ koji validate insurance_policy --json                # raw result for an agent t
 | `--message`, `-m` | Message for the candidate snapshot. |
 | `--watch`, `-w` | Re-run whenever the local schema file changes. |
 | `--check` | Exit non-zero if any field regressed (for CI / loops). |
+| `--explain` | For each failing field, show which chunks the model saw, how they were routed, and whether the expected answer was even present in them. |
 | `--json` | Emit raw JSON instead of a table. |
 | `--profile`, `-p` | CLI profile to use. |
 
 The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found automatically) or a path to a YAML file. The slug is taken from the file's `name:` field. Promote a candidate to live with [`koji schema promote`](#koji-schema).
+
+#### Diagnosing failures with `--explain`
+
+A failing field has two very different causes, and telling them apart decides the fix. `--explain` (also present as `routingDiagnosis` on each `fields[].failingDocs[]` entry under `--json`) reports, per failing field, how its chunks were selected (`source`) and whether the ground-truth answer was even present in the chunks the model was shown (`answerInRoutedChunks`):
+
+- **`answerInRoutedChunks: false` — a routing miss.** The correct answer never reached the model, so no prompt change and no bigger model can fix it. The fix is to steer chunk selection with the field's `hints` (`look_in`, `prefer_contains`, `patterns`, `prefer_position`, `max_chunks`).
+- **`answerInRoutedChunks: true` — a model misread.** The answer was in front of the model and it still got it wrong; tighten the field `description`, `type`, or enum aliases. A larger model is a last resort, justified only here.
+- **`answerInRoutedChunks: null`** — couldn't be determined (a non-scalar expected value, or the read-only `GET` path with no fresh routing data).
 
 ### `koji run`
 

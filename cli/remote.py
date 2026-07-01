@@ -261,7 +261,7 @@ def _diff_fields(ground_truth: dict, extracted: dict) -> list[dict]:
 # ── Renderers ─────────────────────────────────────────────────────────
 
 
-def _render_validate(slug: str, r: dict) -> None:
+def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
     overall = r.get("overallAccuracy")
     prev = r.get("prevAccuracy")
     delta = ""
@@ -326,7 +326,63 @@ def _render_validate(slug: str, r: dict) -> None:
             console.print(f"  [dim]… and {len(failing) - 25} more[/dim]")
     else:
         console.print("\n[green]✓ all docs passing[/green]")
+
+    if explain:
+        _render_routing_diagnostics(r)
     console.print()
+
+
+def _render_routing_diagnostics(r: dict) -> None:
+    """Explain each failing (field, doc) pair: routing source + whether the
+    expected answer was even in the chunks the model saw. A routing MISS means
+    the fix is in the schema `hints`, not a bigger model."""
+    rows: list[tuple[str, str, dict]] = []
+    for f in r.get("fields", []):
+        for d in f.get("failingDocs", []) or []:
+            diag = d.get("routingDiagnosis")
+            if diag:
+                rows.append((f.get("name", ""), d.get("filename", ""), diag))
+
+    if not rows:
+        console.print(
+            "\n[dim]routing diagnostics: none available "
+            "(no routing data on this run — re-run with --no-push to re-extract).[/dim]"
+        )
+        return
+
+    console.print("\n[bold]routing diagnostics[/bold] [dim](why each failing field failed)[/dim]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Field")
+    table.add_column("Doc")
+    table.add_column("Answer in chunks?")
+    table.add_column("Route")
+    table.add_column("Chunks seen")
+    for field_name, filename, diag in rows[:50]:
+        ans = diag.get("answerInRoutedChunks")
+        if ans is False:
+            ans_disp = "[red]NO — routing miss[/red]"
+        elif ans is True:
+            ans_disp = "[yellow]yes — model misread[/yellow]"
+        else:
+            ans_disp = "[dim]?[/dim]"
+        src = diag.get("source") or "?"
+        src_color = "red" if src in ("fallback", "broadened") else "cyan"
+        chunks = diag.get("chunks") or []
+        chunk_disp = ", ".join(str(c.get("index")) for c in chunks) or "[dim]none[/dim]"
+        table.add_row(
+            field_name,
+            _fmt_value(filename, 28),
+            ans_disp,
+            f"[{src_color}]{src}[/{src_color}]",
+            chunk_disp,
+        )
+    console.print(table)
+    console.print(
+        "\n[dim]NO → the answer never reached the model; fix the schema `hints` "
+        "(look_in / prefer_contains / patterns / prefer_position / max_chunks). "
+        "yes → the model saw it and misread; tighten the field description first. "
+        "A bigger model is a last resort.[/dim]"
+    )
 
 
 def _render_extract(entry: dict, r: dict, show_prov: bool) -> None:
@@ -390,6 +446,12 @@ def validate(
     message: str = typer.Option(None, "--message", "-m", help="Commit message for the candidate snapshot."),
     watch: bool = typer.Option(False, "--watch", "-w", help="Re-run whenever the local schema file changes."),
     check: bool = typer.Option(False, "--check", help="Exit non-zero if any field regressed (for CI / loops)."),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        help="For each failing field, show WHY it failed: which chunks the model saw, "
+        "how they were routed, and whether the expected answer was even present in them.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
@@ -437,7 +499,7 @@ def validate(
         if as_json:
             console.print_json(json_mod.dumps(result))
         else:
-            _render_validate(slug, result)
+            _render_validate(slug, result, explain=explain)
         regressed = [f for f in result.get("fields", []) if f.get("status") == "regressed"]
         return 1 if (check and regressed) else 0
 

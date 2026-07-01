@@ -13,7 +13,7 @@
 import { describe, it, expect } from "vitest";
 import { resolvePermissions } from "../auth/roles";
 import { extractFieldMetas } from "../schemas/field-meta";
-import { computeValidateResult } from "./schemas";
+import { computeValidateResult, answerPresentInText } from "./schemas";
 
 type Result = {
   entryId: string;
@@ -131,5 +131,92 @@ describe("computeValidateResult — parse failures are surfaced, not silently dr
     const out = computeValidateResult([passingDoc], new Map(), 1, Date.now());
     expect(out.parseFailures).toEqual([]);
     expect(out.docsTotal).toBe(1);
+  });
+});
+
+describe("answerPresentInText — routing-miss detector heuristic", () => {
+  it("matches a string answer as a normalized substring", () => {
+    expect(answerPresentInText("John Doe", "Insured: John Doe\nPolicy: 1")).toBe(true);
+    expect(answerPresentInText("John Doe", "insured: JOHN   DOE")).toBe(true);
+  });
+
+  it("matches a long string answer on ≥60% of significant tokens", () => {
+    const expected = "water damage from a burst pipe";
+    // Missing "a" (a stopword <=2 chars is ignored anyway); most tokens present.
+    expect(answerPresentInText(expected, "cause of loss: water damage from burst pipe")).toBe(true);
+  });
+
+  it("reports a string answer absent when the chunks don't contain it", () => {
+    expect(answerPresentInText("Hurricane Ida", "Policy Number: POL-1\nInsured: Jane")).toBe(false);
+  });
+
+  it("matches a numeric answer on its digit sequence, ignoring $/commas/decimals", () => {
+    expect(answerPresentInText(50000, "Amount: $50,000.00")).toBe(true);
+    expect(answerPresentInText(1234.5, "Total 1,234.50 due")).toBe(true);
+    expect(answerPresentInText(9999, "Amount: $50,000.00")).toBe(false);
+  });
+
+  it("returns null when no routed text is available or the value is non-scalar", () => {
+    expect(answerPresentInText("anything", undefined)).toBeNull();
+    expect(answerPresentInText(true, "yes it is true")).toBeNull();
+    expect(answerPresentInText([{ a: 1 }], "some text")).toBeNull();
+  });
+});
+
+describe("computeValidateResult — routing diagnosis on failing fields", () => {
+  it("flags a routing MISS when the answer wasn't in the chunks the model saw", () => {
+    const doc = {
+      entryId: "e1",
+      filename: "doc.pdf",
+      groundTruth: { loss_cause: "Hurricane Ida" },
+      extracted: { loss_cause: "Fire" },
+      confidenceScores: { loss_cause: 0.4 },
+      routingPlan: {
+        loss_cause: {
+          source: "fallback",
+          chunks: [{ index: 0, title: "Header" }],
+          text: "Policy Number: POL-1\nInsured: Jane Doe",
+        },
+      },
+    };
+    const out = computeValidateResult([doc], new Map(), 1, Date.now());
+    const field = out.fields.find((f) => f.name === "loss_cause")!;
+    const diag = field.failingDocs[0]!.routingDiagnosis!;
+    expect(diag.source).toBe("fallback");
+    expect(diag.answerInRoutedChunks).toBe(false); // → fix the schema hints, not the model
+    expect(diag.chunks).toEqual([{ index: 0, title: "Header" }]);
+  });
+
+  it("flags a model misread when the answer WAS in the routed chunks", () => {
+    const doc = {
+      entryId: "e2",
+      filename: "doc.pdf",
+      groundTruth: { loss_cause: "Hurricane Ida" },
+      extracted: { loss_cause: "Fire" },
+      confidenceScores: { loss_cause: 0.4 },
+      routingPlan: {
+        loss_cause: {
+          source: "hint",
+          chunks: [{ index: 3, title: "Loss" }],
+          text: "Cause of Loss: Hurricane Ida struck the property",
+        },
+      },
+    };
+    const out = computeValidateResult([doc], new Map(), 1, Date.now());
+    const diag = out.fields.find((f) => f.name === "loss_cause")!.failingDocs[0]!.routingDiagnosis!;
+    expect(diag.source).toBe("hint");
+    expect(diag.answerInRoutedChunks).toBe(true); // model saw it → tighten description, not routing
+  });
+
+  it("omits routingDiagnosis when no routing plan is present (e.g. cached read path)", () => {
+    const doc = {
+      entryId: "e3",
+      filename: "doc.pdf",
+      groundTruth: { x: "A" },
+      extracted: { x: "B" },
+      confidenceScores: { x: 0.5 },
+    };
+    const out = computeValidateResult([doc], new Map(), 1, Date.now());
+    expect(out.fields.find((f) => f.name === "x")!.failingDocs[0]!.routingDiagnosis).toBeUndefined();
   });
 });

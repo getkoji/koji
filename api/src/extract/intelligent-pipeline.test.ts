@@ -168,6 +168,51 @@ describe("intelligentExtract", () => {
     expect(result.extracted.filing_date).toBe("2025-06-15");
   });
 
+  it("populates routing_plan with per-field source, chunks, and routed text", async () => {
+    const markdown = [
+      "# Policy Info",
+      "Policy Number: POL-123",
+      "# Claims",
+      "Date of Loss: 2025-03-15",
+      "Amount: $50,000",
+    ].join("\n");
+
+    const schema = {
+      name: "claim",
+      // Force per-field routing (above the full-document threshold is not
+      // reachable with so few chunks, so disable adaptive full-doc routing).
+      routing: { full_document_below: 0 },
+      categories: {
+        keywords: { header: ["policy"], claims: ["loss", "amount"] },
+      },
+      fields: {
+        policy_number: { type: "string", hints: { look_in: ["header"] } },
+        amount: { type: "number", hints: { look_in: ["claims"] } },
+      },
+    };
+
+    const provider = mockProvider(
+      JSON.stringify({ policy_number: "POL-123", amount: 50000 }),
+    );
+
+    const result = await intelligentExtract(markdown, schema, provider, "gpt-4o-mini");
+    const plan = result.routing_plan as Record<
+      string,
+      { source: string; chunks: Array<{ index: number; title: string }>; text: string }
+    >;
+
+    // Every field appears in the plan with a hint-driven source.
+    expect(plan.policy_number).toBeDefined();
+    expect(plan.amount).toBeDefined();
+    expect(plan.policy_number!.source).toBe("hint");
+    // The routed text for policy_number contains the policy line, not the claims line.
+    expect(plan.policy_number!.text).toContain("POL-123");
+    expect(plan.amount!.text).toContain("50,000");
+    // Chunk records carry an index + title for display.
+    expect(plan.policy_number!.chunks.length).toBeGreaterThan(0);
+    expect(typeof plan.policy_number!.chunks[0]!.index).toBe("number");
+  });
+
   it("handles empty document", async () => {
     const provider = mockProvider("{}");
     const schema = {
