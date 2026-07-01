@@ -363,18 +363,29 @@ export function routeAllChunks(
 export function groupRoutes(routes: FieldRoute[]): RouteGroup[] {
   const groups: RouteGroup[] = [];
 
-  // per_section fields extract in isolation. Their chunk set is deliberately
-  // expanded to one chunk per section — potentially spanning the whole
-  // document. Folding that union into a shared group would make every sibling
-  // field in the group extract against all those sections, so a scalar that
-  // shares even one section chunk with a per_section array would inherit the
-  // rest and mis-extract (e.g. picking the carrier name stamped on each
-  // coverage-part header instead of the named insured). Each per_section field
-  // is therefore its own singleton group and takes no part in the overlap-based
-  // grouping below — as either a seed or a candidate.
-  const groupableRoutes = routes.filter((r) => r.source !== "per_section");
+  // Some fields extract in isolation — each becomes its own singleton group and
+  // takes no part in the overlap-based grouping below (as either a seed or a
+  // candidate). Two cases:
+  //
+  //  • per_section fields, whose chunk set is deliberately expanded to one chunk
+  //    per section (potentially spanning the whole document). Folding that union
+  //    into a shared group would make every sibling extract against all those
+  //    sections — a scalar sharing one section chunk would inherit the rest and
+  //    mis-extract (e.g. a carrier name stamped on each coverage-part header).
+  //
+  //  • fields with `hints.isolate: true`. A grouped field is extracted in one
+  //    LLM call over the UNION of the group's chunks, alongside every other
+  //    member's instructions — so its output depends on siblings' routing and
+  //    flips when an unrelated field's hint changes. `isolate` pins a critical
+  //    field to exactly its own routed chunks and its own instruction, making it
+  //    stable with respect to the rest of the schema.
+  const isIsolated = (r: FieldRoute): boolean =>
+    r.source === "per_section" ||
+    ((r.fieldSpec.hints as Record<string, unknown> | undefined)?.isolate === true);
+
+  const groupableRoutes = routes.filter((r) => !isIsolated(r));
   for (const route of routes) {
-    if (route.source !== "per_section") continue;
+    if (!isIsolated(route)) continue;
     groups.push({
       fields: [route.fieldName],
       fieldSpecs: { [route.fieldName]: route.fieldSpec },

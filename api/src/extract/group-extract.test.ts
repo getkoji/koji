@@ -153,6 +153,26 @@ describe("collectExtractionNotes", () => {
     const fields = { a: { type: "string", extraction_hint: "   " } };
     expect(collectExtractionNotes(fields)).toBe("");
   });
+
+  it("injects an anti-caption note for reject_caption fields", () => {
+    const fields = { insured_name: { type: "string", hints: { reject_caption: true } } };
+    const result = collectExtractionNotes(fields);
+    expect(result).toContain("**insured_name**");
+    expect(result).toContain("never the label/caption text itself");
+  });
+
+  it("combines a field's own extraction_hint with the anti-caption note", () => {
+    const fields = {
+      insured_name: {
+        type: "string",
+        extraction_hint: "The named insured is the organization on the dec.",
+        hints: { reject_caption: true },
+      },
+    };
+    const result = collectExtractionNotes(fields);
+    expect(result).toContain("The named insured is the organization on the dec.");
+    expect(result).toContain("ends with ':'");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -384,6 +384,39 @@ export function stripProvenanceKeys(value: unknown): void {
   }
 }
 
+/**
+ * A scalar string value that is actually a label/caption rather than data — the
+ * characters a field's label ends with, not the value the label introduces.
+ * Generic (no field names, no document types): a value that ends with a colon is
+ * a caption. Real scalar data effectively never ends in ':'.
+ */
+export function isCaptionValue(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 1 && value.trim().endsWith(":");
+}
+
+/**
+ * Deterministic backstop for the `hints.reject_caption` opt-in: null any scalar
+ * field whose extracted value is a caption/label instead of the value beneath
+ * it, so the engine never *emits* a caption. Nulling routes the field to review
+ * (a not-found is safer than a confidently-wrong label). Opt-in per field, so
+ * schemas that don't set the hint are unaffected. Returns the fields it nulled.
+ */
+export function rejectCaptionValues(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+): string[] {
+  const nulled: string[] = [];
+  for (const [name, spec] of Object.entries(fields)) {
+    const hints = spec.hints as Record<string, unknown> | undefined;
+    if (hints?.reject_caption !== true) continue;
+    if (isCaptionValue(extracted[name])) {
+      extracted[name] = null;
+      nulled.push(name);
+    }
+  }
+  return nulled;
+}
+
 function buildConfidence(
   extracted: Record<string, unknown>,
   fields: Record<string, Record<string, unknown>>,
@@ -670,6 +703,12 @@ export async function extractFields(
   // etc.) — recurses into array-of-objects items and nested objects so a
   // `type: mapping` or `number` field works at any depth, not just top level.
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
+
+  // `reject_caption` backstop: null any scalar that came back as its own label
+  // caption so the engine never emits a caption. Runs before validation so a
+  // nulled required field surfaces as not-found (→ review), not a wrong value.
+  const captionNulled = rejectCaptionValues(result.extracted, fields);
+
   const vocabIssues = validateFields(result.extracted, fields);
 
   // Post-extraction normalization (derived fields, etc.)
@@ -677,7 +716,12 @@ export async function extractFields(
   result.extracted = normalized;
   result.normalization = {
     applied: normReport.applied,
-    warnings: normReport.warnings,
+    warnings: [
+      ...normReport.warnings,
+      ...captionNulled.map(
+        (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
+      ),
+    ],
   };
 
   // Post-extraction validation. Conditional-vocabulary failures from field

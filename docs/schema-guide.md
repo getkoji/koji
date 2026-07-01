@@ -805,6 +805,36 @@ hints:
 
 `per_section` is opt-in and scales with the document: a small monoline policy has one or two sections and behaves like a normal field, while a 200-page multi-part package pulls one chunk per part. Use it for array fields whose items are organized into repeating, separately-headed sections; leave it off for scalar fields and single-table arrays (where `max_chunks` is the right tool).
 
+### isolate
+
+By default, fields routed to overlapping chunks are extracted **together** in one LLM call, over the union of their chunks, with every field's instructions in the same prompt. That's efficient, but it couples fields: a field's output can shift when an *unrelated* field's routing hint changes (different routing → different grouping → a different shared prompt). For a critical field whose value must be stable, that coupling is a liability.
+
+`isolate: true` pins a field to its **own** extraction call — exactly its routed chunks, only its own instruction, nothing from its siblings:
+
+```yaml
+insured_name:
+  type: string
+  hints:
+    look_in: [declarations]
+    isolate: true
+```
+
+An isolated field's result depends only on its own routing, so editing another field's hint can never move it. Use it for your most important fields — the ones where a stray, hard-to-reproduce flip is unacceptable. It costs one extra LLM call per isolated field, so reserve it for fields that need the guarantee rather than sprinkling it everywhere.
+
+### reject_caption
+
+When a value sits next to its label (`Named Insured:` on one line, the name on the next), a model will sometimes return the **label caption** instead of the value — `"NAMED INSURED AND ADDRESS:"` rather than the organization beneath it. `reject_caption: true` is a deterministic backstop: after extraction, if the field's value is caption-shaped (it ends with a colon), the engine drops it to null so the field routes to review instead of shipping a label as data. It also adds a prompt note telling the model to return the value a label introduces, never the label text.
+
+```yaml
+insured_name:
+  type: string
+  hints:
+    isolate: true
+    reject_caption: true
+```
+
+It's opt-in per field and never fires on values that aren't caption-shaped, so it's safe to add to any labeled scalar. Pair it with `isolate` on fields where the label-vs-value distinction matters most.
+
 ### How hints interact
 
 `look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.

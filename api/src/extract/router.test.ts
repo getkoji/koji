@@ -821,6 +821,54 @@ describe("groupRoutes", () => {
     expect(scalarGroup.fields.sort()).toEqual(["insured_name", "policy_number"]);
     expect(scalarGroup.chunks.map((c) => c.index)).toEqual([0]);
   });
+
+  // Regression (oss-335): hints.isolate pins a critical field to its own chunks
+  // and its own instruction, so a sibling's routing change can't pull it into a
+  // shared group and flip its output.
+  it("isolates a field with hints.isolate into its own singleton group", () => {
+    const decl = makeChunk({ index: 0 });
+    const other = makeChunk({ index: 3 });
+
+    const routes: FieldRoute[] = [
+      // Shares the declarations chunk with a sibling, so without isolate they'd
+      // group (100% overlap of the scalar's single chunk).
+      {
+        fieldName: "insured_name",
+        fieldSpec: { type: "string", hints: { isolate: true } },
+        chunks: [decl],
+        source: "hint",
+      },
+      { fieldName: "policy_number", fieldSpec: { type: "string" }, chunks: [decl, other], source: "hint" },
+    ];
+
+    const groups = groupRoutes(routes);
+    const insuredGroup = groups.find((g) => g.fields.includes("insured_name"))!;
+    expect(insuredGroup.fields).toEqual(["insured_name"]);
+    expect(insuredGroup.chunks.map((c) => c.index)).toEqual([0]);
+    // policy_number is NOT dragged in, and never pulls insured_name into itself.
+    expect(groups.find((g) => g.fields.includes("policy_number"))!.fields).toEqual(["policy_number"]);
+  });
+
+  it("an isolated field's group is stable when a sibling's routing changes", () => {
+    const decl = makeChunk({ index: 0 });
+    const a = makeChunk({ index: 4 });
+    const b = makeChunk({ index: 8 });
+
+    const isolated = {
+      fieldName: "insured_name",
+      fieldSpec: { type: "string", hints: { isolate: true } },
+      chunks: [decl],
+      source: "hint" as const,
+    };
+    // Sibling routes to {decl, a} in one run and {decl, b} in another (as if its
+    // hint changed). The isolated field's group must be identical either way.
+    const g1 = groupRoutes([isolated, { fieldName: "coverages", fieldSpec: { type: "array" }, chunks: [decl, a], source: "hint" }]);
+    const g2 = groupRoutes([isolated, { fieldName: "coverages", fieldSpec: { type: "array" }, chunks: [decl, b], source: "hint" }]);
+    const grp = (gs: typeof g1) => gs.find((g) => g.fields.includes("insured_name"))!;
+    expect(grp(g1).fields).toEqual(["insured_name"]);
+    expect(grp(g1).chunks.map((c) => c.index)).toEqual([0]);
+    expect(grp(g2).chunks.map((c) => c.index)).toEqual(grp(g1).chunks.map((c) => c.index));
+  });
 });
 
 describe("routeAllChunks (adaptive full-document routing)", () => {

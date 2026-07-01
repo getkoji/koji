@@ -96,9 +96,25 @@ export function collectExtractionNotes(
 ): string {
   const notes: string[] = [];
   for (const [name, spec] of Object.entries(fields)) {
-    const hint = typeof spec === "object" ? (spec.extraction_hint as string) : undefined;
+    if (typeof spec !== "object") continue;
+    const parts: string[] = [];
+    const hint = spec.extraction_hint as string | undefined;
     if (typeof hint === "string" && hint.trim()) {
-      notes.push(`- **${name}**: ${hint.trim()}`);
+      parts.push(hint.trim());
+    }
+    // `reject_caption` fields get a generic anti-caption instruction so the
+    // model returns the value a label introduces, not the label text itself.
+    // Opt-in per field (paired with the deterministic guard downstream).
+    const hints = spec.hints as Record<string, unknown> | undefined;
+    if (hints?.reject_caption === true) {
+      parts.push(
+        "Return the VALUE this label introduces, never the label/caption text itself. " +
+          "The value is on the line directly below the label (or the adjacent cell). " +
+          "A value that is itself a caption — e.g. it ends with ':' — is WRONG.",
+      );
+    }
+    if (parts.length > 0) {
+      notes.push(`- **${name}**: ${parts.join(" ")}`);
     }
   }
   return notes.join("\n");
