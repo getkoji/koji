@@ -6,7 +6,7 @@ import {
 } from "./google-docai";
 import type { ParseEndpointPayload } from "../resolve-tenant-parse";
 import { SAMPLE_DOCUMENT, EXPECTED_TABLE_MARKDOWN } from "./google-docai.fixture";
-import type { BBox } from "../chunk";
+import { spineToMarkdown, type BBox } from "../chunk";
 
 function expectBBoxClose(actual: BBox | undefined, expected: BBox): void {
   expect(actual).toBeDefined();
@@ -19,31 +19,55 @@ function expectBBoxClose(actual: BBox | undefined, expected: BBox): void {
 describe("GoogleDocAiCanonicalizer — sample Document → chunks", () => {
   const chunks = new GoogleDocAiCanonicalizer().toChunks(SAMPLE_DOCUMENT);
 
-  it("emits page text + one table chunk, deduping table-overlapping paragraphs", () => {
-    // Title, table (markdown), total — the duplicate "Building" paragraph that
-    // overlapped a table cell is dropped.
-    expect(chunks).toHaveLength(3);
+  it("emits the spine: title, per-cell table units, total (table paragraphs deduped)", () => {
+    // Spine is now per-cell: title + 9 table cells (3x3) + total = 11 units. The
+    // duplicate "Building" paragraph that overlapped a table cell is dropped.
+    expect(chunks).toHaveLength(11);
     expect(chunks[0]!.text).toBe("Commercial Property Declarations");
-    expect(chunks[2]!.text).toBe("Total Premium: $3,450");
+    expect(chunks[0]!.role).toBe("paragraph");
+    expect(chunks.at(-1)!.text).toBe("Total Premium: $3,450");
+    expect(chunks.at(-1)!.role).toBe("paragraph");
   });
 
-  it("orders chunks top-to-bottom (title → table → total)", () => {
-    expect(chunks.map((c) => c.page)).toEqual([1, 1, 1]);
-    // The table sits between the title and the total by vertical position.
-    expect(chunks[1]!.text.startsWith("| Coverage |")).toBe(true);
+  it("stamps parse-scoped reading-order ids (p<page>-u<index>)", () => {
+    expect(chunks.map((c) => c.id)).toEqual([
+      "p1-u0", "p1-u1", "p1-u2", "p1-u3", "p1-u4", "p1-u5",
+      "p1-u6", "p1-u7", "p1-u8", "p1-u9", "p1-u10",
+    ]);
+    // Deterministic across runs on the same input.
+    const again = new GoogleDocAiCanonicalizer().toChunks(SAMPLE_DOCUMENT);
+    expect(again.map((c) => c.id)).toEqual(chunks.map((c) => c.id));
   });
 
-  it("serializes the table with CORRECT column association from the cell grid", () => {
-    // The key assertion: each value lands under its own header column. Because
-    // the canonicalizer reads cells in row/col array order (not by inferring
-    // columns from flattened reading order), column association cannot drift —
-    // this is the wrong-column fix at the source.
-    expect(chunks[1]!.text).toBe(EXPECTED_TABLE_MARKDOWN);
+  it("emits table cells carrying correct {tableId, row, col} + role", () => {
+    const cells = chunks.filter((c) => c.role === "table_cell");
+    expect(cells).toHaveLength(9);
+    // Header row (row 1): Coverage | Limit | Deductible.
+    expect(cells[0]).toMatchObject({ text: "Coverage", table: { tableId: "p1-t0", row: 1, col: 1 } });
+    expect(cells[1]).toMatchObject({ text: "Limit", table: { tableId: "p1-t0", row: 1, col: 2 } });
+    expect(cells[2]).toMatchObject({ text: "Deductible", table: { tableId: "p1-t0", row: 1, col: 3 } });
+    // Body row 2, col 2 is the Building/Limit value — under its own header.
+    expect(cells[4]).toMatchObject({ text: "$500,000", table: { tableId: "p1-t0", row: 2, col: 2 } });
+    expect(cells[8]).toMatchObject({ text: "$1,000", table: { tableId: "p1-t0", row: 3, col: 3 } });
   });
 
-  it("populates the table bbox from normalized vertices", () => {
-    // Table layout box spans (0.05,0.1)–(0.95,0.5).
-    expectBBoxClose(chunks[1]!.bbox, { x: 0.05, y: 0.1, w: 0.9, h: 0.4 });
+  it("orders units top-to-bottom (title → table cells → total)", () => {
+    expect(chunks.map((c) => c.page)).toEqual(Array(11).fill(1));
+    expect(chunks[0]!.text).toBe("Commercial Property Declarations");
+    expect(chunks[1]!.text).toBe("Coverage"); // first table cell
+    expect(chunks.at(-1)!.text).toBe("Total Premium: $3,450");
+  });
+
+  it("projects markdown with CORRECT column association from the cell grid", () => {
+    // The key assertion: each value lands under its own header column. Cells are
+    // addressed by (row, col) — column association cannot drift — and the
+    // markdown is reprojected from them (the wrong-column fix, preserved).
+    expect(spineToMarkdown(chunks)).toContain(EXPECTED_TABLE_MARKDOWN);
+  });
+
+  it("populates each cell bbox from its normalized vertices", () => {
+    // Coverage cell spans (0.05,0.1)–(0.45,0.15).
+    expectBBoxClose(chunks[1]!.bbox, { x: 0.05, y: 0.1, w: 0.4, h: 0.05 });
   });
 
   it("populates the title bbox from pixel vertices via normalizeBBox", () => {
@@ -88,8 +112,9 @@ describe("GoogleDocAiCanonicalizer — table edge cases", () => {
         },
       ],
     };
-    const [chunk] = canon.toChunks(doc);
-    expect(chunk!.text).toBe(["| A | B |", "| --- | --- |", "| C | D |"].join("\n"));
+    expect(spineToMarkdown(canon.toChunks(doc))).toBe(
+      ["| A | B |", "| --- | --- |", "| C | D |"].join("\n"),
+    );
   });
 
   it("expands colSpan into blank columns so alignment is preserved", () => {
@@ -123,9 +148,8 @@ describe("GoogleDocAiCanonicalizer — table edge cases", () => {
         },
       ],
     };
-    const [chunk] = canon.toChunks(doc);
     // "HEAD" spans columns 1-2 (col 2 blank), "x" is column 3; body Y,Z, blank.
-    expect(chunk!.text).toBe(
+    expect(spineToMarkdown(canon.toChunks(doc))).toBe(
       ["| HEAD |  | x |", "| --- | --- | --- |", "| Y | Z |  |"].join("\n"),
     );
   });
@@ -150,8 +174,10 @@ describe("GoogleDocAiCanonicalizer — table edge cases", () => {
         },
       ],
     };
-    const [chunk] = canon.toChunks(doc);
-    expect(chunk!.text).toContain("a\\|b");
+    // Cell text keeps the raw pipe; the markdown projection escapes it.
+    const [cell] = canon.toChunks(doc);
+    expect(cell!.text).toBe("a|b");
+    expect(spineToMarkdown(canon.toChunks(doc))).toContain("a\\|b");
   });
 
   it("falls back to the union of cell boxes when the table has no layout box", () => {
@@ -185,9 +211,10 @@ describe("GoogleDocAiCanonicalizer — table edge cases", () => {
         },
       ],
     };
-    const [chunk] = canon.toChunks(doc);
-    // Union of the two cell boxes: x 0.1..0.8, y 0.1..0.25.
-    expectBBoxClose(chunk!.bbox, { x: 0.1, y: 0.1, w: 0.7, h: 0.15 });
+    const cells = canon.toChunks(doc);
+    // Per-cell bboxes now ride on each cell directly (no table-level union).
+    expectBBoxClose(cells[0]!.bbox, { x: 0.1, y: 0.1, w: 0.3, h: 0.1 });
+    expectBBoxClose(cells[1]!.bbox, { x: 0.5, y: 0.1, w: 0.3, h: 0.15 });
   });
 
   it("handles an empty document without throwing", () => {
@@ -220,7 +247,7 @@ describe("GoogleDocAiProvider — response shaping", () => {
     expect(resp.engine).toBe("google-docai");
     expect(resp.pages).toBe(1);
     expect(resp.ocr_skipped).toBe(false);
-    expect(resp.chunks).toHaveLength(3);
+    expect(resp.chunks).toHaveLength(11);
     // The markdown view is the chunks joined — table fidelity is preserved.
     expect(resp.markdown).toContain(EXPECTED_TABLE_MARKDOWN);
     expect(resp.markdown).toContain("Commercial Property Declarations");

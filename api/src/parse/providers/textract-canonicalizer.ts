@@ -26,9 +26,11 @@
  */
 
 import {
-  unionBBox,
+  assignUnitIds,
+  spineToMarkdown,
   type BBox,
   type ParseChunk,
+  type ParseUnitDraft,
   type ChunkCanonicalizer,
 } from "../chunk";
 
@@ -126,28 +128,34 @@ function cellText(cell: TextractBlock, byId: Map<string, TextractBlock>, wordSin
   return parts.join(" ").trim();
 }
 
-/** Escape a pipe so it can't break the serialized markdown table grid. */
-function escapeCell(text: string): string {
-  return text.replace(/\|/g, "\\|");
-}
-
-interface TableChunk {
-  chunk: ParseChunk | null;
+/** One TABLE block canonicalized to per-cell units plus placement metadata. */
+interface TableCells {
+  /** Per-cell `table_cell` drafts (id assigned later), row-major ordered. */
+  cells: ParseUnitDraft[];
   /** WORD ids consumed by this table, so the line pass can skip them. */
   wordIds: Set<string>;
+  /** Table top/left (normalized) for reading-order placement among lines. */
+  top: number;
+  left: number;
 }
 
 /**
- * Rebuild one TABLE block into a markdown table chunk from its CELLs'
- * known (row, col) coordinates. Cells are placed by index — never inferred
- * from geometry — so column association is exact.
+ * Turn one TABLE block into per-cell `table_cell` units from its CELLs' known
+ * (row, col) coordinates. Cells are addressed by index — never inferred from
+ * geometry — so column association is exact (the wrong-column fix). Each cell
+ * carries `{ tableId, row, col }`, `role: "table_cell"`, its own bbox, and its
+ * raw text; the clean markdown table is reprojected from these by
+ * {@link spineToMarkdown}. Empty cells are still emitted so the projected grid
+ * keeps its full column count.
  */
-function tableToChunk(table: TextractBlock, byId: Map<string, TextractBlock>): TableChunk {
+function tableToCells(
+  table: TextractBlock,
+  byId: Map<string, TextractBlock>,
+  tableId: string,
+): TableCells {
   const wordIds = new Set<string>();
-  const grid = new Map<string, string>(); // "row,col" → text
-  const cellBoxes: BBox[] = [];
-  let maxRow = 0;
-  let maxCol = 0;
+  const page = table.Page ?? 1;
+  const raw: { row: number; col: number; text: string; bbox?: BBox }[] = [];
 
   for (const id of relatedIds(table)) {
     const cell = byId.get(id);
@@ -157,36 +165,25 @@ function tableToChunk(table: TextractBlock, byId: Map<string, TextractBlock>): T
     const row = cell.RowIndex ?? 0;
     const col = cell.ColumnIndex ?? 0;
     if (row <= 0 || col <= 0) continue;
-    maxRow = Math.max(maxRow, row);
-    maxCol = Math.max(maxCol, col);
-    grid.set(`${row},${col}`, cellText(cell, byId, wordIds));
-    const bbox = toBBox(cell.Geometry);
-    if (bbox) cellBoxes.push(bbox);
+    raw.push({ row, col, text: cellText(cell, byId, wordIds), bbox: toBBox(cell.Geometry) });
   }
 
-  if (maxRow === 0 || maxCol === 0) return { chunk: null, wordIds };
+  // Row-major so the projected markdown reads top-to-bottom, left-to-right.
+  raw.sort((a, b) => a.row - b.row || a.col - b.col);
+  const cells: ParseUnitDraft[] = raw.map((c) => ({
+    text: c.text,
+    page,
+    ...(c.bbox ? { bbox: c.bbox } : {}),
+    role: "table_cell" as const,
+    table: { tableId, row: c.row, col: c.col },
+  }));
 
-  const lines: string[] = [];
-  for (let r = 1; r <= maxRow; r++) {
-    const cols: string[] = [];
-    for (let c = 1; c <= maxCol; c++) {
-      cols.push(escapeCell(grid.get(`${r},${c}`) ?? ""));
-    }
-    lines.push(`| ${cols.join(" | ")} |`);
-    // Emit a markdown header separator after the first row so the serialized
-    // table is valid markdown a downstream LLM reads naturally.
-    if (r === 1) {
-      lines.push(`| ${Array.from({ length: maxCol }, () => "---").join(" | ")} |`);
-    }
-  }
-
-  const text = lines.join("\n");
-  const bbox = toBBox(table.Geometry) ?? unionBBox(cellBoxes);
-  const page = table.Page ?? 1;
-  return {
-    chunk: { text, page, ...(bbox ? { bbox } : {}) },
-    wordIds,
-  };
+  const tableBox = toBBox(table.Geometry);
+  const cellTop = Math.min(...raw.map((c) => c.bbox?.y ?? Infinity), Infinity);
+  const cellLeft = Math.min(...raw.map((c) => c.bbox?.x ?? Infinity), Infinity);
+  const top = tableBox?.y ?? (Number.isFinite(cellTop) ? cellTop : 0);
+  const left = tableBox?.x ?? (Number.isFinite(cellLeft) ? cellLeft : 0);
+  return { cells, wordIds, top, left };
 }
 
 /**
@@ -208,24 +205,30 @@ export class TextractCanonicalizer implements ChunkCanonicalizer<TextractBlocks>
     }
 
     const tableWordIds = new Set<string>();
-    const candidates: Array<{ page: number; y: number; x: number; chunk: ParseChunk }> = [];
+
+    // Each item is a group of contiguous units — a table's cells (kept together
+    // and row-major) or a single free-text line — keyed by (page, top, left) so
+    // the flattened spine lands in natural reading order.
+    interface Item {
+      page: number;
+      y: number;
+      x: number;
+      units: ParseUnitDraft[];
+    }
+    const items: Item[] = [];
 
     // Tables first — they tell us which words are already accounted for.
+    let tableIndex = 0;
     for (const b of blocks) {
       if (b.BlockType !== "TABLE") continue;
-      const { chunk, wordIds } = tableToChunk(b, byId);
+      const page = b.Page ?? 1;
+      const tableId = `p${page}-t${tableIndex++}`;
+      const { cells, wordIds, top, left } = tableToCells(b, byId, tableId);
       for (const id of wordIds) tableWordIds.add(id);
-      if (chunk) {
-        candidates.push({
-          page: chunk.page,
-          y: chunk.bbox?.y ?? 0,
-          x: chunk.bbox?.x ?? 0,
-          chunk,
-        });
-      }
+      if (cells.length > 0) items.push({ page, y: top, x: left, units: cells });
     }
 
-    // Lines that aren't entirely inside a table become text chunks.
+    // Lines that aren't entirely inside a table become text units.
     for (const b of blocks) {
       if (b.BlockType !== "LINE") continue;
       const wordIds = relatedIds(b);
@@ -242,24 +245,27 @@ export class TextractCanonicalizer implements ChunkCanonicalizer<TextractBlocks>
 
       const bbox = toBBox(b.Geometry);
       const page = b.Page ?? 1;
-      candidates.push({
+      items.push({
         page,
         y: bbox?.y ?? 0,
         x: bbox?.x ?? 0,
-        chunk: { text, page, ...(bbox ? { bbox } : {}) },
+        units: [{ text, page, ...(bbox ? { bbox } : {}), role: "line" }],
       });
     }
 
-    candidates.sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x);
-    return candidates.map((c) => c.chunk);
+    items.sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x);
+    const drafts: ParseUnitDraft[] = [];
+    for (const it of items) drafts.push(...it.units);
+    return assignUnitIds(drafts);
   }
 }
 
 /**
- * Serialize canonicalized chunks into a single markdown document — the
- * `ParseResponse.markdown` view the extraction layer consumes today. Table
- * chunks are already markdown; text chunks are joined as paragraphs.
+ * Serialize canonicalized units into a single markdown document — the
+ * `ParseResponse.markdown` view the extraction layer consumes today. Markdown
+ * is a projection of the spine: `table_cell` runs are reassembled into a grid,
+ * every other unit is joined as a paragraph (see {@link spineToMarkdown}).
  */
 export function chunksToMarkdown(chunks: ParseChunk[]): string {
-  return chunks.map((c) => c.text).join("\n\n");
+  return spineToMarkdown(chunks);
 }
