@@ -28,13 +28,31 @@ export type ParseEngine =
   | "textract"
   | "google-docai";
 
-/** A word/segment with its spatial position on the page. */
+/**
+ * A word/segment with its spatial position on the page.
+ *
+ * The flat `x, y, w, h` fields follow the SAME canonical bounding-box
+ * convention as {@link ParseChunk.bbox} — see the `BBox` doc in
+ * `api/src/parse/chunk.ts` for the authoritative definition:
+ *
+ *   - normalized floats in `[0, 1]` (`x, w` of page width; `y, h` of height),
+ *   - origin top-left, y increasing downward,
+ *   - `page` is 1-indexed (the first page is `1`, never `0`).
+ *
+ * Every provider that emits a `text_map` MUST produce coordinates in this
+ * convention so provenance/highlighting needs no per-provider coordinate math.
+ */
 export interface TextMapSegment {
   text: string;
+  /** 1-based page number this segment appears on. */
   page: number;
+  /** Left edge, fraction of page width in [0, 1]. */
   x: number;
+  /** Top edge, fraction of page height in [0, 1] (top-left origin). */
   y: number;
+  /** Width, fraction of page width in [0, 1]. */
   w: number;
+  /** Height, fraction of page height in [0, 1]. */
   h: number;
   /** Character offset of this word in the exported markdown (L3 provenance). */
   md_offset?: number;

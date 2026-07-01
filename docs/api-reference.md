@@ -115,8 +115,8 @@ Send a document to the parse service and get markdown back. This calls the parse
   "pages": 3,
   "markdown": "# Invoice\n\nInvoice Number: INV-2026-0042\n...",
   "text_map": [
-    { "text": "Invoice", "page": 1, "bbox": { "x": 72, "y": 50, "w": 120, "h": 18 }, "level": "word" },
-    { "text": "Number:", "page": 1, "bbox": { "x": 72, "y": 75, "w": 80, "h": 14 }, "level": "word" }
+    { "text": "Invoice", "page": 1, "bbox": { "x": 0.12, "y": 0.06, "w": 0.2, "h": 0.02 }, "level": "word" },
+    { "text": "Number:", "page": 1, "bbox": { "x": 0.12, "y": 0.09, "w": 0.13, "h": 0.02 }, "level": "word" }
   ],
   "elapsed_seconds": 4.2
 }
@@ -1045,7 +1045,7 @@ The `text_map` array returned by `POST /api/parse` contains word-level position 
 {
   "text": "Invoice",
   "page": 1,
-  "bbox": { "x": 72, "y": 50, "w": 120, "h": 18 },
+  "bbox": { "x": 0.12, "y": 0.06, "w": 0.2, "h": 0.02 },
   "level": "word"
 }
 ```
@@ -1054,7 +1054,7 @@ The `text_map` array returned by `POST /api/parse` contains word-level position 
 |-------|------|-------------|
 | `text` | string | The word or text segment. |
 | `page` | integer | Page number (1-indexed). |
-| `bbox` | object | Bounding box in PDF points. Origin is top-left of the page. |
+| `bbox` | object | Bounding box in **normalized page fractions** — `x`/`w` as a fraction of page width, `y`/`h` as a fraction of page height, each in `[0, 1]`. Origin is the **top-left** of the page (y increases downward). This is the one canonical coordinate convention every parse provider emits. |
 | `level` | string | Always `"word"` for word-level segments. |
 
 The `text_map` is threaded automatically from parse → extract when using `POST /api/process`. When using `POST /api/extract` with pre-parsed content, pass the `text_map` from the parse response to enable provenance resolution.

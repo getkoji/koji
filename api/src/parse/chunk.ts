@@ -27,15 +27,31 @@
  */
 
 /**
- * A bounding box in **normalized page coordinates**: each component is a
- * fraction in `[0, 1]` of the page's width/height, with the origin at the
- * top-left corner.
+ * THE CANONICAL BOUNDING-BOX COORDINATE CONVENTION — the single source of truth
+ * for every parse provider in Koji. If you emit geometry from a parser, it MUST
+ * conform to this exactly; the dashboard renders highlights straight from these
+ * stored values with zero per-provider coordinate math.
  *
- * This matches the convention already used by `DigitalPdfProvider`'s
- * `text_map` (which divides pixel coords by page width/height with a top-down
- * y axis) and by the extract layer's provenance `BBox`
- * (`api/src/extract/provenance.ts`). Keeping a single convention means a chunk
- * bbox can flow straight into provenance highlighting without conversion.
+ * 1. **Normalized floats in `[0, 1]`.** `x`/`w` are fractions of the page
+ *    width; `y`/`h` are fractions of the page height. Never pixels, never PDF
+ *    points. (Convert absolute units with {@link normalizeBBox}.)
+ * 2. **Origin top-left, y increases downward.** `y = 0` is the top edge of the
+ *    page, `y = 1` the bottom. PDF user space (origin bottom-left) MUST be
+ *    flipped before emission.
+ * 3. **Page-indexed starting at 1.** The `BBox` itself carries no page; the
+ *    companion `page` field on {@link ParseChunk} / `TextMapSegment` does, and
+ *    the first page is `1` (never `0`).
+ *
+ * This convention applies identically to both {@link ParseChunk.bbox} and the
+ * flat `x,y,w,h` on `TextMapSegment` (`api/src/parse/provider.ts`), and matches
+ * the extract layer's provenance `BBox` (`api/src/extract/provenance.ts`).
+ * Keeping one convention everywhere means a chunk/word box flows straight into
+ * provenance highlighting without conversion.
+ *
+ * Providers that cannot produce normalized coords (they lack the page
+ * dimensions) MUST leave the box `undefined` — never emit raw pixel/point
+ * coordinates that would silently violate this contract. Use
+ * {@link assertNormalizedBBox} in tests to enforce conformance.
  */
 export interface BBox {
   /** Left edge, fraction of page width in [0, 1]. */
@@ -143,4 +159,47 @@ export function normalizeBBox(
     w: box.w / pageWidth,
     h: box.h / pageHeight,
   };
+}
+
+/**
+ * Predicate: does `box` conform to the canonical {@link BBox} convention?
+ *
+ * A conforming box has finite `x, y, w, h`, non-negative width/height, and lies
+ * entirely within the normalized unit square (`0 <= x`, `0 <= y`,
+ * `x + w <= 1`, `y + h <= 1`), allowing a tiny `epsilon` for floating-point
+ * rounding at the edges. This is the machine-checkable form of the top-left,
+ * normalized-`[0, 1]` contract documented on {@link BBox}.
+ *
+ * Note: normalization alone cannot prove top-left origin — a bottom-left box is
+ * still numerically in `[0, 1]`. Origin correctness is verified per provider by
+ * feeding a known input whose top-left position is asserted (see the bbox
+ * contract tests). This predicate catches the mechanical failures: unnormalized
+ * pixels/points (values `> 1`), negative coordinates, and `NaN`/`Infinity`.
+ */
+export function isNormalizedBBox(box: BBox, epsilon = 1e-6): boolean {
+  const { x, y, w, h } = box;
+  if (![x, y, w, h].every((n) => Number.isFinite(n))) return false;
+  if (w < -epsilon || h < -epsilon) return false;
+  if (x < -epsilon || y < -epsilon) return false;
+  if (x + w > 1 + epsilon || y + h > 1 + epsilon) return false;
+  return true;
+}
+
+/**
+ * Assert that `box` conforms to the canonical {@link BBox} convention, throwing
+ * a descriptive error otherwise. Providers and their tests use this to enforce
+ * "one canonical coordinate convention" — a box that fails here would render
+ * highlights in the wrong place (or off-page) in the dashboard.
+ *
+ * Dependency-free by design: safe to call from provider code paths, not just
+ * tests. `label` is included in the message so a failure names the offending
+ * provider/emitter.
+ */
+export function assertNormalizedBBox(box: BBox, label = "bbox"): void {
+  if (!isNormalizedBBox(box)) {
+    throw new Error(
+      `${label} violates the canonical normalized [0,1] top-left BBox convention: ` +
+        `${JSON.stringify(box)}`,
+    );
+  }
 }
