@@ -764,6 +764,63 @@ describe("groupRoutes", () => {
     expect(new Set(allFields).size).toBe(allFields.length);
     expect(allFields.sort()).toEqual(["a", "b", "c"]);
   });
+
+  // Regression (oss-329): a per_section array field's expanded, multi-section
+  // chunk set must not leak into a sibling field's extraction context via the
+  // shared group union. Mirrors the Bellasera bug: insured_name (scalar) shares
+  // the declarations chunk with coverages (per_section, spanning many section
+  // chunks); before the fix insured_name absorbed all of coverages' sections
+  // and flipped to the carrier name stamped on each coverage-part header.
+  it("isolates a per_section field so siblings don't inherit its section union", () => {
+    const decl = makeChunk({ index: 0, title: "DECLARATIONS" });
+    const s1 = makeChunk({ index: 5, title: "CRIME COVERAGE PART DECLARATIONS" });
+    const s2 = makeChunk({ index: 9, title: "PROPERTY COVERAGE PART DECLARATIONS" });
+    const s3 = makeChunk({ index: 14, title: "LIABILITY COVERAGE PART DECLARATIONS" });
+
+    const routes: FieldRoute[] = [
+      // Scalar shares only the declarations chunk. Sorted first (shorter set),
+      // so it is the grouping seed — the exact condition that triggered the bug.
+      { fieldName: "insured_name", fieldSpec: { type: "string" }, chunks: [decl], source: "hint" },
+      // per_section array spans the declarations chunk + 3 coverage sections.
+      { fieldName: "coverages", fieldSpec: { type: "array" }, chunks: [decl, s1, s2, s3], source: "per_section" },
+    ];
+
+    const groups = groupRoutes(routes);
+
+    const insuredGroup = groups.find((g) => g.fields.includes("insured_name"))!;
+    // The scalar must NOT be grouped with coverages, and must see ONLY its own
+    // declarations chunk — never the coverage-part sections.
+    expect(insuredGroup.fields).toEqual(["insured_name"]);
+    expect(insuredGroup.chunks.map((c) => c.index)).toEqual([0]);
+
+    // coverages is its own singleton group holding all its section chunks.
+    const covGroup = groups.find((g) => g.fields.includes("coverages"))!;
+    expect(covGroup.fields).toEqual(["coverages"]);
+    expect(covGroup.chunks.map((c) => c.index).sort((a, b) => a - b)).toEqual([0, 5, 9, 14]);
+
+    // Every field still lands in exactly one group.
+    const allFields = groups.flatMap((g) => g.fields);
+    expect(allFields.sort()).toEqual(["coverages", "insured_name"]);
+  });
+
+  it("normal fields still group together when a per_section sibling is present", () => {
+    const decl = makeChunk({ index: 0 });
+    const s1 = makeChunk({ index: 5 });
+
+    const routes: FieldRoute[] = [
+      { fieldName: "insured_name", fieldSpec: { type: "string" }, chunks: [decl], source: "hint" },
+      { fieldName: "policy_number", fieldSpec: { type: "string" }, chunks: [decl], source: "hint" },
+      { fieldName: "coverages", fieldSpec: { type: "array" }, chunks: [decl, s1], source: "per_section" },
+    ];
+
+    const groups = groupRoutes(routes);
+    // insured_name + policy_number still share the declarations chunk in one
+    // group; coverages is isolated. Two groups total.
+    expect(groups).toHaveLength(2);
+    const scalarGroup = groups.find((g) => g.fields.includes("insured_name"))!;
+    expect(scalarGroup.fields.sort()).toEqual(["insured_name", "policy_number"]);
+    expect(scalarGroup.chunks.map((c) => c.index)).toEqual([0]);
+  });
 });
 
 describe("routeAllChunks (adaptive full-document routing)", () => {
