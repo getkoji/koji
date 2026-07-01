@@ -40,6 +40,35 @@ describe("DigitalPdfProvider", () => {
     expect(result.text_map?.length ?? 0).toBeGreaterThan(0);
   });
 
+  it("emits text_map in the canonical normalized [0,1] top-left convention", async () => {
+    // Text is drawn near the TOP of the page (y=720 of 792 in PDF bottom-left
+    // user space). A correct flip to top-left origin makes the normalized y
+    // SMALL (~0.09), proving the y-axis is flipped and coords are normalized.
+    const buf = await makeDigitalPdf(["Top line", "Second line"]);
+    const provider = new DigitalPdfProvider();
+    const result = await provider.parse({
+      filename: "coords.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: buf,
+    });
+
+    const segs = result.text_map ?? [];
+    expect(segs.length).toBeGreaterThan(0);
+    for (const s of segs) {
+      expect(s.page).toBe(1); // 1-indexed
+      for (const v of [s.x, s.y, s.w, s.h]) {
+        expect(Number.isFinite(v)).toBe(true);
+        expect(v).toBeGreaterThanOrEqual(0);
+      }
+      expect(s.x + s.w).toBeLessThanOrEqual(1 + 1e-6);
+      expect(s.y + s.h).toBeLessThanOrEqual(1 + 1e-6);
+    }
+    // First word ("Top") sits in the top ~15% of the page under a top-left origin.
+    const top = segs.find((s) => s.text.includes("Top"));
+    expect(top).toBeDefined();
+    expect(top!.y).toBeLessThan(0.15);
+  });
+
   it("rejects non-PDF input with a clear error", async () => {
     const provider = new DigitalPdfProvider();
     await expect(
