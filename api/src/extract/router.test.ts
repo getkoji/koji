@@ -798,3 +798,114 @@ describe("routeAllChunks (adaptive full-document routing)", () => {
     expect(routeAllChunks({}, chunks)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// per_section — coverage-maximizing selection for array fields
+// ---------------------------------------------------------------------------
+
+describe("routeFields — per_section coverage-maximizing selection", () => {
+  const covSignals = {
+    has_dates: false,
+    has_dollar_amounts: true,
+    has_tables: true,
+    has_key_value_pairs: true,
+  };
+
+  // A large multi-part package: `n` coverage-part sections, each a distinct
+  // heading, plus one unrelated noise chunk. Every section chunk matches the
+  // array field's hints, so a top-N pass would keep only the first few.
+  function coveragePackage(n: number): Chunk[] {
+    const chunks: Chunk[] = [];
+    for (let i = 0; i < n; i++) {
+      chunks.push(
+        makeChunk({
+          index: i,
+          title: `COVERAGE PART ${i} DECLARATIONS`,
+          category: "declarations",
+          content: "coverage limit deductible table row",
+          signals: { ...covSignals },
+        }),
+      );
+    }
+    chunks.push(makeChunk({ index: n, title: "Notes", category: "other", content: "misc" }));
+    return chunks;
+  }
+
+  function arraySchema(extraHints: Record<string, unknown> = {}) {
+    return {
+      fields: {
+        coverages: {
+          type: "array",
+          hints: {
+            look_in: ["declarations"],
+            signals: ["has_tables", "has_dollar_amounts"],
+            patterns: ["coverage", "limit", "deductible"],
+            ...extraHints,
+          },
+        },
+      },
+    };
+  }
+
+  it("without per_section, top-N drops sections on a 6-part package", () => {
+    const routes = routeFields(arraySchema(), coveragePackage(6));
+    expect(routes[0]!.chunks.length).toBeLessThanOrEqual(3);
+    expect(routes[0]!.source).not.toBe("per_section");
+  });
+
+  it("with per_section, every distinct section reaches the extractor (6/6)", () => {
+    const routes = routeFields(arraySchema({ per_section: true }), coveragePackage(6));
+    const titles = new Set(routes[0]!.chunks.map((c) => c.title));
+    expect(titles.size).toBe(6);
+    expect(routes[0]!.source).toBe("per_section");
+  });
+
+  it("scales down to a small package without inflating (4/4)", () => {
+    const routes = routeFields(arraySchema({ per_section: true }), coveragePackage(4));
+    expect(new Set(routes[0]!.chunks.map((c) => c.title)).size).toBe(4);
+  });
+
+  it("returns representatives in document order (by index)", () => {
+    const routes = routeFields(arraySchema({ per_section: true }), coveragePackage(5));
+    const indices = routes[0]!.chunks.map((c) => c.index);
+    expect(indices).toEqual([...indices].sort((a, b) => a - b));
+  });
+
+  it("caps distinct sections at hints.max_sections", () => {
+    const routes = routeFields(arraySchema({ per_section: true, max_sections: 3 }), coveragePackage(6));
+    expect(routes[0]!.chunks.length).toBe(3);
+  });
+
+  it("collapses chunks that share a heading into one section", () => {
+    const chunks: Chunk[] = [
+      makeChunk({
+        index: 0,
+        title: "PROPERTY COVERAGE PART DECLARATIONS",
+        category: "declarations",
+        content: "coverage limit deductible",
+        signals: { ...covSignals },
+      }),
+      makeChunk({
+        index: 1,
+        title: "PROPERTY COVERAGE PART DECLARATIONS", // same heading = same section (split page)
+        category: "declarations",
+        content: "coverage limit deductible continued",
+        signals: { ...covSignals },
+      }),
+      makeChunk({
+        index: 2,
+        title: "LIABILITY COVERAGE PART DECLARATIONS",
+        category: "declarations",
+        content: "coverage limit deductible",
+        signals: { ...covSignals },
+      }),
+    ];
+    const routes = routeFields(arraySchema({ per_section: true }), chunks);
+    expect(routes[0]!.chunks.length).toBe(2);
+  });
+
+  it("does not engage for a non-opted-in array field (default top-N)", () => {
+    const routes = routeFields(arraySchema(), coveragePackage(6));
+    expect(routes[0]!.source).toBe("hint");
+  });
+});

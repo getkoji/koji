@@ -142,3 +142,7 @@ fields:
       look_in: [schedule_of_coverages, declarations]
       signals: [has_tables, has_dollar_amounts]
       patterns: ["coverage", "limit", "deductible"]
+      # Large multi-part packages scatter coverage sections across many pages.
+      # per_section guarantees one chunk from EACH distinct section reaches the
+      # extractor, instead of only the globally top-scoring few.
+      per_section: true

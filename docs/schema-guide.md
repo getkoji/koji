@@ -779,6 +779,32 @@ Use this for arrays of objects that span the document. Example: an insurance cer
 
 Don't set this for simple scalar fields — it just wastes tokens.
 
+### per_section
+
+For an **array field** on a large, multi-part document, `max_chunks` alone isn't enough. It raises the cap, but the router still selects the globally *top-N* scoring chunks — so when many sections score similarly (e.g. six coverage-part declaration pages in one policy package), the highest-scoring few crowd out the rest and whole sections never reach the model. Bumping `max_chunks` higher to compensate dilutes small documents and destabilizes ranking.
+
+`per_section` changes the selection strategy: instead of top-N, the router takes the **best-scoring chunk from each distinct section** so every qualifying section is represented.
+
+```yaml
+coverages:
+  type: array
+  hints:
+    look_in: [schedule_of_coverages, declarations]
+    signals: [has_tables, has_dollar_amounts]
+    patterns: ["coverage", "limit", "deductible"]
+    per_section: true
+```
+
+A "section" is identified by its heading (the chunk title) — distinct parts of a package carry distinct headings, so each becomes its own section. Chunks that share a heading (e.g. a declaration page split across pages) collapse into one section. Selection is bounded by `max_sections` (default 24); if a document has more qualifying sections than that, the highest-scoring ones are kept and a warning is logged. Raise `max_sections` to include them all:
+
+```yaml
+hints:
+  per_section: true
+  max_sections: 40
+```
+
+`per_section` is opt-in and scales with the document: a small monoline policy has one or two sections and behaves like a normal field, while a 200-page multi-part package pulls one chunk per part. Use it for array fields whose items are organized into repeating, separately-headed sections; leave it off for scalar fields and single-table arrays (where `max_chunks` is the right tool).
+
 ### How hints interact
 
 `look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.
@@ -791,7 +817,7 @@ Within the filtered pool, `prefer_contains`, `patterns`, and `signals` rank whic
 
 If `look_in` is set but no chunks match the listed categories (e.g., the schema author referenced a category the document doesn't have), the router falls back to scoring every chunk with `patterns` + `signals` so the field still gets routed somewhere. Generic inference (field name matching, type-based signals) is skipped whenever any hint is defined — hints are authoritative.
 
-The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
+The top 3 scoring chunks are selected for each field by default (or up to `max_chunks` if you've set it, or one per distinct section if `per_section` is set). Fields that share the same top chunks are grouped into a single extraction call to minimize LLM usage.
 
 ### When to use hints vs. letting the router infer
 
