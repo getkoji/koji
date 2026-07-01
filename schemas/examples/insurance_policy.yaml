@@ -53,10 +53,19 @@ fields:
     type: string
     required: true
     description: Named insured (policyholder)
+    extraction_hint: >-
+      The organization or person named as the insured — the value on the line
+      directly below the "Named Insured"/"Named Insured and Address" caption,
+      not the caption, the carrier, or a street/city line.
     hints:
       look_in: [declarations]
       patterns: ["(?:named\\s+)?insured", "policyholder"]
       signals: [has_name_references]
+      # Critical scalar: extract it in isolation so its result is stable and not
+      # perturbed by other fields' routing, and reject a label caption if the
+      # model returns one instead of the value beneath it.
+      isolate: true
+      reject_caption: true
 
   effective_date:
     type: date

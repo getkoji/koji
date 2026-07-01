@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, stripProvenanceKeys, validateFields, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, rejectCaptionValues, stripProvenanceKeys, validateFields, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -120,6 +120,50 @@ describe("stripProvenanceKeys", () => {
     expect(() => stripProvenanceKeys(null)).not.toThrow();
     expect(() => stripProvenanceKeys(undefined)).not.toThrow();
     expect(() => stripProvenanceKeys(42)).not.toThrow();
+  });
+});
+
+describe("isCaptionValue", () => {
+  it("flags values that end with a colon (labels/captions)", () => {
+    expect(isCaptionValue("NAMED INSURED AND ADDRESS:")).toBe(true);
+    expect(isCaptionValue("  Policy Number:  ")).toBe(true);
+  });
+
+  it("does not flag real data values", () => {
+    expect(isCaptionValue("BELLASERA OFFICE PARK OWNERS ASSOCIATION")).toBe(false);
+    expect(isCaptionValue("CHARLOTTE, NC 28209")).toBe(false);
+    expect(isCaptionValue("GL-12345")).toBe(false);
+  });
+
+  it("ignores non-strings and a lone colon", () => {
+    expect(isCaptionValue(null)).toBe(false);
+    expect(isCaptionValue(42)).toBe(false);
+    expect(isCaptionValue(":")).toBe(false);
+  });
+});
+
+describe("rejectCaptionValues", () => {
+  const fields = {
+    insured_name: { type: "string", hints: { reject_caption: true } },
+    notes: { type: "string" }, // no opt-in → never touched
+  };
+
+  it("nulls a caption value only for fields that opt in", () => {
+    const extracted: Record<string, unknown> = {
+      insured_name: "NAMED INSURED AND ADDRESS:",
+      notes: "SEE ATTACHED:", // caption-shaped but NOT opted in
+    };
+    const nulled = rejectCaptionValues(extracted, fields);
+    expect(nulled).toEqual(["insured_name"]);
+    expect(extracted.insured_name).toBeNull();
+    expect(extracted.notes).toBe("SEE ATTACHED:"); // untouched
+  });
+
+  it("leaves a correct value alone", () => {
+    const extracted: Record<string, unknown> = { insured_name: "BELLASERA OFFICE PARK OWNERS ASSOCIATION" };
+    const nulled = rejectCaptionValues(extracted, fields);
+    expect(nulled).toEqual([]);
+    expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
   });
 });
 
