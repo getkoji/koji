@@ -46,36 +46,6 @@ export function setDagParseProvider(provider: ParseProvider, config?: ParseConfi
   _parseConfig = config ?? null;
 }
 
-/**
- * Resolve the parse provider the DAG runner should use for one tenant.
- *
- * Parity with `handleIngestionProcess` / `resolveBuildParse`: walk the tenant's
- * BYO parse endpoint (honoring a pipeline-pinned `parse_provider_id`) and wrap
- * it via `buildEffectiveParseProvider`. Dormant-until-configured — when the
- * tenant has no parse endpoint (or no driver is registered, or `parseConfig` is
- * absent), `resolveTenantParse` returns null and `buildEffectiveParseProvider`
- * hands back the exact default provider, so behavior is byte-for-byte identical
- * to pre-BYO-parse. Resolution failures never block the run; we log and fall
- * back to the default provider.
- *
- * Returns the effective provider plus its parse-cache fingerprint, so the DAG
- * path keys/caches under the resolved provider — matching production (oss-298).
- *
- * Thin adapter over the shared {@link resolveParse} seam helper (oss-310) —
- * `resolveBuildParse`, `resolveDagParse`, and the inline block in
- * `handleIngestionProcess` were byte-for-byte identical and now share one
- * implementation. Kept as a positional shim so existing call sites don't change
- * during the incremental migration.
- */
-export async function resolveDagParse(
-  db: Db,
-  tenantId: string,
-  defaultProvider: ParseProvider,
-  parseConfig: ParseConfig | null,
-  parseProviderId: string | null = null,
-): Promise<{ provider: ParseProvider; fingerprint: string }> {
-  return resolveParse(db, tenantId, { parseProviderId, defaultProvider, parseConfig });
-}
 
 /** Shared split execution — used by both main path and branch fan-out. */
 async function executeSplit(
@@ -361,12 +331,14 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       // tenant's configured parse engine (and a pipeline-pinned override) the
       // same way the single-doc ingestion path does. Falls back to the default
       // provider when none is configured (dormant-until-configured).
-      const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveDagParse(
+      const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
         db,
         tenantId,
-        _parseProvider,
-        _parseConfig,
-        readParseProviderPin(pipeline.configJson),
+        {
+          parseProviderId: readParseProviderPin(pipeline.configJson),
+          defaultProvider: _parseProvider,
+          parseConfig: _parseConfig,
+        },
       );
       // Provider-aware parse cache (oss-298): keyed under the resolved provider's
       // fingerprint, so switching/editing the parse provider re-parses instead of
