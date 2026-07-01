@@ -233,6 +233,15 @@ function ClassifyResults({ output }: { output: Record<string, unknown> }) {
   );
 }
 
+// Render an extracted field value. Array/object fields (e.g. line-item lists)
+// are JSON-stringified instead of coercing to "[object Object]"; the row
+// truncates with ellipsis so long JSON stays contained.
+function formatFieldValue(value: unknown): string {
+  if (value == null) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function ExtractResults({ output }: { output: Record<string, unknown> }) {
   const fields = output.fields as Record<string, unknown> | undefined;
   return (
@@ -255,7 +264,7 @@ function ExtractResults({ output }: { output: Record<string, unknown> }) {
               fontSize: "12px", padding: "4px 0", borderBottom: "1px solid rgba(0,0,0,0.04)",
             }}>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", color: "#8A847B" }}>{key}</span>
-              <span style={{ color: "#171410", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{String(val)}</span>
+              <span style={{ color: "#171410", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }} title={formatFieldValue(val)}>{formatFieldValue(val)}</span>
             </div>
           ))}
         </div>
