@@ -212,6 +212,83 @@ The `trace` object describes the pipeline run — its shape is locked and docume
 
 ---
 
+## Classify
+
+### `POST /api/classify`
+
+Classify a document into one of a user-defined set of classes. Runs a cost
+cascade — cheap deterministic signals first, paid model calls only for the hard
+tail — and stops at the first confident tier. Non-persisting, so it also serves
+as the test surface. Config is inline; classes, keywords, and windows are all
+yours (the engine ships no built-in classes).
+
+**Request** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | Yes | The document to classify. |
+| `config` | string | Yes | Classifier config as YAML or JSON (see below). |
+
+Or `application/json` with a stored document:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `storage_key` | string | Yes | Key of a previously uploaded document. |
+| `config` | object | Yes | Classifier config. |
+| `filename` | string | No | Overrides the name inferred from `storage_key`. |
+| `mime_type` | string | No | Overrides the inferred content type. |
+
+**Config**
+
+```yaml
+classify:
+  window: 3            # default leading pages to consider
+  scan: head           # head | head_and_tail
+  max_tier: 4          # cost ceiling: 0 meta · 1 text · 2 keyword · 3 llm · 4 vision
+  on_unknown: return   # return unknown, or reject (422)
+classes:
+  invoice:
+    description: "a vendor bill"
+    keywords: ["invoice", "amount due", "remit to"]
+    window: 2          # per-class cost dial
+  policy:
+    keywords: ["declarations", "insuring agreement"]
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "label": "invoice",
+  "confidence": 0.9,
+  "method": "keyword",
+  "tier_used": 2,
+  "evidence_page": 2,
+  "scores": [
+    { "id": "invoice", "score": 0.9, "hits": 3, "total": 3, "evidence_page": 2 }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `label` | string | Winning class id, or `"unknown"`. |
+| `confidence` | number | Confidence in the label (0–1). Semantics vary by `method`. |
+| `method` | string | Tier that produced the label: `keyword`, `llm`, `vision`, or `unknown`. |
+| `tier_used` | integer | Numeric tier reached (0 metadata … 4 vision). Conveys the cost paid. |
+| `evidence_page` | integer\|null | Page the label was keyed on — helps debug cover-sheet misses. |
+| `scores` | array | Per-class deterministic scores, when the keyword tier ran. |
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Missing file/config, or an invalid classifier config. |
+| `404` | `storage_key` not found. |
+| `422` | No class matched and the config set `on_unknown: reject`. |
+
+---
+
 ## Content-Type and Ingestion Warnings
 
 Every ingestion endpoint expects an RFC-compliant `Content-Type` (`type/subtype`) — for example `application/pdf`, `image/png`, `text/csv`. The server uses it as the canonical document type for downstream parsing and rendering.
@@ -959,6 +1036,80 @@ Release YAML directly (skip the rc loop) and make it live — the early-stage / 
 ### Per-pipeline version mode
 
 Promoting a schema changes its live release; each pipeline chooses how to react via `pipelines.versionMode`: **`auto`** (default) always runs the schema's live release, **`pinned`** holds a specific version until bumped (staged rollout). Set it with `POST /api/pipelines/{idOrSlug}/deploy` (auth `schema:deploy`): body `{ schema_version_id }` pins that version (sets `versionMode: "pinned"`); body `{ mode: "auto" }` unpins. The runner honors a pin only for the schema the pinned version belongs to; other schemas in a DAG fall back to live.
+
+---
+
+## Classifiers
+
+A **classifier** is a config artifact — the schema-sibling of an extraction schema. Where a schema stores YAML defining `fields` to extract, a classifier stores YAML defining `classes` a document can be assigned to, plus the cost controls the [`POST /api/classify`](#post-apiclassify) cascade obeys. Classifiers use the same CRUD shape, the same semver versioning (released + `rc.N` candidates), and the same permissions as schemas: read is `schema:read`, create/update is `schema:write`, promote/release is `schema:deploy`. The engine ships no built-in classes — every class is user config.
+
+Committing or creating a classifier validates the YAML with the classifier engine and stores the normalized config as the version's `parsedJson`. Invalid YAML (or a config that isn't a valid classifier — e.g. no `classes`) returns `400` with the validation message in `error`/`details`.
+
+### `GET /api/classifiers`
+
+List the tenant's classifiers. Each row carries `id`, `slug`, `displayName`, `description`, `currentVersionId`, `createdAt`, and `latestVersion` (the highest committed version number, or `null`). Auth: `schema:read`.
+
+### `GET /api/classifiers/{slug}`
+
+The classifier plus its `latestVersion` (`{ versionNumber, yamlSource, commitMessage, createdAt }` or `null`). `404` for an unknown slug. Auth: `schema:read`.
+
+### `POST /api/classifiers`
+
+Create a classifier. Auth: `schema:write`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slug` | string | Required. Unique per tenant. |
+| `display_name` | string | Required. |
+| `description` | string? | Optional. |
+| `initial_yaml` | string? | Classifier YAML for v1. Defaults to a minimal one-class template. |
+
+Creates the classifier and commits **v1** (released), then returns the classifier with `latestVersion: 1`. `400` when `slug`/`display_name` are missing or the YAML is not a valid classifier config.
+
+### `PATCH /api/classifiers/{slug}`
+
+Update metadata or the working draft. Body: `{ display_name?, description?, draft_yaml? }`. Setting `draft_yaml` also stamps `draftUpdatedAt`. `404` for an unknown slug. Auth: `schema:write`.
+
+### `DELETE /api/classifiers/{slug}`
+
+Soft-delete (sets `deletedAt`; the row is filtered from every read path). Returns `204`. Auth: `schema:write`.
+
+## Classifier versions
+
+Versions use semver, identical to schema versions. **Candidates** carry a prerelease tag (`v0.0.4-rc.7`) and are never live; **releases** (`v0.0.4`) are activatable, and `classifiers.currentVersionId` points at the live release. The bump is auto-derived by diffing the candidate's **label set** against the active release: a removed class = **major**, an added class = **minor**, tuning only (descriptions, keywords, patterns, windows, cost controls) = **patch**. Override with `bump` in the request.
+
+### `GET /api/classifiers/{slug}/versions`
+
+The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), plus `versionNumber`, `major`/`minor`/`patch`/`prerelease`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
+
+### `GET /api/classifiers/{slug}/versions/{v}`
+
+A single version by its `versionNumber`, including `yamlSource` and the normalized `parsedJson`. `404` if the version doesn't exist. Auth: `schema:read`.
+
+### `POST /api/classifiers/{slug}/versions`
+
+Commit a version. Auth: `schema:write`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `yaml_source` | string | Required. Classifier YAML (`yaml` is accepted as an alias). |
+| `commit_message` | string? | Message for the version. |
+| `candidate` | boolean? | `true` snapshots a non-active candidate (dedup by content hash); otherwise releases directly and activates. |
+| `bump` | `"major"\|"minor"\|"patch"`? | Override the auto-derived bump. |
+
+Returns `{ id, version, released, ... }` (`201`). `400` on invalid YAML; `409` if a release already occupies that `x.y.z`.
+
+### `POST /api/classifiers/{slug}/promote`
+
+Graduate a candidate to a release and make it live — **manual, gated by `schema:deploy`**. Body: `{ versionId? }` (defaults to the latest candidate). Returns `{ released: "v0.0.4" }`. `400` if there's no candidate; `409` if a release already occupies that `x.y.z`.
+
+### `POST /api/classifiers/{slug}/release`
+
+Release YAML directly (skip the rc loop) and make it live — the early-stage path. Defaults to the classifier's draft. Auth: `schema:deploy`. Body: `{ yaml_source? }` (`yaml` accepted as an alias). Returns `{ released, versionId }`.
 
 ---
 

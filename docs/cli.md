@@ -347,6 +347,25 @@ koji schema release ./schemas/insurance_policy.yaml  # …from a local file
 
 The full **validate → promote** loop is encoded in the `schema-loop` Claude skill.
 
+### `koji classify`
+
+Run and manage classifiers — the same lifecycle CLI as `koji schema`, plus a `run` verb that classifies a single document. A classifier assigns a document a label (its type) using a cost-ordered cascade of tiers (keyword match → windowed heuristics → LLM → vision), stopping at the first tier confident enough to answer.
+
+```bash
+koji classify run document_type ./invoice.pdf         # classify a doc: label, confidence, method, tier
+koji classify run document_type ./invoice.pdf --json  # raw result for an agent
+koji classify run ./classifiers/document_type.yaml ./invoice.pdf   # …with a local config (iterate without pushing)
+
+koji classify versions document_type                  # released lineage + candidates
+koji classify promote document_type                   # graduate the latest candidate to a release + make it live
+koji classify release document_type                   # release directly, skipping the rc loop
+koji classify release ./classifiers/document_type.yaml  # …from a local file
+```
+
+`koji classify run` drives the standalone `POST /api/classify` primitive — it fetches the classifier's released config (falling back to the server-side draft), or uses a local YAML if you pass a file path, and **nothing is persisted**. It prints the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.
+
+`koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
+
 ### `koji pipeline`
 
 Inspect pipelines and control which schema version each one runs. Every pipeline tracks schema versions in one of two modes: **auto** (default) always runs the schema's current live release, so it picks up a promotion immediately; **pinned** holds a specific version until you bump it — useful for canary / staged rollout (pin a critical pipeline, let the rest auto-follow a promotion, verify, then bump the pinned one).
