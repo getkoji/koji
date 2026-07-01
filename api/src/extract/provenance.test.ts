@@ -1778,3 +1778,126 @@ describe("provenance tolerates bbox-less segments", () => {
     ).not.toThrow();
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// oss-333: deterministic repeated-value disambiguation via table coordinates
+//
+// When a value string appears in >=2 table cells, the pre-oss-333 path took the
+// first textual match (spike oss-331: 0/4 on this case). With table coords, the
+// field's identity is matched against each candidate cell's column header / row
+// label to pick the right occurrence. Strictly gated + additive.
+// ---------------------------------------------------------------------------
+
+describe("resolveProvenance — table-coord disambiguation (oss-333)", () => {
+  // Two columns share the value "$300,000": one under "Each Occurrence",
+  // one under "Aggregate". Distinct bboxes let us assert which cell was picked.
+  const markdown =
+    "| Limit | Each Occurrence | Aggregate |\n| Liability | $300,000 | $300,000 |";
+  const twoColumnTable = () =>
+    assignUnitIds([
+      // header row
+      { text: "Limit", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 1 } },
+      { text: "Each Occurrence", page: 1, bbox: { x: 0.4, y: 0.1, w: 0.2, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 2 } },
+      { text: "Aggregate", page: 1, bbox: { x: 0.7, y: 0.1, w: 0.2, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 3 } },
+      // data row
+      { text: "Liability", page: 1, bbox: { x: 0.1, y: 0.5, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 1 } },
+      { text: "$300,000", page: 1, bbox: { x: 0.4, y: 0.5, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 2 } },
+      { text: "$300,000", page: 1, bbox: { x: 0.7, y: 0.5, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 3 } },
+    ]);
+
+  it("CORE: a field matching column A's header resolves to A's cell", () => {
+    const result = resolveProvenance(
+      { each_occurrence: "$300,000" }, markdown,
+      undefined, undefined, undefined, undefined, undefined,
+      twoColumnTable(),
+    );
+    // "each occurrence" identity matches the col-2 header -> col-2 cell (x 0.4).
+    expect(result.each_occurrence!.bbox).toEqual({ x: 0.4, y: 0.5, w: 0.1, h: 0.02 });
+    expect(result.each_occurrence!.resolution).toBe("chunk");
+  });
+
+  it("CORE: a field matching column B's header resolves to B's cell", () => {
+    const result = resolveProvenance(
+      { aggregate: "$300,000" }, markdown,
+      undefined, undefined, undefined, undefined, undefined,
+      twoColumnTable(),
+    );
+    // "aggregate" identity matches the col-3 header -> col-3 cell (x 0.7),
+    // NOT the first textual match (col-2, x 0.4).
+    expect(result.aggregate!.bbox).toEqual({ x: 0.7, y: 0.5, w: 0.1, h: 0.02 });
+    expect(result.aggregate!.resolution).toBe("chunk");
+  });
+
+  it("sources field identity from the schema label, not just the key", () => {
+    // The field key "col_b" carries no signal; its schema label does.
+    const result = resolveProvenance(
+      { col_b: "$300,000" }, markdown,
+      undefined, undefined, { col_b: { label: "Aggregate" } },
+      undefined, undefined,
+      twoColumnTable(),
+    );
+    expect(result.col_b!.bbox).toEqual({ x: 0.7, y: 0.5, w: 0.1, h: 0.02 });
+  });
+
+  it("disambiguates repeated values by ROW label", () => {
+    // Same "$5,000" in two rows; the field matches a row label.
+    const md = "| Coverage | Amount |\n| Building | $5,000 |\n| Contents | $5,000 |";
+    const rowTable = () =>
+      assignUnitIds([
+        { text: "Coverage", page: 1, bbox: { x: 0.1, y: 0.1, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 1 } },
+        { text: "Amount", page: 1, bbox: { x: 0.5, y: 0.1, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 1, col: 2 } },
+        { text: "Building", page: 1, bbox: { x: 0.1, y: 0.4, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 1 } },
+        { text: "$5,000", page: 1, bbox: { x: 0.5, y: 0.4, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 2 } },
+        { text: "Contents", page: 1, bbox: { x: 0.1, y: 0.6, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 3, col: 1 } },
+        { text: "$5,000", page: 1, bbox: { x: 0.5, y: 0.6, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 3, col: 2 } },
+      ]);
+    const building = resolveProvenance(
+      { building: "$5,000" }, md, undefined, undefined, undefined, undefined, undefined, rowTable(),
+    );
+    expect(building.building!.bbox).toEqual({ x: 0.5, y: 0.4, w: 0.1, h: 0.02 });
+    const contents = resolveProvenance(
+      { contents: "$5,000" }, md, undefined, undefined, undefined, undefined, undefined, rowTable(),
+    );
+    // Second row, NOT the first textual match.
+    expect(contents.contents!.bbox).toEqual({ x: 0.5, y: 0.6, w: 0.1, h: 0.02 });
+  });
+
+  it("NO REGRESSION: repeated value with NO table coords keeps first match", () => {
+    const md = "First $300,000 then $300,000";
+    const chunks = assignUnitIds([
+      { text: "$300,000", page: 1, bbox: { x: 0.2, y: 0.2, w: 0.1, h: 0.02 } },
+      { text: "$300,000", page: 1, bbox: { x: 0.6, y: 0.6, w: 0.1, h: 0.02 } },
+    ]);
+    const result = resolveProvenance(
+      { each_occurrence: "$300,000" }, md,
+      undefined, undefined, undefined, undefined, undefined, chunks,
+    );
+    // No coords -> disambiguation can't run -> first chunk (x 0.2).
+    expect(result.each_occurrence!.bbox).toEqual({ x: 0.2, y: 0.2, w: 0.1, h: 0.02 });
+  });
+
+  it("single occurrence is unchanged (disambiguation not triggered)", () => {
+    const md = "Each Occurrence $300,000";
+    const chunks = assignUnitIds([
+      { text: "$300,000", page: 1, bbox: { x: 0.4, y: 0.5, w: 0.1, h: 0.02 }, role: "table_cell", table: { tableId: "p1-t0", row: 2, col: 2 } },
+    ]);
+    const result = resolveProvenance(
+      { aggregate: "$300,000" }, md,
+      undefined, undefined, undefined, undefined, undefined, chunks,
+    );
+    // One candidate -> the single cell, regardless of identity match.
+    expect(result.aggregate!.bbox).toEqual({ x: 0.4, y: 0.5, w: 0.1, h: 0.02 });
+  });
+
+  it("no identity signal falls back to first match (purely additive)", () => {
+    // Field identity ("mystery") matches neither header -> tie at score 0 ->
+    // fall back to the pre-existing first/page-closest pick (col-2, x 0.4).
+    const result = resolveProvenance(
+      { mystery: "$300,000" }, markdown,
+      undefined, undefined, undefined, undefined, undefined,
+      twoColumnTable(),
+    );
+    expect(result.mystery!.bbox).toEqual({ x: 0.4, y: 0.5, w: 0.1, h: 0.02 });
+  });
+});

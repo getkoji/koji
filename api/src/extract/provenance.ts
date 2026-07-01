@@ -1514,21 +1514,32 @@ function headerCandidates(
 }
 
 /**
- * Find the chunk whose text contains `value` and carries geometry. When several
- * match, prefer the one on / closest to `preferredPage`. Returns null when no
- * bbox-bearing chunk matches (so the text-based bbox is left untouched).
+ * All bbox-bearing chunks whose text contains `value` — the candidate
+ * occurrences an extracted value could have come from. When a value string
+ * appears in several cells (the repeated-value case a dec page produces), this
+ * returns every one so the caller can disambiguate.
  */
-function findValueChunk(
+function matchingValueChunks(
   value: string,
   chunks: readonly ParseChunk[],
-  preferredPage?: number,
-): ParseChunk | null {
+): ParseChunk[] {
   const needle = normalizeWhitespace(value).toLowerCase();
-  if (!needle) return null;
-
-  const matches = chunks.filter(
+  if (!needle) return [];
+  return chunks.filter(
     (c) => c.bbox && normalizeWhitespace(c.text).toLowerCase().includes(needle),
   );
+}
+
+/**
+ * From a set of candidate chunks, pick the one on / closest to `preferredPage`
+ * (first match when there's a single candidate or no page preference). This is
+ * the pre-existing tie-break — the fallback when table-coordinate
+ * disambiguation can't decide.
+ */
+function pickByPage(
+  matches: readonly ParseChunk[],
+  preferredPage?: number,
+): ParseChunk | null {
   if (matches.length === 0) return null;
   if (matches.length === 1 || preferredPage == null) return matches[0]!;
 
@@ -1541,6 +1552,167 @@ function findValueChunk(
       bestDist = d;
     }
   }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic repeated-value disambiguation via table coordinates (oss-333)
+//
+// When a value string appears in >=2 table cells (e.g. a `$300,000` that is both
+// a limit and -- in a different column -- a matching sublimit), the first
+// textual match highlights the wrong cell (the anchored-extraction spike,
+// oss-331, scored the deterministic path 0/4 here). Now that `table_cell` units
+// carry `{ tableId, row, col }` (oss-318), we can pick the right occurrence
+// deterministically: score each candidate cell by how well the field's identity
+// (its key + schema label/title/description/aliases) matches that cell's column
+// header and row label, read straight off the spine's table coordinates. No
+// LLM, no tokens -- the disambiguated pick is still deterministic geometry, so
+// it keeps the `"chunk"` resolution rung.
+//
+// This is the table-coordinate counterpart to the geometric `findHeaderChunk`
+// notion of a column header used by `column_mismatch`: that one finds the header
+// by bbox (the chunk sitting above the value); this one finds it by cell
+// coordinates (min row, same col). Both express "the header of this value's
+// column"; this path uses coordinates because they disambiguate *which* cell,
+// not just whether one cell sits under its header.
+// ---------------------------------------------------------------------------
+
+/** Grammatical glue that would create spurious identity/label token overlap. */
+const IDENTITY_STOPWORDS = new Set([
+  "the", "of", "and", "a", "an", "to", "for", "in", "on", "by", "with", "or",
+]);
+
+/** Lowercase, split on non-alphanumeric, drop stopwords and 1-char tokens. */
+function tokenizeIdentity(s: string): string[] {
+  return normalizeWhitespace(s)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2 && !IDENTITY_STOPWORDS.has(t));
+}
+
+/**
+ * Identity tokens for a field: its humanized key plus any schema-declared
+ * `label`/`title`/`description`/`aliases`. Generic -- no domain knowledge, just
+ * whatever the schema says this field *is*.
+ */
+function fieldIdentityTokens(
+  fieldName: string,
+  fieldSpec?: Record<string, unknown>,
+): string[] {
+  const parts: string[] = [fieldName.replace(/[_-]+/g, " ")];
+  if (fieldSpec) {
+    for (const key of ["label", "title", "description"]) {
+      const v = fieldSpec[key];
+      if (typeof v === "string" && v.trim()) parts.push(v);
+    }
+    const aliases = fieldSpec.aliases;
+    if (Array.isArray(aliases)) {
+      for (const a of aliases) if (typeof a === "string" && a.trim()) parts.push(a);
+    }
+  }
+  const tokens = new Set<string>();
+  for (const p of parts) for (const t of tokenizeIdentity(p)) tokens.add(t);
+  return [...tokens];
+}
+
+/** Count of distinct field tokens that also appear in the label token set. */
+function tokenOverlapScore(
+  fieldTokens: readonly string[],
+  labelTokens: readonly string[],
+): number {
+  if (fieldTokens.length === 0 || labelTokens.length === 0) return 0;
+  const labelSet = new Set(labelTokens);
+  let n = 0;
+  for (const t of new Set(fieldTokens)) if (labelSet.has(t)) n++;
+  return n;
+}
+
+/**
+ * The text of the cell at (minimum row, candidate's col) within the candidate's
+ * table -- its column header. Returns [] when the candidate has no table coords,
+ * no earlier row exists, or the candidate is itself in the header row.
+ */
+function columnHeaderTokensFor(
+  cand: ParseChunk,
+  units: readonly ParseChunk[],
+): string[] {
+  const t = cand.table;
+  if (!t) return [];
+  let headerRow = Infinity;
+  let headerText: string | null = null;
+  for (const u of units) {
+    const ut = u.table;
+    if (ut && ut.tableId === t.tableId && ut.col === t.col && ut.row < headerRow) {
+      headerRow = ut.row;
+      headerText = u.text;
+    }
+  }
+  if (headerText == null || headerRow >= t.row) return [];
+  return tokenizeIdentity(headerText);
+}
+
+/**
+ * The text of the cell at (candidate's row, minimum col) within the candidate's
+ * table -- its row label. Returns [] under the same guards as the column header.
+ */
+function rowLabelTokensFor(
+  cand: ParseChunk,
+  units: readonly ParseChunk[],
+): string[] {
+  const t = cand.table;
+  if (!t) return [];
+  let labelCol = Infinity;
+  let labelText: string | null = null;
+  for (const u of units) {
+    const ut = u.table;
+    if (ut && ut.tableId === t.tableId && ut.row === t.row && ut.col < labelCol) {
+      labelCol = ut.col;
+      labelText = u.text;
+    }
+  }
+  if (labelText == null || labelCol >= t.col) return [];
+  return tokenizeIdentity(labelText);
+}
+
+/**
+ * Deterministically pick which candidate cell a repeated value came from, by
+ * matching the field's identity against each candidate's column header and row
+ * label (read off the spine's table coordinates). Returns the single
+ * highest-scoring candidate, or null -- the caller then falls back to the
+ * existing page/first-match behavior. Strictly gated so it is purely additive:
+ *   (a) >=2 candidate occurrences,
+ *   (b) at least one candidate carries table coordinates,
+ *   (c) the top score clears a small threshold, AND
+ *   (d) that top score is unique (a tie is treated as no signal).
+ */
+function disambiguateByTableCoords(
+  candidates: readonly ParseChunk[],
+  fieldTokens: readonly string[],
+  allUnits: readonly ParseChunk[],
+): ParseChunk | null {
+  if (candidates.length < 2 || fieldTokens.length === 0) return null;
+  const coordCands = candidates.filter((c) => c.table);
+  if (coordCands.length === 0) return null;
+
+  let best: ParseChunk | null = null;
+  let bestScore = 0;
+  let tie = false;
+  for (const c of coordCands) {
+    const labelTokens = [
+      ...columnHeaderTokensFor(c, allUnits),
+      ...rowLabelTokensFor(c, allUnits),
+    ];
+    const score = tokenOverlapScore(fieldTokens, labelTokens);
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+      tie = false;
+    } else if (score === bestScore && score > 0) {
+      tie = true;
+    }
+  }
+  // Threshold: at least one shared identity/label token, and a unique winner.
+  if (!best || bestScore < 1 || tie) return null;
   return best;
 }
 
@@ -1591,10 +1763,28 @@ function applyChunkToSpan(
     typeof value === "number" ? String(value) : typeof value === "string" ? value : null;
   if (!str) return;
 
-  const vc = findValueChunk(str, chunks, span.page);
+  const candidates = matchingValueChunks(str, chunks);
+  if (candidates.length === 0) return;
+
+  // Higher-priority signal: when a value occurs in >=2 cells, disambiguate by
+  // matching the field's identity to each candidate's table column header / row
+  // label (oss-333). Strictly gated inside `disambiguateByTableCoords`; returns
+  // null when it can't decide, in which case we fall back to the pre-existing
+  // page/first-match tie-break — zero regression on the non-repeated case.
+  let vc: ParseChunk | null = null;
+  if (candidates.length >= 2) {
+    vc = disambiguateByTableCoords(
+      candidates,
+      fieldIdentityTokens(fieldName, fieldSpec),
+      chunks,
+    );
+  }
+  if (!vc) vc = pickByPage(candidates, span.page);
   if (!vc || !vc.bbox) return;
 
-  // Chunk geometry is authoritative — replace the text-derived bbox/page.
+  // Chunk geometry is authoritative — replace the text-derived bbox/page. The
+  // disambiguated pick is still deterministic geometry, so it keeps the same
+  // "chunk" rung.
   span.bbox = vc.bbox;
   span.page = vc.page;
   span.resolution = "chunk";
