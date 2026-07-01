@@ -41,6 +41,83 @@ describe("case-insensitive match", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Short codes (state abbreviations) — never substring-match inside a word
+// ---------------------------------------------------------------------------
+
+describe("short state-code provenance (no substring match inside words)", () => {
+  it("resolves 'NC' to 'North Carolina', NOT the 'nc' inside 'Incorporation'", () => {
+    // The classic bug: "NC" substring-matches the "nc" in "Incorporation",
+    // so a state field would highlight the document title. The bare code has
+    // no word-boundary occurrence here, so resolution must expand NC → its
+    // full state name and land on that.
+    const markdown = "ARTICLES OF INCORPORATION\nThe corporation is organized under the laws of North Carolina.";
+    const result = resolveProvenance({ state: "NC" }, markdown);
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("North Carolina");
+    expect(result.state!.offset).toBe(markdown.indexOf("North Carolina"));
+    // Must NOT be the "nc" inside "Incorporation".
+    expect(result.state!.offset).not.toBe(markdown.toLowerCase().indexOf("nc"));
+  });
+
+  it("matches a bare 'NC' token at a word boundary (e.g. in an address)", () => {
+    const markdown = "Principal office: 100 Main St, Raleigh, NC 27609";
+    const result = resolveProvenance({ state: "NC" }, markdown);
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("NC");
+    expect(result.state!.offset).toBe(markdown.indexOf(", NC") + 2);
+  });
+
+  it("returns null rather than a wrong substring when a short code can't be located", () => {
+    // No bare 'NC' token and no 'North Carolina' to expand to — better to
+    // highlight nothing than to confidently highlight the wrong span.
+    const markdown = "ARTICLES OF INCORPORATION\nThe undersigned incorporator adopts these articles.";
+    const result = resolveProvenance({ state: "NC" }, markdown);
+
+    expect(result.state).toBeNull();
+  });
+
+  it("guards the PRIMARY source-text path too when the LLM echoes the code 'NC' with a context line", () => {
+    // The LLM often returns the canonical code ("NC") as __source_text rather
+    // than the verbatim "North Carolina". Within the correct context region the
+    // bare "NC" still substring-matches "…Incorporation…" unless guarded.
+    const markdown = "ARTICLES OF INCORPORATION\nThe corporation is organized under the laws of North Carolina.";
+    const scalarSourceTexts = { state: "NC" };
+    const sourceContexts = { state: "organized under the laws of North Carolina" };
+    const result = resolveProvenance(
+      { state: "NC" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      scalarSourceTexts,
+      sourceContexts,
+    );
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("North Carolina");
+    expect(result.state!.offset).toBe(markdown.indexOf("North Carolina"));
+  });
+
+  it("guards the PRIMARY source-text path with an echoed code and no context (Strategy 2)", () => {
+    const markdown = "ARTICLES OF INCORPORATION\nOrganized under the laws of North Carolina.";
+    const result = resolveProvenance(
+      { state: "NC" },
+      markdown,
+      undefined,
+      undefined,
+      undefined,
+      { state: "NC" }, // scalarSourceTexts — echoed code, no context provided
+    );
+
+    expect(result.state).not.toBeNull();
+    expect(result.state!.chunk).toBe("North Carolina");
+    expect(result.state!.offset).toBe(markdown.indexOf("North Carolina"));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Dollar amount matching
 // ---------------------------------------------------------------------------
 
