@@ -29,12 +29,12 @@ import {
   type ParseConfig,
   type ParseProviderOptions,
 } from "../parse/factory";
-import { resolveTenantParse, type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
+import { type ResolvedTenantParse } from "../parse/resolve-tenant-parse";
 import {
-  parseCacheFingerprint,
   parseCacheStorageKey,
   DEFAULT_PARSE_FINGERPRINT,
 } from "../parse/cache-fingerprint";
+import { resolveParse, parseDocument } from "./seam";
 import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
 import { mimeTypeFor, normalizeMimeType } from "./mime";
 
@@ -283,33 +283,21 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     throw new TerminalError(reason);
   }
 
-  // ── Resolve the tenant's parse provider (BYO parse) ──────────────────────
-  // Honor a pipeline-pinned parse endpoint (config_json.parse_provider_id),
-  // else the tenant's active parse endpoint. Returns null when none is
-  // configured / no driver exists → the default provider is used unchanged
-  // (dormant-until-configured). Resolution failures never block ingestion.
-  let resolvedParse: ResolvedTenantParse | null = null;
-  if (_parseConfig) {
-    try {
-      resolvedParse = await resolveTenantParse(db, tenantId, {
-        parseProviderId: readParseProviderPin(pipeline.configJson),
-      });
-    } catch (err) {
-      console.warn(
-        `[ingestion.process] parse provider resolution failed for ${documentId}, using default:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  const parseProvider = await buildEffectiveParseProvider(
-    _parseConfig,
-    defaultParseProvider,
-    resolvedParse,
+  // ── Resolve the tenant's parse provider (BYO parse) via the shared seam ──
+  // Honors a pipeline-pinned parse endpoint (config_json.parse_provider_id),
+  // else the tenant's active parse endpoint; hands back the default provider
+  // unchanged when none is configured (dormant-until-configured). One resolver
+  // for every surface (oss-310) — no per-entrypoint copy to drift. The provider-
+  // aware fingerprint keys the parse cache so a provider switch re-parses (oss-298).
+  const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
+    db,
+    tenantId,
+    {
+      parseProviderId: readParseProviderPin(pipeline.configJson),
+      defaultProvider: defaultParseProvider,
+      parseConfig: _parseConfig,
+    },
   );
-  // Provider-aware parse-cache key: switching/editing the resolved parse
-  // provider yields a new fingerprint, so a previously-cached parse from a
-  // different provider misses and re-parses (oss-298).
-  const parseFingerprint = parseCacheFingerprint(resolvedParse);
 
   // ── Resolve markdown via parse_cache, falling back to live parse ─────────
   //
@@ -326,15 +314,15 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     const parseOutput = await recorder.run(
       "parse",
       async () => {
-        const result = await getOrParse(
+        const result = await parseDocument({
           db,
           storage,
-          parseProvider,
           tenantId,
           document,
-          parseFingerprint,
-          { skipCache },
-        );
+          provider: parseProvider,
+          fingerprint: parseFingerprint,
+          skipCache,
+        });
         const summary: Record<string, unknown> = {
           markdown_chars: result.markdown.length,
         };
@@ -343,7 +331,11 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       },
     );
     let markdown = parseOutput.markdown;
-    const textMap = parseOutput.textMap;
+    // Nested provenance text_map (bbox highlights), shaped once by the seam so
+    // ingestion matches build/validate. Passing the raw flat map here previously
+    // yielded NO text_map highlights — provenance reads seg.bbox, which the flat
+    // shape lacks (oss-310). Mutable: cleared on a vision-OCR re-parse below.
+    let textMap = parseOutput.textMap;
     // Provenance-carrying chunks from a structured/positional parse (PB-11).
     // Mutable: a vision-OCR escalation replaces the markdown with a
     // markdown-native re-parse, so any positional chunks become stale.
@@ -414,8 +406,11 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 
           if (escalated.markdown.trim().length > 0) {
             markdown = escalated.markdown;
-            // Vision-OCR is markdown-native: drop stale positional chunks.
+            // Vision-OCR is markdown-native and re-flows the text: drop the
+            // stale positional chunks AND text_map (their offsets/boxes no
+            // longer match the re-parsed markdown).
             chunks = undefined;
+            textMap = undefined;
             // Re-cache the vision text so a reprocess of this file doesn't
             // re-escalate (and re-pay the per-page vision cost).
             await overwriteParseCache(storage, tenantId, document.contentHash, markdown, escalated.pages);
