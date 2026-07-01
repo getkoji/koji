@@ -213,6 +213,12 @@ def _normalize_value_for_compare(value: Any) -> Any:
         # are semantically equivalent for comparison purposes.
         normalized = {}
         for k, v in value.items():
+            # Drop `__`-prefixed provenance metadata (`__source_text`,
+            # `__source_context`). The model emits these inline on extracted
+            # objects; ground truth never carries them, so scoring them as
+            # unexpected keys silently caps every array item and nested object.
+            if isinstance(k, str) and k.startswith("__"):
+                continue
             nv = _normalize_value_for_compare(v)
             if nv is not None:
                 normalized[k] = nv
