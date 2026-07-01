@@ -14,6 +14,7 @@ import { formExtractToResult, fieldsNeedingLlm } from "../extract/form-extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { generateFingerprint } from "../extract/form-match";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { resolveParse } from "../ingestion/seam";
 
 const { formMappings, schemas: schemasTable } = schema;
 
@@ -229,10 +230,17 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   if (body.status === "active" && current.sampleStorageKey) {
     try {
       const storage = c.get("storage");
-      const parseProvider = c.get("parseProvider") as any;
-      if (parseProvider?.extractCoordinates) {
-        // Use coordinate extraction to get page 1 text (just a small region)
-        // Actually simpler: fetch the PDF and use the parse provider to get text
+      // Resolve the tenant's BYO parse provider via the shared seam so the
+      // fingerprint is built from the SAME text production would parse. Using
+      // the global-default c.get("parseProvider") here was the oss-308 bug on
+      // this surface — a tenant on Doc AI would fingerprint against docling
+      // (oss-310 step 7). Gate on `.parse` (all we need), not extractCoordinates.
+      const { provider: parseProvider } = await resolveParse(db, tenantId, {
+        parseProviderId: null,
+        defaultProvider: (c as any).get("parseProvider"),
+        parseConfig: c.get("parseConfig"),
+      });
+      if (parseProvider?.parse) {
         const blob = await storage.getBuffer(current.sampleStorageKey);
         if (blob) {
           const parseResult = await parseProvider.parse({
