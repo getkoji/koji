@@ -59,6 +59,20 @@ const DEFAULT_TAG_COLOR = { bg: "bg-cream-2", text: "text-ink-3", dot: "bg-ink-4
 
 function tagColor(tag: string) { return TAG_COLORS[tag] ?? DEFAULT_TAG_COLOR; }
 
+// Render a ground-truth value for display. Object/array values are stored as
+// compact JSON (see loadGroundTruth); pretty-print them so nested structure is
+// legible and wraps inside the card instead of overflowing on one long line.
+function formatGtDisplay(type: string, gt: string): string {
+  if (gt.startsWith("{") || gt.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(gt), null, 2);
+    } catch {
+      // not valid JSON — fall through and render as-is
+    }
+  }
+  return type === "string" ? `"${gt}"` : gt;
+}
+
 function parseFields(yaml: string | null): SchemaField[] {
   if (!yaml) return [];
   try {
@@ -561,8 +575,8 @@ export default function CorpusPage() {
                             <span className="font-mono text-[8px] font-medium px-1.5 py-0.5 rounded-sm uppercase bg-cream-2 text-ink-4">no gt</span>
                           )}
                         </div>
-                        <div className="font-mono text-[11px] text-ink mt-0.5">
-                          {hasGt ? (f.type === "string" ? `"${gt}"` : gt) : "—"}
+                        <div className="font-mono text-[11px] text-ink mt-0.5 whitespace-pre-wrap break-all">
+                          {hasGt ? formatGtDisplay(f.type, gt) : "—"}
                         </div>
                       </div>
                     );
