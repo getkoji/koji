@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { jobs as jobsApi, type DocumentDetail, type TraceStageRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { prettyStageName } from "./format";
+import type { ResolutionRung } from "@/lib/provenance-resolution";
 
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
@@ -189,7 +190,7 @@ export default function TraceViewPage() {
   const highlights = useMemo(() => {
     const prov = displayExtraction?.provenanceJson as Record<string, any> | null;
     if (!prov) return [];
-    const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string }> = [];
+    const out: Array<{ field: string; page: number; bbox?: any; words?: any; reasoning?: string; resolution?: ResolutionRung }> = [];
     for (const [field, v] of Object.entries(prov)) {
       if (!v) continue;
       if (v.items && Array.isArray(v.items)) {
@@ -197,14 +198,14 @@ export default function TraceViewPage() {
           const item = v.items[i];
           if (!item) continue;
           if (item.words?.length || (item.bbox && item.page) || item.page) {
-            out.push({ field: `${field}[${i}]`, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning });
+            out.push({ field: `${field}[${i}]`, page: item.words?.[0]?.page ?? item.page ?? 1, bbox: item.bbox, words: item.words, reasoning: item.reasoning, resolution: item.resolution });
           }
           // Per-property highlights within the item
           if (item.properties && typeof item.properties === "object") {
             for (const [prop, pSpan] of Object.entries(item.properties as Record<string, any>)) {
               if (!pSpan) continue;
               if (pSpan.words?.length || (pSpan.bbox && pSpan.page) || pSpan.page) {
-                out.push({ field: `${field}[${i}].${prop}`, page: pSpan.words?.[0]?.page ?? pSpan.page ?? 1, bbox: pSpan.bbox, words: pSpan.words });
+                out.push({ field: `${field}[${i}].${prop}`, page: pSpan.words?.[0]?.page ?? pSpan.page ?? 1, bbox: pSpan.bbox, words: pSpan.words, resolution: pSpan.resolution });
               }
             }
           }
@@ -212,7 +213,7 @@ export default function TraceViewPage() {
         continue;
       }
       if (v.words?.length || (v.bbox && v.page)) {
-        out.push({ field, page: v.words?.[0]?.page ?? v.page ?? 1, bbox: v.bbox, words: v.words, reasoning: v.reasoning });
+        out.push({ field, page: v.words?.[0]?.page ?? v.page ?? 1, bbox: v.bbox, words: v.words, reasoning: v.reasoning, resolution: v.resolution });
       }
     }
     return out;
