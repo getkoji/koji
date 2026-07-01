@@ -1121,6 +1121,8 @@ When the parse provider instead emits structured/positional **chunks** carrying 
 
 When the `text_map` carries **offset annotations** (`md_offset`/`md_length` — see [`text_map` format](#text_map-format)), Koji resolves a field's bounding box deterministically: it maps the value to its character range in the markdown, then looks up the covering word boxes by offset overlap instead of fuzzily re-scanning the `text_map` text. This is more precise for repeated values (the same date on two pages resolves to the correct occurrence). Parses without offset annotations fall back to fuzzy text matching, unchanged. The digital-PDF (pdfjs) parser emits these offsets today; OCR/markdown-native parses do not.
 
+When a value string appears in **more than one table cell** (e.g. the same dollar amount under two different columns of a declarations grid) and the chunks carry table coordinates (`tableId`/`row`/`col`, emitted by structured providers like Google Document AI and Textract), Koji disambiguates deterministically: it matches the field's identity (its key plus any schema `label`/`title`/`description`/`aliases`) against each candidate cell's column header and row label, and highlights the best-matching occurrence rather than the first textual match. This is a pure geometry-selection step — no extra model call — and it is strictly additive: it only changes the highlight when there are at least two candidate occurrences, the candidates carry table coordinates, and one occurrence clearly out-scores the rest. Otherwise (single occurrence, no table coordinates, or an ambiguous tie) resolution falls back to the previous behavior unchanged.
+
 ### Provenance span
 
 Each field maps to a provenance span (or `null` if the value couldn't be located in the source):
