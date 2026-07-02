@@ -38,6 +38,7 @@ Check that your environment is ready to run Koji. Verifies Docker, Docker Compos
 
 ```bash
 koji doctor
+koji doctor -c ~/proj/koji.yaml   # check a project outside the current directory
 ```
 
 ```
@@ -65,13 +66,16 @@ Run this any time something looks wrong. It's the fastest way to diagnose setup 
 Start the cluster defined in `koji.yaml`. By default, pulls pre-built images from `ghcr.io/getkoji`.
 
 ```bash
-koji start                # pull pre-built images and run (default)
-koji start --dev          # build images from local source (for contributors)
+koji start                          # pull pre-built images and run (default)
+koji start --dev                    # build images from local source (for contributors)
+koji start -c ~/proj/koji.yaml      # start a project outside the current directory
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--dev` | Build images from the local source tree instead of pulling. Required when developing on Koji itself. |
+| `--clean` | Destroy existing data and start fresh (equivalent to `koji destroy` + `koji start`). |
+| `--config`, `-c` | Path to `koji.yaml` (default: `./koji.yaml`). The project's `.koji/` state lives next to the config file, so every other cluster command accepts the same flag. |
 
 First start with `--dev` takes a few minutes for the docling/torch image build. Default `koji start` pulls pre-built images and is usually under a minute once images are cached locally.
 
@@ -85,6 +89,7 @@ Stop the running cluster.
 
 ```bash
 koji stop
+koji stop -c ~/proj/koji.yaml   # stop a project outside the current directory
 ```
 
 Tears down all containers but preserves Docker volumes (model caches, etc.). Run `koji start` again to bring the cluster back up.
@@ -97,6 +102,7 @@ Show cluster health and per-service status.
 
 ```bash
 koji status
+koji status -c ~/proj/koji.yaml   # status of a project outside the current directory
 ```
 
 Output shows each running service, its port, and health check result. Use this to verify the cluster is fully up before processing documents.
@@ -119,6 +125,7 @@ koji logs server --tail 500     # show last 500 lines of server logs
 | `service` (positional) | Service name: `server`, `parse`, `extract`, `ui`, `ollama`. Omit to show all services. |
 | `--follow`, `-f` | Follow log output (like `tail -f`). Press Ctrl-C to stop. |
 | `--tail`, `-t` | Number of lines to show from the end of the log (default: 100). |
+| `--config`, `-c` | Path to `koji.yaml` (default: `./koji.yaml`). |
 
 ---
 
@@ -139,6 +146,7 @@ koji process ./doc.pdf --schema schemas/invoice.yaml --output ./results/
 | `path` (positional) | Path to a document file or a directory of documents. |
 | `--schema`, `-s` | Path to an extraction schema YAML. If omitted, only the parse step runs. |
 | `--output`, `-o` | Output directory (default: `./output/`). |
+| `--config`, `-c` | Path to `koji.yaml` (default: `./koji.yaml`). Locates the running cluster when you're not in the project directory. |
 
 When `--schema` is provided, you get the full pipeline: parse → extract → JSON output. Without `--schema`, you get parsed markdown only — useful for inspecting how Koji sees a document before writing a schema.
 
@@ -161,6 +169,7 @@ koji extract ./output/invoice.md \
 | `--model`, `-m` | Model override. Format: `provider/model-name`. Examples: `openai/gpt-4o-mini`, `openai/gpt-4o`, `ollama/llama3.2`. |
 | `--output`, `-o` | Output directory (default: `./output/`). |
 | `--strategy` | Extraction strategy: `parallel` (default, recommended) or `agent`. |
+| `--config`, `-c` | Path to `koji.yaml` (default: `./koji.yaml`). Locates the running cluster when you're not in the project directory. |
 
 This is the fastest feedback loop while iterating on a schema. Parse once, extract many times with different schemas or models.
 

@@ -20,29 +20,37 @@ console = Console()
 KOJI_DIR = ".koji"
 
 
-def get_project_dir() -> str:
+def get_project_dir(config_path: Path | None = None) -> str:
+    if config_path is not None:
+        return str(config_path.resolve().parent)
     return str(Path.cwd())
 
 
-def get_koji_dir() -> Path:
-    koji_dir = Path.cwd() / KOJI_DIR
+def get_koji_dir(project_dir: str | None = None) -> Path:
+    root = Path(project_dir) if project_dir else Path.cwd()
+    koji_dir = root / KOJI_DIR
     koji_dir.mkdir(exist_ok=True)
     return koji_dir
 
 
-def load_project_config() -> KojiConfig:
-    """Load koji.yaml from the current directory."""
-    config_path = Path.cwd() / "koji.yaml"
+def load_project_config(config_path: Path | None = None) -> KojiConfig:
+    """Load koji.yaml from config_path, or from the current directory if not given."""
+    if config_path is None:
+        config_path = Path.cwd() / "koji.yaml"
+    else:
+        config_path = config_path.resolve()
     if not config_path.exists():
-        console.print("[red]No koji.yaml found in current directory.[/red]")
-        console.print("Run [bold]koji init[/bold] to create one, or cd to a directory with a koji.yaml.")
+        console.print(f"[red]No koji.yaml found at: {config_path}[/red]")
+        if config_path == (Path.cwd() / "koji.yaml").resolve():
+            console.print("Run [bold]koji init[/bold] to create one, or cd to a directory with a koji.yaml.")
         raise SystemExit(1)
     return load_config(config_path)
 
 
-def save_cluster_state(config: KojiConfig) -> None:
+def save_cluster_state(config: KojiConfig, koji_dir: Path | None = None) -> None:
     """Save cluster metadata for status/stop commands."""
-    koji_dir = get_koji_dir()
+    if koji_dir is None:
+        koji_dir = get_koji_dir()
     state = {
         "project": config.project,
         "cluster_name": config.cluster.name,
@@ -57,9 +65,10 @@ def save_cluster_state(config: KojiConfig) -> None:
         json.dump(state, f, indent=2)
 
 
-def load_cluster_state() -> dict | None:
+def load_cluster_state(project_dir: str | None = None) -> dict | None:
     """Load saved cluster state."""
-    state_path = Path.cwd() / KOJI_DIR / "cluster.json"
+    root = Path(project_dir) if project_dir else Path.cwd()
+    state_path = root / KOJI_DIR / "cluster.json"
     if not state_path.exists():
         return None
     with open(state_path) as f:
@@ -135,7 +144,7 @@ def _is_cluster_running(config: KojiConfig) -> bool:
     return check_health(server_url)
 
 
-def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) -> None:
+def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False, config_path: Path | None = None) -> None:
     """Start the Koji cluster.
 
     By default, pre-built images are pulled from ghcr.io/getkoji. Pass
@@ -144,8 +153,8 @@ def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) ->
 
     Pass ``clean=True`` to destroy existing data before starting fresh.
     """
-    project_dir = get_project_dir()
-    koji_dir = get_koji_dir()
+    project_dir = get_project_dir(config_path)
+    koji_dir = get_koji_dir(project_dir)
 
     # CLI flag wins; otherwise fall back to the cluster config flag.
     dev_mode = dev or config.cluster.dev
@@ -162,7 +171,7 @@ def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) ->
             console.print("  Removed containers, volumes, and state.\n")
 
     # If cluster is already running, show status instead of re-starting
-    state = load_cluster_state()
+    state = load_cluster_state(project_dir)
     if state is not None and _is_cluster_running(config):
         console.print(f"\n[bold green]Koji cluster [cyan]{config.project}[/cyan] is already running:[/bold green]\n")
         console.print(f"  [bold]Dashboard:[/bold]   http://127.0.0.1:{config.cluster.ui_port}")
@@ -208,7 +217,7 @@ def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) ->
         raise SystemExit(1)
 
     # Save state
-    save_cluster_state(config)
+    save_cluster_state(config, koji_dir)
 
     # Wait for server health
     server_url = f"http://127.0.0.1:{config.cluster.server_port}"
@@ -226,10 +235,11 @@ def start_cluster(config: KojiConfig, dev: bool = False, clean: bool = False) ->
     console.print()
 
 
-def stop_cluster() -> None:
+def stop_cluster(config_path: Path | None = None) -> None:
     """Stop the Koji cluster."""
-    koji_dir = Path.cwd() / KOJI_DIR
-    state = load_cluster_state()
+    project_dir = get_project_dir(config_path)
+    koji_dir = Path(project_dir) / KOJI_DIR
+    state = load_cluster_state(project_dir)
 
     if not (koji_dir / "docker-compose.yaml").exists():
         console.print("[yellow]No running cluster found in this directory.[/yellow]")
@@ -246,10 +256,11 @@ def stop_cluster() -> None:
     console.print("[bold green]Cluster stopped.[/bold green]\n")
 
 
-def destroy_cluster() -> None:
+def destroy_cluster(config_path: Path | None = None) -> None:
     """Stop the cluster and remove all containers, volumes, and data."""
-    koji_dir = Path.cwd() / KOJI_DIR
-    state = load_cluster_state()
+    project_dir = get_project_dir(config_path)
+    koji_dir = Path(project_dir) / KOJI_DIR
+    state = load_cluster_state(project_dir)
 
     if not (koji_dir / "docker-compose.yaml").exists():
         console.print("[yellow]No cluster found in this directory.[/yellow]")
@@ -271,9 +282,9 @@ def destroy_cluster() -> None:
     console.print("[bold green]Cluster destroyed. All data removed.[/bold green]\n")
 
 
-def cluster_status() -> None:
+def cluster_status(config_path: Path | None = None) -> None:
     """Show cluster status."""
-    state = load_cluster_state()
+    state = load_cluster_state(get_project_dir(config_path) if config_path else None)
     if state is None:
         console.print("[yellow]No cluster state found. Is a cluster running in this directory?[/yellow]")
         raise SystemExit(1)
