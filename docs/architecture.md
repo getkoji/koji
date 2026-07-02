@@ -255,7 +255,11 @@ Per-type scoring rules:
 | `boolean` | strictly `true` or `false` | — | anything else |
 | `string` w/ `pattern` | matches regex | — | doesn't match |
 | `string` w/o pattern | non-empty + provenance found it | non-empty, no provenance hit (= 0.7) | empty |
+| `object` | mean of its declared sub-fields' scores (each scored recursively from per-property provenance) | — | not an object |
+| `array` | mean of its elements' scores (each element scored recursively from per-element provenance); empty array = 1.0 if optional | — | empty array + required |
 | any | value is `null`, schema doesn't require it | — | required field is null |
+
+`array` and `object` fields are scored by **recursing into the per-element / per-property provenance** the resolver already produces and averaging — so a correct, well-grounded array reflects its true confidence instead of collapsing to 0.0 and force-tripping review on every document.
 
 **Doc-level confidence = `min` of per-field scores** (strict). The document is only as confident as its weakest field. The HITL review gate routes the doc to review when *any* field falls below the pipeline's `review_threshold` (default 0.85). Optional fields that come back null are scored 1.0 (legitimate absence) so they don't drag the doc down.
 
