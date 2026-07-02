@@ -90,19 +90,47 @@ export default function ValidatePage() {
   const hasRuns = runHistory.length > 0;
 
   const [runError, setRunError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
   async function handleRun() {
     setResult(null);
     setRunError(null);
+    setProgress(null);
     setRunning(true);
     try {
-      const data = await api.post<ValidateResult>(`/api/schemas/${schemaSlug}/validate`, {});
-      setResult(data);
+      // Async validate (oss-348): the server fans each corpus doc out as its
+      // own background job and returns a run id; poll it for progress + the
+      // final result so no request ever has to outlive the whole corpus.
+      const queued = await api.post<{ runId: string; docsTotal: number }>(
+        `/api/schemas/${schemaSlug}/validate`,
+        { async: true },
+      );
+      setProgress({ done: 0, total: queued.docsTotal });
+
+      const deadline = Date.now() + 30 * 60 * 1000;
+      for (;;) {
+        if (Date.now() > deadline) throw new Error("Validate run timed out after 30 minutes");
+        await new Promise((r) => setTimeout(r, 2000));
+        const run = await api.get<{
+          status: string;
+          docsTotal: number;
+          docsProcessed: number;
+          result: ValidateResult | null;
+          error: string | null;
+        }>(`/api/schemas/${schemaSlug}/validate/runs/${queued.runId}`);
+        setProgress({ done: run.docsProcessed, total: run.docsTotal });
+        if (run.status === "completed" && run.result) {
+          setResult(run.result);
+          break;
+        }
+        if (run.status === "failed") throw new Error(run.error ?? "Validate failed");
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Validate failed";
       setRunError(msg);
     } finally {
       setRunning(false);
+      setProgress(null);
     }
   }
 
@@ -279,7 +307,17 @@ export default function ValidatePage() {
         {running && (
           <div className="px-8 py-12 text-center">
             <div className="animate-pulse font-mono text-[12px] text-ink-4 mb-2">Running validate...</div>
-            <div className="font-mono text-[11px] text-ink-4">Processing {(corpusEntries ?? []).length} documents</div>
+            <div className="font-mono text-[11px] text-ink-4">
+              {progress ? `${progress.done}/${progress.total} documents processed` : `Processing ${(corpusEntries ?? []).length} documents`}
+            </div>
+            {progress && progress.total > 0 && (
+              <div className="mx-auto mt-3 h-1 w-64 overflow-hidden rounded-full bg-cream-2">
+                <div
+                  className="h-full bg-vermillion-2 transition-all duration-500"
+                  style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 

@@ -21,11 +21,10 @@ interface PerformanceRun {
   versionNumber: number | null;
   status: string;
   errorMessage: string | null;
-  failuresJson: RunFailure[] | null;
+  failures: RunFailure[];
   accuracy: string | null;
   docsTotal: number;
   docsPassed: number;
-  docsFailed: number;
   regressionsCount: number;
   durationMs: number | null;
   completedAt: string | null;
@@ -352,9 +351,9 @@ export default function PerformancePage() {
               {(latestRun.errorMessage ?? "The most recent validate run failed before any document was scored").replace(/\.?$/, ".")}
               {validRuns.length > 0 && " The accuracy shown above is from the last completed run."}
             </div>
-            {(latestRun.failuresJson?.length ?? 0) > 0 && (
+            {(latestRun.failures?.length ?? 0) > 0 && (
               <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
-                {latestRun.failuresJson!.map((f) => (
+                {latestRun.failures.map((f) => (
                   <li key={f.entryId} className="flex gap-2 min-w-0 font-mono text-[11px]">
                     <span className="shrink-0 max-w-[240px] truncate text-ink" title={f.filename}>{f.filename}</span>
                     <span className="truncate text-vermillion-2" title={f.error}>{f.error}</span>
@@ -479,7 +478,7 @@ export default function PerformancePage() {
                   </thead>
                   <tbody>
                     {runs.filter((r) => r.versionNumber !== null).slice().reverse().map((r, i) => {
-                      const failures = r.failuresJson ?? [];
+                      const failures = r.failures ?? [];
                       const expanded = expandedRunId === r.id;
                       return (
                         <Fragment key={r.id}>

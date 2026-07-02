@@ -81,6 +81,7 @@ import {
   handleIngestionProcess,
 } from "./ingestion/process";
 import { initDagRunner, setDagParseProvider, handleDagRun } from "./ingestion/dag-runner";
+import { initValidateRunner, handleSchemaValidateDoc } from "./schemas/validate-run";
 
 import type { Env } from "./env";
 
@@ -165,6 +166,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initDeliveryHandler(deps.db, deps.masterKey);
   initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider, deps.parseConfig);
+  initValidateRunner(deps.db, deps.storage, deps.parseProvider, deps.parseConfig);
   initDagRunner(deps.db, deps.storage);
   setDagParseProvider(deps.parseProvider, deps.parseConfig);
   initBilling(billing);
@@ -253,6 +255,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     "webhook.deliver": handleWebhookDeliver,
     "ingestion.process": handleIngestionProcess,
     "pipeline.dag.run": handleDagRun,
+    "schema.validate.doc": handleSchemaValidateDoc,
   };
 
   return { app, handlers };

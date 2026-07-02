@@ -1,5 +1,5 @@
 {
-  "id": "7d8f05e5-0f28-46d4-85a2-bac116b224c2",
+  "id": "8f8ef16e-2669-432e-ba02-789309d2cd6e",
   "prevId": "66e01f72-e9c6-473a-bdb1-b102a8e7fa5d",
   "version": "7",
   "dialect": "postgresql",
@@ -4899,6 +4899,152 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.schema_run_docs": {
+      "name": "schema_run_docs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schema_run_id": {
+          "name": "schema_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "corpus_entry_id": {
+          "name": "corpus_entry_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "routing_plan_json": {
+          "name": "routing_plan_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "schema_run_docs_run_entry_idx": {
+          "name": "schema_run_docs_run_entry_idx",
+          "columns": [
+            {
+              "expression": "schema_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "corpus_entry_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "schema_run_docs_tenant_idx": {
+          "name": "schema_run_docs_tenant_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "schema_run_docs_tenant_id_tenants_id_fk": {
+          "name": "schema_run_docs_tenant_id_tenants_id_fk",
+          "tableFrom": "schema_run_docs",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "schema_run_docs_schema_run_id_schema_runs_id_fk": {
+          "name": "schema_run_docs_schema_run_id_schema_runs_id_fk",
+          "tableFrom": "schema_run_docs",
+          "tableTo": "schema_runs",
+          "columnsFrom": [
+            "schema_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "schema_run_docs_corpus_entry_id_corpus_entries_id_fk": {
+          "name": "schema_run_docs_corpus_entry_id_corpus_entries_id_fk",
+          "tableFrom": "schema_run_docs",
+          "tableTo": "corpus_entries",
+          "columnsFrom": [
+            "corpus_entry_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.schema_run_models": {
       "name": "schema_run_models",
       "schema": "",
@@ -5183,8 +5329,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "failures_json": {
-          "name": "failures_json",
+        "result_json": {
+          "name": "result_json",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

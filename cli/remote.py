@@ -31,6 +31,7 @@ import httpx
 import typer
 import yaml as yaml_mod
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .credentials import get_active_profile, load_credentials
@@ -39,6 +40,16 @@ console = Console()
 # Progress / status goes to stderr so stdout stays pure (important for --json,
 # which an agent pipes and parses).
 err_console = Console(stderr=True)
+
+
+def emit_json(data: Any) -> None:
+    """Print machine-readable JSON straight to stdout, bypassing rich.
+
+    rich's print_json injects ANSI style codes whenever stdout looks like a
+    terminal (agent harnesses run commands under a pty), and NO_COLOR only
+    strips colors, not bold — either way json.loads breaks downstream.
+    """
+    print(json_mod.dumps(data, indent=2))
 
 
 # ── Auth / connection ─────────────────────────────────────────────────
@@ -444,6 +455,66 @@ def _render_diff(entry: dict, rows: list[dict]) -> None:
 # ── Commands: validate / run ──────────────────────────────────────────
 
 
+def _poll_validate_run(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict,
+    slug: str,
+    queued: dict,
+) -> dict:
+    """Poll an async validate run until it finishes; return the ValidateResult.
+
+    The POST returned 202 with {runId, docsTotal}. Each corpus doc runs as its
+    own background job server-side (oss-348) — this just watches progress.
+    Exits non-zero if the run fails or hasn't finished after 30 minutes.
+    """
+    run_id = queued.get("runId")
+    docs_total = int(queued.get("docsTotal") or 0)
+    url = f"{base_url}/api/schemas/{slug}/validate/runs/{run_id}"
+    deadline = time.monotonic() + 1800  # 30 min hard cap
+
+    # Progress renders to stderr: it's human feedback, and stdout must stay
+    # pure for --json consumers (oss-349 — ANSI on stdout breaks json.loads).
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} docs"),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"validating {slug}", total=docs_total or None)
+        while True:
+            if time.monotonic() > deadline:
+                progress.stop()
+                console.print(
+                    "[red]✗[/red] validate run still not finished after 30 minutes — "
+                    "check the server's worker logs, then re-run."
+                )
+                raise typer.Exit(1)
+            resp = client.get(url, headers=headers)
+            if resp.status_code != 200:
+                _api_error(resp, f"validate {slug} (run {run_id})")
+            data = resp.json()
+            total = int(data.get("docsTotal") or docs_total)
+            progress.update(task, completed=int(data.get("docsProcessed") or 0), total=total or None)
+            status = data.get("status")
+            if status == "completed":
+                result = data.get("result")
+                if not isinstance(result, dict):
+                    progress.stop()
+                    console.print("[red]✗[/red] validate run completed but returned no result payload.")
+                    raise typer.Exit(1)
+                return result
+            if status == "failed":
+                progress.stop()
+                console.print(f"[red]✗[/red] validate {slug} failed — {data.get('error') or 'unknown error'}")
+                for pf in data.get("parseFailures") or []:
+                    console.print(f"  [red]✗[/red] {pf.get('filename')}: {pf.get('error')}")
+                raise typer.Exit(1)
+            time.sleep(2)
+
+
 def validate(
     schema: str = typer.Argument(..., help="Schema slug, or path to a local schema YAML to backtest."),
     model: str = typer.Option(None, "--model", help="Override the extraction model (e.g. openai/gpt-4o-mini)."),
@@ -480,8 +551,10 @@ def validate(
     slug, local_yaml, local_path = _load_schema_arg(schema)
 
     def run_once() -> int:
+        # 300s covers the sync fallback against an older server (the async
+        # path returns in milliseconds and each poll is a fast read).
         with httpx.Client(timeout=300) as client:
-            body: dict = {}
+            body: dict = {"async": True}
             if model:
                 body["model"] = model
             if bump:
@@ -500,12 +573,24 @@ def validate(
             resp = client.post(f"{base_url}/api/schemas/{slug}/validate", json=body, headers=headers)
             if _auth_error(resp, base_url):
                 raise typer.Exit(1)
-            if resp.status_code != 200:
+            if resp.status_code == 202:
+                # Async run: the server fans each corpus doc out as its own job
+                # (no request ever races a timeout — oss-348). Poll for progress
+                # and the final result, then merge the candidate metadata from
+                # the 202 (version/bump/deduped) into it for rendering.
+                queued = resp.json()
+                result = _poll_validate_run(client, base_url, headers, slug, queued)
+                for key in ("version", "bump", "deduped"):
+                    result.setdefault(key, queued.get(key))
+            elif resp.status_code == 200:
+                # Older server without async validate — full result in one response.
+                result = resp.json()
+            else:
                 _api_error(resp, f"validate {slug}")
-            result = resp.json()
+                return 1  # unreachable — _api_error raises
 
         if as_json:
-            console.print_json(json_mod.dumps(result))
+            emit_json(result)
         else:
             _render_validate(slug, result, explain=explain)
         regressed = [f for f in result.get("fields", []) if f.get("status") == "regressed"]
@@ -586,7 +671,7 @@ def run_doc(
         console.print(f"[red]extraction failed:[/red] {result['error']}")
         raise typer.Exit(1)
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
     else:
         _render_extract(matched, result, provenance)
 
@@ -620,7 +705,7 @@ def corpus_ls(
         entries = [e for e in entries if tag in (e.get("tags") or [])]
 
     if as_json:
-        console.print_json(json_mod.dumps(entries))
+        emit_json(entries)
         return
     if not entries:
         console.print("[yellow]No matching corpus entries.[/yellow]")
@@ -702,7 +787,7 @@ def corpus_diff(
 
     rows = _diff_fields(ground_truth, extracted)
     if as_json:
-        console.print_json(json_mod.dumps({"entry": matched.get("filename"), "id": eid, "fields": rows}))
+        emit_json({"entry": matched.get("filename"), "id": eid, "fields": rows})
         return
     if not ground_truth:
         console.print(
@@ -902,7 +987,7 @@ def gt_show(
     latest = data[0]
     payload = latest.get("payloadJson", {}) or {}
     if as_json:
-        console.print_json(json_mod.dumps(payload))
+        emit_json(payload)
         return
     console.print(
         f"\n[bold]{matched.get('filename')}[/bold] ground truth "
@@ -1073,7 +1158,7 @@ def review_ls(
         rows = resp.json().get("data", [])
 
     if as_json:
-        console.print_json(json_mod.dumps(rows))
+        emit_json(rows)
         return
     if not rows:
         console.print(f"[yellow]No {status} review items.[/yellow]")
@@ -1129,7 +1214,7 @@ def review_show(
         row = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(row))
+        emit_json(row)
         return
 
     console.print(
@@ -1222,7 +1307,7 @@ def review_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     status_label = "[yellow]draft (needs approval)[/yellow]" if result.get("provisional") else "[green]approved[/green]"
     dedup_note = " [dim](appended to existing corpus entry)[/dim]" if result.get("deduped") else ""
@@ -1263,7 +1348,7 @@ def schema_versions(
         versions = _fetch_versions(client, base_url, headers, slug)
 
     if as_json:
-        console.print_json(json_mod.dumps(versions))
+        emit_json(versions)
         return
     if not versions:
         console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
@@ -1318,7 +1403,7 @@ def schema_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
 
@@ -1349,7 +1434,7 @@ def schema_release(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
 
@@ -1391,7 +1476,7 @@ def pipeline_ls(
         rows = resp.json().get("data", [])
 
     if as_json:
-        console.print_json(json_mod.dumps(rows))
+        emit_json(rows)
         return
     if not rows:
         console.print("[yellow]No pipelines.[/yellow]")
@@ -1452,7 +1537,7 @@ def pipeline_deploy(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     mode = result.get("versionMode", "auto" if auto else "pinned")
     if mode == "pinned":
@@ -1603,7 +1688,7 @@ def classify_run(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     _render_classify(document.name, result)
     if result.get("label") == "unknown":
@@ -1622,7 +1707,7 @@ def classify_versions(
         versions = _fetch_classifier_versions(client, base_url, headers, slug)
 
     if as_json:
-        console.print_json(json_mod.dumps(versions))
+        emit_json(versions)
         return
     if not versions:
         console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
@@ -1661,7 +1746,7 @@ def classify_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     released = result.get("released") or result.get("versionNumber")
     console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
@@ -1692,7 +1777,7 @@ def classify_release(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     released = result.get("released") or result.get("versionNumber")
     console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
