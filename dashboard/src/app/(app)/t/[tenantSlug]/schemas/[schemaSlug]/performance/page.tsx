@@ -96,6 +96,13 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
   const hovered = hoverIdx !== null ? data[hoverIdx] : null;
   const hoveredPrev = hoverIdx !== null && hoverIdx > 0 ? data[hoverIdx - 1] : null;
 
+  // Thin the x-axis labels once they'd collide: cap how many render and
+  // anchor the stride on the newest run so it always stays labeled. Every
+  // point remains hoverable — the tooltip identifies unlabeled runs.
+  const MAX_X_LABELS = 12;
+  const labelStep = Math.ceil(data.length / MAX_X_LABELS);
+  const showXLabel = (i: number) => (data.length - 1 - i) % labelStep === 0;
+
   return (
     <div className="relative">
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 260 }}
@@ -136,7 +143,9 @@ function TrendChart({ data }: { data: Array<{ version: number; accuracy: number;
               fill={hoverIdx === i ? "#C33520" : "#C33520"}
               stroke="#F4EEE2" strokeWidth="2"
               style={{ transition: "r 150ms" }} />
-            <text x={x(i)} y={h - 4} textAnchor="middle" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: hoverIdx === i ? "#171410" : "#998E78" }}>{d.label ?? `v${d.version}`}</text>
+            {showXLabel(i) && (
+              <text x={x(i)} y={h - 4} textAnchor="middle" style={{ fontSize: 10, fontFamily: "var(--font-mono)", fill: hoverIdx === i ? "#171410" : "#998E78" }}>{d.label ?? `v${d.version}`}</text>
+            )}
             {/* Invisible hover target */}
             <rect x={x(i) - 25} y={py} width={50} height={plotH + 20} fill="transparent"
               onMouseEnter={() => setHoverIdx(i)} />
