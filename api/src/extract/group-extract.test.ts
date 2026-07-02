@@ -175,6 +175,23 @@ describe("collectExtractionNotes", () => {
     expect(result).toContain("The named insured is the organization on the dec.");
     expect(result).toContain("ends with ':'");
   });
+
+  it("injects a skip-row note for skip_row_when fields", () => {
+    const fields = {
+      coverages: { type: "array", hints: { skip_row_when: ["Not Covered", "^\\$0$"] } },
+    };
+    const result = collectExtractionNotes(fields);
+    expect(result).toContain("**coverages**");
+    expect(result).toContain("/Not Covered/i or /^\\$0$/i");
+    expect(result).toContain("Do not emit such rows");
+  });
+
+  it("accepts a single skip_row_when pattern string and ignores an empty list", () => {
+    const single = { coverages: { type: "array", hints: { skip_row_when: "if included" } } };
+    expect(collectExtractionNotes(single)).toContain("/if included/i");
+    const empty = { coverages: { type: "array", hints: { skip_row_when: [] } } };
+    expect(collectExtractionNotes(empty)).toBe("");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -922,6 +939,14 @@ describe("buildEnumerationPrompt", () => {
     expect(p).toContain("Already extracted (2)");
     expect(p).toContain("COMPLETE array");
     expect(p).toContain('"code":"GL"');
+    expect(p).not.toContain("EXCEPTION:");
+  });
+
+  it("carves out skip_row_when rows from the list-every-row instruction", () => {
+    const skipSpec = { ...spec, hints: { skip_row_when: ["Not Covered"] } };
+    const p = buildEnumerationPrompt("coverages", skipSpec, chunks, [{ code: "GL" }]);
+    expect(p).toContain("EXCEPTION: SKIP rows");
+    expect(p).toContain("/Not Covered/i");
   });
 });
 

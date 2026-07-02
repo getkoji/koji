@@ -417,6 +417,79 @@ export function rejectCaptionValues(
   return nulled;
 }
 
+/**
+ * Compile a pattern hint (a regex string or a list of them) into
+ * case-insensitive RegExps. Invalid patterns are skipped rather than failing
+ * the field — a schema-author typo shouldn't drop extraction.
+ */
+function compilePatternList(raw: unknown): RegExp[] {
+  const patterns = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
+  const compiled: RegExp[] = [];
+  for (const p of patterns) {
+    if (typeof p !== "string" || !p) continue;
+    try {
+      compiled.push(new RegExp(p, "i"));
+    } catch {
+      // Skip a malformed pattern — a schema-author bug shouldn't break extraction.
+    }
+  }
+  return compiled;
+}
+
+/** Collect every string leaf in an array element (the element itself when it's
+ *  a string, all nested string values when it's an object/array). */
+function collectStringLeaves(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectStringLeaves(v, out);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const v of Object.values(value)) collectStringLeaves(v, out);
+  }
+}
+
+/**
+ * Deterministic backstop for the `hints.skip_row_when` opt-in on array fields:
+ * drop any element whose string values match one of the schema-provided
+ * patterns. A repeated structure often lists rows that carry a marker meaning
+ * "present in the layout but not actually applicable" ("$0", "Not Covered",
+ * "If Included") — enumeration faithfully emits them, and this filter is where
+ * they get dropped. Keeps the index-aligned per-element `source_texts` in sync
+ * so provenance highlighting doesn't shift onto the wrong row. Opt-in per
+ * field; returns per-field drop counts for the normalization report.
+ */
+export function skipMarkedRows(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+  sourceTexts?: Record<string, string[]>,
+): Array<{ field: string; dropped: number }> {
+  const report: Array<{ field: string; dropped: number }> = [];
+  for (const [name, spec] of Object.entries(fields)) {
+    const hints = spec.hints as Record<string, unknown> | undefined;
+    const patterns = compilePatternList(hints?.skip_row_when);
+    if (patterns.length === 0) continue;
+    const value = extracted[name];
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const keep = value.map((el) => {
+      const leaves: string[] = [];
+      collectStringLeaves(el, leaves);
+      return !leaves.some((s) => patterns.some((re) => re.test(s)));
+    });
+    if (keep.every(Boolean)) continue;
+    extracted[name] = value.filter((_, i) => keep[i]);
+    const st = sourceTexts?.[name];
+    if (st && st.length === value.length) {
+      sourceTexts[name] = st.filter((_, i) => keep[i]);
+    }
+    report.push({ field: name, dropped: keep.filter((k) => !k).length });
+  }
+  return report;
+}
+
 /** Normalize a line/caption for matching: strip markdown, collapse spaces, drop
  *  a trailing colon, lowercase. */
 function normalizeCaption(s: string): string {
@@ -787,6 +860,13 @@ export async function extractFields(
   // nulled required field surfaces as not-found (→ review), not a wrong value.
   const captionNulled = rejectCaptionValues(result.extracted, fields);
 
+  // `skip_row_when` backstop: drop array rows whose values match a
+  // schema-provided pattern — rows a table lists but marks as not applicable.
+  // Deterministic and after every extraction pass (including enumerate_rows),
+  // so a marked row never ships regardless of which pass produced it. Runs
+  // before validation so dropped rows aren't validated.
+  const skippedRows = skipMarkedRows(result.extracted, fields, result.source_texts);
+
   const vocabIssues = validateFields(result.extracted, fields);
 
   // Post-extraction normalization (derived fields, etc.)
@@ -804,6 +884,9 @@ export async function extractFields(
       ),
       ...captionNulled.map(
         (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
+      ),
+      ...skippedRows.map(
+        ({ field, dropped }) => `${field}: dropped ${dropped} row(s) matching skip_row_when`,
       ),
     ],
   };

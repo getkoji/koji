@@ -855,6 +855,26 @@ coverages:
 
 It costs one extra model call per opted-in array field (only when the field extracted at least one row), so reserve it for array fields where completeness matters and the source stacks many items in one place. Pairs naturally with `per_section` (which handles the *scattered* case) — together they cover both scattered and co-located elements.
 
+### skip_row_when
+
+Row enumeration is faithful to the source — which becomes a *precision* problem when the source lists rows that aren't actually applicable. Rate schedules, product catalogs, and summary tables routinely include every item the layout supports, marking the inapplicable ones with a value like `$0`, `Not Covered`, or `If Included`. `enumerate_rows` (and the model's own thoroughness) will emit those rows as data.
+
+`skip_row_when` takes a regex (or a list of them) and drops any array element whose values match:
+
+```yaml
+coverages:
+  type: array
+  hints:
+    per_section: true
+    element_key: coverage_code
+    enumerate_rows: true
+    skip_row_when: ["^\\$?0(\\.00)?$", "Not Covered", "If Included"]
+```
+
+Matching is case-insensitive and applies to every string value in the element (including nested ones). It works in two layers: the patterns are added to the extraction and enumeration prompts as a skip instruction, and a **deterministic post-filter** drops any matching row that slips through — after every extraction pass, so a marked row never ships regardless of which pass produced it. Per-element provenance stays aligned with the surviving rows.
+
+Anchor patterns that could legitimately appear *inside* a real value: `"^\\$0$"` drops a row whose limit is exactly `$0`, while a bare `"\\$0"` would also kill a row with a `$1,000,000 ($0 deductible)` limit. A malformed regex is skipped (the rest still apply) rather than failing extraction.
+
 ### isolate
 
 By default, fields routed to overlapping chunks are extracted **together** in one LLM call, over the union of their chunks, with every field's instructions in the same prompt. That's efficient, but it couples fields: a field's output can shift when an *unrelated* field's routing hint changes (different routing → different grouping → a different shared prompt). For a critical field whose value must be stable, that coupling is a liability.
