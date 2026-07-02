@@ -1010,6 +1010,8 @@ Documents are parsed with the tenant's configured parse provider (the same one t
 
 Each entry in `fields[]` carries `name`, `accuracy` (%), `prevAccuracy`, `status`, and `failingDocs`. **Array fields** are scored by F1 and additionally carry `precision` and `recall` (percentages), so a low score can be read as missed elements (low recall) vs spurious/wrong elements (low precision). Element matching uses the array's `element_key` hint when declared, and sub-fields marked `informational` are excluded from scoring (see the schema guide).
 
+Each successfully extracted document is persisted as an extraction run linked to the validate run. These per-document records power the per-field accuracy heatmap on the Performance page (`GET /api/schemas/{slug}/performance`) and serve as the regression baseline for the next validate.
+
 ### `GET /api/schemas/{slug}/versions`
 
 The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
