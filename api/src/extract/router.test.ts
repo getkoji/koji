@@ -981,7 +981,7 @@ describe("routeFields — per_section coverage-maximizing selection", () => {
     expect(routes[0]!.chunks.length).toBe(3);
   });
 
-  it("collapses chunks that share a heading into one section", () => {
+  it("keeps ALL chunks of a section that spans multiple chunks (oss-345)", () => {
     const chunks: Chunk[] = [
       makeChunk({
         index: 0,
@@ -1006,6 +1006,22 @@ describe("routeFields — per_section coverage-maximizing selection", () => {
       }),
     ];
     const routes = routeFields(arraySchema({ per_section: true }), chunks);
+    // The PROPERTY section spans two chunks — BOTH are kept (rows in the second
+    // chunk would otherwise be lost), plus the LIABILITY chunk = 3.
+    expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0, 1, 2]);
+  });
+
+  it("caps chunks pulled from a single section at chunks_per_section", () => {
+    const chunks: Chunk[] = Array.from({ length: 6 }, (_, i) =>
+      makeChunk({
+        index: i,
+        title: "PROPERTY COVERAGE PART DECLARATIONS", // all one section
+        category: "declarations",
+        content: "coverage limit deductible",
+        signals: { ...covSignals },
+      }),
+    );
+    const routes = routeFields(arraySchema({ per_section: true, chunks_per_section: 2 }), chunks);
     expect(routes[0]!.chunks.length).toBe(2);
   });
 

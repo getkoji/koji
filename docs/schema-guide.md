@@ -836,6 +836,25 @@ coverages:
 
 The pattern is case-insensitive. Provide several when the qualifying sections aren't uniformly named (`["COVERAGE PART DECLARATIONS", "RECORD OF ADDITIONAL INSUREDS"]`). If the anchor matches no section, `per_section` falls back to all sections and logs a warning — a too-narrow pattern won't make the field silently vanish. Use `section_anchor` to trade a little recall for a lot of precision once `per_section` is over-producing.
 
+**`chunks_per_section`** (default `4`) controls how many chunks `per_section` keeps *per* matched section. A section whose table spans several chunks needs more than one, or the rows in the dropped chunks never reach the model. Raise it for very long coverage-part tables; the default handles most.
+
+### enumerate_rows
+
+`per_section` iterates *sections*, so it doesn't help when many elements live in a **single** section — a dense dec where four coverage parts are stacked in one table. Models routinely under-count the rows of a co-located table (return 2 of 4), and this is **not** a model-capability problem: a bigger model under-counts the same table. Routing can't fix it either, because all the rows are already in the chunk.
+
+`enumerate_rows: true` adds a second **completion pass** for the array field: after the first extraction, the engine re-prompts over the same chunks — "you extracted these N rows; list EVERY row of the table including any you missed; return the complete set" — and unions the result (deduplicated). It reliably recovers the rows a single pass drops.
+
+```yaml
+coverages:
+  type: array
+  hints:
+    per_section: true
+    element_key: coverage_code
+    enumerate_rows: true   # second pass to catch under-counted co-located rows
+```
+
+It costs one extra model call per opted-in array field (only when the field extracted at least one row), so reserve it for array fields where completeness matters and the source stacks many items in one place. Pairs naturally with `per_section` (which handles the *scattered* case) — together they cover both scattered and co-located elements.
+
 ### isolate
 
 By default, fields routed to overlapping chunks are extracted **together** in one LLM call, over the union of their chunks, with every field's instructions in the same prompt. That's efficient, but it couples fields: a field's output can shift when an *unrelated* field's routing hint changes (different routing → different grouping → a different shared prompt). For a critical field whose value must be stable, that coupling is a liability.

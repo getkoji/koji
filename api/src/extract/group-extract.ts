@@ -216,6 +216,19 @@ export function buildGroupPrompt(
   const cfg = schemaConfig ?? {};
   const extraInstructions: string[] = [];
 
+  // Exhaustive enumeration for array fields — models routinely under-count the
+  // rows of a co-located table (emit 2 of a 4-row coverage table). Generic: it
+  // only asks for completeness when the data is a repeated structure, so it's
+  // safe for arrays that aren't tables.
+  const hasArrayField = Object.values(fields).some((s) => (s.type as string) === "array");
+  if (hasArrayField) {
+    extraInstructions.push(
+      "For array fields, enumerate EVERY matching row/item as a separate element — " +
+        "if a table or repeated block has N rows, return N items. Do not summarize, " +
+        "group, deduplicate, or stop early; list them all, even when they look similar.",
+    );
+  }
+
   // Locale: unified block or legacy standalone keys
   const locale = (cfg.locale ?? {}) as Record<string, unknown>;
   const localeFallback = (locale.fallback ?? {}) as Record<string, string>;
@@ -577,5 +590,73 @@ export async function fillGap(
   } catch (e) {
     console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
     return {};
+  }
+}
+
+/**
+ * Prompt for the `enumerate_rows` completion pass — shows what was already
+ * extracted and asks for the COMPLETE row set over the same chunks.
+ */
+export function buildEnumerationPrompt(
+  fieldName: string,
+  fieldSpec: Record<string, unknown>,
+  chunks: Chunk[],
+  currentItems: unknown[],
+  contextChunks?: Chunk[] | null,
+): string {
+  const typeLabel = "array" + describeArrayItem(fieldSpec);
+  const description = (fieldSpec.description as string) ?? "";
+  const descLabel = description ? ` — ${description}` : "";
+  const hint = fieldSpec.extraction_hint as string | undefined;
+  const notesSection =
+    typeof hint === "string" && hint.trim() ? `\n## Extraction notes\n\n- **${fieldName}**: ${hint.trim()}\n` : "";
+  const content = chunks.map((c) => `### ${c.title}\n\n${c.content}`).join("\n\n---\n\n");
+  const contextSection = renderContextChunks(contextChunks, chunks);
+
+  return `An earlier pass extracted ${currentItems.length} item(s) for the array field "${fieldName}", but a repeated structure (a table or list) in the sections below likely has MORE rows that were missed. Enumerate EVERY row.
+
+## Array field
+
+  - ${fieldName}: ${typeLabel}${descLabel}
+${notesSection}## Already extracted (${currentItems.length})
+
+${JSON.stringify(currentItems)}
+${contextSection}
+## Document sections
+
+${content}
+
+## Instructions
+
+Return the COMPLETE array for "${fieldName}" — every row of the table/list as a separate item, INCLUDING the ones already extracted above AND any that were missed. Do not summarize, merge, deduplicate, or drop rows; list them all even when they look similar. Return a FLAT JSON object {"${fieldName}": [ ... ]}. Do not invent data — only rows explicitly present in the sections.
+
+JSON:`;
+}
+
+/**
+ * `enumerate_rows` completion pass: re-prompt over the array field's chunks to
+ * list EVERY row, catching the model's first-pass under-count of a co-located
+ * table. Returns the model's row list (to be unioned with the current items by
+ * the caller). Returns [] on any error/invalid JSON — never throws.
+ */
+export async function enumerateRows(
+  fieldName: string,
+  fieldSpec: Record<string, unknown>,
+  chunks: Chunk[],
+  currentItems: unknown[],
+  provider: ModelProvider,
+  contextChunks?: Chunk[] | null,
+): Promise<unknown[]> {
+  const prompt = buildEnumerationPrompt(fieldName, fieldSpec, chunks, currentItems, contextChunks);
+  try {
+    const raw = await provider.generate(prompt, true);
+    const parsed = parseJsonResponse(raw);
+    if (!parsed) return [];
+    const result = unwrapNestedResult(parsed, new Set([fieldName]));
+    const value = result[fieldName];
+    return Array.isArray(value) ? value : [];
+  } catch (e) {
+    console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
+    return [];
   }
 }
