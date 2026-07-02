@@ -41,6 +41,16 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+def emit_json(data: Any) -> None:
+    """Print machine-readable JSON straight to stdout, bypassing rich.
+
+    rich's print_json injects ANSI style codes whenever stdout looks like a
+    terminal (agent harnesses run commands under a pty), and NO_COLOR only
+    strips colors, not bold — either way json.loads breaks downstream.
+    """
+    print(json_mod.dumps(data, indent=2))
+
+
 # ── Auth / connection ─────────────────────────────────────────────────
 
 
@@ -505,7 +515,7 @@ def validate(
             result = resp.json()
 
         if as_json:
-            console.print_json(json_mod.dumps(result))
+            emit_json(result)
         else:
             _render_validate(slug, result, explain=explain)
         regressed = [f for f in result.get("fields", []) if f.get("status") == "regressed"]
@@ -586,7 +596,7 @@ def run_doc(
         console.print(f"[red]extraction failed:[/red] {result['error']}")
         raise typer.Exit(1)
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
     else:
         _render_extract(matched, result, provenance)
 
@@ -620,7 +630,7 @@ def corpus_ls(
         entries = [e for e in entries if tag in (e.get("tags") or [])]
 
     if as_json:
-        console.print_json(json_mod.dumps(entries))
+        emit_json(entries)
         return
     if not entries:
         console.print("[yellow]No matching corpus entries.[/yellow]")
@@ -702,7 +712,7 @@ def corpus_diff(
 
     rows = _diff_fields(ground_truth, extracted)
     if as_json:
-        console.print_json(json_mod.dumps({"entry": matched.get("filename"), "id": eid, "fields": rows}))
+        emit_json({"entry": matched.get("filename"), "id": eid, "fields": rows})
         return
     if not ground_truth:
         console.print(
@@ -902,7 +912,7 @@ def gt_show(
     latest = data[0]
     payload = latest.get("payloadJson", {}) or {}
     if as_json:
-        console.print_json(json_mod.dumps(payload))
+        emit_json(payload)
         return
     console.print(
         f"\n[bold]{matched.get('filename')}[/bold] ground truth "
@@ -1073,7 +1083,7 @@ def review_ls(
         rows = resp.json().get("data", [])
 
     if as_json:
-        console.print_json(json_mod.dumps(rows))
+        emit_json(rows)
         return
     if not rows:
         console.print(f"[yellow]No {status} review items.[/yellow]")
@@ -1129,7 +1139,7 @@ def review_show(
         row = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(row))
+        emit_json(row)
         return
 
     console.print(
@@ -1222,7 +1232,7 @@ def review_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     status_label = "[yellow]draft (needs approval)[/yellow]" if result.get("provisional") else "[green]approved[/green]"
     dedup_note = " [dim](appended to existing corpus entry)[/dim]" if result.get("deduped") else ""
@@ -1263,7 +1273,7 @@ def schema_versions(
         versions = _fetch_versions(client, base_url, headers, slug)
 
     if as_json:
-        console.print_json(json_mod.dumps(versions))
+        emit_json(versions)
         return
     if not versions:
         console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
@@ -1318,7 +1328,7 @@ def schema_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
 
@@ -1349,7 +1359,7 @@ def schema_release(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     console.print(f"[green]✓[/green] released [cyan]{result.get('released')}[/cyan] — now live")
 
@@ -1391,7 +1401,7 @@ def pipeline_ls(
         rows = resp.json().get("data", [])
 
     if as_json:
-        console.print_json(json_mod.dumps(rows))
+        emit_json(rows)
         return
     if not rows:
         console.print("[yellow]No pipelines.[/yellow]")
@@ -1452,7 +1462,7 @@ def pipeline_deploy(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     mode = result.get("versionMode", "auto" if auto else "pinned")
     if mode == "pinned":
@@ -1603,7 +1613,7 @@ def classify_run(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     _render_classify(document.name, result)
     if result.get("label") == "unknown":
@@ -1622,7 +1632,7 @@ def classify_versions(
         versions = _fetch_classifier_versions(client, base_url, headers, slug)
 
     if as_json:
-        console.print_json(json_mod.dumps(versions))
+        emit_json(versions)
         return
     if not versions:
         console.print(f"[yellow]No versions for {slug} yet.[/yellow]")
@@ -1661,7 +1671,7 @@ def classify_promote(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     released = result.get("released") or result.get("versionNumber")
     console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
@@ -1692,7 +1702,7 @@ def classify_release(
         result = resp.json()
 
     if as_json:
-        console.print_json(json_mod.dumps(result))
+        emit_json(result)
         return
     released = result.get("released") or result.get("versionNumber")
     console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
