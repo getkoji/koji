@@ -13,6 +13,7 @@ from cli.bench import (
     discover_categories,
     discover_documents,
     format_report,
+    model_from_config,
     run_bench,
 )
 
@@ -68,6 +69,74 @@ def _make_mock_client(responses: list) -> MagicMock:
     client = MagicMock()
     client.post.side_effect = responses
     return client
+
+
+# ── model_from_config ────────────────────────────────────────────────
+
+
+class TestModelFromConfig:
+    """Unit tests for model_from_config — reads extract step model from koji.yaml."""
+
+    def test_returns_model_from_extract_step(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text("pipeline:\n  - step: extract\n    model: openai/gpt-4o-mini\n")
+        assert model_from_config(cfg) == "openai/gpt-4o-mini"
+
+    def test_returns_none_when_no_extract_step(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text("pipeline:\n  - step: parse\n    engine: docling\n")
+        assert model_from_config(cfg) is None
+
+    def test_returns_none_when_extract_step_has_no_model(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text("pipeline:\n  - step: extract\n")
+        assert model_from_config(cfg) is None
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        assert model_from_config(tmp_path / "nonexistent.yaml") is None
+
+    def test_returns_none_when_file_empty(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text("")
+        assert model_from_config(cfg) is None
+
+    def test_returns_none_on_invalid_yaml(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text(": invalid: [yaml\n")
+        assert model_from_config(cfg) is None
+
+    def test_skips_non_extract_steps_and_finds_extract(self, tmp_path):
+        cfg = tmp_path / "koji.yaml"
+        cfg.write_text(
+            "pipeline:\n"
+            "  - step: parse\n"
+            "    engine: docling\n"
+            "  - step: classify\n"
+            "  - step: extract\n"
+            "    model: anthropic/claude-3-5-haiku\n"
+        )
+        assert model_from_config(cfg) == "anthropic/claude-3-5-haiku"
+
+    def test_uses_default_path_when_none_given(self, tmp_path, monkeypatch):
+        """With no explicit path, reads ./koji.yaml relative to cwd."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "koji.yaml").write_text("pipeline:\n  - step: extract\n    model: openai/gpt-4o\n")
+        assert model_from_config() == "openai/gpt-4o"
+
+    def test_returns_none_when_no_koji_yaml_in_cwd(self, tmp_path, monkeypatch):
+        """No koji.yaml in cwd → None, not an exception."""
+        monkeypatch.chdir(tmp_path)
+        assert model_from_config() is None
+
+    def test_bench_config_flag_registered(self):
+        """koji bench accepts --config to locate a non-default koji.yaml."""
+        from typer.testing import CliRunner
+
+        from cli.main import app
+
+        result = CliRunner().invoke(app, ["bench", "--help"])
+        assert result.exit_code == 0
+        assert "config" in result.output
 
 
 # ── Corpus discovery ──────────────────────────────────────────────────

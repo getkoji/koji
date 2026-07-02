@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.44.0"
+KOJI_VERSION = "0.45.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -460,12 +460,16 @@ def bench(
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
     output: str | None = typer.Option(None, "--output", "-o", help="Write JSON results to file"),
     emit_latest: bool = typer.Option(False, "--emit-latest", help="Write results to {corpus}/.benchmarks/latest.json"),
+    config: str | None = typer.Option(None, "--config", help="Path to koji.yaml (default: ./koji.yaml)"),
 ):
     """Benchmark extraction accuracy against a validation corpus.
 
     Runs extraction against every document in the corpus and compares the
     output against expected ground truth. Reports per-category, per-document,
     and aggregate accuracy.
+
+    Without --model, uses the extract step's model from koji.yaml (the same
+    model the cluster runs), falling back to the server default.
 
     Requires a running Koji cluster (use `koji start` first). Use this to
     measure extraction accuracy before shipping schema changes, to compare
@@ -486,7 +490,7 @@ def bench(
     # Locally it runs on the server port; prod uses the CLI profile URL.
     from .credentials import get_active_profile
 
-    state = load_cluster_state()
+    state = load_cluster_state(_project_dir_from(config))
     if state is not None:
         server_url = f"http://127.0.0.1:{state.get('server_port', 9501)}"
     else:
@@ -504,6 +508,13 @@ def bench(
     except (httpx.ConnectError, httpx.ReadTimeout):
         console.print(f"[red]Extract service not reachable at {server_url}[/red]")
         raise SystemExit(1)
+
+    # Without --model, bench runs whatever model the cluster's koji.yaml
+    # configures for the extract step, so bench numbers match live behavior.
+    if model is None:
+        from .bench import model_from_config
+
+        model = model_from_config(Path(config) if config else None)
 
     if not json_output:
         label_parts = [f"corpus: {corpus_path.name}"]

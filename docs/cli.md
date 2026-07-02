@@ -206,7 +206,8 @@ koji test --schema schemas/invoice.yaml --json             # machine-readable ou
 Benchmark extraction accuracy across an entire validation corpus. Use this to measure accuracy before shipping schema changes, compare models, or produce numbers for an accuracy dashboard.
 
 ```bash
-koji bench --corpus ./corpus --model openai/gpt-4o-mini
+koji bench --corpus ./corpus                                # model from koji.yaml
+koji bench --corpus ./corpus --model openai/gpt-4o-mini     # explicit model override
 koji bench --corpus ./corpus --category invoices --limit 10
 koji bench --corpus ./corpus --model openai/gpt-4o --output bench.json
 ```
@@ -214,11 +215,12 @@ koji bench --corpus ./corpus --model openai/gpt-4o --output bench.json
 | Flag | Description |
 |------|-------------|
 | `--corpus`, `-c` | **Required.** Path to a corpus directory (with `documents/`, `expected/`, `manifests/`, `schemas/` subdirectories per category). |
-| `--model`, `-m` | Model override. |
+| `--model`, `-m` | Model override. Defaults to the extract step's `model` in `koji.yaml` — the same model the cluster runs — falling back to the server default. |
 | `--category` | Only benchmark a single category (e.g., `invoices`). |
 | `--limit` | Maximum documents to process per category. Useful for fast CI runs. |
 | `--json` | Output machine-readable JSON. |
 | `--output`, `-o` | Write JSON results to a file (always JSON, regardless of `--json`). |
+| `--config` | Path to `koji.yaml` (default: `./koji.yaml`). Long form only — bench uses `-c` for `--corpus`. |
 
 The corpus format is the convention used by [getkoji/corpus](https://github.com/getkoji/corpus). Per-category, per-document, and aggregate accuracy are reported. Exit code is 0 on full pass, 1 on any regression or error.
 
