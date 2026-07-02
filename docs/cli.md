@@ -225,7 +225,7 @@ The inner loop is: edit the schema YAML → `koji validate` to backtest it (safe
 
 ### `koji validate`
 
-Backtest a schema against its corpus ground truth — **safely**. Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs. **The candidate is not made live**: iterating never touches the schema your pipelines run. The semver bump (`major`/`minor`/`patch`) is auto-derived from how the output shape changed.
+Backtest a schema against its corpus ground truth — **safely**. Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs. Array fields are scored by F1 and show a `P/R` (precision/recall) column so you can tell missed elements from spurious ones; `--json` includes `precision`/`recall` per array field. **The candidate is not made live**: iterating never touches the schema your pipelines run. The semver bump (`major`/`minor`/`patch`) is auto-derived from how the output shape changed.
 
 ```bash
 koji validate insurance_policy                       # snapshot schemas/insurance_policy.yaml as a candidate + backtest

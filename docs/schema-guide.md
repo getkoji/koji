@@ -1160,6 +1160,39 @@ line_items:
 
 When multiple extraction groups return results for the same array field, Koji concatenates and deduplicates them. This means array fields spanning multiple pages or sections are merged automatically.
 
+### Scoring arrays in Validate (`element_key`, `informational`)
+
+Validate scores an array field by **F1** of precision and recall over its elements — so it rewards recall (finding the right elements) and precision (not producing spurious ones) separately, and reports both. Two optional hints make that scoring accurate:
+
+- **`element_key`** (an array-field hint) names the sub-field that identifies an element — e.g. `coverage_name`, `role`, `loc_number`. Validate matches expected ↔ extracted elements by that key, so a single wrong sub-field can't mispair an element, and finding/missing whole elements is measured honestly. Without a key, elements are matched by greedy best-overlap.
+
+```yaml
+coverages:
+  type: array
+  items:
+    type: object
+    properties:
+      coverage_name: { type: string }
+      limit: { type: string }
+  hints:
+    element_key: coverage_name
+```
+
+- **`informational: true`** (a sub-field hint) marks a sub-field that should **not** count toward an element's accuracy — cosmetic wording, raw passthroughs, anything you extract for reference but don't want to be graded on. It's neither scored nor penalized.
+
+```yaml
+items:
+  type: object
+  properties:
+    coverage_name: { type: string }
+    limit: { type: string }
+    applies_to_raw:
+      type: string
+      hints: { informational: true }   # kept, but not scored
+```
+
+The validate output reports `precision` and `recall` (percentages) per array field alongside `accuracy` (the F1). A low F1 with high recall / low precision means spurious or wrong elements; high precision / low recall means missed elements — the distinction tells you whether to tighten extraction or broaden it. `koji validate --json` includes all three.
+
 ## Enum matching
 
 Enum fields constrain extraction to a predefined set of values. Koji applies fuzzy matching in this order:

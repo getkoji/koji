@@ -1193,7 +1193,14 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     return c.json({ error: "All extractions failed", parseFailures }, 502);
   }
 
-  const validateResult = computeValidateResult(results, prevExtractedMap, versionNumber, startTime, parseFailures);
+  const validateResult = computeValidateResult(
+    results,
+    prevExtractedMap,
+    versionNumber,
+    startTime,
+    parseFailures,
+    (schemaDef.fields as Record<string, Record<string, unknown>>) ?? {},
+  );
 
   // Update schema_run with results
   await withRLS(db, tenantId, (tx) =>
@@ -1295,27 +1302,43 @@ export function computeValidateResult(
    * Defaults to `[]` for the GET (read-only) caller that has no failure list.
    */
   parseFailures: Array<{ entryId: string; filename: string; error: string }> = [],
+  /**
+   * Schema field specs, so array fields can be scored with their declared
+   * `element_key` (identity matching) and `informational` sub-fields (excluded
+   * from scoring), and so precision/recall can be reported per array field.
+   * Optional — without it, arrays still get F1 scoring via greedy matching.
+   */
+  schemaFields?: Record<string, Record<string, unknown>>,
 ) {
   const allFields = new Set<string>();
   for (const r of results) {
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
   let totalScore = 0;
   let totalChecked = 0;
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
+    const fieldSpec = schemaFields?.[fieldName];
     let scoreSum = 0, checked = 0, prevScoreSum = 0, prevChecked = 0;
+    // Precision/recall accumulate only over docs whose expected value is an
+    // array, so array fields can report both alongside the F1 accuracy.
+    let precSum = 0, recSum = 0, arrChecked = 0;
     const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> = [];
 
     for (const r of results) {
       const expected = r.groundTruth[fieldName];
       if (expected === undefined || expected === null) continue;
       checked++;
-      const cmp = compareValues(expected, r.extracted[fieldName]);
+      const cmp = compareValues(expected, r.extracted[fieldName], fieldSpec);
       scoreSum += cmp.score;
+      if (cmp.diff.kind === "array") {
+        precSum += cmp.diff.precision;
+        recSum += cmp.diff.recall;
+        arrChecked++;
+      }
 
       if (!cmp.match) {
         const conf = r.confidenceScores[fieldName] ?? 0;
@@ -1339,7 +1362,7 @@ export function computeValidateResult(
       const prevExtracted = prevExtractedMap.get(r.entryId);
       if (prevExtracted) {
         prevChecked++;
-        prevScoreSum += compareValues(expected, prevExtracted[fieldName]).score;
+        prevScoreSum += compareValues(expected, prevExtracted[fieldName], fieldSpec).score;
       }
     }
 
@@ -1348,7 +1371,14 @@ export function computeValidateResult(
     totalScore += scoreSum;
     totalChecked += checked;
     const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
-    fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, failingDocs: failing });
+    // Report precision/recall for array fields (mean over docs, as percentages)
+    // so a low F1 can be read as "missed elements" (recall) vs "spurious/wrong
+    // elements" (precision) — the diagnosis Superkey needs on coverages et al.
+    const prAgg =
+      arrChecked > 0
+        ? { precision: (precSum / arrChecked) * 100, recall: (recSum / arrChecked) * 100 }
+        : {};
+    fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, ...prAgg, failingDocs: failing });
   }
 
   fieldResults.sort((a, b) => a.accuracy - b.accuracy);
@@ -1395,10 +1425,24 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   const [latestVersion] = await withRLS(db, tenantId, (tx) =>
-    tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+    tx.select({ versionNumber: schema.schemaVersions.versionNumber, yamlSource: schema.schemaVersions.yamlSource })
       .from(schema.schemaVersions).where(eq(schema.schemaVersions.schemaId, schemaRow.id))
       .orderBy(desc(schema.schemaVersions.versionNumber)).limit(1)
   );
+
+  // Parse the schema's field specs so array fields score with their declared
+  // `element_key`/`informational` (same as the POST path). Best-effort — a
+  // parse failure just falls back to schema-less F1 scoring.
+  let getSchemaFields: Record<string, Record<string, unknown>> | undefined;
+  if (latestVersion?.yamlSource) {
+    try {
+      const { parse: parseYaml } = await import("yaml");
+      const parsed = parseYaml(latestVersion.yamlSource) as Record<string, unknown>;
+      getSchemaFields = (parsed?.fields as Record<string, Record<string, unknown>>) ?? undefined;
+    } catch {
+      getSchemaFields = undefined;
+    }
+  }
 
   const entries = await withRLS(db, tenantId, (tx) =>
     tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
@@ -1433,5 +1477,5 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
 
   if (results.length === 0) return c.json(null);
 
-  return c.json(computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime));
+  return c.json(computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime, [], getSchemaFields));
 });

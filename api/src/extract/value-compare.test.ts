@@ -74,14 +74,17 @@ describe("compareValues — arrays", () => {
     expect(r.score).toBe(1);
   });
 
-  it("gives partial credit for missing elements (4 of 6)", () => {
+  it("gives partial credit for missing elements — F1 (4 of 6 recall, full precision)", () => {
     const expected = [a, b, c, a, b, c];
-    const got = [a, b, c, a]; // 4 present
+    const got = [a, b, c, a]; // 4 present, all correct
     const r = compareValues(expected, got);
-    expect(r.score).toBeCloseTo(4 / 6, 5);
+    // precision = 4/4 = 1, recall = 4/6, F1 = 2·1·(4/6)/(1 + 4/6) = 0.8
+    expect(r.score).toBeCloseTo(0.8, 5);
     const diff = r.diff as ArrayDiff;
     expect(diff.expectedCount).toBe(6);
     expect(diff.gotCount).toBe(4);
+    expect(diff.precision).toBeCloseTo(1, 5);
+    expect(diff.recall).toBeCloseTo(4 / 6, 5);
     expect(diff.elements.filter((e) => e.status === "missing")).toHaveLength(2);
   });
 
@@ -91,10 +94,13 @@ describe("compareValues — arrays", () => {
     expect(r.score).toBe(0);
   });
 
-  it("penalizes extra elements and surfaces them in the diff", () => {
-    const r = compareValues([a], [a, b]);
-    expect(r.score).toBeCloseTo(1 / 2, 5);
+  it("penalizes extra elements via precision, surfaces them in the diff (F1)", () => {
+    const r = compareValues([a], [a, b]); // 1 correct + 1 spurious extra
+    // precision = 1/2, recall = 1/1, F1 = 2·0.5·1/1.5 = 0.6667
+    expect(r.score).toBeCloseTo(2 / 3, 5);
     const diff = r.diff as ArrayDiff;
+    expect(diff.precision).toBeCloseTo(0.5, 5);
+    expect(diff.recall).toBeCloseTo(1, 5);
     expect(diff.elements.some((e) => e.status === "extra")).toBe(true);
   });
 
@@ -104,6 +110,103 @@ describe("compareValues — arrays", () => {
     const diff = r.diff as ArrayDiff;
     const changed = diff.elements.find((e) => e.status === "changed");
     expect(changed).toBeDefined();
+  });
+});
+
+describe("compareValues — arrays with element_key matching", () => {
+  const spec = {
+    type: "array",
+    hints: { element_key: "code" },
+    items: {
+      type: "object",
+      properties: { code: { type: "string" }, limit: { type: "string" } },
+    },
+  };
+
+  it("pairs elements by key regardless of order or a wrong sub-field", () => {
+    const expected = [
+      { code: "GL", limit: "1000000" },
+      { code: "PROP", limit: "2000000" },
+    ];
+    // Reordered, and PROP's limit is wrong — but keys still pair them.
+    const got = [
+      { code: "PROP", limit: "9999999" },
+      { code: "GL", limit: "1000000" },
+    ];
+    const r = compareValues(expected, got, spec);
+    const diff = r.diff as ArrayDiff;
+    expect(diff.matchedCount).toBe(2); // both keys matched
+    // GL element = 1.0, PROP element = 0.5 (code ok, limit wrong) → credit 1.5
+    // precision = recall = 1.5/2 = 0.75 → F1 = 0.75
+    expect(diff.precision).toBeCloseTo(0.75, 5);
+    expect(diff.recall).toBeCloseTo(0.75, 5);
+    expect(r.score).toBeCloseTo(0.75, 5);
+  });
+
+  it("a real extra element GT lacks costs precision but NOT recall", () => {
+    const expected = [{ code: "GL", limit: "1000000" }];
+    const got = [
+      { code: "GL", limit: "1000000" },
+      { code: "UMB", limit: "5000000" }, // real part GT doesn't have
+    ];
+    const r = compareValues(expected, got, spec);
+    const diff = r.diff as ArrayDiff;
+    // recall stays perfect — nothing expected was missed.
+    expect(diff.recall).toBeCloseTo(1, 5);
+    // precision drops (1 of 2 produced elements is in GT).
+    expect(diff.precision).toBeCloseTo(0.5, 5);
+    expect(diff.elements.some((e) => e.status === "extra")).toBe(true);
+  });
+
+  it("a missed element costs recall but not precision", () => {
+    const expected = [
+      { code: "GL", limit: "1000000" },
+      { code: "PROP", limit: "2000000" },
+    ];
+    const got = [{ code: "GL", limit: "1000000" }];
+    const r = compareValues(expected, got, spec);
+    const diff = r.diff as ArrayDiff;
+    expect(diff.precision).toBeCloseTo(1, 5); // everything produced was right
+    expect(diff.recall).toBeCloseTo(0.5, 5); // missed PROP
+  });
+});
+
+describe("compareValues — informational sub-fields are not scored", () => {
+  const spec = {
+    type: "array",
+    hints: { element_key: "code" },
+    items: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        limit: { type: "string" },
+        applies_to_raw: { type: "string", hints: { informational: true } },
+      },
+    },
+  };
+
+  it("a wrong informational sub-field does not lower the score", () => {
+    const expected = [{ code: "GL", limit: "1000000", applies_to_raw: "Each Occurrence" }];
+    const got = [{ code: "GL", limit: "1000000", applies_to_raw: "per occurrence (reworded)" }];
+    const r = compareValues(expected, got, spec);
+    // Only code + limit are scored; both correct → 1.0 despite the reworded field.
+    expect(r.score).toBeCloseTo(1, 5);
+    expect(r.match).toBe(true);
+  });
+
+  it("without the informational flag, the same wording difference lowers the score", () => {
+    const plainSpec = {
+      type: "array",
+      hints: { element_key: "code" },
+      items: {
+        type: "object",
+        properties: { code: { type: "string" }, limit: { type: "string" }, applies_to_raw: { type: "string" } },
+      },
+    };
+    const expected = [{ code: "GL", limit: "1000000", applies_to_raw: "Each Occurrence" }];
+    const got = [{ code: "GL", limit: "1000000", applies_to_raw: "per occurrence (reworded)" }];
+    const r = compareValues(expected, got, plainSpec);
+    expect(r.score).toBeCloseTo(2 / 3, 5); // 2 of 3 sub-fields correct
   });
 });
 

@@ -294,6 +294,10 @@ def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
         table = Table(show_header=True, header_style="bold")
         table.add_column("Field")
         table.add_column("Acc", justify="right")
+        # Precision / recall — populated for array fields (F1 scoring); blank for
+        # scalars. Lets you read a low array score as "missed elements" (recall)
+        # vs "spurious/wrong elements" (precision).
+        table.add_column("P/R", justify="right")
         table.add_column("Δ", justify="right")
         table.add_column("Status")
         for f in fields:
@@ -308,9 +312,13 @@ def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
                 "failing": "[yellow]failing[/yellow]",
             }.get(st, st)
             acc_disp = "—" if acc is None else f"{acc:.0f}%"
+            prec = f.get("precision")
+            rec = f.get("recall")
+            pr_disp = "" if (prec is None or rec is None) else f"[dim]{prec:.0f}/{rec:.0f}[/dim]"
             table.add_row(
                 f.get("name", ""),
                 acc_disp,
+                pr_disp,
                 f"[{d_color}]{d}[/{d_color}]" if d else "",
                 st_disp,
             )

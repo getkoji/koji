@@ -151,6 +151,9 @@ fields:
       look_in: [schedule_of_coverages, declarations]
       signals: [has_tables, has_dollar_amounts]
       patterns: ["coverage", "limit", "deductible"]
+      # Score with F1: match elements by coverage_name so validate reports
+      # precision/recall honestly and recall (finding more parts) isn't penalized.
+      element_key: coverage_name
       # Large multi-part packages scatter coverage sections across many pages.
       # per_section guarantees one chunk from EACH distinct section reaches the
       # extractor, instead of only the globally top-scoring few.
