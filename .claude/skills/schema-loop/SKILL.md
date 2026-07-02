@@ -58,6 +58,9 @@ Always pass `--json` and parse the result — don't scrape the table. Key shapes
 - `koji corpus get <schema> <doc> -o <path>` → download the **source file** so you can `Read`
   it yourself (PDFs/images included). `--markdown` writes the parsed text instead. This is how
   you check what a document actually says.
+- `koji corpus rm <schema> <doc> [--yes]` → remove a doc from the corpus (soft-delete, recoverable
+  via `corpus add`). Use it when a document isn't really this schema's type and is skewing the
+  scores — don't burn iterations tuning against a doc that doesn't belong.
 - `koji corpus add <schema> <file>` → upload a document into the corpus.
 - `koji corpus gt show <schema> <doc> --json` → current ground truth.
 - `koji corpus gt accept <schema> <doc>` → promote the doc's latest `koji run` extraction to
