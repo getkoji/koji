@@ -1091,3 +1091,59 @@ describe("routeFields — per_section section_anchor precision filter (oss-339)"
     expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// neighbor_radius — label-anchored value routing (oss-340)
+// ---------------------------------------------------------------------------
+
+describe("routeFields — neighbor_radius pulls adjacent chunks", () => {
+  // The label is in a declarations chunk; the value sits in the NEXT chunk,
+  // which is a different category that look_in would otherwise exclude.
+  function splitLabelValue(): Chunk[] {
+    return [
+      makeChunk({ index: 0, title: "Header", category: "declarations", content: "policy info", signals: { has_dates: false, has_dollar_amounts: false, has_tables: false, has_key_value_pairs: true } }),
+      makeChunk({ index: 1, title: "Premium", category: "declarations", content: "TOTAL DEPOSIT PREMIUM", signals: { has_dates: false, has_dollar_amounts: false, has_tables: false, has_key_value_pairs: true } }),
+      // Value chunk — different category (excluded by look_in), holds "$1,691".
+      makeChunk({ index: 2, title: "amounts", category: "other", content: "$1,691", signals: { has_dates: false, has_dollar_amounts: true, has_tables: false, has_key_value_pairs: false } }),
+    ];
+  }
+
+  function premiumSchema(extraHints: Record<string, unknown> = {}) {
+    return {
+      fields: {
+        premium: {
+          type: "string",
+          hints: { look_in: ["declarations"], prefer_contains: ["total deposit premium"], max_chunks: 1, ...extraHints },
+        },
+      },
+    };
+  }
+
+  it("without neighbor_radius, the value chunk is unreachable (label chunk only)", () => {
+    const routes = routeFields(premiumSchema(), splitLabelValue());
+    const idx = routes[0]!.chunks.map((c) => c.index);
+    expect(idx).toEqual([1]); // label chunk only — value in chunk 2 not routed
+  });
+
+  it("with neighbor_radius:1, the adjacent value chunk is pulled in", () => {
+    const routes = routeFields(premiumSchema({ neighbor_radius: 1 }), splitLabelValue());
+    const idx = routes[0]!.chunks.map((c) => c.index);
+    expect(idx).toContain(1); // label
+    expect(idx).toContain(2); // value (different category, from the full set)
+  });
+
+  it("pulls neighbors on both sides and stays in document order", () => {
+    const chunks = [
+      makeChunk({ index: 0, title: "a", category: "other", content: "before" }),
+      makeChunk({ index: 1, title: "label", category: "declarations", content: "TOTAL DEPOSIT PREMIUM", signals: { has_dates: false, has_dollar_amounts: false, has_tables: false, has_key_value_pairs: true } }),
+      makeChunk({ index: 2, title: "c", category: "other", content: "after" }),
+    ];
+    const routes = routeFields(premiumSchema({ neighbor_radius: 1 }), chunks);
+    expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0, 1, 2]);
+  });
+
+  it("radius 0 (default) is a no-op", () => {
+    const routes = routeFields(premiumSchema({ neighbor_radius: 0 }), splitLabelValue());
+    expect(routes[0]!.chunks.map((c) => c.index)).toEqual([1]);
+  });
+});
