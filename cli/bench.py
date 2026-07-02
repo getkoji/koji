@@ -180,6 +180,38 @@ class BenchResult:
         }
 
 
+# ── Config helpers ────────────────────────────────────────────────────
+
+
+def model_from_config(config_path: Path | None = None) -> str | None:
+    """Return the extract step's model from koji.yaml, or None.
+
+    When ``koji bench`` is invoked without ``--model``, this is called to
+    pick up the model configured in the project's ``koji.yaml`` so that
+    bench and the live cluster always use the same model by default.
+
+    Returns ``None`` on any error (file missing, parse error, no extract
+    step, no model key on the step) so the caller can fall through to the
+    server's own default.
+
+    Args:
+        config_path: Path to ``koji.yaml``. Defaults to ``./koji.yaml``
+            relative to the current working directory.
+    """
+    from cli.config import load_config
+
+    if config_path is None:
+        config_path = Path("koji.yaml")
+    try:
+        config = load_config(config_path)
+    except Exception:
+        return None
+    for step in config.pipeline:
+        if step.step == "extract" and step.model:
+            return step.model
+    return None
+
+
 # ── Corpus discovery ──────────────────────────────────────────────────
 
 
