@@ -454,13 +454,14 @@ function collectStringLeaves(value: unknown, out: string[]): void {
 
 /**
  * Deterministic backstop for the `hints.skip_row_when` opt-in on array fields:
- * drop any element whose string values match one of the schema-provided
- * patterns. A repeated structure often lists rows that carry a marker meaning
- * "present in the layout but not actually applicable" ("$0", "Not Covered",
- * "If Included") — enumeration faithfully emits them, and this filter is where
- * they get dropped. Keeps the index-aligned per-element `source_texts` in sync
- * so provenance highlighting doesn't shift onto the wrong row. Opt-in per
- * field; returns per-field drop counts for the normalization report.
+ * drop any element whose string values — or whose verbatim per-row source line —
+ * match one of the schema-provided patterns. A repeated structure often lists
+ * rows that carry a marker meaning "present in the layout but not actually
+ * applicable" ("$0", "Not Covered", "If Included") — enumeration faithfully
+ * emits them, and this filter is where they get dropped. Keeps the
+ * index-aligned per-element `source_texts` in sync so provenance highlighting
+ * doesn't shift onto the wrong row. Opt-in per field; returns per-field drop
+ * counts for the normalization report.
  */
 export function skipMarkedRows(
   extracted: Record<string, unknown>,
@@ -474,16 +475,23 @@ export function skipMarkedRows(
     if (patterns.length === 0) continue;
     const value = extracted[name];
     if (!Array.isArray(value) || value.length === 0) continue;
-    const keep = value.map((el) => {
+    // When per-element source_texts are index-aligned with the array, the
+    // patterns also run against each row's verbatim source line — a row can
+    // be marked not-applicable purely by its surroundings (a checkbox glyph,
+    // an option/menu marker) while its extracted values look like real data.
+    const st = sourceTexts?.[name];
+    const aligned = st && st.length === value.length ? st : undefined;
+    const keep = value.map((el, i) => {
       const leaves: string[] = [];
       collectStringLeaves(el, leaves);
+      const src = aligned?.[i];
+      if (src) leaves.push(src);
       return !leaves.some((s) => patterns.some((re) => re.test(s)));
     });
     if (keep.every(Boolean)) continue;
     extracted[name] = value.filter((_, i) => keep[i]);
-    const st = sourceTexts?.[name];
-    if (st && st.length === value.length) {
-      sourceTexts[name] = st.filter((_, i) => keep[i]);
+    if (aligned && sourceTexts) {
+      sourceTexts[name] = aligned.filter((_, i) => keep[i]);
     }
     report.push({ field: name, dropped: keep.filter((k) => !k).length });
   }

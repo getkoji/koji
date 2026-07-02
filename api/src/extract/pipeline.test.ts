@@ -233,6 +233,80 @@ describe("skipMarkedRows", () => {
     expect(sourceTexts.coverages).toEqual(["only-one"]);
   });
 
+  it("drops a row whose SOURCE line matches even when its values look real", () => {
+    const optFields = {
+      coverages: { type: "array", hints: { skip_row_when: ["OPTIONAL", "^\\s*☐"] } },
+    };
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { code: "GL", premium: "$4,120" },
+        { code: "UMB", premium: "$1,200" }, // values look bound…
+        { code: "FID", premium: "$800" },
+      ],
+    };
+    const sourceTexts: Record<string, string[]> = {
+      coverages: [
+        "General Liability   $4,120",
+        "OPTIONAL COVERAGES AVAILABLE: Umbrella $1,200", // …but the source line is a menu row
+        "☐ Fidelity Bond  $800",
+      ],
+    };
+    const report = skipMarkedRows(extracted, optFields, sourceTexts);
+    expect(report).toEqual([{ field: "coverages", dropped: 2 }]);
+    expect(extracted.coverages).toEqual([{ code: "GL", premium: "$4,120" }]);
+    expect(sourceTexts.coverages).toEqual(["General Liability   $4,120"]);
+  });
+
+  it("does not use source lines when they are misaligned with the array", () => {
+    const optFields = {
+      coverages: { type: "array", hints: { skip_row_when: ["OPTIONAL"] } },
+    };
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "GL" }, { code: "UMB" }],
+    };
+    // One text for two rows — matching by index would blame the wrong row.
+    const sourceTexts: Record<string, string[]> = { coverages: ["OPTIONAL COVERAGES"] };
+    const report = skipMarkedRows(extracted, optFields, sourceTexts);
+    expect(report).toEqual([]);
+    expect(extracted.coverages).toHaveLength(2);
+  });
+
+  it("drops an enumerated row by its source line, full loop through extractFields", async () => {
+    // The end-to-end gate: the enumeration pass re-adds a row from an
+    // option/menu line whose extracted values look real; the deterministic
+    // backstop drops it by its verbatim source line.
+    const queue = [
+      JSON.stringify({
+        coverages: [{ code: "GL", premium: "$4,120", __source_text: "General Liability $4,120" }],
+      }),
+      JSON.stringify({
+        coverages: [
+          { code: "GL", premium: "$4,120" },
+          { code: "UMB", premium: "$1,200", __source_text: "OPTIONAL COVERAGES AVAILABLE: Umbrella $1,200" },
+        ],
+      }),
+    ];
+    const provider: ModelProvider = {
+      generate: vi.fn().mockImplementation(async () => (queue.length > 1 ? queue.shift()! : queue[0]!)),
+    };
+    const schema = {
+      name: "policy",
+      fields: {
+        coverages: {
+          type: "array",
+          items: { type: "object", properties: { code: { type: "string" }, premium: { type: "string" } } },
+          hints: { enumerate_rows: true, skip_row_when: ["OPTIONAL COVERAGES"] },
+        },
+      },
+    };
+
+    const result = await extractFields("# Coverages\nGeneral Liability $4,120\nmore text", schema, provider, "m");
+
+    expect(result.extracted.coverages).toEqual([{ code: "GL", premium: "$4,120" }]);
+    expect(result.source_texts?.coverages).toEqual(["General Liability $4,120"]);
+    expect(result.normalization?.warnings).toContain("coverages: dropped 1 row(s) matching skip_row_when");
+  });
+
   it("skips malformed regex patterns without throwing", () => {
     const badFields = { coverages: { type: "array", hints: { skip_row_when: ["([", "Not Covered"] } } };
     const extracted: Record<string, unknown> = {

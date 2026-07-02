@@ -344,6 +344,26 @@ export function routeFields(
 
     scored.sort((a, b) => b[0] - a[0]);
 
+    // `section_exclude` vetoes sections this field must never route to —
+    // option/menu/catalog blocks that list rows as *available* rather than
+    // as data, which enumeration would otherwise faithfully emit. The veto is
+    // absolute: it applies to the scored pool here AND to the broaden/fallback
+    // safety nets below, because any fallback that re-admits a vetoed section
+    // defeats the point of the veto. Unlike a too-narrow `section_anchor`
+    // (where falling back is safe — the data is still only extracted where it
+    // exists), an exclude-everything pattern routes nothing and warns.
+    const excludes = compileSectionAnchors(hints.section_exclude);
+    const isVetoed = (c: Chunk): boolean => excludes.length > 0 && matchesAnchor(c, excludes);
+    let viable = scored;
+    if (excludes.length > 0) {
+      viable = scored.filter(([, c]) => !isVetoed(c));
+      if (viable.length === 0 && scored.length > 0) {
+        console.warn(
+          `[koji-extract] Route: field '${fieldName}' section_exclude matched every candidate section — routing none.`,
+        );
+      }
+    }
+
     // `per_section`: coverage-maximizing selection. For an array field on a
     // large multi-part document, one chunk per distinct section reaches the
     // extractor — not just the globally top-N (which collapse onto the few
@@ -351,7 +371,7 @@ export function routeFields(
     // small/monoline docs are unaffected (they simply have fewer sections).
     const perSection = hints.per_section === true;
     let topChunks: Chunk[];
-    if (perSection && scored.length > 0) {
+    if (perSection && viable.length > 0) {
       const maxSections =
         typeof hints.max_sections === "number" && hints.max_sections > 0
           ? hints.max_sections
@@ -360,12 +380,12 @@ export function routeFields(
       // whose heading/top-of-body matches an anchor pattern get a representative
       // chunk. This stops per_section from over-producing spurious rows out of
       // boilerplate (product-catalog menus, "who is an insured" blocks) on large
-      // packages. If the anchor matches nothing, fall back to all sections (a
-      // too-narrow pattern shouldn't make a field silently vanish).
+      // packages. If the anchor matches nothing, fall back to all (non-vetoed)
+      // sections (a too-narrow pattern shouldn't make a field silently vanish).
       const anchors = compileSectionAnchors(hints.section_anchor);
-      let scopedScored = scored;
+      let scopedScored = viable;
       if (anchors.length > 0) {
-        const filtered = scored.filter(([, c]) => matchesAnchor(c, anchors));
+        const filtered = scopedScored.filter(([, c]) => matchesAnchor(c, anchors));
         if (filtered.length > 0) {
           scopedScored = filtered;
         } else {
@@ -387,7 +407,7 @@ export function routeFields(
         );
       }
     } else {
-      topChunks = scored.slice(0, fieldCap).map(([, c]) => c);
+      topChunks = viable.slice(0, fieldCap).map(([, c]) => c);
     }
 
     // `neighbor_radius`: a value can land in a different chunk than its label
@@ -414,8 +434,12 @@ export function routeFields(
         source,
       });
     } else {
-      // Nothing matched — broaden to any chunk with generic signals
-      const broadened = chunks.filter((c) => chunkHasAnySignal(c));
+      // Nothing matched — broaden to any chunk with generic signals. The
+      // `section_exclude` veto still applies: a safety net that re-admits a
+      // vetoed section would silently undo the schema's veto, so when the veto
+      // leaves nothing to broaden to, the field routes empty (visible in the
+      // routing plan as "none") rather than reading a vetoed section.
+      const broadened = chunks.filter((c) => chunkHasAnySignal(c) && !isVetoed(c));
       if (broadened.length > 0) {
         routes.push({
           fieldName,
@@ -424,11 +448,11 @@ export function routeFields(
           source: "broadened",
         });
       } else {
-        // Last resort — first chunks
+        // Last resort — first non-vetoed chunks
         routes.push({
           fieldName,
           fieldSpec,
-          chunks: chunks.slice(0, fieldCap),
+          chunks: chunks.filter((c) => !isVetoed(c)).slice(0, fieldCap),
           source: "fallback",
         });
       }

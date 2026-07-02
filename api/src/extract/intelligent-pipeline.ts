@@ -310,6 +310,27 @@ async function extractOneSection(
     const merged = unionArrayItems(current, more);
     if (merged.length > current.length) {
       console.log(`[koji-extract] enumerate_rows: ${fieldName} ${current.length} -> ${merged.length} rows`);
+      // Extend the field's index-aligned source_texts to cover the appended
+      // rows. Enumerated items carry inline `__source_text` (the enumeration
+      // prompt requests it); harvest and strip it here so appended rows keep
+      // provenance and stay eligible for the source-text row gate
+      // (`skip_row_when`) downstream — both need the alignment to hold for
+      // the whole merged array. Union preserves order: `current` first (their
+      // texts were harvested in the main pass), appended extras after.
+      const existing = allSourceTexts[fieldName] ?? [];
+      const texts = merged.map((item, i) => {
+        if (i < current.length) return existing[i] ?? "";
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const obj = item as Record<string, unknown>;
+          const src = obj.__source_text;
+          delete obj.__source_text;
+          return typeof src === "string" ? src : "";
+        }
+        return "";
+      });
+      if (texts.some((t) => t.length > 0)) {
+        allSourceTexts[fieldName] = texts;
+      }
       accumulated.extracted[fieldName] = merged;
       const prov = computeProvenanceStrength(merged, enumChunks, "array");
       const score = computeFieldConfidence({ provenanceStrength: prov, validationPassed: true });

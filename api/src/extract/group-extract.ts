@@ -663,7 +663,7 @@ ${content}
 
 ## Instructions
 
-Return the COMPLETE array for "${fieldName}" — every row of the table/list as a separate item, INCLUDING the ones already extracted above AND any that were missed. Do not summarize, merge, deduplicate, or drop rows; list them all even when they look similar. Return a FLAT JSON object {"${fieldName}": [ ... ]}. Do not invent data — only rows explicitly present in the sections.${skipException}
+Return the COMPLETE array for "${fieldName}" — every row of the table/list as a separate item, INCLUDING the ones already extracted above AND any that were missed. Do not summarize, merge, deduplicate, or drop rows; list them all even when they look similar. Return a FLAT JSON object {"${fieldName}": [ ... ]}. Do not invent data — only rows explicitly present in the sections. For each item, include a "__source_text" property with the EXACT verbatim text from the document where you found that row — copy 1-3 consecutive lines exactly as they appear, do not paraphrase or reformat.${skipException}
 
 JSON:`;
 }
@@ -672,7 +672,9 @@ JSON:`;
  * `enumerate_rows` completion pass: re-prompt over the array field's chunks to
  * list EVERY row, catching the model's first-pass under-count of a co-located
  * table. Returns the model's row list (to be unioned with the current items by
- * the caller). Returns [] on any error/invalid JSON — never throws.
+ * the caller). Object rows may carry an inline `__source_text` (the prompt
+ * requests it) — the caller harvests and strips it when extending the field's
+ * per-element source_texts. Returns [] on any error/invalid JSON — never throws.
  */
 export async function enumerateRows(
   fieldName: string,

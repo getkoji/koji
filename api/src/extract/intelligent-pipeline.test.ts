@@ -381,6 +381,41 @@ describe("intelligentExtract", () => {
     expect(result.extracted.invoice_number).toBe("INV-001");
   });
 
+  describe("enumerate_rows source_texts alignment", () => {
+    it("extends per-element source_texts for rows the enumeration pass appends", async () => {
+      const markdown = ["# Items", "Alpha 100", "Beta 200", "Gamma 300"].join("\n");
+      const schema = {
+        name: "list",
+        fields: {
+          items: {
+            type: "array",
+            items: { type: "object", properties: { name: { type: "string" } } },
+            hints: { enumerate_rows: true },
+          },
+        },
+      };
+      const provider = mockProvider([
+        // Main pass: two rows, each with harvested provenance.
+        JSON.stringify({
+          items: [
+            { name: "Alpha", __source_text: "Alpha 100" },
+            { name: "Beta", __source_text: "Beta 200" },
+          ],
+        }),
+        // Enumeration pass: the full set, the appended row with its own source line.
+        JSON.stringify({
+          items: [{ name: "Alpha" }, { name: "Beta" }, { name: "Gamma", __source_text: "Gamma 300" }],
+        }),
+      ]);
+
+      const result = await intelligentExtract(markdown, schema, provider, "test-model");
+
+      expect(result.extracted.items).toEqual([{ name: "Alpha" }, { name: "Beta" }, { name: "Gamma" }]);
+      // Index-aligned across the merged array — appended row included.
+      expect(result.source_texts.items).toEqual(["Alpha 100", "Beta 200", "Gamma 300"]);
+    });
+  });
+
   describe("adaptive routing (full-document below threshold)", () => {
     // 6 sections → 6 chunks: below the default 10-chunk threshold, above the
     // 3-chunk per-field routing cap, so full-document mode is observable.
