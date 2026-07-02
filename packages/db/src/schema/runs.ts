@@ -44,6 +44,11 @@ export const schemaRuns = pgTable(
     costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
     durationMs: integer("duration_ms"),
     errorMessage: text("error_message"),
+    // Per-doc failures ({entryId, filename, error}[]) for docs that never
+    // reached scoring (storage miss, parse error, extract error). Without
+    // this the reasons live only in the validate HTTP response and server
+    // logs — a failed run in the DB is undiagnosable after the fact.
+    failuresJson: jsonb("failures_json"),
     createdAt: createdAt(),
   },
   (t) => ({

@@ -1,0 +1,1 @@
+ALTER TABLE "schema_runs" ADD COLUMN "failures_json" jsonb;

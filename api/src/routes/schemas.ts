@@ -655,9 +655,16 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
     tx.select({
       id: schema.schemaRuns.id,
       schemaVersionId: schema.schemaRuns.schemaVersionId,
+      // status/errorMessage/failuresJson let the page distinguish a run that
+      // FAILED (nothing scored) from one that scored 0 passing docs — without
+      // them both render as "0/N", which hides outages entirely.
+      status: schema.schemaRuns.status,
+      errorMessage: schema.schemaRuns.errorMessage,
+      failuresJson: schema.schemaRuns.failuresJson,
       accuracy: schema.schemaRuns.accuracy,
       docsTotal: schema.schemaRuns.docsTotal,
       docsPassed: schema.schemaRuns.docsPassed,
+      docsFailed: schema.schemaRuns.docsFailed,
       regressionsCount: schema.schemaRuns.regressionsCount,
       costUsd: schema.schemaRuns.costUsd,
       durationMs: schema.schemaRuns.durationMs,
@@ -1183,10 +1190,19 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   }
 
   if (results.length === 0) {
-    // Update schema_run as failed
+    // Update schema_run as failed. Persist the per-doc reasons — the HTTP
+    // response below is gone the moment the caller closes it, and without
+    // `failuresJson` a failed run in the DB (and on the Performance page)
+    // is an undiagnosable "0/N".
     await withRLS(db, tenantId, (tx) =>
-      tx.update(schema.schemaRuns).set({ status: "failed", completedAt: new Date(), errorMessage: "All extractions failed" })
-        .where(eq(schema.schemaRuns.id, schemaRun.id))
+      tx.update(schema.schemaRuns).set({
+        status: "failed",
+        completedAt: new Date(),
+        errorMessage: `All ${parseFailures.length} document(s) failed before scoring`,
+        failuresJson: parseFailures,
+        docsFailed: parseFailures.length,
+        durationMs: Date.now() - startTime,
+      }).where(eq(schema.schemaRuns.id, schemaRun.id))
     );
     // Surface the per-doc reasons so an all-failed run is debuggable instead of
     // an opaque 502 (oss-308).
@@ -1212,6 +1228,11 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
       regressionsCount: validateResult.regressions.length,
       accuracy: String(validateResult.overallAccuracy / 100), // stored as 0.0-1.0
       durationMs: validateResult.durationMs,
+      // Docs dropped before scoring (parse/extract failures) — persisted even
+      // on a completed run so a partial failure stays diagnosable after the
+      // HTTP response is gone.
+      failuresJson: parseFailures.length > 0 ? parseFailures : null,
+      docsFailed: parseFailures.length,
     }).where(eq(schema.schemaRuns.id, schemaRun.id))
   );
 

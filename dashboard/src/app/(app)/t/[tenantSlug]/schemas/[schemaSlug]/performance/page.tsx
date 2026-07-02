@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { useCallback, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { BarChart3, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -10,12 +10,22 @@ import { EmptyState } from "@/components/shared/EmptyState";
 
 // ── Types ──
 
+interface RunFailure {
+  entryId: string;
+  filename: string;
+  error: string;
+}
+
 interface PerformanceRun {
   id: string;
   versionNumber: number | null;
+  status: string;
+  errorMessage: string | null;
+  failuresJson: RunFailure[] | null;
   accuracy: string | null;
   docsTotal: number;
   docsPassed: number;
+  docsFailed: number;
   regressionsCount: number;
   durationMs: number | null;
   completedAt: string | null;
@@ -167,6 +177,7 @@ export default function PerformancePage() {
   );
 
   const [accMode, setAccMode] = useState<"field" | "doc" | "composite">("field");
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   const runs = data?.runs ?? [];
   const perRunFieldAccuracy = data?.perRunFieldAccuracy ?? [];
@@ -312,7 +323,10 @@ export default function PerformancePage() {
             { label: "Corpus", value: String(corpusCount), delta: null, up: true },
             { label: "Runs", value: String(runs.length), delta: null, up: true },
             { label: "Fields tracked", value: `${heatmapFields.length}`, delta: null, up: true },
-            { label: "Last run", value: latestRun.completedAt ? timeAgo(latestRun.completedAt) : "—", delta: current ? `v${current.version}` : null, up: true },
+            // The latest run may be a FAILED one (accuracy null, excluded from
+            // the chart) — say so instead of silently labeling it with the
+            // last successful run's version.
+            { label: "Last run", value: latestRun.completedAt ? timeAgo(latestRun.completedAt) : "—", delta: latestRun.status === "failed" ? "failed" : current ? `v${current.version}` : null, up: latestRun.status !== "failed" },
           ].map((m) => (
             <div key={m.label} className="bg-cream px-4 py-3.5 flex flex-col gap-0.5">
               <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">{m.label}</span>
@@ -330,7 +344,31 @@ export default function PerformancePage() {
       <div className="flex-1 overflow-y-auto">
         <div className="px-8 pt-6 pb-12 max-w-[1100px]">
 
+        {/* ── 1. Latest-run failure banner ── */}
+        {latestRun.status === "failed" && (
+          <div className="mb-8 border-l-2 border-vermillion-2 bg-vermillion-3/20 rounded-r-sm px-4 py-3">
+            <div className="font-mono text-[10px] font-medium text-vermillion-2 uppercase tracking-[0.08em] mb-1">Latest run failed</div>
+            <div className="text-[12px] text-ink">
+              {(latestRun.errorMessage ?? "The most recent validate run failed before any document was scored").replace(/\.?$/, ".")}
+              {validRuns.length > 0 && " The accuracy shown above is from the last completed run."}
+            </div>
+            {(latestRun.failuresJson?.length ?? 0) > 0 && (
+              <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                {latestRun.failuresJson!.map((f) => (
+                  <li key={f.entryId} className="flex gap-2 min-w-0 font-mono text-[11px]">
+                    <span className="shrink-0 max-w-[240px] truncate text-ink" title={f.filename}>{f.filename}</span>
+                    <span className="truncate text-vermillion-2" title={f.error}>{f.error}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* ── 2. Accuracy over time ── */}
+        {/* Hidden when no run has ever completed (e.g. only failed runs) —
+            an empty chart frame reads as a rendering bug. */}
+        {chartData.length > 0 && (
         <div className="mb-8">
           <div className="flex items-baseline justify-between mb-4">
             <h2 className="font-display text-[18px] font-medium tracking-tight text-ink" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
@@ -358,9 +396,12 @@ export default function PerformancePage() {
             </div>
           )}
         </div>
+        )}
 
         {/* ── 3. Two-column grid ── */}
-        {chartData.length >= 2 && (
+        {/* Gated on runs (not chart points): failed runs have no accuracy and
+            never reach the chart, but must still appear in Run details. */}
+        {runs.length > 0 && (
           <div className="grid gap-6" style={{ gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr)" }}>
             {/* Per-field heatmap */}
             <div>
@@ -437,17 +478,45 @@ export default function PerformancePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.filter((r) => r.versionNumber !== null).slice().reverse().map((r, i) => (
-                      <tr key={r.id} className={`border-t border-border ${i === 0 ? "bg-cream-2/30" : ""}`}>
-                        <td className="px-3 py-2 font-mono text-[11px] text-ink">
-                          v{r.versionNumber}
-                          {i === 0 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
-                        </td>
-                        <td className="px-3 py-2"><span className={`font-mono text-[11px] font-medium ${r.accuracy && parseFloat(r.accuracy) * 100 >= 97 ? "text-green" : "text-ink-3"}`}>{r.accuracy ? (parseFloat(r.accuracy) * 100).toFixed(1) : "—"}%</span></td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.docsPassed}/{r.docsTotal}</td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : "—"}</td>
-                      </tr>
-                    ))}
+                    {runs.filter((r) => r.versionNumber !== null).slice().reverse().map((r, i) => {
+                      const failures = r.failuresJson ?? [];
+                      const expanded = expandedRunId === r.id;
+                      return (
+                        <Fragment key={r.id}>
+                          <tr
+                            className={`border-t border-border ${i === 0 ? "bg-cream-2/30" : ""} ${failures.length > 0 ? "cursor-pointer hover:bg-cream-2/50" : ""}`}
+                            onClick={failures.length > 0 ? () => setExpandedRunId(expanded ? null : r.id) : undefined}
+                          >
+                            <td className="px-3 py-2 font-mono text-[11px] text-ink">
+                              v{r.versionNumber}
+                              {i === 0 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
+                              {r.status === "failed" && <span className="font-mono text-[8px] font-medium text-vermillion-2 bg-vermillion-3/40 px-1 py-0.5 rounded-sm uppercase ml-1.5">failed</span>}
+                              {r.status === "running" && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">running</span>}
+                            </td>
+                            <td className="px-3 py-2"><span className={`font-mono text-[11px] font-medium ${r.accuracy && parseFloat(r.accuracy) * 100 >= 97 ? "text-green" : "text-ink-3"}`}>{r.accuracy ? `${(parseFloat(r.accuracy) * 100).toFixed(1)}%` : "—"}</span></td>
+                            <td className="px-3 py-2 font-mono text-[11px] text-ink-3">
+                              {r.docsPassed}/{r.docsTotal}
+                              {failures.length > 0 && <span className="text-vermillion-2 ml-1.5" title="Documents that failed before scoring — click for details">{failures.length} failed</span>}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-[11px] text-ink-3">{r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : "—"}</td>
+                          </tr>
+                          {expanded && (
+                            <tr className="border-t border-border bg-cream-2/20">
+                              <td colSpan={4} className="px-3 py-2">
+                                <ul className="space-y-1 max-h-36 overflow-y-auto">
+                                  {failures.map((f) => (
+                                    <li key={f.entryId} className="flex gap-2 min-w-0 font-mono text-[10px]">
+                                      <span className="shrink-0 max-w-[160px] truncate text-ink" title={f.filename}>{f.filename}</span>
+                                      <span className="truncate text-vermillion-2" title={f.error}>{f.error}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
