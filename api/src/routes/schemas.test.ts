@@ -220,3 +220,44 @@ describe("computeValidateResult — routing diagnosis on failing fields", () => 
     expect(out.fields.find((f) => f.name === "x")!.failingDocs[0]!.routingDiagnosis).toBeUndefined();
   });
 });
+
+describe("computeValidateResult — F1 array scoring + precision/recall reporting (oss-337)", () => {
+  const schemaFields = {
+    coverages: {
+      type: "array",
+      hints: { element_key: "code" },
+      items: { type: "object", properties: { code: { type: "string" }, limit: { type: "string" } } },
+    },
+  };
+
+  it("reports precision/recall for an array field and scores by F1", () => {
+    const doc: Result = {
+      entryId: "d1",
+      filename: "policy.pdf",
+      groundTruth: { coverages: [{ code: "GL", limit: "1000000" }, { code: "PROP", limit: "2000000" }] },
+      // Found GL correctly, missed PROP, added a spurious UMB → recall + precision both 0.5.
+      extracted: { coverages: [{ code: "GL", limit: "1000000" }, { code: "UMB", limit: "5000000" }] },
+      confidenceScores: { coverages: 0.9 },
+    };
+    const out = computeValidateResult([doc], new Map(), 1, Date.now(), [], schemaFields);
+    const field = out.fields.find((f) => f.name === "coverages")!;
+    expect(field.precision).toBeCloseTo(50, 3); // 1 of 2 produced was right
+    expect(field.recall).toBeCloseTo(50, 3); // 1 of 2 expected was found
+    // F1 = 2·0.5·0.5/1 = 0.5 → accuracy 50%
+    expect(field.accuracy).toBeCloseTo(50, 3);
+  });
+
+  it("does not attach precision/recall to a scalar field", () => {
+    const doc: Result = {
+      entryId: "d2",
+      filename: "policy.pdf",
+      groundTruth: { policy_number: "ABC-123" },
+      extracted: { policy_number: "ABC-123" },
+      confidenceScores: { policy_number: 1 },
+    };
+    const out = computeValidateResult([doc], new Map(), 1, Date.now(), [], { policy_number: { type: "string" } });
+    const field = out.fields.find((f) => f.name === "policy_number")!;
+    expect(field.precision).toBeUndefined();
+    expect(field.recall).toBeUndefined();
+  });
+});

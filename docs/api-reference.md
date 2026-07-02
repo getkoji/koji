@@ -1008,6 +1008,8 @@ Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a
 
 Documents are parsed with the tenant's configured parse provider (the same one the live extraction path uses), falling back to the system default when none is configured, and reuse the shared parse cache. Any corpus entry that fails to parse or extract is reported in a `parseFailures` array (`[{ entryId, filename, error }]`) rather than being silently dropped, and `docsTotal` counts every attempted document (scored + failed) so accuracy is not inflated by dropped docs.
 
+Each entry in `fields[]` carries `name`, `accuracy` (%), `prevAccuracy`, `status`, and `failingDocs`. **Array fields** are scored by F1 and additionally carry `precision` and `recall` (percentages), so a low score can be read as missed elements (low recall) vs spurious/wrong elements (low precision). Element matching uses the array's `element_key` hint when declared, and sub-fields marked `informational` are excluded from scoring (see the schema guide).
+
 ### `GET /api/schemas/{slug}/versions`
 
 The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
