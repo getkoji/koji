@@ -1268,6 +1268,8 @@ Validate scores an array field by **F1** of precision and recall over its elemen
 
 - **`element_key`** (an array-field hint) names the sub-field that identifies an element — e.g. `coverage_name`, `role`, `loc_number`. Validate matches expected ↔ extracted elements by that key, so a single wrong sub-field can't mispair an element, and finding/missing whole elements is measured honestly. Without a key, elements are matched by greedy best-overlap.
 
+  Declaring the key also changes extraction: **same-key rows collapse to one**. Multi-pass extraction (`per_section` groups, `enumerate_rows`) emits one row *variant* per place an element appears — a summary table, the element's own section, a sub-limit table — and those variants differ in sub-values, so plain dedup can't see through them. Since the key is your statement that it identifies an element uniquely, the engine keeps the richest variant (most filled sub-fields; ties → the earliest) and drops the rest, keeping per-element provenance aligned. Rows that don't carry the key are kept as-is. The collapse is reported in the normalization warnings (`collapsed N duplicate row(s) by element_key`). If your data genuinely has multiple legitimate rows per key value, the key isn't identifying — pick a sub-field (or add one) that is.
+
 ```yaml
 coverages:
   type: array
