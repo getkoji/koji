@@ -27,6 +27,27 @@ export interface ModelProvider {
   generateWithImage?(prompt: string, imageBase64: string, jsonMode?: boolean): Promise<string>;
 }
 
+/**
+ * An HTTP error from a model provider, carrying the status code so callers can
+ * distinguish a systemic misconfiguration (bad model name → 404, bad key → 401)
+ * — which every extraction call will hit identically and should surface as a
+ * clear error — from a transient failure worth tolerating.
+ */
+export class ProviderHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProviderHttpError";
+  }
+}
+
+/** Status codes that mean "your request/config is wrong" — surface, don't swallow. */
+export function isSystemicProviderError(e: unknown): boolean {
+  return e instanceof ProviderHttpError && [400, 401, 403, 404].includes(e.status);
+}
+
 // ---------------------------------------------------------------------------
 // Ollama
 // ---------------------------------------------------------------------------
@@ -52,7 +73,7 @@ export class OllamaProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(1_800_000),
     });
-    if (!resp.ok) throw new Error(`Ollama ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `Ollama ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as { response?: string };
     return body.response ?? "";
   }
@@ -93,7 +114,7 @@ export class OpenAIProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
-    if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `OpenAI ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
@@ -124,7 +145,7 @@ export class OpenAIProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
-    if (!resp.ok) throw new Error(`OpenAI vision ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `OpenAI vision ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
@@ -169,7 +190,7 @@ export class AzureOpenAIProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
-    if (!resp.ok) throw new Error(`Azure OpenAI ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `Azure OpenAI ${resp.status}: ${await resp.text()}`);
     const body = (await resp.json()) as {
       choices: Array<{ message: { content: string } }>;
     };
@@ -219,7 +240,7 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
-    if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `Anthropic ${resp.status}: ${await resp.text()}`);
     return AnthropicProvider.extractText(await resp.json() as { content?: Array<{ type: string; text?: string }> });
   }
 
@@ -248,7 +269,7 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
-    if (!resp.ok) throw new Error(`Anthropic vision ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `Anthropic vision ${resp.status}: ${await resp.text()}`);
     return AnthropicProvider.extractText(await resp.json() as { content?: Array<{ type: string; text?: string }> });
   }
 }

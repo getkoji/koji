@@ -62,25 +62,33 @@ export async function pickActiveTenantModel(
   tenantId: string,
   preferModel: string | null,
 ): Promise<string | null> {
-  const conditions = [
-    eq(schema.tenantModels.status, "active"),
-    eq(schema.providerCredentials.status, "active"),
-  ];
-  if (preferModel) {
-    conditions.push(eq(schema.tenantModels.model, preferModel));
-  }
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
-      .select({ id: schema.tenantModels.id })
+      .select({ id: schema.tenantModels.id, model: schema.tenantModels.model })
       .from(schema.tenantModels)
       .innerJoin(
         schema.providerCredentials,
         eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
       )
-      .where(and(...conditions))
-      .limit(1),
+      .where(
+        and(
+          eq(schema.tenantModels.status, "active"),
+          eq(schema.providerCredentials.status, "active"),
+        ),
+      ),
   );
-  return row?.id ?? null;
+  if (!preferModel) return rows[0]?.id ?? null;
+
+  // Match by model name, tolerating a `provider/` prefix on either side — so
+  // `openai/gpt-4o` matches a stored `gpt-4o` (and vice versa). Without this the
+  // exact-string match missed prefixed names, silently fell back to an env-key
+  // provider, and returned an empty extraction. Dated snapshots (`gpt-4o-2024-…`)
+  // still require an exactly-configured model — a genuinely different model
+  // shouldn't be silently aliased to its base.
+  const stripPrefix = (m: string) => (m.includes("/") ? m.slice(m.indexOf("/") + 1) : m);
+  const want = stripPrefix(preferModel);
+  const match = rows.find((r) => r.model === preferModel || stripPrefix(r.model) === want);
+  return match?.id ?? null;
 }
 
 export async function resolveExtractEndpoint(

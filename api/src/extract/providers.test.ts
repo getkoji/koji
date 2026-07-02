@@ -5,6 +5,8 @@ import {
   OllamaProvider,
   AzureOpenAIProvider,
   createProvider,
+  ProviderHttpError,
+  isSystemicProviderError,
 } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -376,5 +378,34 @@ describe("createProvider", () => {
       api_key: "sk-test",
     });
     expect(provider).toBeInstanceOf(OpenAIProvider);
+  });
+});
+
+describe("ProviderHttpError / isSystemicProviderError (oss-346)", () => {
+  it("classifies auth/model 4xx as systemic (surface, don't swallow)", () => {
+    expect(isSystemicProviderError(new ProviderHttpError(404, "OpenAI 404: model not found"))).toBe(true);
+    expect(isSystemicProviderError(new ProviderHttpError(401, "OpenAI 401: bad key"))).toBe(true);
+    expect(isSystemicProviderError(new ProviderHttpError(400, "bad request"))).toBe(true);
+    expect(isSystemicProviderError(new ProviderHttpError(403, "forbidden"))).toBe(true);
+  });
+
+  it("does not classify 5xx / transient / non-provider errors as systemic", () => {
+    expect(isSystemicProviderError(new ProviderHttpError(500, "server error"))).toBe(false);
+    expect(isSystemicProviderError(new ProviderHttpError(429, "rate limited"))).toBe(false);
+    expect(isSystemicProviderError(new Error("network timeout"))).toBe(false);
+    expect(isSystemicProviderError(null)).toBe(false);
+  });
+
+  it("OpenAIProvider throws a ProviderHttpError carrying the status on a 4xx", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("The model `gpt-4o-2024-11-20` does not exist", { status: 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const p = new OpenAIProvider("gpt-4o-2024-11-20", "sk-test");
+      await expect(p.generate("hi")).rejects.toMatchObject({ status: 404 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
