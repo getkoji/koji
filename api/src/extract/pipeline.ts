@@ -452,6 +452,80 @@ function collectStringLeaves(value: unknown, out: string[]): void {
   }
 }
 
+/** Normalized identity value of a row's `element_key` sub-field, or null when
+ *  the row doesn't carry it (non-object row, missing/empty key). */
+function rowKeyOf(row: unknown, elementKey: string): string | null {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+  const k = (row as Record<string, unknown>)[elementKey];
+  if (k === null || k === undefined) return null;
+  const s = String(k).trim().toLowerCase().replace(/\s+/g, " ");
+  return s.length > 0 ? s : null;
+}
+
+/** How much of a row is filled in — non-null, non-empty, non-provenance
+ *  sub-fields. Used to pick which duplicate of a keyed row to keep. */
+function rowRichness(row: unknown): number {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+    if (k.startsWith("__")) continue;
+    if (v === null || v === undefined || v === "") continue;
+    n += 1;
+  }
+  return n;
+}
+
+/**
+ * Collapse duplicate array rows that share an `element_key` value. Multi-pass
+ * extraction produces one row VARIANT per place a logical element appears — a
+ * summary table, the element's own section, a sub-limit table each yield the
+ * same key with different local sub-values — and the exact-JSON union dedup
+ * can't see through the sub-field drift. Declaring `element_key` is the
+ * schema's statement that the key identifies an element uniquely (scoring
+ * already pairs at most one row per key), so same-key rows collapse to the
+ * richest one (most filled sub-fields; tie → the earliest, which came from the
+ * highest-ranked route). Rows that don't carry the key are kept as-is. Keeps
+ * per-element `source_texts` index-aligned. Returns per-field collapse counts
+ * for the normalization report.
+ */
+export function collapseKeyedRows(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+  sourceTexts?: Record<string, string[]>,
+): Array<{ field: string; collapsed: number }> {
+  const report: Array<{ field: string; collapsed: number }> = [];
+  for (const [name, spec] of Object.entries(fields)) {
+    const hints = spec.hints as Record<string, unknown> | undefined;
+    const elementKey = hints?.element_key;
+    if (typeof elementKey !== "string" || !elementKey) continue;
+    const value = extracted[name];
+    if (!Array.isArray(value) || value.length < 2) continue;
+
+    // Pick the winner index per key: richest row, earliest on ties.
+    const winnerByKey = new Map<string, number>();
+    for (let i = 0; i < value.length; i++) {
+      const key = rowKeyOf(value[i], elementKey);
+      if (key === null) continue;
+      const cur = winnerByKey.get(key);
+      if (cur === undefined || rowRichness(value[i]) > rowRichness(value[cur])) {
+        winnerByKey.set(key, i);
+      }
+    }
+    const keep = value.map((row, i) => {
+      const key = rowKeyOf(row, elementKey);
+      return key === null || winnerByKey.get(key) === i;
+    });
+    if (keep.every(Boolean)) continue;
+    extracted[name] = value.filter((_, i) => keep[i]);
+    const st = sourceTexts?.[name];
+    if (st && st.length === value.length && sourceTexts) {
+      sourceTexts[name] = st.filter((_, i) => keep[i]);
+    }
+    report.push({ field: name, collapsed: keep.filter((k) => !k).length });
+  }
+  return report;
+}
+
 /**
  * Deterministic backstop for the `hints.skip_row_when` opt-in on array fields:
  * drop any element whose string values — or whose verbatim per-row source line —
@@ -868,6 +942,12 @@ export async function extractFields(
   // nulled required field surfaces as not-found (→ review), not a wrong value.
   const captionNulled = rejectCaptionValues(result.extracted, fields);
 
+  // `element_key` collapse: multi-pass extraction (per_section groups,
+  // enumerate_rows) emits one row variant per place a logical element appears;
+  // same-key rows collapse to the richest. Runs before skip_row_when so the
+  // skip counts reflect the collapsed set.
+  const collapsedRows = collapseKeyedRows(result.extracted, fields, result.source_texts);
+
   // `skip_row_when` backstop: drop array rows whose values match a
   // schema-provided pattern — rows a table lists but marks as not applicable.
   // Deterministic and after every extraction pass (including enumerate_rows),
@@ -892,6 +972,9 @@ export async function extractFields(
       ),
       ...captionNulled.map(
         (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
+      ),
+      ...collapsedRows.map(
+        ({ field, collapsed }) => `${field}: collapsed ${collapsed} duplicate row(s) by element_key`,
       ),
       ...skippedRows.map(
         ({ field, dropped }) => `${field}: dropped ${dropped} row(s) matching skip_row_when`,

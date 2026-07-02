@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, skipMarkedRows, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
+import { collapseKeyedRows, extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, skipMarkedRows, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -164,6 +164,91 @@ describe("rejectCaptionValues", () => {
     const nulled = rejectCaptionValues(extracted, fields);
     expect(nulled).toEqual([]);
     expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+  });
+});
+
+describe("collapseKeyedRows", () => {
+  const fields = {
+    coverages: { type: "array", hints: { element_key: "coverage_code" } },
+    notes: { type: "array" }, // no element_key → never touched
+  };
+
+  it("collapses same-key rows to the richest variant, preserving order", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { coverage_code: "property", premium: "6955.91" },
+        { coverage_code: "general_liability", premium: "360" },
+        { coverage_code: "property", premium: "25000", limit: "500000" }, // richest property
+        { coverage_code: "property", premium: "25000" },
+      ],
+    };
+    const report = collapseKeyedRows(extracted, fields);
+    expect(report).toEqual([{ field: "coverages", collapsed: 2 }]);
+    expect(extracted.coverages).toEqual([
+      { coverage_code: "general_liability", premium: "360" },
+      { coverage_code: "property", premium: "25000", limit: "500000" },
+    ]);
+  });
+
+  it("keeps the earliest variant on a richness tie", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { coverage_code: "auto", premium: "100" },
+        { coverage_code: "auto", premium: "999" },
+      ],
+    };
+    collapseKeyedRows(extracted, fields);
+    expect(extracted.coverages).toEqual([{ coverage_code: "auto", premium: "100" }]);
+  });
+
+  it("matches keys case- and whitespace-insensitively", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ coverage_code: "Fidelity  Crime" }, { coverage_code: "fidelity crime", limit: "25000" }],
+    };
+    collapseKeyedRows(extracted, fields);
+    expect(extracted.coverages).toEqual([{ coverage_code: "fidelity crime", limit: "25000" }]);
+  });
+
+  it("keeps rows that don't carry the key, and ignores provenance keys in richness", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { coverage_code: null, premium: "1" },
+        { premium: "2" },
+        { coverage_code: "gl", __source_text: "a", __x: "b" }, // richness 1
+        { coverage_code: "gl", limit: "5", premium: "6" }, // richness 3 → wins
+      ],
+    };
+    const report = collapseKeyedRows(extracted, fields);
+    expect(report).toEqual([{ field: "coverages", collapsed: 1 }]);
+    expect((extracted.coverages as unknown[]).length).toBe(3);
+    expect((extracted.coverages as Array<Record<string, unknown>>)[2]).toEqual({
+      coverage_code: "gl",
+      limit: "5",
+      premium: "6",
+    });
+  });
+
+  it("keeps index-aligned source_texts in sync", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { coverage_code: "property", premium: "1" },
+        { coverage_code: "property", premium: "2", limit: "3" },
+        { coverage_code: "gl" },
+      ],
+    };
+    const sourceTexts: Record<string, string[]> = { coverages: ["src-a", "src-b", "src-c"] };
+    collapseKeyedRows(extracted, fields, sourceTexts);
+    expect(sourceTexts.coverages).toEqual(["src-b", "src-c"]);
+  });
+
+  it("does nothing without element_key or with unique keys", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ coverage_code: "a" }, { coverage_code: "b" }],
+      notes: [{ n: "x" }, { n: "x" }],
+    };
+    expect(collapseKeyedRows(extracted, fields)).toEqual([]);
+    expect((extracted.coverages as unknown[]).length).toBe(2);
+    expect((extracted.notes as unknown[]).length).toBe(2);
   });
 });
 
