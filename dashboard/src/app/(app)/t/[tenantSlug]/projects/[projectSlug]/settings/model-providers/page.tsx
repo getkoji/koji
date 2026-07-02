@@ -361,11 +361,11 @@ function CredentialCard({
 
       {cred.models.length > 0 ? (
         <div className="divide-y divide-border">
-          {cred.models.map((m) => (
+          {groupModelRows(cred.models).map((g) => (
             <ModelRow
-              key={m.id}
+              key={g.model}
               credentialId={cred.id}
-              model={m}
+              rows={g.rows}
               canWrite={canWrite}
               onChanged={onModelChanged}
             />
@@ -389,16 +389,36 @@ function CredentialCard({
   );
 }
 
-// ── Model row (one row per capability — capability is the row's identity) ──
+// ── Model row (one visual row per model) ──────────────────────────────────
+// The API stores one tenant_models row per (model, capability) so the
+// picker UIs can capability-filter — a chat+vision model arrives here as
+// two rows. Collapse them: the model is the row, capabilities are badges.
+
+function groupModelRows(
+  models: TenantModel[],
+): Array<{ model: string; rows: TenantModel[] }> {
+  const groups = new Map<string, TenantModel[]>();
+  for (const m of models) {
+    const existing = groups.get(m.model);
+    if (existing) existing.push(m);
+    else groups.set(m.model, [m]);
+  }
+  const capOrder = (c: TenantModel["capability"]) =>
+    CAPABILITIES.findIndex((x) => x.value === c);
+  return [...groups.entries()].map(([model, rows]) => ({
+    model,
+    rows: rows.slice().sort((a, b) => capOrder(a.capability) - capOrder(b.capability)),
+  }));
+}
 
 function ModelRow({
   credentialId,
-  model,
+  rows,
   canWrite,
   onChanged,
 }: {
   credentialId: string;
-  model: TenantModel;
+  rows: TenantModel[];
   canWrite: boolean;
   onChanged: () => void;
 }) {
@@ -406,11 +426,22 @@ function ModelRow({
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const first = rows[0];
+  const displayName = rows.find((r) => r.displayName)?.displayName ?? null;
+  // Status is stored per (model, capability) row. In practice they move
+  // together; when they diverge (API-side PATCH of a single row), reflect
+  // it on the capability badge instead of pretending it's uniform.
+  const uniformStatus = rows.every((r) => r.status === first.status) ? first.status : null;
+
   async function handleDelete() {
     setDeleting(true);
     setError(null);
     try {
-      await api.delete(`/api/credentials/${credentialId}/models/${model.id}`);
+      // One row per capability underneath — removing the model means
+      // removing all of them.
+      await Promise.all(
+        rows.map((r) => api.delete(`/api/credentials/${credentialId}/models/${r.id}`)),
+      );
       onChanged();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to delete model");
@@ -419,25 +450,33 @@ function ModelRow({
     }
   }
 
-  // Capability shown as a static badge — each row IS one capability
-  // (the (credential, model, capability) unique constraint means an
-  // inline swap would 409 against a sibling row). To change a model's
-  // capabilities, delete and re-add via the Add model dialog.
-  const capabilityHint = CAPABILITIES.find((c) => c.value === model.capability)?.hint;
-
   return (
     <div className="px-4 py-2.5 flex items-center justify-between gap-4">
       <div className="flex items-center gap-3 min-w-0">
-        <span className="font-mono text-[12px] text-ink truncate">{model.model}</span>
-        {model.displayName && model.displayName !== model.model && (
-          <span className="text-[11px] text-ink-4 truncate">{model.displayName}</span>
+        <span className="font-mono text-[12px] text-ink truncate">{first.model}</span>
+        {displayName && displayName !== first.model && (
+          <span className="text-[11px] text-ink-4 truncate">{displayName}</span>
         )}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
-        <span title={capabilityHint}>
-          <Badge>{model.capability}</Badge>
-        </span>
-        <Badge variant={model.status === "active" ? "active" : "neutral"}>{model.status}</Badge>
+        <div className="flex items-center gap-1.5">
+          {rows.map((r) => {
+            const hint = CAPABILITIES.find((c) => c.value === r.capability)?.hint;
+            return (
+              <span
+                key={r.id}
+                title={uniformStatus ? hint : `${hint ?? ""} (${r.status})`.trim()}
+              >
+                <Badge variant={uniformStatus || r.status === "active" ? "neutral" : "destructive"}>
+                  {r.capability}
+                </Badge>
+              </span>
+            );
+          })}
+        </div>
+        {uniformStatus && (
+          <Badge variant={uniformStatus === "active" ? "active" : "neutral"}>{uniformStatus}</Badge>
+        )}
         {canWrite &&
           (confirmDelete ? (
             <div className="flex items-center gap-2">
