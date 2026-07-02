@@ -261,6 +261,29 @@ function selectCoverageMax(
   return { chunks: reps, sectionsFound };
 }
 
+/**
+ * Expand a selected chunk set to include chunks within ±`radius` document
+ * positions (by `index`), looked up in the FULL chunk set — so a neighbor in a
+ * different category (one `look_in` filtered out) is still reachable. Lets a
+ * field reach a value that sits in a chunk adjacent to the one holding its
+ * label. Returns chunks in document order.
+ */
+function expandNeighbors(selected: Chunk[], all: Chunk[], radius: number): Chunk[] {
+  const byIndex = new Map<number, Chunk>();
+  for (const c of all) byIndex.set(c.index, c);
+  const out = new Map<number, Chunk>();
+  for (const c of selected) out.set(c.index, c);
+  for (const c of selected) {
+    for (let d = 1; d <= radius; d++) {
+      for (const ni of [c.index - d, c.index + d]) {
+        const n = byIndex.get(ni);
+        if (n && !out.has(ni)) out.set(ni, n);
+      }
+    }
+  }
+  return [...out.values()].sort((a, b) => a.index - b.index);
+}
+
 // ---------------------------------------------------------------------------
 // Route fields
 // ---------------------------------------------------------------------------
@@ -346,6 +369,21 @@ export function routeFields(
       }
     } else {
       topChunks = scored.slice(0, fieldCap).map(([, c]) => c);
+    }
+
+    // `neighbor_radius`: a value can land in a different chunk than its label
+    // (e.g. a dense dec where "$1,691" and its "TOTAL DEPOSIT PREMIUM" label
+    // split across a chunk boundary), so no single routed chunk holds both
+    // anchor and value and the field is unreachable via look_in/prefer_contains
+    // alone. When set, also pull chunks within ±radius document positions of
+    // each selected chunk. Opt-in; pair with prefer_contains/patterns so the
+    // label chunk is the one selected and its neighbor carries the value.
+    const neighborRadius =
+      typeof hints.neighbor_radius === "number" && hints.neighbor_radius > 0
+        ? hints.neighbor_radius
+        : 0;
+    if (neighborRadius > 0 && topChunks.length > 0) {
+      topChunks = expandNeighbors(topChunks, chunks, neighborRadius);
     }
 
     if (topChunks.length > 0) {

@@ -693,6 +693,24 @@ Common pattern: the real value lives in a signature block at the bottom of the d
 
 The bonus is applied at most once per chunk no matter how many phrases match — if you want an additional bump for stronger matches, use `patterns` or `signals` as well.
 
+### neighbor_radius
+
+Sometimes a field's **value lands in a different chunk than its label** — a dense declarations page where `TOTAL DEPOSIT PREMIUM` and its `$1,691` fall on either side of a chunk boundary. Routing then finds the label chunk but not the value, and no amount of `look_in` / `prefer_contains` / `max_chunks` tuning fixes it, because the value simply isn't in the chunk the label anchors to.
+
+`neighbor_radius` pulls the chunks immediately around each selected chunk into the field's routed set — by **document position**, looked up across the *whole* document (so a neighbor in a different category that `look_in` filtered out is still reached):
+
+```yaml
+total_premium:
+  type: string
+  hints:
+    look_in: [declarations]
+    prefer_contains: ["total deposit premium"]
+    max_chunks: 1
+    neighbor_radius: 1   # also pull the chunk(s) on each side of the label chunk
+```
+
+Pair it with `prefer_contains`/`patterns` so the *label* chunk is the one selected — then `neighbor_radius: 1` brings in the adjacent chunk that carries the value. Keep the radius small (usually `1`); it widens the prompt, so it's opt-in and off by default (`0`).
+
 ### patterns
 
 Regex patterns matched against chunk titles and content. Medium priority -- patterns score below `look_in` but above signals.
