@@ -678,7 +678,8 @@ provenance highlights. Same token auth as `/preview`.
       "page": 1,
       "bbox": { "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 },
       "words": [ { "text": "$6,000.00", "page": 1, "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 } ],
-      "reasoning": "labeled 'Total Due'"
+      "reasoning": "labeled 'Total Due'",
+      "resolution": "offset"
     }
   ],
   "filename": "invoice-0042.pdf",
@@ -690,8 +691,12 @@ provenance highlights. Same token auth as `/preview`.
 [Provenance](#provenance)). `bbox`/`words` coordinates are normalized fractions
 of the page (0–1). `value` is the extracted value for the field (the scalar
 from the extraction, or the highlighted words' text when the value isn't a
-scalar) — the embed viewer's field picker shows it. The embed viewer consumes
-this shape directly; you can also use it to drive your own renderer.
+scalar) — the embed viewer's field picker shows it. `resolution` is the
+provenance [resolution rung](#provenance-span) (`offset`/`chunk`/`fuzzy`/…): the
+embed viewer draws `fuzzy` (best-guess) highlights with a dashed, muted border
+and an "approximate location" hover note, so an exact locate is visually
+distinct from a guess. The embed viewer consumes this shape directly; you can
+also use it to drive your own renderer.
 
 **Errors**
 

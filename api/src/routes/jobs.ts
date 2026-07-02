@@ -1172,7 +1172,7 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
   // Convert provenance to BBoxHighlight format
   const provenance = (doc.provenanceJson ?? {}) as Record<
     string,
-    { offset?: number; length?: number; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string } | null
+    { offset?: number; length?: number; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; resolution?: string } | null
   >;
   const extraction = (doc.extractionJson ?? {}) as Record<string, unknown>;
 
@@ -1184,6 +1184,9 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
       bbox: v!.bbox,
       words: v!.words,
       reasoning: v!.reasoning,
+      // The resolution rung, so the embed viewer can render exact vs.
+      // best-guess (fuzzy) highlights honestly. See BBoxHighlight.
+      resolution: v!.resolution,
       // The extracted value, so the embed's field picker can show
       // "field → value". Prefer the scalar from extractionJson; fall back to
       // the highlighted words' text for fields without a scalar value.

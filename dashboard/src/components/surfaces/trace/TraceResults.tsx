@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { keepRawView } from "@/lib/keep-raw";
+import {
+  sourceConfidence,
+  SOURCE_CONFIDENCE_DESCRIPTION,
+  SOURCE_CONFIDENCE_LABEL,
+} from "@/lib/provenance-resolution";
 
 interface ProvenanceItem {
   offset?: number;
@@ -11,6 +16,7 @@ interface ProvenanceItem {
   page?: number;
   bbox?: object;
   words?: object[];
+  resolution?: string;
   items?: ProvenanceItem[];
   properties?: Record<string, ProvenanceItem | null>;
 }
@@ -42,6 +48,12 @@ export function TraceResults({
 
   const { entries: fields, rawByField } = keepRawView(extractionJson);
 
+  // Only surface source indicators when provenance was actually computed for
+  // this document. When the whole map is absent we can't say anything honest
+  // about where a field came from, so show nothing (rather than "no source"
+  // on every field).
+  const provenanceAvailable = provenanceJson != null;
+
   const toggleExpand = (key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -65,7 +77,6 @@ export function TraceResults({
         {fields.map(([name, value]) => {
           const confidence = confidenceScoresJson?.[name] ?? null;
           const prov = provenanceJson?.[name];
-          const hasProvenance = prov != null;
           const isExpandable = isComplex(value);
           const isActive = activeField === name;
 
@@ -88,9 +99,7 @@ export function TraceResults({
                       className={`w-3 h-3 shrink-0 text-ink-4 transition-transform ${isOpen ? "rotate-90" : ""}`}
                     />
                     {name}
-                    {hasProvenance && (
-                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-vermillion-2 shrink-0" />
-                    )}
+                    {provenanceAvailable && <SourceIndicator prov={prov} />}
                   </span>
                   <span className="font-mono text-[11px] text-ink-3 shrink-0">
                     {summarizeType(value)}
@@ -132,9 +141,7 @@ export function TraceResults({
             >
               <span className="font-mono text-[11px] text-ink font-medium truncate min-w-0 flex items-center gap-1.5">
                 {name}
-                {hasProvenance && (
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-vermillion-2 shrink-0" />
-                )}
+                {provenanceAvailable && <SourceIndicator prov={prov} />}
               </span>
               <span className="flex flex-col items-end min-w-0 max-w-[200px]">
                 <span className="font-mono text-[11px] text-ink-2 truncate min-w-0 text-right">
@@ -212,7 +219,7 @@ function NestedValue({
                     <ChevronRight className={`w-2.5 h-2.5 shrink-0 text-ink-4 transition-transform ${isOpen ? "rotate-90" : ""}`} />
                     <span className="font-mono text-[10px] text-ink-4 shrink-0 tabular-nums">[{idx}]</span>
                     <span className="font-mono text-[10.5px] text-ink-2 truncate min-w-0 flex items-center gap-1.5">
-                      {itemProv && <span className="inline-block w-1 h-1 rounded-full bg-vermillion-2 shrink-0" />}
+                      {itemProv && <SourceIndicator prov={itemProv} small />}
                       {typeof item === "object" && !Array.isArray(item) ? summarizeObject(item as Record<string, unknown>) : summarizeType(item)}
                     </span>
                   </div>
@@ -335,6 +342,54 @@ function NestedValue({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-field source indicator. Translates a provenance span's resolution rung
+ * into an honest affordance:
+ *   - exact       → solid dot ("Exact source" on hover)
+ *   - approximate → hollow dot ("Best guess" — the location may be off)
+ *   - none        → an inline "no source located" label, so a field whose
+ *                   value couldn't be traced back to the document isn't
+ *                   silently indistinguishable from one that could.
+ */
+function SourceIndicator({
+  prov,
+  small,
+}: {
+  prov: ProvenanceItem | null | undefined;
+  small?: boolean;
+}) {
+  const hasSource = !!(
+    prov &&
+    (prov.bbox ||
+      (prov.words && prov.words.length > 0) ||
+      prov.page != null ||
+      (prov.offset != null && prov.offset >= 0))
+  );
+  const confidence = sourceConfidence(prov?.resolution, hasSource);
+
+  if (confidence === "none") {
+    return (
+      <span
+        className="shrink-0 font-mono text-[9px] italic text-ink-4"
+        title={SOURCE_CONFIDENCE_DESCRIPTION.none}
+      >
+        {SOURCE_CONFIDENCE_LABEL.none.toLowerCase()}
+      </span>
+    );
+  }
+
+  const approx = confidence === "approximate";
+  const size = small ? "w-1 h-1" : "w-1.5 h-1.5";
+  return (
+    <span
+      title={approx ? SOURCE_CONFIDENCE_DESCRIPTION.approximate : SOURCE_CONFIDENCE_DESCRIPTION.exact}
+      className={`inline-block ${size} rounded-full shrink-0 ${
+        approx ? "border border-vermillion-2 bg-transparent" : "bg-vermillion-2"
+      }`}
+    />
+  );
+}
 
 /** Is this value expandable (array or object)? */
 function isComplex(value: unknown): boolean {

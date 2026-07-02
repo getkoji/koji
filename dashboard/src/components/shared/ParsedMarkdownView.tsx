@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import {
+  sourceConfidence,
+  type SourceConfidence,
+  SOURCE_CONFIDENCE_DESCRIPTION,
+} from "@/lib/provenance-resolution";
 
 /**
  * Renders parsed document markdown as monospace text with provenance
@@ -16,10 +21,12 @@ import { useEffect, useRef } from "react";
 interface ProvenanceSpan {
   offset?: number;
   length?: number;
+  resolution?: string;
   items?: Array<{
     offset?: number;
     length?: number;
-    properties?: Record<string, { offset?: number; length?: number } | null>;
+    resolution?: string;
+    properties?: Record<string, { offset?: number; length?: number; resolution?: string } | null>;
   } | null>;
 }
 
@@ -71,7 +78,7 @@ export function ParsedMarkdownView({
   const prov = provenance ?? {};
 
   // Flatten all provenance spans including per-item and per-property.
-  const allSpans: Array<{ field: string; offset: number; length: number }> = [];
+  const allSpans: Array<{ field: string; offset: number; length: number; resolution?: string }> = [];
   for (const [field, raw] of Object.entries(prov)) {
     const v = raw as ProvenanceSpan | null;
     if (!v) continue;
@@ -82,17 +89,17 @@ export function ParsedMarkdownView({
         if (item.properties && typeof item.properties === "object") {
           for (const [propName, pSpan] of Object.entries(item.properties)) {
             if (pSpan && (pSpan.offset ?? -1) >= 0 && (pSpan.length ?? 0) > 0) {
-              allSpans.push({ field: `${field}[${i}].${propName}`, offset: pSpan.offset!, length: pSpan.length! });
+              allSpans.push({ field: `${field}[${i}].${propName}`, offset: pSpan.offset!, length: pSpan.length!, resolution: pSpan.resolution });
             }
           }
         }
         if ((item.offset ?? -1) >= 0 && (item.length ?? 0) > 0) {
-          allSpans.push({ field: `${field}[${i}]`, offset: item.offset!, length: item.length! });
+          allSpans.push({ field: `${field}[${i}]`, offset: item.offset!, length: item.length!, resolution: item.resolution });
         }
       }
     }
     if ((v.offset ?? -1) >= 0 && (v.length ?? 0) > 0) {
-      allSpans.push({ field, offset: v.offset!, length: v.length! });
+      allSpans.push({ field, offset: v.offset!, length: v.length!, resolution: v.resolution });
     }
   }
 
@@ -112,14 +119,14 @@ export function ParsedMarkdownView({
     spans.push(span);
   }
 
-  const fragments: Array<{ text: string; field?: string }> = [];
+  const fragments: Array<{ text: string; field?: string; confidence?: SourceConfidence }> = [];
   let cursor = 0;
   for (const span of spans) {
     if (span.offset > cursor) {
       fragments.push({ text: md.slice(cursor, span.offset) });
     }
     if (span.offset >= cursor) {
-      fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field });
+      fragments.push({ text: md.slice(span.offset, span.offset + span.length), field: span.field, confidence: sourceConfidence(span.resolution, true) });
       cursor = span.offset + span.length;
     }
   }
@@ -139,7 +146,17 @@ export function ParsedMarkdownView({
             <mark
               key={i}
               data-provenance-field={frag.field}
+              data-provenance-confidence={frag.confidence}
+              title={
+                frag.confidence === "approximate"
+                  ? SOURCE_CONFIDENCE_DESCRIPTION.approximate
+                  : undefined
+              }
               className={`rounded-sm px-0.5 cursor-pointer ${
+                frag.confidence === "approximate"
+                  ? "underline decoration-dashed decoration-vermillion-2/70 underline-offset-2 "
+                  : ""
+              }${
                 frag.field === activeField
                   ? "bg-vermillion-3/50 text-vermillion-2 ring-1 ring-vermillion-2/40"
                   : "bg-cream-2 text-ink-3 hover:bg-cream-3"

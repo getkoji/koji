@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { ChevronLeft, ChevronRight, Highlighter } from "lucide-react";
 import dynamic from "next/dynamic";
+import {
+  sourceConfidence,
+  type ResolutionRung,
+  type SourceConfidence,
+  SOURCE_CONFIDENCE_LABEL,
+  SOURCE_CONFIDENCE_DESCRIPTION,
+} from "@/lib/provenance-resolution";
 
 // react-pdf uses pdfjs which requires DOM APIs (DOMMatrix, canvas) that don't
 // exist during SSR. Import the entire component client-side only.
@@ -47,6 +54,12 @@ export interface BBoxHighlight {
    * it raw — the picker renders `label ?? field`.
    */
   label?: string;
+  /**
+   * How this field's geometry was resolved — the provenance resolution "rung"
+   * (see `@/lib/provenance-resolution`). Drives exact vs. best-guess highlight
+   * styling. Absent for host-supplied highlights (treated as exact).
+   */
+  resolution?: ResolutionRung;
 }
 
 /** Highlight colors, overridable by the embedding host (query param / koji:setTheme). */
@@ -612,17 +625,38 @@ function HighlightOverlay({
     >
       {highlights.map((h, i) => {
         const isActive = h.field === activeField;
-        const boxClass = `absolute rounded-sm transition-all cursor-pointer ${
-          isActive
-            ? "bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
-            : "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40"
+        // Highlights always carry geometry (they wouldn't be rendered
+        // otherwise), so pass hasSource=true — the rung alone decides exact
+        // vs. best-guess. A best-guess (fuzzy) box is drawn with a dashed,
+        // muted border so it reads as approximate at a glance.
+        const confidence = sourceConfidence(h.resolution, true);
+        const isApprox = confidence === "approximate";
+        const base = "absolute rounded-sm transition-all cursor-pointer";
+        const exactActive = "bg-vermillion-3/40 ring-2 ring-vermillion-2/60";
+        const exactIdle =
+          "bg-cream-3/30 ring-1 ring-ink-4/20 hover:bg-vermillion-3/20 hover:ring-vermillion-2/40";
+        const approxActive =
+          "bg-vermillion-3/20 border-2 border-dashed border-vermillion-2/70";
+        const approxIdle =
+          "bg-cream-3/15 border border-dashed border-ink-4/50 hover:bg-vermillion-3/15 hover:border-vermillion-2/50";
+        const boxClass = `${base} ${
+          isApprox
+            ? isActive
+              ? approxActive
+              : approxIdle
+            : isActive
+              ? exactActive
+              : exactIdle
         }`;
         // Host-supplied theme overrides the default vermillion/cream colors.
-        // Inline styles win over the Tailwind utilities above (background +
-        // box-shadow ring). Pass rgba()/hsla() for translucent fills.
+        // Inline styles win over the Tailwind utilities above. For a best-guess
+        // box, express the theme color as a dashed border so the approximate
+        // affordance survives a custom theme; otherwise use the solid ring.
         const themeColor = isActive ? theme?.activeColor : theme?.inactiveColor;
         const themeStyle: React.CSSProperties = themeColor
-          ? { backgroundColor: themeColor, boxShadow: `0 0 0 ${isActive ? 2 : 1}px ${themeColor}` }
+          ? isApprox
+            ? { backgroundColor: themeColor, border: `${isActive ? 2 : 1}px dashed ${themeColor}`, boxShadow: "none" }
+            : { backgroundColor: themeColor, boxShadow: `0 0 0 ${isActive ? 2 : 1}px ${themeColor}` }
           : {};
 
         // Per-word boxes (precise highlights) — use percentage positioning
@@ -645,6 +679,7 @@ function HighlightOverlay({
                 page={currentPage}
                 reasoning={h.reasoning}
                 isActive={isActive}
+                confidence={confidence}
                 onFieldClick={onFieldClick}
               />
             ));
@@ -668,6 +703,7 @@ function HighlightOverlay({
             page={currentPage}
             reasoning={h.reasoning}
             isActive={isActive}
+            confidence={confidence}
             onFieldClick={onFieldClick}
           />
         );
@@ -687,6 +723,7 @@ function HoverBox({
   page,
   reasoning,
   isActive,
+  confidence = "exact",
   onFieldClick,
 }: {
   className: string;
@@ -695,15 +732,18 @@ function HoverBox({
   page: number;
   reasoning?: string;
   isActive?: boolean;
+  confidence?: SourceConfidence;
   onFieldClick?: (field: string, page: number) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const isApprox = confidence === "approximate";
 
   return (
     <div
       ref={boxRef}
       data-highlight-field={field}
+      data-highlight-confidence={confidence}
       className={`${className} ${isActive ? "animate-pulse" : ""}`}
       style={style}
       onMouseEnter={() => setHovered(true)}
@@ -716,7 +756,19 @@ function HoverBox({
           style={{ bottom: "100%", left: 0, marginBottom: 4 }}
         >
           <div className="bg-ink text-cream rounded-sm px-2.5 py-1.5 shadow-lg max-w-[280px] whitespace-normal">
-            <div className="font-mono text-[10px] font-medium text-cream/70">{field}</div>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="font-mono text-[10px] font-medium text-cream/70 truncate min-w-0">{field}</span>
+              {isApprox && (
+                <span className="shrink-0 rounded-sm bg-cream/20 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-cream">
+                  {SOURCE_CONFIDENCE_LABEL.approximate}
+                </span>
+              )}
+            </div>
+            {isApprox && (
+              <p className="text-[10px] leading-snug mt-0.5 text-cream/70">
+                {SOURCE_CONFIDENCE_DESCRIPTION.approximate}
+              </p>
+            )}
             {reasoning && (
               <p className="text-[11px] leading-snug mt-0.5">{reasoning}</p>
             )}

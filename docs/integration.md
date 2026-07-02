@@ -548,6 +548,13 @@ also works.)
 | `value` | string | no | Extracted value; the field picker shows it as `name: value`. |
 | `label` | string | no | Human-readable name for the field picker. The picker renders **`label ?? field`**, so you can keep `field` opaque without leaking it into the UI. |
 | `reasoning` | string | no | Tooltip text shown on hover. |
+| `resolution` | string | no | How the location was resolved — the provenance [resolution rung](api-reference.md#provenance-span): `offset`/`chunk`/`anchored` (exact) or `fuzzy` (best guess). Drives the viewer's exact-vs-approximate styling (see below). Highlights fetched from the API (document mode) carry this automatically; omit it for host-supplied highlights and the box renders as exact. |
+
+**Exact vs. best-guess highlights.** The viewer styles each box by its
+`resolution`: an exact locate (`offset`/`chunk`/`anchored`, or no `resolution`)
+renders as a solid box, while a best guess (`fuzzy`) renders with a dashed,
+muted border and a "location is approximate" note on hover — so users can tell a
+precise highlight from an approximate one at a glance.
 
 ### Messaging schema (postMessage)
 
