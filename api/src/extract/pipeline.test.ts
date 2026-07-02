@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, skipMarkedRows, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -164,6 +164,82 @@ describe("rejectCaptionValues", () => {
     const nulled = rejectCaptionValues(extracted, fields);
     expect(nulled).toEqual([]);
     expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+  });
+});
+
+describe("skipMarkedRows", () => {
+  const fields = {
+    coverages: { type: "array", hints: { skip_row_when: ["Not Covered", "^\\$0$", "if included"] } },
+    locations: { type: "array" }, // no opt-in → never touched
+  };
+
+  it("drops rows whose string values match a pattern, case-insensitively", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [
+        { code: "GL", limit: "$1,000,000" },
+        { code: "CYBER", limit: "NOT COVERED" },
+        { code: "TRIA", limit: "If Included In The Policy" },
+        { code: "PROP", limit: "$500,000" },
+      ],
+    };
+    const report = skipMarkedRows(extracted, fields);
+    expect(report).toEqual([{ field: "coverages", dropped: 2 }]);
+    expect((extracted.coverages as unknown[]).map((r) => (r as { code: string }).code)).toEqual(["GL", "PROP"]);
+  });
+
+  it("matches nested string leaves and bare string elements", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "UMB", detail: { limit: "$0" } }, "Not Covered", { code: "GL", detail: { limit: "$5,000" } }],
+    };
+    skipMarkedRows(extracted, fields);
+    expect(extracted.coverages).toEqual([{ code: "GL", detail: { limit: "$5,000" } }]);
+  });
+
+  it("does not match a pattern inside a longer value when anchored", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "GL", limit: "$1,000,000 ($0 deductible)" }],
+    };
+    const report = skipMarkedRows(extracted, fields);
+    expect(report).toEqual([]);
+    expect(extracted.coverages).toHaveLength(1);
+  });
+
+  it("only touches fields that opt in, and ignores non-arrays", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: "Not Covered", // not an array → untouched even though it matches
+      locations: [{ address: "Not Covered Lane" }],
+    };
+    const report = skipMarkedRows(extracted, fields);
+    expect(report).toEqual([]);
+    expect(extracted.coverages).toBe("Not Covered");
+    expect(extracted.locations).toHaveLength(1);
+  });
+
+  it("keeps index-aligned source_texts in sync when rows drop", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "GL" }, { code: "CYBER", limit: "Not Covered" }, { code: "PROP" }],
+    };
+    const sourceTexts: Record<string, string[]> = { coverages: ["src-gl", "src-cyber", "src-prop"] };
+    skipMarkedRows(extracted, fields, sourceTexts);
+    expect(sourceTexts.coverages).toEqual(["src-gl", "src-prop"]);
+  });
+
+  it("leaves source_texts alone when lengths already disagree", () => {
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "GL" }, { code: "CYBER", limit: "Not Covered" }],
+    };
+    const sourceTexts: Record<string, string[]> = { coverages: ["only-one"] };
+    skipMarkedRows(extracted, fields, sourceTexts);
+    expect(sourceTexts.coverages).toEqual(["only-one"]);
+  });
+
+  it("skips malformed regex patterns without throwing", () => {
+    const badFields = { coverages: { type: "array", hints: { skip_row_when: ["([", "Not Covered"] } } };
+    const extracted: Record<string, unknown> = {
+      coverages: [{ code: "GL" }, { code: "CYBER", limit: "Not Covered" }],
+    };
+    expect(() => skipMarkedRows(extracted, badFields)).not.toThrow();
+    expect(extracted.coverages).toEqual([{ code: "GL" }]);
   });
 });
 

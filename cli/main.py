@@ -21,7 +21,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.41.0"
+KOJI_VERSION = "0.42.0"
 
 
 def _version_callback(value: bool) -> None:

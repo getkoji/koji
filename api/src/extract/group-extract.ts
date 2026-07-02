@@ -88,6 +88,25 @@ export function describeObjectShape(spec: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Render the `skip_row_when` hint (a regex string or a list of them) into a
+ * prompt instruction telling the model not to emit rows carrying a
+ * not-applicable marker. Returns null when the hint is absent/empty. Paired
+ * with the deterministic `skipMarkedRows` post-filter, which drops any row
+ * that slips through.
+ */
+function buildSkipRowNote(raw: unknown): string | null {
+  const patterns = (typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : []).filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  );
+  if (patterns.length === 0) return null;
+  return (
+    "SKIP rows that are listed in the structure but marked as not applicable or not present — " +
+    `specifically any row whose text matches ${patterns.map((p) => `/${p}/i`).join(" or ")}. ` +
+    "Do not emit such rows."
+  );
+}
+
+/**
  * Render per-field extraction_hint strings into a notes block.
  * Returns empty string if no field has a hint.
  */
@@ -112,6 +131,13 @@ export function collectExtractionNotes(
           "The value is on the line directly below the label (or the adjacent cell). " +
           "A value that is itself a caption — e.g. it ends with ':' — is WRONG.",
       );
+    }
+    // `skip_row_when` fields get a prompt note not to emit rows carrying a
+    // not-applicable marker (paired with the deterministic post-filter
+    // downstream, which drops any that slip through).
+    const skipNote = buildSkipRowNote(hints?.skip_row_when);
+    if (skipNote) {
+      parts.push(skipNote);
     }
     if (parts.length > 0) {
       notes.push(`- **${name}**: ${parts.join(" ")}`);
@@ -616,6 +642,11 @@ export function buildEnumerationPrompt(
     typeof hint === "string" && hint.trim() ? `\n## Extraction notes\n\n- **${fieldName}**: ${hint.trim()}\n` : "";
   const content = chunks.map((c) => `### ${c.title}\n\n${c.content}`).join("\n\n---\n\n");
   const contextSection = renderContextChunks(contextChunks, chunks);
+  // `skip_row_when` carve-out: the enumeration instructions otherwise demand
+  // that no row be dropped, which would override the skip note.
+  const hints = fieldSpec.hints as Record<string, unknown> | undefined;
+  const skipNote = buildSkipRowNote(hints?.skip_row_when);
+  const skipException = skipNote ? ` EXCEPTION: ${skipNote}` : "";
 
   return `An earlier pass extracted ${currentItems.length} item(s) for the array field "${fieldName}", but a repeated structure (a table or list) in the sections below likely has MORE rows that were missed. Enumerate EVERY row.
 
@@ -632,7 +663,7 @@ ${content}
 
 ## Instructions
 
-Return the COMPLETE array for "${fieldName}" — every row of the table/list as a separate item, INCLUDING the ones already extracted above AND any that were missed. Do not summarize, merge, deduplicate, or drop rows; list them all even when they look similar. Return a FLAT JSON object {"${fieldName}": [ ... ]}. Do not invent data — only rows explicitly present in the sections.
+Return the COMPLETE array for "${fieldName}" — every row of the table/list as a separate item, INCLUDING the ones already extracted above AND any that were missed. Do not summarize, merge, deduplicate, or drop rows; list them all even when they look similar. Return a FLAT JSON object {"${fieldName}": [ ... ]}. Do not invent data — only rows explicitly present in the sections.${skipException}
 
 JSON:`;
 }

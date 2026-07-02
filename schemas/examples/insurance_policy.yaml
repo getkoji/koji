@@ -161,6 +161,12 @@ fields:
       # pass under-counts the rows — enumerate_rows runs a completion pass to
       # list every row.
       enumerate_rows: true
+      # Enumeration is faithful to the source, so rows that are listed but not
+      # actually bound ("$0", "Not Covered", "If Included") come back as data.
+      # skip_row_when drops any row whose values match one of these patterns
+      # (case-insensitive; prompt instruction + deterministic post-filter).
+      # Uncomment + tune to your documents' not-applicable markers:
+      # skip_row_when: ["^\\$?0(\\.00)?$", "Not Covered", "If Included"]
       # On a big multi-part package, gate which sections per_section visits so it
       # doesn't emit spurious rows out of boilerplate. Uncomment + tune to your
       # carrier's section headings:
