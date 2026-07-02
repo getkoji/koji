@@ -1008,6 +1008,8 @@ Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a
 
 Documents are parsed with the tenant's configured parse provider (the same one the live extraction path uses), falling back to the system default when none is configured, and reuse the shared parse cache. Any corpus entry that fails to parse or extract is reported in a `parseFailures` array (`[{ entryId, filename, error }]`) rather than being silently dropped, and `docsTotal` counts every attempted document (scored + failed) so accuracy is not inflated by dropped docs.
 
+Each successfully extracted document is persisted as an extraction run linked to the validate run. These per-document records power the per-field accuracy heatmap on the Performance page (`GET /api/schemas/{slug}/performance`) and serve as the regression baseline for the next validate.
+
 ### `GET /api/schemas/{slug}/versions`
 
 The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
