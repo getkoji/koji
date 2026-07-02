@@ -18,6 +18,9 @@ interface FieldResult {
   accuracy: number;
   prevAccuracy: number | null;
   status: "pass" | "regressed" | "failing";
+  /** Present for array fields (F1 scoring): precision/recall as percentages. */
+  precision?: number;
+  recall?: number;
   failingDocs: FailingDoc[];
 }
 
@@ -352,6 +355,14 @@ export default function ValidatePage() {
                             <span className={`font-mono text-[11px] font-medium ${f.accuracy >= 98 ? "text-green" : f.accuracy >= 95 ? "text-ink" : "text-vermillion-2"}`}>
                               {f.accuracy.toFixed(1)}%
                             </span>
+                            {f.precision !== undefined && f.recall !== undefined && (
+                              <span
+                                className="ml-2 font-mono text-[10px] text-ink-4"
+                                title="Array field — F1 of precision (of extracted rows, how many were correct) and recall (of expected rows, how many were found)"
+                              >
+                                P {f.precision.toFixed(0)} · R {f.recall.toFixed(0)}
+                              </span>
+                            )}
                           </td>
                           <td className="px-4 py-2.5">
                             {f.prevAccuracy !== null && (
