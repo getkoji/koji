@@ -1074,6 +1074,8 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   // lands in exactly one of `results` or `parseFailures` (oss-308).
   const parseFailures: Array<{ entryId: string; filename: string; error: string }> = [];
 
+  const yamlHash = createHash("sha256").update(schemaYaml).digest("hex");
+
   // Run extractions directly (no HTTP loopback — works on Vercel)
   for (const entry of entriesWithGT) {
     try {
@@ -1140,6 +1142,39 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         // consumed by computeValidateResult, never persisted or returned raw.
         routingPlan: (extractResult.routing_plan as RoutingPlan) ?? undefined,
       });
+
+      // Persist the per-doc extraction, linked to this schema_run. The
+      // performance heatmap joins extraction_runs on schema_run_id, and the
+      // next validate's regression baseline reads the latest run per corpus
+      // entry — without this row both saw only build-page extractions.
+      // Same row shape as the build path (extract.ts) so shared consumers
+      // (run detail, provenance) work on validate rows too. A failed insert
+      // must not fail the validate run itself.
+      try {
+        await withRLS(db, tenantId, (tx) =>
+          tx.insert(schema.extractionRuns).values({
+            tenantId,
+            schemaId: schemaRow.id,
+            schemaVersionId: versionId,
+            schemaRunId: schemaRun.id,
+            corpusEntryId: entry.id,
+            model: String(extractResult.model ?? extractModel ?? "unknown"),
+            schemaYamlHash: yamlHash,
+            extractedJson: extractResult.extracted ?? {},
+            confidenceJson: extractResult.confidence ?? null,
+            confidenceScoresJson: extractResult.confidence_scores ?? null,
+            provenanceJson: extractResult.provenance ?? null,
+            markdownText: markdown,
+            parseSeconds: null,
+            extractMs: (extractResult.elapsed_ms as number) ?? null,
+            ocrSkipped: parsed.ocr_skipped ? "true" : "false",
+            cached: parsed.cached ? "true" : "false",
+            triggeredBy: principal.userId,
+          })
+        );
+      } catch (err) {
+        console.warn(`[validate] Failed to persist extraction run for ${entry.filename}:`, err);
+      }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       console.warn(`[validate] Failed to extract ${entry.filename}:`, error);
