@@ -1106,6 +1106,63 @@ describe("routeFields — per_section section_anchor precision filter (oss-339)"
     const routes = routeFields(schema({ per_section: true, section_anchor: "COVERAGE PART DECLARATIONS" }), chunks);
     expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0]);
   });
+
+  // ── section_exclude — the routing veto (negative of section_anchor) ──
+
+  function packageWithOptionsMenu(): Chunk[] {
+    return [
+      makeChunk({ index: 0, title: "COMMERCIAL PROPERTY COVERAGE PART DECLARATIONS", category: "declarations", content: "coverage limit deductible", signals: { ...covSignals } }),
+      makeChunk({ index: 1, title: "COMMERCIAL GENERAL LIABILITY COVERAGE PART DECLARATIONS", category: "declarations", content: "coverage limit deductible", signals: { ...covSignals } }),
+      // A checklist of *available* items with example amounts — rows that look
+      // bound but aren't; only a veto keeps them out of the routed pool.
+      makeChunk({ index: 2, title: "OPTIONAL COVERAGES AVAILABLE", category: "declarations", content: "Umbrella coverage limit $1,200 Fidelity Bond coverage limit $800", signals: { ...covSignals } }),
+    ];
+  }
+
+  it("section_exclude vetoes matching sections from the per_section pool", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_exclude: "OPTIONAL COVERAGES" }),
+      packageWithOptionsMenu(),
+    );
+    const titles = routes[0]!.chunks.map((c) => c.title);
+    expect(titles).toEqual([
+      "COMMERCIAL PROPERTY COVERAGE PART DECLARATIONS",
+      "COMMERCIAL GENERAL LIABILITY COVERAGE PART DECLARATIONS",
+    ]);
+  });
+
+  it("the section_anchor fallback cannot re-admit a vetoed section", () => {
+    // Anchor matches nothing → falls back — but only to the non-vetoed pool.
+    const routes = routeFields(
+      schema({
+        per_section: true,
+        section_anchor: "THIS MATCHES NO SECTION XYZ",
+        section_exclude: "OPTIONAL COVERAGES",
+      }),
+      packageWithOptionsMenu(),
+    );
+    const titles = routes[0]!.chunks.map((c) => c.title);
+    expect(titles).not.toContain("OPTIONAL COVERAGES AVAILABLE");
+    expect(titles.length).toBe(2);
+  });
+
+  it("an exclude that matches every section routes nothing (no fallback)", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_exclude: "COVERAGE" }),
+      packageWithOptionsMenu(),
+    );
+    // A veto that matches everything must not silently re-admit sections —
+    // routing none is the honest outcome (and it warns).
+    expect(routes[0]!.chunks.length).toBe(0);
+  });
+
+  it("skips a malformed exclude pattern rather than dropping the field", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_exclude: ["([", "OPTIONAL COVERAGES"] }),
+      packageWithOptionsMenu(),
+    );
+    expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0, 1]);
+  });
 });
 
 // ---------------------------------------------------------------------------

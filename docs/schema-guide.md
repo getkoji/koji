@@ -836,6 +836,18 @@ coverages:
 
 The pattern is case-insensitive. Provide several when the qualifying sections aren't uniformly named (`["COVERAGE PART DECLARATIONS", "RECORD OF ADDITIONAL INSUREDS"]`). If the anchor matches no section, `per_section` falls back to all sections and logs a warning — a too-narrow pattern won't make the field silently vanish. Use `section_anchor` to trade a little recall for a lot of precision once `per_section` is over-producing.
 
+**`section_exclude`** is the anchor's negative: a regex (or list) naming sections the field must **never** route to. Its target is the *option/menu/catalog* block — a section that lists items as *available* rather than as data, often with example amounts that look exactly like real rows ("OPTIONAL COVERAGES", "AVAILABLE ENDORSEMENTS", a product menu). Those rows defeat `skip_row_when`'s value matching because their extracted values look bound; the fix is to never read the section at all:
+
+```yaml
+coverages:
+  type: array
+  hints:
+    per_section: true
+    section_exclude: ["OPTIONAL COVERAGES", "AVAILABLE COVERAGES"]
+```
+
+The veto is absolute — it applies to the scored pool *and* to the router's broaden/fallback safety nets, and the `section_anchor` fallback can never re-admit a vetoed section. Unlike `section_anchor` there is deliberately **no** fallback when the veto matches everything: falling back would re-admit exactly the sections the schema said never to read, so an exclude-everything pattern routes nothing (visible in `--explain` as an empty chunk list) and logs a warning. Because the `enumerate_rows` pass re-reads the field's routed chunks, a vetoed section is also invisible to enumeration.
+
 **`chunks_per_section`** (default `4`) controls how many chunks `per_section` keeps *per* matched section. A section whose table spans several chunks needs more than one, or the rows in the dropped chunks never reach the model. Raise it for very long coverage-part tables; the default handles most.
 
 ### enumerate_rows
@@ -871,9 +883,15 @@ coverages:
     skip_row_when: ["^\\$?0(\\.00)?$", "Not Covered", "If Included"]
 ```
 
-Matching is case-insensitive and applies to every string value in the element (including nested ones). It works in two layers: the patterns are added to the extraction and enumeration prompts as a skip instruction, and a **deterministic post-filter** drops any matching row that slips through — after every extraction pass, so a marked row never ships regardless of which pass produced it. Per-element provenance stays aligned with the surviving rows.
+Matching is case-insensitive and applies to every string value in the element (including nested ones) — **and to the row's verbatim source line**. Each array element carries the exact document text it was extracted from (both the first pass and the enumeration pass request it), and the patterns run against that line too. That catches rows that are not-applicable purely by their *surroundings* — a checkbox glyph, an "optional"/"available" marker on the line — even when the extracted values look like real data:
 
-Anchor patterns that could legitimately appear *inside* a real value: `"^\\$0$"` drops a row whose limit is exactly `$0`, while a bare `"\\$0"` would also kill a row with a `$1,000,000 ($0 deductible)` limit. A malformed regex is skipped (the rest still apply) rather than failing extraction.
+```yaml
+    skip_row_when: ["^\\$?0(\\.00)?$", "Not Covered", "If Included", "optional", "available", "☐"]
+```
+
+It works in two layers: the patterns are added to the extraction and enumeration prompts as a skip instruction, and a **deterministic post-filter** drops any matching row that slips through — after every extraction pass, so a marked row never ships regardless of which pass produced it. Per-element provenance stays aligned with the surviving rows.
+
+Anchor patterns that could legitimately appear *inside* a real value: `"^\\$0$"` drops a row whose limit is exactly `$0`, while a bare `"\\$0"` would also kill a row with a `$1,000,000 ($0 deductible)` limit. A malformed regex is skipped (the rest still apply) rather than failing extraction. When a whole *section* is a menu of available items, prefer `section_exclude` (above) — vetoing the section is cheaper and more reliable than pattern-matching every row in it.
 
 ### isolate
 

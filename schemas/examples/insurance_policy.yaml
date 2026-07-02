@@ -163,14 +163,19 @@ fields:
       enumerate_rows: true
       # Enumeration is faithful to the source, so rows that are listed but not
       # actually bound ("$0", "Not Covered", "If Included") come back as data.
-      # skip_row_when drops any row whose values match one of these patterns
-      # (case-insensitive; prompt instruction + deterministic post-filter).
-      # Uncomment + tune to your documents' not-applicable markers:
+      # skip_row_when drops any row whose values — or whose verbatim source
+      # line — match one of these patterns (case-insensitive; prompt
+      # instruction + deterministic post-filter). Uncomment + tune to your
+      # documents' not-applicable markers:
       # skip_row_when: ["^\\$?0(\\.00)?$", "Not Covered", "If Included"]
       # On a big multi-part package, gate which sections per_section visits so it
       # doesn't emit spurious rows out of boilerplate. Uncomment + tune to your
       # carrier's section headings:
       # section_anchor: "COVERAGE PART DECLARATIONS|SCHEDULE OF COVERAGES"
+      # Sections that MENU coverages as available/optional (with example
+      # amounts that look real) should never be read at all — the veto also
+      # shields the enumerate_rows pass:
+      # section_exclude: ["OPTIONAL COVERAGES", "AVAILABLE COVERAGES"]
       # Large multi-part packages scatter coverage sections across many pages.
       # per_section guarantees one chunk from EACH distinct section reaches the
       # extractor, instead of only the globally top-scoring few.

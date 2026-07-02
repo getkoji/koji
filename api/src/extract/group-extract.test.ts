@@ -948,6 +948,12 @@ describe("buildEnumerationPrompt", () => {
     expect(p).toContain("EXCEPTION: SKIP rows");
     expect(p).toContain("/Not Covered/i");
   });
+
+  it("requests per-item __source_text so appended rows carry provenance", () => {
+    const p = buildEnumerationPrompt("coverages", spec, chunks, [{ code: "GL" }]);
+    expect(p).toContain('"__source_text"');
+    expect(p).toContain("EXACT verbatim text");
+  });
 });
 
 describe("enumerateRows", () => {
