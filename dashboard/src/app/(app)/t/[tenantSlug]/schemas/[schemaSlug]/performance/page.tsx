@@ -268,15 +268,23 @@ export default function PerformancePage() {
 
   const latestRun = runs[runs.length - 1]!;
 
-  // Build heatmap from real per-run field accuracy data
+  // Build heatmap from real per-run field accuracy data.
+  // Columns are capped to the most recent runs — one column per run forever
+  // would grow without bound and shove the run-details panel off screen.
+  // Scores are joined by runId: the API omits runs with no extraction data,
+  // so perRunFieldAccuracy is not index-aligned with runs.
+  const HEATMAP_MAX_RUNS = 10;
+  const scoresByRunId = new Map(perRunFieldAccuracy.map((prf) => [prf.runId, prf.fields]));
+  const heatmapRuns = validRuns
+    .map((r, i) => ({ runId: r.id, label: i + 1 }))
+    .slice(-HEATMAP_MAX_RUNS);
   const allFieldNames = new Set<string>();
   for (const prf of perRunFieldAccuracy) {
     for (const f of Object.keys(prf.fields)) allFieldNames.add(f);
   }
-  const heatmapVersions = validRuns.map((_, i) => i + 1);
   const heatmapFields = Array.from(allFieldNames).map((name) => ({
     name,
-    scores: perRunFieldAccuracy.map((prf) => prf.fields[name] ?? 100),
+    scores: heatmapRuns.map(({ runId }) => scoresByRunId.get(runId)?.[name] ?? null),
   }));
 
   return (
@@ -353,44 +361,64 @@ export default function PerformancePage() {
 
         {/* ── 3. Two-column grid ── */}
         {chartData.length >= 2 && (
-          <div className="grid gap-6" style={{ gridTemplateColumns: "1.2fr 1fr" }}>
+          <div className="grid gap-6" style={{ gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr)" }}>
             {/* Per-field heatmap */}
             <div>
               <h2 className="font-display text-[18px] font-medium tracking-tight text-ink mb-4" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50" }}>
                 Per-field accuracy
               </h2>
               <div className="border border-border rounded-sm overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-cream-2/50">
-                      <th className="text-left px-3 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Field</th>
-                      {heatmapVersions.map((v, i) => (
-                        <th key={v} className={`px-2 py-2 font-mono text-[9px] font-medium text-center ${i === heatmapVersions.length - 1 ? "text-ink" : "text-ink-4"}`}>#{v}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {heatmapFields.map((f) => (
-                      <tr key={f.name} className="border-t border-border">
-                        <td className="px-3 py-1.5 font-mono text-[10px] text-ink">{f.name}</td>
-                        {f.scores.map((s, i) => (
-                          <td key={i} className="px-1 py-1 text-center">
-                            <span className={`inline-block font-mono text-[10px] font-medium px-1.5 py-0.5 rounded-sm ${heatColor(s)}`}>{s.toFixed(0)}</span>
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="px-3 py-2 border-t border-border bg-cream-2/30 flex items-center gap-3">
-                  <span className="font-mono text-[8px] text-ink-4 uppercase">Accuracy</span>
-                  {[["bg-vermillion-3", "<90"], ["bg-yellow-500/15", "90-95"], ["bg-green/10", "95-98"], ["bg-green/25", "98+"]].map(([bg, label]) => (
-                    <div key={label} className="flex items-center gap-1">
-                      <span className={`w-3 h-3 rounded-sm ${bg}`} />
-                      <span className="font-mono text-[8px] text-ink-4">{label}</span>
+                {heatmapFields.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <p className="text-[12px] text-ink-3">No per-field data yet.</p>
+                    <p className="text-[11px] text-ink-4 mt-1">
+                      Add ground truth to corpus entries — per-field accuracy is computed against it on each validate run.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-cream-2/50">
+                            <th className="text-left px-3 py-2 font-mono text-[9px] font-medium tracking-[0.1em] uppercase text-ink-4">Field</th>
+                            {heatmapRuns.map(({ runId, label }, i) => (
+                              <th key={runId} className={`px-2 py-2 font-mono text-[9px] font-medium text-center ${i === heatmapRuns.length - 1 ? "text-ink" : "text-ink-4"}`}>#{label}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {heatmapFields.map((f) => (
+                            <tr key={f.name} className="border-t border-border">
+                              <td className="px-3 py-1.5 font-mono text-[10px] text-ink whitespace-nowrap">{f.name}</td>
+                              {f.scores.map((s, i) => (
+                                <td key={i} className="px-1 py-1 text-center">
+                                  {s === null ? (
+                                    <span className="font-mono text-[10px] text-ink-4">—</span>
+                                  ) : (
+                                    <span className={`inline-block font-mono text-[10px] font-medium px-1.5 py-0.5 rounded-sm ${heatColor(s)}`}>{s.toFixed(0)}</span>
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                  ))}
-                </div>
+                    <div className="px-3 py-2 border-t border-border bg-cream-2/30 flex items-center gap-3">
+                      <span className="font-mono text-[8px] text-ink-4 uppercase">Accuracy</span>
+                      {[["bg-vermillion-3", "<90"], ["bg-yellow-500/15", "90-95"], ["bg-green/10", "95-98"], ["bg-green/25", "98+"]].map(([bg, label]) => (
+                        <div key={label} className="flex items-center gap-1">
+                          <span className={`w-3 h-3 rounded-sm ${bg}`} />
+                          <span className="font-mono text-[8px] text-ink-4">{label}</span>
+                        </div>
+                      ))}
+                      {validRuns.length > HEATMAP_MAX_RUNS && (
+                        <span className="font-mono text-[8px] text-ink-4 ml-auto">last {HEATMAP_MAX_RUNS} of {validRuns.length} runs</span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
