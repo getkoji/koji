@@ -417,6 +417,78 @@ export function rejectCaptionValues(
   return nulled;
 }
 
+/** Normalize a line/caption for matching: strip markdown, collapse spaces, drop
+ *  a trailing colon, lowercase. */
+function normalizeCaption(s: string): string {
+  return s
+    .replace(/[*_#>|`]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/:\s*$/, "")
+    .toLowerCase();
+}
+
+/** Strip leading/trailing markdown decoration from a recovered value line. */
+function stripMarkdown(s: string): string {
+  return s.replace(/^[*_#>|`\s-]+/, "").replace(/[*_`|\s]+$/, "").trim();
+}
+
+/**
+ * Find the source line matching `caption` and return the first following
+ * non-empty line that isn't itself a caption — the value the label introduces.
+ * Returns null when the label isn't found or the next non-empty line is another
+ * label (no value beneath it).
+ */
+export function valueAfterLabel(caption: string, markdown: string): string | null {
+  const core = normalizeCaption(caption);
+  if (!core) return null;
+  const lines = markdown.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (normalizeCaption(lines[i]!) !== core) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      const candidate = lines[j]!.trim();
+      if (!candidate) continue;
+      if (isCaptionValue(candidate)) return null; // next non-empty is another label
+      const value = stripMarkdown(candidate);
+      return value.length > 0 ? value : null;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Recovery variant of the caption guard, for the `hints.take_value_after_label`
+ * opt-in. When a scalar comes back as its own label caption, take the value from
+ * the line after that label in the source instead of nulling to review —
+ * belt-and-suspenders for label→value scalars (pairs with isolate/reject_caption).
+ * Falls back to null when no following value is found, so it never emits the
+ * caption. Returns the fields it recovered and the fields it nulled.
+ */
+export function recoverCaptionValues(
+  extracted: Record<string, unknown>,
+  fields: Record<string, Record<string, unknown>>,
+  markdown: string,
+): { recovered: string[]; nulled: string[] } {
+  const recovered: string[] = [];
+  const nulled: string[] = [];
+  for (const [name, spec] of Object.entries(fields)) {
+    const hints = spec.hints as Record<string, unknown> | undefined;
+    if (hints?.take_value_after_label !== true) continue;
+    const val = extracted[name];
+    if (!isCaptionValue(val)) continue;
+    const next = valueAfterLabel(val as string, markdown);
+    if (next != null) {
+      extracted[name] = next;
+      recovered.push(name);
+    } else {
+      extracted[name] = null; // never emit the caption
+      nulled.push(name);
+    }
+  }
+  return { recovered, nulled };
+}
+
 function buildConfidence(
   extracted: Record<string, unknown>,
   fields: Record<string, Record<string, unknown>>,
@@ -704,6 +776,12 @@ export async function extractFields(
   // `type: mapping` or `number` field works at any depth, not just top level.
   const fields = (schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>;
 
+  // `take_value_after_label` recovery: if a scalar came back as its own label
+  // caption, take the value from the line after that label in the source
+  // instead of nulling. Runs before the reject_caption backstop so a recovered
+  // field is no longer caption-shaped by the time that runs.
+  const captionRecovery = recoverCaptionValues(result.extracted, fields, markdown);
+
   // `reject_caption` backstop: null any scalar that came back as its own label
   // caption so the engine never emits a caption. Runs before validation so a
   // nulled required field surfaces as not-found (→ review), not a wrong value.
@@ -718,6 +796,12 @@ export async function extractFields(
     applied: normReport.applied,
     warnings: [
       ...normReport.warnings,
+      ...captionRecovery.recovered.map(
+        (f) => `${f}: recovered the value from the line after its label (take_value_after_label)`,
+      ),
+      ...captionRecovery.nulled.map(
+        (f) => `${f}: caption with no value beneath it — routed to review (take_value_after_label)`,
+      ),
       ...captionNulled.map(
         (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
       ),
