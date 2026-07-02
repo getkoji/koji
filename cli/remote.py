@@ -348,7 +348,61 @@ def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
 
     if explain:
         _render_routing_diagnostics(r)
+        _render_array_element_diffs(r)
     console.print()
+
+
+def _elem_labels(elements: list[dict], side: str, limit: int = 6) -> str:
+    """Compact labels for a list of element diffs: the element_key value when
+    the schema declares one, else the formatted element itself."""
+    labels = [e.get("key") or _fmt_value(e.get(side, ""), 24) for e in elements]
+    shown = ", ".join(labels[:limit])
+    return shown + (f" …+{len(labels) - limit}" if len(labels) > limit else "")
+
+
+def _render_array_element_diffs(r: dict) -> None:
+    """Per-element diagnosis for failing array fields: which extracted elements
+    were spurious (FP — they hurt precision) and which expected elements were
+    missed (FN — they hurt recall), keyed by element_key when declared."""
+    rows: list[tuple[str, str, list[dict], list[dict], int]] = []
+    for f in r.get("fields", []):
+        for d in f.get("failingDocs", []) or []:
+            diff = d.get("diff") or {}
+            if diff.get("kind") != "array":
+                continue
+            elements = diff.get("elements") or []
+            fp = [e for e in elements if e.get("status") == "extra"]
+            fn = [e for e in elements if e.get("status") == "missing"]
+            changed = sum(1 for e in elements if e.get("status") == "changed")
+            if not fp and not fn and not changed:
+                continue
+            rows.append((f.get("name", ""), d.get("filename", ""), fp, fn, changed))
+
+    if not rows:
+        return
+
+    console.print("\n[bold]array element diagnostics[/bold] [dim](per-element FP / FN)[/dim]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Field")
+    table.add_column("Doc")
+    table.add_column("FP (spurious)")
+    table.add_column("FN (missed)")
+    table.add_column("~", justify="right")
+    for field_name, filename, fp, fn, changed in rows[:50]:
+        table.add_row(
+            field_name,
+            _fmt_value(filename, 28),
+            f"[red]{_elem_labels(fp, 'got')}[/red]" if fp else "[dim]—[/dim]",
+            f"[yellow]{_elem_labels(fn, 'expected')}[/yellow]" if fn else "[dim]—[/dim]",
+            f"[dim]{changed}[/dim]" if changed else "[dim]—[/dim]",
+        )
+    console.print(table)
+    console.print(
+        "\n[dim]FP → spurious elements the extraction invented or over-enumerated; "
+        "tighten `section_anchor` / `skip_row_when`. "
+        "FN → expected elements the extraction missed; check `per_section` / "
+        "`enumerate_rows` routing. ~ → matched by key but a sub-field differs.[/dim]"
+    )
 
 
 def _render_routing_diagnostics(r: dict) -> None:

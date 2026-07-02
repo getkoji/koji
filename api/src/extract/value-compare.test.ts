@@ -169,6 +169,49 @@ describe("compareValues — arrays with element_key matching", () => {
     expect(diff.precision).toBeCloseTo(1, 5); // everything produced was right
     expect(diff.recall).toBeCloseTo(0.5, 5); // missed PROP
   });
+
+  it("labels every element diff with its element_key value", () => {
+    const expected = [
+      { code: "GL", limit: "1000000" },
+      { code: "PROP", limit: "2000000" }, // will be missed (FN)
+      { code: "CRIME", limit: "250000" }, // will pair but differ (changed)
+    ];
+    const got = [
+      { code: "GL", limit: "1000000" }, // matched
+      { code: "CRIME", limit: "999" }, // changed
+      { code: "UMB", limit: "5000000" }, // extra (FP)
+    ];
+    const r = compareValues(expected, got, spec);
+    const diff = r.diff as ArrayDiff;
+    const keysOf = (s: string) =>
+      diff.elements.filter((e) => e.status === s).map((e) => (e as { key?: string }).key);
+    expect(keysOf("matched")).toEqual(["GL"]);
+    expect(keysOf("changed")).toEqual(["CRIME"]);
+    expect(keysOf("missing")).toEqual(["PROP"]);
+    expect(keysOf("extra")).toEqual(["UMB"]);
+  });
+
+  it("omits key when the element doesn't carry the key sub-field", () => {
+    const expected = [{ code: "GL", limit: "1" }];
+    const got = [{ limit: "2" }]; // no code → extra without a key
+    const r = compareValues(expected, got, spec);
+    const diff = r.diff as ArrayDiff;
+    const extra = diff.elements.find((e) => e.status === "extra");
+    expect(extra).toBeDefined();
+    expect((extra as { key?: string }).key).toBeUndefined();
+  });
+});
+
+describe("compareValues — arrays without element_key carry no element keys", () => {
+  it("leaves key off every element diff", () => {
+    const spec = { type: "array", items: { type: "object", properties: { code: { type: "string" } } } };
+    const r = compareValues([{ code: "GL" }], [{ code: "UMB" }], spec);
+    const diff = r.diff as ArrayDiff;
+    expect(diff.elements.length).toBeGreaterThan(0);
+    for (const e of diff.elements) {
+      expect((e as { key?: string }).key).toBeUndefined();
+    }
+  });
 });
 
 describe("compareValues — informational sub-fields are not scored", () => {

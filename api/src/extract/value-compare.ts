@@ -33,11 +33,15 @@ export interface ScalarDiff {
   match: boolean;
 }
 
+/** `key` is the element's `element_key` value (when the schema declares one and
+ *  the element carries it) — a compact identity label so clients can report
+ *  per-element false positives ("extra") and false negatives ("missing")
+ *  without dumping whole formatted elements. */
 export type ArrayElemDiff =
-  | { status: "matched"; expected: string }
-  | { status: "changed"; expected: string; got: string; diff: ValueDiff }
-  | { status: "missing"; expected: string }
-  | { status: "extra"; got: string };
+  | { status: "matched"; expected: string; key?: string }
+  | { status: "changed"; expected: string; got: string; diff: ValueDiff; key?: string }
+  | { status: "missing"; expected: string; key?: string }
+  | { status: "extra"; got: string; key?: string };
 
 export interface ArrayDiff {
   kind: "array";
@@ -275,6 +279,13 @@ function compareArrays(expected: unknown[], got: unknown[], spec?: CompareSpec):
     }
   }
 
+  // The element's identity label for per-element FP/FN reporting.
+  const keyFor = (item: unknown): { key?: string } => {
+    if (!elementKey) return {};
+    const k = keyOf(item, elementKey);
+    return isNullish(k) ? {} : { key: formatValue(k) };
+  };
+
   // Sub-field credit summed over matched pairs (each in (0,1]). This weights
   // precision/recall by how good each matched element is, not just the count.
   let creditSum = 0;
@@ -283,24 +294,25 @@ function compareArrays(expected: unknown[], got: unknown[], spec?: CompareSpec):
   for (let i = 0; i < expected.length; i++) {
     const pair = paired.get(i);
     if (!pair) {
-      elements.push({ status: "missing", expected: formatValue(expected[i]) });
+      elements.push({ status: "missing", expected: formatValue(expected[i]), ...keyFor(expected[i]) });
       continue;
     }
     creditSum += pair.result.score;
     matchedCount += 1;
     if (pair.result.match) {
-      elements.push({ status: "matched", expected: formatValue(expected[i]) });
+      elements.push({ status: "matched", expected: formatValue(expected[i]), ...keyFor(expected[i]) });
     } else {
       elements.push({
         status: "changed",
         expected: formatValue(expected[i]),
         got: formatValue(got[pair.j]),
         diff: pair.result.diff,
+        ...keyFor(expected[i]),
       });
     }
   }
   for (let j = 0; j < got.length; j++) {
-    if (!gotUsed[j]) elements.push({ status: "extra", got: formatValue(got[j]) });
+    if (!gotUsed[j]) elements.push({ status: "extra", got: formatValue(got[j]), ...keyFor(got[j]) });
   }
 
   // F1 of quality-weighted precision and recall. Precision falls only on
