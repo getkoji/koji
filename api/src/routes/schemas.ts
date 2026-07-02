@@ -6,16 +6,31 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
-import { createNotification } from "../notifications/emit";
 import { extractFieldMetas } from "../schemas/field-meta";
-import { extractFields } from "../extract";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
-import { compareValues, type ValueDiff } from "../extract/value-compare";
+import { compareValues } from "../extract/value-compare";
 import { and, isNull, isNotNull } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { resolveMimeType } from "../ingestion/mime";
-import { resolveParse, parseDocument } from "../ingestion/seam";
+import { resolveParse } from "../ingestion/seam";
+import { mapWithConcurrency } from "../parse/pdf-slice";
+import { computeValidateResult } from "../schemas/validate-scoring";
+import {
+  runValidateDoc,
+  maybeFinalizeValidateRun,
+  type ValidateRunContext,
+  type ValidateDocJobPayload,
+} from "../schemas/validate-run";
+
+// Validate scoring lives in ../schemas/validate-scoring (shared with the async
+// run finalizer). Re-exported here for existing consumers and tests.
+export { answerPresentInText } from "../schemas/validate-scoring";
+export { computeValidateResult };
+
+/** Bounded parallelism for the sync validate driver — enough to keep a small
+ *  corpus well inside request timeouts without hammering the model endpoint. */
+const VALIDATE_SYNC_CONCURRENCY = 3;
 
 const DEFAULT_TEMPLATE = `name: my_schema
 description: ""
@@ -893,16 +908,21 @@ schemas.post(
  *
  * Re-runs extraction on every corpus entry with ground truth using the
  * current schema YAML, then compares results against ground truth.
+ *
+ * Two modes (oss-348):
+ *   - default (sync, back-compat): docs run in-request with bounded
+ *     parallelism; the full ValidateResult is the response.
+ *   - `{async: true}`: one `schema.validate.doc` job per entry is enqueued
+ *     and a 202 `{runId, ...}` returns immediately. Poll
+ *     GET /:slug/validate/runs/:runId for progress + the final result.
  */
 schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
-  const startTime = Date.now();
 
-  const body = await c.req
-    .json<{ model?: string; yaml?: string; bump?: Bump; commitMessage?: string }>()
-    .catch((): { model?: string; yaml?: string; bump?: Bump; commitMessage?: string } => ({}));
+  type ValidateBody = { model?: string; yaml?: string; bump?: Bump; commitMessage?: string; async?: boolean };
+  const body = await c.req.json<ValidateBody>().catch((): ValidateBody => ({}));
 
   const principal = getPrincipal(c);
 
@@ -998,28 +1018,8 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);
   if (!versionId) return c.json({ error: "No schema version found. Save or validate a schema first." }, 400);
 
-  // Create the schema_run record (ties to the candidate or the latest version).
-  const [schemaRun] = await withRLS(db, tenantId, (tx) =>
-    tx.insert(schema.schemaRuns).values({
-      tenantId,
-      schemaId: schemaRow.id,
-      schemaVersionId: versionId,
-      runType: "validate",
-      triggeredBy: principal.userId,
-      status: "running",
-      startedAt: new Date(),
-      docsTotal: entriesWithGT.length,
-    }).returning({ id: schema.schemaRuns.id })
-  );
-  if (!schemaRun) return c.json({ error: "Failed to create schema run" }, 500);
-
-  // Resolve model endpoint for extraction
-  const storage = c.get("storage");
-  const { provider, model: extractModel } = await resolveTenantProvider(db, tenantId, {
-    preferModel: body.model ?? null,
-  });
-
-  // Parse schema YAML for extraction
+  // Parse schema YAML for extraction — validated BEFORE the run row exists so
+  // a bad YAML can't strand a queued run that no job can ever load.
   let schemaDef: Record<string, unknown>;
   try {
     const { parse: parseYaml } = await import("yaml");
@@ -1028,37 +1028,67 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     return c.json({ error: "Invalid schema YAML" }, 422);
   }
 
-  const results: Array<{
-    entryId: string;
-    filename: string;
-    groundTruth: Record<string, unknown>;
-    extracted: Record<string, unknown>;
-    confidenceScores: Record<string, number>;
-    routingPlan?: RoutingPlan;
-  }> = [];
+  const isAsync = body.async === true;
 
-  // Get previous extraction runs for regression detection
-  const prevExtractedMap = new Map<string, Record<string, unknown>>();
-  for (const entry of entriesWithGT) {
-    const [prevRun] = await withRLS(db, tenantId, (tx) =>
-      tx.select({ extractedJson: schema.extractionRuns.extractedJson })
-        .from(schema.extractionRuns)
-        .where(eq(schema.extractionRuns.corpusEntryId, entry.id))
-        .orderBy(desc(schema.extractionRuns.createdAt))
-        .limit(1)
-    );
-    if (prevRun) {
-      prevExtractedMap.set(entry.id, prevRun.extractedJson as Record<string, unknown>);
+  // Create the schema_run record (ties to the candidate or the latest version).
+  const [schemaRun] = await withRLS(db, tenantId, (tx) =>
+    tx.insert(schema.schemaRuns).values({
+      tenantId,
+      schemaId: schemaRow.id,
+      schemaVersionId: versionId,
+      runType: "validate",
+      triggeredBy: principal.userId,
+      status: isAsync ? "queued" : "running",
+      startedAt: new Date(),
+      docsTotal: entriesWithGT.length,
+    }).returning({ id: schema.schemaRuns.id })
+  );
+  if (!schemaRun) return c.json({ error: "Failed to create schema run" }, 500);
+
+  // ── Async driver ──────────────────────────────────────────────
+  // One `schema.validate.doc` job per corpus entry; the last doc to finish
+  // finalizes the run (validate-run.ts). The client polls
+  // GET /:slug/validate/runs/:runId. This is what keeps a big corpus (or an
+  // expensive per-doc config like enumerate_rows) clear of every request
+  // timeout — no single invocation carries more than one document (oss-348).
+  if (isAsync) {
+    const queue = c.get("queue");
+    for (const entry of entriesWithGT) {
+      const payload: ValidateDocJobPayload = {
+        schemaRunId: schemaRun.id,
+        corpusEntryId: entry.id,
+        model: body.model ?? null,
+      };
+      await queue.enqueue("schema.validate.doc", payload, { tenantId, maxRetries: 2 });
     }
+    return c.json(
+      {
+        runId: schemaRun.id,
+        status: "queued",
+        docsTotal: entriesWithGT.length,
+        version: versionLabel,
+        bump,
+        deduped,
+      },
+      202,
+    );
   }
 
-  // Resolve the tenant's BYO parse provider ONCE before the loop. Validate must
-  // parse with the SAME provider production (`run`/ingestion) uses, not the
-  // global default (`c.get("parseProvider")`) — otherwise scanned/degraded docs
-  // that only the tenant's Doc AI handles parse empty here and get silently
-  // dropped, surfacing downstream as expected=None/got=None (oss-308). Falls
-  // back to the default provider when no endpoint is configured. `resolveParse`
-  // is the one shared resolver every surface uses (oss-310).
+  // ── Sync driver (back-compat) ─────────────────────────────────
+  // Same per-doc unit as the async jobs, run in-request with bounded
+  // parallelism. Kept so clients that don't pass `async` (older CLIs, direct
+  // API callers) still get the full result in one response.
+  const storage = c.get("storage");
+  const { provider, model: extractModel } = await resolveTenantProvider(db, tenantId, {
+    preferModel: body.model ?? null,
+  });
+
+  // Resolve the tenant's BYO parse provider ONCE before the docs run. Validate
+  // must parse with the SAME provider production (`run`/ingestion) uses, not
+  // the global default — otherwise scanned/degraded docs that only the
+  // tenant's provider handles parse empty here and score as failures
+  // (oss-308). `resolveParse` is the one shared resolver every surface uses
+  // (oss-310).
   const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
     tenantId,
@@ -1069,343 +1099,91 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     },
   );
 
-  // Per-doc parse failures — surfaced in the response instead of being silently
-  // dropped from `results` (which masqueraded as "no ground truth"). Each entry
-  // lands in exactly one of `results` or `parseFailures` (oss-308).
-  const parseFailures: Array<{ entryId: string; filename: string; error: string }> = [];
+  const ctx: ValidateRunContext = {
+    tenantId,
+    schemaRunId: schemaRun.id,
+    schemaId: schemaRow.id,
+    schemaVersionId: versionId,
+    schemaDef,
+    yamlHash: createHash("sha256").update(schemaYaml).digest("hex"),
+    provider,
+    extractModel,
+    parseProvider,
+    parseFingerprint,
+    triggeredBy: principal.userId,
+  };
 
-  const yamlHash = createHash("sha256").update(schemaYaml).digest("hex");
-
-  // Run extractions directly (no HTTP loopback — works on Vercel)
-  for (const entry of entriesWithGT) {
-    try {
-      // Get file from storage
-      const fileResult = await storage.getBuffer(entry.storageKey);
-      if (!fileResult) {
-        const error = "file not found in storage";
-        console.warn(`[validate] ${entry.filename}: ${error}`);
-        parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
-        continue;
-      }
-
-      // Parse via the shared seam (oss-310): `parseDocument` runs the resolved
-      // tenant provider through the same parse cache `run`/ingestion uses (cache
-      // parity — a doc already parsed is reused, no redundant re-parse), and
-      // shapes the flat parse-layer text_map into the nested provenance TextMap
-      // with the one shared converter so this path can't drift from build's
-      // (the oss-309 footgun). MIME is normalized with the buffer first so a
-      // sloppy stored value never hard-fails the parse (#401).
-      const mimeType = resolveMimeType(entry.mimeType, entry.filename, fileResult.data);
-      const parsed = await parseDocument({
-        db,
-        storage,
-        tenantId,
-        document: {
-          id: entry.id,
-          storageKey: entry.storageKey,
-          filename: entry.filename,
-          mimeType,
-          contentHash: entry.contentHash,
-        },
-        provider: parseProvider,
-        fingerprint: parseFingerprint,
-      });
-      const markdown = parsed.markdown;
-
-      if (!markdown) {
-        const error = "parse returned empty markdown";
-        console.warn(`[validate] ${entry.filename}: ${error}`);
-        parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
-        continue;
-      }
-
-      // Extract — forward the nested text_map (bbox provenance) AND chunks, so
-      // validate produces the same provenance as build/ingestion (it previously
-      // dropped `chunks`). `parseDocument` already nested the text_map.
-      const extractResult = await extractFields(
-        markdown,
-        schemaDef,
-        provider,
-        extractModel,
-        parsed.textMap,
-        parsed.chunks,
-      );
-
-      results.push({
-        entryId: entry.id,
-        filename: entry.filename,
-        groundTruth: entry.groundTruthJson as Record<string, unknown>,
-        extracted: (extractResult.extracted as Record<string, unknown>) ?? {},
-        confidenceScores: (extractResult.confidence_scores as Record<string, number>) ?? {},
-        // Per-field chunk routing — powers the `routingDiagnosis` on failing
-        // fields (was the answer even in the chunks the model saw?). Transient:
-        // consumed by computeValidateResult, never persisted or returned raw.
-        routingPlan: (extractResult.routing_plan as RoutingPlan) ?? undefined,
-      });
-
-      // Persist the per-doc extraction, linked to this schema_run. The
-      // performance heatmap joins extraction_runs on schema_run_id, and the
-      // next validate's regression baseline reads the latest run per corpus
-      // entry — without this row both saw only build-page extractions.
-      // Same row shape as the build path (extract.ts) so shared consumers
-      // (run detail, provenance) work on validate rows too. A failed insert
-      // must not fail the validate run itself.
-      try {
-        await withRLS(db, tenantId, (tx) =>
-          tx.insert(schema.extractionRuns).values({
-            tenantId,
-            schemaId: schemaRow.id,
-            schemaVersionId: versionId,
-            schemaRunId: schemaRun.id,
-            corpusEntryId: entry.id,
-            model: String(extractResult.model ?? extractModel ?? "unknown"),
-            schemaYamlHash: yamlHash,
-            extractedJson: extractResult.extracted ?? {},
-            confidenceJson: extractResult.confidence ?? null,
-            confidenceScoresJson: extractResult.confidence_scores ?? null,
-            provenanceJson: extractResult.provenance ?? null,
-            markdownText: markdown,
-            parseSeconds: null,
-            extractMs: (extractResult.elapsed_ms as number) ?? null,
-            ocrSkipped: parsed.ocr_skipped ? "true" : "false",
-            cached: parsed.cached ? "true" : "false",
-            triggeredBy: principal.userId,
-          })
-        );
-      } catch (err) {
-        console.warn(`[validate] Failed to persist extraction run for ${entry.filename}:`, err);
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      console.warn(`[validate] Failed to extract ${entry.filename}:`, error);
-      parseFailures.push({ entryId: entry.id, filename: entry.filename, error });
-    }
-  }
-
-  if (results.length === 0) {
-    // Update schema_run as failed
-    await withRLS(db, tenantId, (tx) =>
-      tx.update(schema.schemaRuns).set({ status: "failed", completedAt: new Date(), errorMessage: "All extractions failed" })
-        .where(eq(schema.schemaRuns.id, schemaRun.id))
-    );
-    // Surface the per-doc reasons so an all-failed run is debuggable instead of
-    // an opaque 502 (oss-308).
-    return c.json({ error: "All extractions failed", parseFailures }, 502);
-  }
-
-  const validateResult = computeValidateResult(
-    results,
-    prevExtractedMap,
-    versionNumber,
-    startTime,
-    parseFailures,
-    (schemaDef.fields as Record<string, Record<string, unknown>>) ?? {},
+  await mapWithConcurrency(entriesWithGT, VALIDATE_SYNC_CONCURRENCY, (entry) =>
+    runValidateDoc(db, storage, ctx, entry.id),
   );
 
-  // Update schema_run with results
-  await withRLS(db, tenantId, (tx) =>
-    tx.update(schema.schemaRuns).set({
-      status: "completed",
-      completedAt: new Date(),
-      docsTotal: validateResult.docsTotal,
-      docsPassed: validateResult.docsPassed,
-      regressionsCount: validateResult.regressions.length,
-      accuracy: String(validateResult.overallAccuracy / 100), // stored as 0.0-1.0
-      durationMs: validateResult.durationMs,
-    }).where(eq(schema.schemaRuns.id, schemaRun.id))
-  );
-
-  if (validateResult.regressions.length > 0) {
-    createNotification(tenantId, {
-      type: "validate.regression",
-      title: `Validate regression detected`,
-      body: `${validateResult.regressions.length} field regression(s) on ${validateResult.docsTotal} docs (${validateResult.overallAccuracy.toFixed(1)}% accuracy)`,
-      data: {
-        schemaRunId: schemaRun.id,
-        regressionsCount: validateResult.regressions.length,
-        docsTotal: validateResult.docsTotal,
-        accuracy: validateResult.overallAccuracy,
-      },
-    });
+  const outcome = await maybeFinalizeValidateRun(db, tenantId, schemaRun.id);
+  if (!outcome.finalized) {
+    // Every doc ran in-request, so the claim can only have been lost to a
+    // concurrent caller — surface it rather than serving a half-read.
+    return c.json({ error: "Validate run was finalized elsewhere" }, 409);
+  }
+  if (outcome.status === "failed") {
+    // Surface the per-doc reasons so an all-failed run is debuggable instead
+    // of an opaque 502 (oss-308).
+    return c.json({ error: outcome.error, parseFailures: outcome.parseFailures }, 502);
   }
 
   // Surface the candidate the run scored — its semver label, the auto-derived
   // bump (vs the active release), and whether identical content was reused.
   // The candidate is NOT activated; promotion is a separate, gated step.
-  return c.json({ ...validateResult, version: versionLabel, bump, deduped });
+  return c.json({ ...outcome.result, bump, deduped });
 });
 
-/** Per-field chunk-routing record produced by the intelligent pipeline. */
-type RoutingPlan = Record<
-  string,
-  { source: string; chunks: Array<{ index: number; title: string }>; text: string }
->;
-
-/** Diagnosis attached to a failing (field, doc) pair to explain *why* it failed. */
-interface RoutingDiagnosis {
-  /** How the chunks were selected: hint | signal_inferred | broadened | fallback | full_document. */
-  source: string | null;
-  /**
-   * Whether the ground-truth answer's text appears in the chunks the model was
-   * shown. `false` ⇒ a routing miss — the model never saw the answer, so no
-   * prompt or model change can fix it; fix the schema `hints`. `true` ⇒ the
-   * answer reached the model and it still got it wrong — a prompt/description
-   * (or, last resort, model) problem. `null` ⇒ couldn't determine (no routing
-   * data, or a non-scalar expected value the heuristic doesn't score).
-   */
-  answerInRoutedChunks: boolean | null;
-  /** The chunks the field was routed to (index + heading), for display. */
-  chunks: Array<{ index: number; title: string }>;
-}
-
 /**
- * Heuristic: does the ground-truth `expected` value appear in `text` (the
- * concatenated content of the chunks the field was routed to)? Numbers match on
- * their digit sequence (tolerating `$`, commas, decimals); strings match as a
- * normalized substring or ≥60% of their significant word tokens. Booleans and
- * complex values return `null` — the routing `source` still applies. Intended as
- * a diagnostic hint, not a hard gate.
+ * GET /api/schemas/:slug/validate/runs/:runId — poll an async validate run.
+ *
+ * Cheap DB reads only: run status, per-doc progress (schema_run_docs rows vs
+ * docs_total), and — once finalized — the persisted ValidateResult. The CLI
+ * and dashboard poll this after POST /validate {async:true}.
  */
-export function answerPresentInText(expected: unknown, text: string | undefined): boolean | null {
-  if (!text) return null;
-  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-  const hay = norm(text);
-  if (!hay) return null;
+schemas.get("/:slug/validate/runs/:runId", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const runId = c.req.param("runId")!;
 
-  if (typeof expected === "number") {
-    const digits = String(expected).replace(/[^0-9]/g, "");
-    if (!digits) return null;
-    return hay.replace(/[^0-9]/g, "").includes(digits);
-  }
-  if (typeof expected === "string") {
-    const needle = norm(expected);
-    if (!needle) return null;
-    if (hay.includes(needle)) return true;
-    const tokens = needle.split(" ").filter((t) => t.length > 2);
-    if (tokens.length === 0) return hay.includes(needle);
-    const hits = tokens.filter((t) => hay.includes(t)).length;
-    return hits / tokens.length >= 0.6;
-  }
-  return null;
-}
+  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+  );
+  if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
-/** Compare extraction results against ground truth and compute accuracy/regressions. */
-export function computeValidateResult(
-  results: Array<{ entryId: string; filename: string; groundTruth: Record<string, unknown>; extracted: Record<string, unknown>; confidenceScores: Record<string, number>; routingPlan?: RoutingPlan }>,
-  prevExtractedMap: Map<string, Record<string, unknown>>,
-  schemaVersion: number,
-  startTime: number,
-  /**
-   * Docs that failed to parse/extract and never made it into `results`. Threaded
-   * through so they're visible in the response (`parseFailures`) and counted in
-   * `docsTotal` — a dropped doc must not silently inflate accuracy (oss-308).
-   * Defaults to `[]` for the GET (read-only) caller that has no failure list.
-   */
-  parseFailures: Array<{ entryId: string; filename: string; error: string }> = [],
-  /**
-   * Schema field specs, so array fields can be scored with their declared
-   * `element_key` (identity matching) and `informational` sub-fields (excluded
-   * from scoring), and so precision/recall can be reported per array field.
-   * Optional — without it, arrays still get F1 scoring via greedy matching.
-   */
-  schemaFields?: Record<string, Record<string, unknown>>,
-) {
-  const allFields = new Set<string>();
-  for (const r of results) {
-    for (const k of Object.keys(r.groundTruth)) allFields.add(k);
-  }
+  const [run] = await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      id: schema.schemaRuns.id,
+      schemaId: schema.schemaRuns.schemaId,
+      status: schema.schemaRuns.status,
+      docsTotal: schema.schemaRuns.docsTotal,
+      errorMessage: schema.schemaRuns.errorMessage,
+      resultJson: schema.schemaRuns.resultJson,
+    }).from(schema.schemaRuns).where(eq(schema.schemaRuns.id, runId)).limit(1)
+  );
+  if (!run || run.schemaId !== schemaRow.id) return c.json({ error: "Run not found" }, 404);
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
-  let totalScore = 0;
-  let totalChecked = 0;
-  const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
+  const [progress] = await withRLS(db, tenantId, (tx) =>
+    tx.select({ count: sql<number>`count(*)::int` })
+      .from(schema.schemaRunDocs)
+      .where(eq(schema.schemaRunDocs.schemaRunId, run.id))
+  );
 
-  for (const fieldName of allFields) {
-    const fieldSpec = schemaFields?.[fieldName];
-    let scoreSum = 0, checked = 0, prevScoreSum = 0, prevChecked = 0;
-    // Precision/recall accumulate only over docs whose expected value is an
-    // array, so array fields can report both alongside the F1 accuracy.
-    let precSum = 0, recSum = 0, arrChecked = 0;
-    const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> = [];
-
-    for (const r of results) {
-      const expected = r.groundTruth[fieldName];
-      if (expected === undefined || expected === null) continue;
-      checked++;
-      const cmp = compareValues(expected, r.extracted[fieldName], fieldSpec);
-      scoreSum += cmp.score;
-      if (cmp.diff.kind === "array") {
-        precSum += cmp.diff.precision;
-        recSum += cmp.diff.recall;
-        arrChecked++;
-      }
-
-      if (!cmp.match) {
-        const conf = r.confidenceScores[fieldName] ?? 0;
-        // Explain the failure: did the answer even reach the model? A routing
-        // miss (answerInRoutedChunks=false) is schema-fixable via hints and no
-        // model change helps; a hit points at prompt/description instead.
-        const route = r.routingPlan?.[fieldName];
-        const routingDiagnosis: RoutingDiagnosis | undefined = route
-          ? {
-              source: route.source,
-              answerInRoutedChunks: answerPresentInText(expected, route.text),
-              chunks: route.chunks,
-            }
-          : undefined;
-        failing.push({ id: r.entryId, filename: r.filename, diff: cmp.diff, score: cmp.score, confidence: conf, ...(routingDiagnosis ? { routingDiagnosis } : {}) });
-        const existing = failingDocsMap.get(r.entryId);
-        if (existing) { existing.failedFields.push(fieldName); existing.worstConfidence = Math.min(existing.worstConfidence, conf); }
-        else { failingDocsMap.set(r.entryId, { id: r.entryId, filename: r.filename, failedFields: [fieldName], worstConfidence: conf }); }
-      }
-
-      const prevExtracted = prevExtractedMap.get(r.entryId);
-      if (prevExtracted) {
-        prevChecked++;
-        prevScoreSum += compareValues(expected, prevExtracted[fieldName], fieldSpec).score;
-      }
-    }
-
-    const accuracy = checked > 0 ? (scoreSum / checked) * 100 : 100;
-    const prevAccuracy = prevChecked > 0 ? (prevScoreSum / prevChecked) * 100 : null;
-    totalScore += scoreSum;
-    totalChecked += checked;
-    const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
-    // Report precision/recall for array fields (mean over docs, as percentages)
-    // so a low F1 can be read as "missed elements" (recall) vs "spurious/wrong
-    // elements" (precision) — the diagnosis Superkey needs on coverages et al.
-    const prAgg =
-      arrChecked > 0
-        ? { precision: (precSum / arrChecked) * 100, recall: (recSum / arrChecked) * 100 }
-        : {};
-    fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, ...prAgg, failingDocs: failing });
-  }
-
-  fieldResults.sort((a, b) => a.accuracy - b.accuracy);
-  const overallAccuracy = totalChecked > 0 ? (totalScore / totalChecked) * 100 : 100;
-
-  return {
-    overallAccuracy,
-    prevAccuracy: null,
-    // Attempted docs = scored docs + docs that failed to parse/extract. Counting
-    // failures keeps accuracy honest — a dropped doc can't silently shrink the
-    // denominator (oss-308).
-    docsTotal: results.length + parseFailures.length,
-    docsPassed: results.length - failingDocsMap.size,
-    fieldCount: fieldResults.length,
-    durationMs: Date.now() - startTime,
-    costUsd: 0,
-    passed: overallAccuracy >= 95,
-    schemaVersion,
-    ranAt: new Date().toISOString(),
-    regressions: fieldResults.filter((f) => f.status === "regressed"),
-    fields: fieldResults,
-    failingDocs: Array.from(failingDocsMap.values()),
-    // Docs that never produced an extraction (parse/storage/extract failure).
-    // Additive field — read-only callers omit it and get [].
-    parseFailures,
-  };
-}
+  const failed = run.status === "failed";
+  return c.json({
+    runId: run.id,
+    status: run.status,
+    docsTotal: run.docsTotal,
+    docsProcessed: progress?.count ?? 0,
+    result: run.status === "completed" ? run.resultJson : null,
+    error: failed ? (run.errorMessage ?? "Validate run failed") : null,
+    ...(failed
+      ? { parseFailures: (run.resultJson as { parseFailures?: unknown } | null)?.parseFailures ?? [] }
+      : {}),
+  });
+});
 
 /**
  * GET /api/schemas/:slug/validate — read latest validation results.

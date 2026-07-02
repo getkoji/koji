@@ -1008,10 +1008,24 @@ Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a
 | `bump` | `"major"\|"minor"\|"patch"`? | Override the auto-derived bump. |
 | `model` | string? | Override the extraction model. |
 | `commitMessage` | string? | Message for the candidate snapshot. |
+| `async` | boolean? | When `true`, run in the background: each corpus doc executes as its own queued job and the response is an immediate `202` with `{ runId, status, docsTotal, version, bump, deduped }`. Poll the run endpoint below for progress and the final result. Recommended for any real corpus — the synchronous mode holds one HTTP request for the whole run and is subject to request timeouts. |
 
-**Response** `200 OK` — the validate result plus `version` (semver label), `bump`, and `deduped`. Requires corpus ground truth (`400` otherwise). The candidate is **not** activated.
+**Response** `200 OK` (sync) — the validate result plus `version` (semver label), `bump`, and `deduped` — or `202 Accepted` (async) with the run handle. Requires corpus ground truth (`400` otherwise). The candidate is **not** activated.
 
 Documents are parsed with the tenant's configured parse provider (the same one the live extraction path uses), falling back to the system default when none is configured, and reuse the shared parse cache. Any corpus entry that fails to parse or extract is reported in a `parseFailures` array (`[{ entryId, filename, error }]`) rather than being silently dropped, and `docsTotal` counts every attempted document (scored + failed) so accuracy is not inflated by dropped docs.
+
+### `GET /api/schemas/{slug}/validate/runs/{runId}`
+
+Poll an async validate run. Auth: `job:run`. Returns:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `runId` | string | The schema run id from the `202`. |
+| `status` | string | `queued` → `running` → `finalizing` → `completed` (or `failed`). |
+| `docsTotal` | number | Corpus docs in the run. |
+| `docsProcessed` | number | Docs finished so far (ok or failed). |
+| `result` | object? | The full validate result (same shape as the sync `200` body) once `status` is `completed`; `null` before that. |
+| `error` | string? | Failure reason when `status` is `failed` (with `parseFailures` alongside). |
 
 Each entry in `fields[]` carries `name`, `accuracy` (%), `prevAccuracy`, `status`, and `failingDocs`. **Array fields** are scored by F1 and additionally carry `precision` and `recall` (percentages), so a low score can be read as missed elements (low recall) vs spurious/wrong elements (low precision). Element matching uses the array's `element_key` hint when declared, and sub-fields marked `informational` are excluded from scoring (see the schema guide).
 

@@ -31,6 +31,7 @@ import httpx
 import typer
 import yaml as yaml_mod
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .credentials import get_active_profile, load_credentials
@@ -454,6 +455,66 @@ def _render_diff(entry: dict, rows: list[dict]) -> None:
 # ── Commands: validate / run ──────────────────────────────────────────
 
 
+def _poll_validate_run(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict,
+    slug: str,
+    queued: dict,
+) -> dict:
+    """Poll an async validate run until it finishes; return the ValidateResult.
+
+    The POST returned 202 with {runId, docsTotal}. Each corpus doc runs as its
+    own background job server-side (oss-348) — this just watches progress.
+    Exits non-zero if the run fails or hasn't finished after 30 minutes.
+    """
+    run_id = queued.get("runId")
+    docs_total = int(queued.get("docsTotal") or 0)
+    url = f"{base_url}/api/schemas/{slug}/validate/runs/{run_id}"
+    deadline = time.monotonic() + 1800  # 30 min hard cap
+
+    # Progress renders to stderr: it's human feedback, and stdout must stay
+    # pure for --json consumers (oss-349 — ANSI on stdout breaks json.loads).
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} docs"),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"validating {slug}", total=docs_total or None)
+        while True:
+            if time.monotonic() > deadline:
+                progress.stop()
+                console.print(
+                    "[red]✗[/red] validate run still not finished after 30 minutes — "
+                    "check the server's worker logs, then re-run."
+                )
+                raise typer.Exit(1)
+            resp = client.get(url, headers=headers)
+            if resp.status_code != 200:
+                _api_error(resp, f"validate {slug} (run {run_id})")
+            data = resp.json()
+            total = int(data.get("docsTotal") or docs_total)
+            progress.update(task, completed=int(data.get("docsProcessed") or 0), total=total or None)
+            status = data.get("status")
+            if status == "completed":
+                result = data.get("result")
+                if not isinstance(result, dict):
+                    progress.stop()
+                    console.print("[red]✗[/red] validate run completed but returned no result payload.")
+                    raise typer.Exit(1)
+                return result
+            if status == "failed":
+                progress.stop()
+                console.print(f"[red]✗[/red] validate {slug} failed — {data.get('error') or 'unknown error'}")
+                for pf in data.get("parseFailures") or []:
+                    console.print(f"  [red]✗[/red] {pf.get('filename')}: {pf.get('error')}")
+                raise typer.Exit(1)
+            time.sleep(2)
+
+
 def validate(
     schema: str = typer.Argument(..., help="Schema slug, or path to a local schema YAML to backtest."),
     model: str = typer.Option(None, "--model", help="Override the extraction model (e.g. openai/gpt-4o-mini)."),
@@ -490,8 +551,10 @@ def validate(
     slug, local_yaml, local_path = _load_schema_arg(schema)
 
     def run_once() -> int:
+        # 300s covers the sync fallback against an older server (the async
+        # path returns in milliseconds and each poll is a fast read).
         with httpx.Client(timeout=300) as client:
-            body: dict = {}
+            body: dict = {"async": True}
             if model:
                 body["model"] = model
             if bump:
@@ -510,9 +573,21 @@ def validate(
             resp = client.post(f"{base_url}/api/schemas/{slug}/validate", json=body, headers=headers)
             if _auth_error(resp, base_url):
                 raise typer.Exit(1)
-            if resp.status_code != 200:
+            if resp.status_code == 202:
+                # Async run: the server fans each corpus doc out as its own job
+                # (no request ever races a timeout — oss-348). Poll for progress
+                # and the final result, then merge the candidate metadata from
+                # the 202 (version/bump/deduped) into it for rendering.
+                queued = resp.json()
+                result = _poll_validate_run(client, base_url, headers, slug, queued)
+                for key in ("version", "bump", "deduped"):
+                    result.setdefault(key, queued.get(key))
+            elif resp.status_code == 200:
+                # Older server without async validate — full result in one response.
+                result = resp.json()
+            else:
                 _api_error(resp, f"validate {slug}")
-            result = resp.json()
+                return 1  # unreachable — _api_error raises
 
         if as_json:
             emit_json(result)
