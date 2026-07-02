@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, rejectCaptionValues, stripProvenanceKeys, validateFields, type ExtractionResult } from "./pipeline";
+import { extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -163,6 +163,67 @@ describe("rejectCaptionValues", () => {
     const extracted: Record<string, unknown> = { insured_name: "BELLASERA OFFICE PARK OWNERS ASSOCIATION" };
     const nulled = rejectCaptionValues(extracted, fields);
     expect(nulled).toEqual([]);
+    expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+  });
+});
+
+describe("valueAfterLabel", () => {
+  const md = [
+    "NAMED INSURED AND ADDRESS:",
+    "BELLASERA OFFICE PARK OWNERS ASSOCIATION",
+    "5200 PARK RD STE 111",
+    "CHARLOTTE, NC 28209",
+  ].join("\n");
+
+  it("returns the line after the matching label", () => {
+    expect(valueAfterLabel("NAMED INSURED AND ADDRESS:", md)).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+  });
+
+  it("matches ignoring markdown decoration and trailing colon", () => {
+    const decorated = "**NAMED INSURED AND ADDRESS:**\nBELLASERA OFFICE PARK OWNERS ASSOCIATION";
+    expect(valueAfterLabel("NAMED INSURED AND ADDRESS:", decorated)).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+  });
+
+  it("skips blank lines to the first real value", () => {
+    expect(valueAfterLabel("Label:", "Label:\n\n\nActual Value")).toBe("Actual Value");
+  });
+
+  it("returns null when the next non-empty line is another label", () => {
+    expect(valueAfterLabel("Label:", "Label:\nAnother Label:\nvalue")).toBeNull();
+  });
+
+  it("returns null when the label isn't found", () => {
+    expect(valueAfterLabel("Missing Label:", md)).toBeNull();
+  });
+});
+
+describe("recoverCaptionValues", () => {
+  const md = ["NAMED INSURED AND ADDRESS:", "BELLASERA OFFICE PARK OWNERS ASSOCIATION", "5200 PARK RD STE 111"].join("\n");
+  const fields = {
+    insured_name: { type: "string", hints: { take_value_after_label: true } },
+    other: { type: "string" }, // no opt-in
+  };
+
+  it("recovers the value from the line after the label for opted-in fields", () => {
+    const extracted: Record<string, unknown> = { insured_name: "NAMED INSURED AND ADDRESS:", other: "SOME LABEL:" };
+    const out = recoverCaptionValues(extracted, fields, md);
+    expect(out.recovered).toEqual(["insured_name"]);
+    expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
+    expect(extracted.other).toBe("SOME LABEL:"); // not opted in → untouched
+  });
+
+  it("nulls (never emits the caption) when no value can be recovered", () => {
+    const extracted: Record<string, unknown> = { insured_name: "NAMED INSURED AND ADDRESS:" };
+    const out = recoverCaptionValues(extracted, fields, "some unrelated document text");
+    expect(out.nulled).toEqual(["insured_name"]);
+    expect(extracted.insured_name).toBeNull();
+  });
+
+  it("leaves a correct (non-caption) value alone", () => {
+    const extracted: Record<string, unknown> = { insured_name: "BELLASERA OFFICE PARK OWNERS ASSOCIATION" };
+    const out = recoverCaptionValues(extracted, fields, md);
+    expect(out.recovered).toEqual([]);
+    expect(out.nulled).toEqual([]);
     expect(extracted.insured_name).toBe("BELLASERA OFFICE PARK OWNERS ASSOCIATION");
   });
 });

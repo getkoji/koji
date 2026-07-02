@@ -866,6 +866,20 @@ insured_name:
 
 It's opt-in per field and never fires on values that aren't caption-shaped, so it's safe to add to any labeled scalar. Pair it with `isolate` on fields where the label-vs-value distinction matters most.
 
+### take_value_after_label
+
+`reject_caption` nulls a caption and routes the field to review. `take_value_after_label` is the **recovery** variant: when a scalar comes back as its own label caption, the engine finds that label in the source and takes the value on the **next line** instead of nulling — so you get the value automatically rather than a review item.
+
+```yaml
+insured_name:
+  type: string
+  hints:
+    isolate: true
+    take_value_after_label: true
+```
+
+Given a dec that reads `NAMED INSURED AND ADDRESS:` on one line and `BELLASERA OFFICE PARK OWNERS ASSOCIATION` on the next, a model that returns the caption is corrected to the organization beneath it. If no value can be recovered (the label isn't found, or the next line is itself another label), it falls back to null → review, so it **never emits the caption**. Use it for label→value scalars where the value reliably sits directly under its label; it's the belt-and-suspenders companion to `isolate` + `reject_caption`.
+
 ### How hints interact
 
 `look_in` is a **hard filter**. If any chunk matches one of the listed categories, the router considers *only* those chunks for the field — other chunks are excluded entirely, even if their patterns or signals would have scored higher. Declaring `look_in: [declarations]` is a promise from the schema author that the value lives in declarations; the router takes the promise at face value.

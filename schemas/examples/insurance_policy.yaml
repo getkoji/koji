@@ -66,6 +66,9 @@ fields:
       # model returns one instead of the value beneath it.
       isolate: true
       reject_caption: true
+      # Alternative to reject_caption: recover the value from the line after the
+      # label instead of nulling to review. Enable one or the other.
+      # take_value_after_label: true
 
   effective_date:
     type: date
