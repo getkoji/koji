@@ -27,6 +27,7 @@ def tail_logs(
     follow: bool = False,
     tail: int = 100,
     console: Console,
+    project_dir: str | None = None,
 ) -> None:
     """Stream or tail logs for one or all Koji services."""
     if service and service not in VALID_SERVICES:
@@ -35,7 +36,7 @@ def tail_logs(
         )
         raise SystemExit(1)
 
-    koji_dir = Path.cwd() / KOJI_DIR
+    koji_dir = (Path(project_dir) if project_dir else Path.cwd()) / KOJI_DIR
     compose_file = koji_dir / "docker-compose.yaml"
 
     if not compose_file.exists():

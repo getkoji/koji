@@ -11,6 +11,7 @@ from rich.console import Console
 from .cluster import (
     cluster_status,
     destroy_cluster,
+    get_project_dir,
     load_cluster_state,
     load_project_config,
     start_cluster,
@@ -21,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.43.1"
+KOJI_VERSION = "0.44.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -36,6 +37,27 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _config_option() -> Any:
+    return typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to koji.yaml (default: ./koji.yaml)",
+    )
+
+
+def _project_dir_from(config: str | None) -> str | None:
+    return get_project_dir(Path(config)) if config else None
+
+
+def _load_state_or_exit(config: str | None) -> dict:
+    state = load_cluster_state(_project_dir_from(config))
+    if state is None:
+        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
+        raise SystemExit(1)
+    return state
 
 
 def _check_http_auth_error(resp: Any, base_url: str) -> bool:
@@ -108,21 +130,26 @@ def start(
         "--clean",
         help="Destroy existing data and start fresh (equivalent to koji destroy + koji start).",
     ),
+    config: str | None = _config_option(),
 ):
     """Start the Koji cluster."""
-    config = load_project_config()
-    start_cluster(config, dev=dev, clean=clean)
+    config_path = Path(config) if config else None
+    loaded_config = load_project_config(config_path)
+    start_cluster(loaded_config, dev=dev, clean=clean, config_path=config_path)
 
 
 @app.command()
-def stop():
+def stop(
+    config: str | None = _config_option(),
+):
     """Stop the Koji cluster."""
-    stop_cluster()
+    stop_cluster(Path(config) if config else None)
 
 
 @app.command()
 def destroy(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    config: str | None = _config_option(),
 ):
     """Destroy the Koji cluster and delete all data.
 
@@ -133,13 +160,15 @@ def destroy(
         confirm = typer.confirm("This will permanently delete all data. Continue?")
         if not confirm:
             raise SystemExit(0)
-    destroy_cluster()
+    destroy_cluster(Path(config) if config else None)
 
 
 @app.command()
-def status():
+def status(
+    config: str | None = _config_option(),
+):
     """Show cluster status."""
-    cluster_status()
+    cluster_status(Path(config) if config else None)
 
 
 @app.command()
@@ -147,12 +176,10 @@ def process(
     path: str = typer.Argument(help="Path to a document or directory of documents"),
     schema: str | None = typer.Option(None, "--schema", "-s", help="Path to extraction schema YAML"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
+    config: str | None = _config_option(),
 ):
     """Process documents through the pipeline."""
-    state = load_cluster_state()
-    if state is None:
-        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
-        raise SystemExit(1)
+    state = _load_state_or_exit(config)
 
     server_url = f"http://127.0.0.1:{state['server_port']}"
     output_dir = output or "./output"
@@ -188,12 +215,10 @@ def extract(
     output: str | None = typer.Option(None, "--output", "-o", help="Output directory (default: ./output/)"),
     model: str | None = typer.Option(None, "--model", "-m", help="Model to use (e.g., openai/gpt-4o-mini, llama3.2)"),
     strategy: str | None = typer.Option(None, "--strategy", help="Extraction strategy: parallel (default) or agent"),
+    config: str | None = _config_option(),
 ):
     """Extract structured data from an already-parsed markdown file."""
-    state = load_cluster_state()
-    if state is None:
-        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
-        raise SystemExit(1)
+    state = _load_state_or_exit(config)
 
     server_url = f"http://127.0.0.1:{state['server_port']}"
     output_dir = output or "./output"
@@ -224,22 +249,28 @@ def logs(
     service: str | None = typer.Argument(None, help="Service name: server, parse, extract, dashboard, ollama"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: int = typer.Option(100, "--tail", "-t", help="Number of lines to show"),
+    config: str | None = _config_option(),
 ):
     """Show logs from Koji services."""
-    state = load_cluster_state()
-    if state is None:
-        console.print("[red]No cluster running. Run [bold]koji start[/bold] first.[/red]")
-        raise SystemExit(1)
-
-    tail_logs(state, service=service, follow=follow, tail=tail, console=console)
+    state = _load_state_or_exit(config)
+    tail_logs(
+        state,
+        service=service,
+        follow=follow,
+        tail=tail,
+        console=console,
+        project_dir=_project_dir_from(config),
+    )
 
 
 @app.command()
-def doctor():
+def doctor(
+    config: str | None = _config_option(),
+):
     """Check environment health and report issues."""
     console.print("\n[bold]Koji Doctor[/bold]\n")
 
-    results = run_all_checks()
+    results = run_all_checks(Path(config) if config else None)
 
     status_icons = {
         "pass": "[green]✓[/green]",
