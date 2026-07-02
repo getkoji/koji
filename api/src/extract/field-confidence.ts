@@ -131,11 +131,99 @@ export function computeFieldConfidence(
       return scoreBoolean(value);
     case "string":
       return scoreString(value, schema, sourceProvenance);
+    case "array":
+      return scoreArray(value, schema, sourceProvenance);
+    case "object":
+      return scoreObject(value, schema, sourceProvenance);
     default:
       // Unknown type — degrade to free-text string scoring so we don't
       // accidentally flag every field of an unrecognized type.
       return scoreString(value, schema, sourceProvenance);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Array / object scorers
+// ---------------------------------------------------------------------------
+
+/** Round to 3 decimals so scores compare cleanly against thresholds. */
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+/** The declared sub-field schemas of an object/array-item (either vocabulary). */
+function itemProperties(schema: FieldSchema): Record<string, FieldSchema> | undefined {
+  const props = (schema.properties ?? schema.fields) as Record<string, FieldSchema> | undefined;
+  return props && typeof props === "object" ? props : undefined;
+}
+
+/**
+ * Confidence for an ARRAY field — the mean of its elements' confidences, each
+ * scored recursively from the per-element provenance the resolver already
+ * produced (`span.items[i]`). Without this an array falls through to the string
+ * scorer and returns 0.0, so every array field trips review regardless of
+ * correctness. An empty array is a not-found: 0.0 if required, else 1.0.
+ */
+function scoreArray(
+  value: unknown,
+  schema: FieldSchema,
+  sourceProvenance?: ProvenanceSpan | null,
+): number {
+  if (!Array.isArray(value)) return 0.0;
+  if (value.length === 0) return schema.required ? 0.0 : 1.0;
+
+  const itemSchema = (schema.items as FieldSchema | undefined) ?? {};
+  const itemProvs = sourceProvenance?.items ?? [];
+  // Route object items to the object scorer even when `items` omits an explicit
+  // `type: object` (a declared `properties`/`fields` shape is enough), so a
+  // structured element isn't misrouted to the string scorer and zeroed.
+  const objectItems = itemProperties(itemSchema) !== undefined;
+
+  let sum = 0;
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    const itemProv = itemProvs[i] ?? null;
+    sum +=
+      objectItems && item != null && typeof item === "object" && !Array.isArray(item)
+        ? scoreObject(item, itemSchema, itemProv)
+        : computeFieldConfidence(item, itemSchema, itemProv);
+  }
+  return round3(sum / value.length);
+}
+
+/**
+ * Confidence for an OBJECT field / array-of-objects element — the mean of its
+ * declared sub-fields' confidences, each scored recursively from the
+ * per-property provenance (`span.properties[name]`). Sub-fields that are absent
+ * on the value and not required carry no signal and are skipped (mirroring the
+ * scorer's empty-on-both rule). Falls back to a provenance-based free-text score
+ * when the schema declares no sub-fields.
+ */
+function scoreObject(
+  value: unknown,
+  schema: FieldSchema,
+  sourceProvenance?: ProvenanceSpan | null,
+): number {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return 0.0;
+
+  const props = itemProperties(schema);
+  if (!props) {
+    // No declared shape — credit a located object, soft-score otherwise.
+    return provenanceHit(sourceProvenance) ? 1.0 : 0.7;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const propProvs = sourceProvenance?.properties ?? {};
+
+  let sum = 0;
+  let n = 0;
+  for (const [name, propSchema] of Object.entries(props)) {
+    const pv = obj[name];
+    if ((pv === null || pv === undefined) && !propSchema.required) continue;
+    sum += computeFieldConfidence(pv, propSchema, propProvs[name] ?? null);
+    n += 1;
+  }
+  return n > 0 ? round3(sum / n) : 1.0;
 }
 
 // ---------------------------------------------------------------------------

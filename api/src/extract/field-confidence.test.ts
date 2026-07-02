@@ -372,3 +372,87 @@ describe("findLowestField", () => {
     expect(findLowestField({}, 0.85)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// array / object confidence (oss-338) — arrays used to fall through to the
+// string scorer and always return 0.0, tripping review on every array field.
+// ---------------------------------------------------------------------------
+
+describe("computeFieldConfidence — array", () => {
+  const schema = {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        coverage_code: { type: "string" },
+        limit: { type: "string" },
+      },
+    },
+  };
+
+  // Per-element + per-property provenance, as the resolver produces it.
+  const prov: ProvenanceSpan = {
+    offset: 10,
+    length: 5,
+    items: [
+      { offset: 10, length: 5, properties: { coverage_code: { offset: 10, length: 3 }, limit: { offset: 20, length: 4 } } },
+      { offset: 40, length: 5, properties: { coverage_code: { offset: 40, length: 3 }, limit: { offset: 50, length: 4 } } },
+    ],
+  };
+
+  it("does NOT return 0 for a correct, located array (the bug)", () => {
+    const value = [
+      { coverage_code: "GL", limit: "$1,000,000" },
+      { coverage_code: "PROP", limit: "$2,000,000" },
+    ];
+    // Every property located → each element 1.0 → mean 1.0.
+    expect(computeFieldConfidence(value, schema, prov)).toBe(1.0);
+  });
+
+  it("aggregates element confidences by mean", () => {
+    const value = [
+      { coverage_code: "GL", limit: "$1,000,000" }, // located → 1.0
+      { coverage_code: "PROP", limit: "$2,000,000" }, // no per-item prov → soft
+    ];
+    // Second element has no provenance items[1]? It does here; drop it to force a soft score.
+    const partialProv: ProvenanceSpan = { offset: 10, length: 5, items: [prov.items![0]!] };
+    const score = computeFieldConfidence(value, schema, partialProv);
+    // elem0 = 1.0 (located), elem1 = mean(0.7, 0.7) = 0.7 → mean(1.0, 0.7) = 0.85
+    expect(score).toBeCloseTo(0.85, 3);
+  });
+
+  it("soft-scores a located-but-unresolved array instead of zero", () => {
+    const value = [{ coverage_code: "GL", limit: "$1,000,000" }];
+    // No provenance at all → each property 0.7 → element 0.7 → array 0.7.
+    expect(computeFieldConfidence(value, schema, null)).toBe(0.7);
+  });
+
+  it("scores an empty array as not-found (0 if required, else 1)", () => {
+    expect(computeFieldConfidence([], { type: "array", required: true })).toBe(0.0);
+    expect(computeFieldConfidence([], { type: "array" })).toBe(1.0);
+  });
+
+  it("handles arrays of scalars via the element scorer", () => {
+    const strArr = { type: "array", items: { type: "string" } };
+    const p: ProvenanceSpan = { offset: 1, length: 1, items: [FOUND, FOUND] };
+    expect(computeFieldConfidence(["a", "b"], strArr, p)).toBe(1.0);
+  });
+});
+
+describe("computeFieldConfidence — object", () => {
+  const schema = {
+    type: "object",
+    properties: { name: { type: "string" }, code: { type: "string" } },
+  };
+
+  it("scores the mean of located sub-fields instead of zero", () => {
+    const value = { name: "Acme", code: "GL" };
+    const prov: ProvenanceSpan = { offset: 0, length: 1, properties: { name: FOUND, code: FOUND } };
+    expect(computeFieldConfidence(value, schema, prov)).toBe(1.0);
+  });
+
+  it("soft-scores unresolved sub-fields (0.7) rather than 0", () => {
+    const value = { name: "Acme", code: "GL" };
+    expect(computeFieldConfidence(value, schema, null)).toBe(0.7);
+  });
+});
