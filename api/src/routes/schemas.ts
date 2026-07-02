@@ -9,7 +9,7 @@ import { compileSchema } from "../schemas/compiler";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues } from "../extract/value-compare";
-import { and, isNull, isNotNull } from "drizzle-orm";
+import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { resolveMimeType } from "../ingestion/mime";
@@ -670,6 +670,11 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
     tx.select({
       id: schema.schemaRuns.id,
       schemaVersionId: schema.schemaRuns.schemaVersionId,
+      // status + errorMessage let the page distinguish a run that FAILED
+      // (nothing scored) from one that scored 0 passing docs — without them
+      // both render as "0/N", which hides outages entirely.
+      status: schema.schemaRuns.status,
+      errorMessage: schema.schemaRuns.errorMessage,
       accuracy: schema.schemaRuns.accuracy,
       docsTotal: schema.schemaRuns.docsTotal,
       docsPassed: schema.schemaRuns.docsPassed,
@@ -682,6 +687,33 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
       .where(eq(schema.schemaRuns.schemaId, s.id))
       .orderBy(schema.schemaRuns.createdAt)
   );
+
+  // Per-doc failures for these runs, from the schema_run_docs progress rows
+  // the validate runner writes (oss-348) — one grouped query, joined for the
+  // filename. Powers the failed-run detail on the Performance page so a doc
+  // dropped before scoring stays diagnosable after the HTTP response is gone.
+  const runIds = runs.map((r) => r.id);
+  const failureRows = runIds.length === 0 ? [] : await withRLS(db, tenantId, (tx) =>
+    tx.select({
+      schemaRunId: schema.schemaRunDocs.schemaRunId,
+      entryId: schema.schemaRunDocs.corpusEntryId,
+      filename: schema.corpusEntries.filename,
+      error: schema.schemaRunDocs.errorMessage,
+    })
+      .from(schema.schemaRunDocs)
+      .innerJoin(schema.corpusEntries, eq(schema.corpusEntries.id, schema.schemaRunDocs.corpusEntryId))
+      .where(and(
+        inArray(schema.schemaRunDocs.schemaRunId, runIds),
+        eq(schema.schemaRunDocs.status, "failed"),
+      ))
+      .orderBy(schema.schemaRunDocs.createdAt)
+  );
+  const failuresByRun = new Map<string, Array<{ entryId: string; filename: string; error: string }>>();
+  for (const f of failureRows) {
+    const list = failuresByRun.get(f.schemaRunId) ?? [];
+    list.push({ entryId: f.entryId, filename: f.filename, error: f.error ?? "unknown error" });
+    failuresByRun.set(f.schemaRunId, list);
+  }
 
   // Enrich each run with its version's semver label + released/candidate flag.
   const enrichedRuns = [];
@@ -706,7 +738,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
       version = sv ? formatSemver(sv) : null;
       released = sv ? sv.prerelease === null : null;
     }
-    enrichedRuns.push({ ...run, versionNumber, version, released });
+    enrichedRuns.push({ ...run, versionNumber, version, released, failures: failuresByRun.get(run.id) ?? [] });
   }
 
   // Compute per-field accuracy per run from extraction_runs + ground truth

@@ -1014,6 +1014,8 @@ Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a
 
 Documents are parsed with the tenant's configured parse provider (the same one the live extraction path uses), falling back to the system default when none is configured, and reuse the shared parse cache. Any corpus entry that fails to parse or extract is reported in a `parseFailures` array (`[{ entryId, filename, error }]`) rather than being silently dropped, and `docsTotal` counts every attempted document (scored + failed) so accuracy is not inflated by dropped docs.
 
+Per-document failures are also **persisted** (not just returned in the response): each doc's outcome lands in a `schema_run_docs` row (`status`, `error_message`), and a run where every document fails is marked `failed` with an `errorMessage`. `GET /api/schemas/{slug}/performance` returns `status`, `errorMessage`, and a `failures` array (`[{ entryId, filename, error }]`) for each run, so failed runs stay diagnosable after the fact — the dashboard Performance page renders them as failed with the per-document errors instead of a bare `0/N`.
+
 ### `GET /api/schemas/{slug}/validate/runs/{runId}`
 
 Poll an async validate run. Auth: `job:run`. Returns:
