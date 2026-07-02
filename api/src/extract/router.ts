@@ -202,6 +202,37 @@ function sectionKey(chunk: Chunk): string {
   return "__untitled";
 }
 
+/** How much of a chunk's body to scan when anchor-matching a section. */
+const ANCHOR_SCAN = 800;
+
+/**
+ * Compile a `section_anchor` hint (a regex string or a list of them) into
+ * RegExps. Invalid patterns are skipped rather than failing the whole route.
+ */
+function compileSectionAnchors(raw: unknown): RegExp[] {
+  const patterns = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
+  const compiled: RegExp[] = [];
+  for (const p of patterns) {
+    if (typeof p !== "string" || !p) continue;
+    try {
+      compiled.push(new RegExp(p, "i"));
+    } catch {
+      // Skip a malformed pattern — a schema-author bug shouldn't drop the field.
+    }
+  }
+  return compiled;
+}
+
+/**
+ * Whether a chunk's section matches any anchor pattern. Matches against the
+ * heading plus the head of the body so an anchor works whether the identifying
+ * phrase is the title or the top line of the section.
+ */
+function matchesAnchor(chunk: Chunk, anchors: RegExp[]): boolean {
+  const text = `${chunk.title ?? ""}\n${(chunk.content ?? "").slice(0, ANCHOR_SCAN)}`;
+  return anchors.some((re) => re.test(text));
+}
+
 /**
  * Coverage-maximizing selection for an array field: instead of the globally
  * top-N chunks (which collapse onto the highest-scoring few and starve whole
@@ -287,7 +318,25 @@ export function routeFields(
         typeof hints.max_sections === "number" && hints.max_sections > 0
           ? hints.max_sections
           : DEFAULT_MAX_SECTIONS;
-      const sel = selectCoverageMax(scored, maxSections);
+      // `section_anchor` gates WHICH sections per_section visits: only sections
+      // whose heading/top-of-body matches an anchor pattern get a representative
+      // chunk. This stops per_section from over-producing spurious rows out of
+      // boilerplate (product-catalog menus, "who is an insured" blocks) on large
+      // packages. If the anchor matches nothing, fall back to all sections (a
+      // too-narrow pattern shouldn't make a field silently vanish).
+      const anchors = compileSectionAnchors(hints.section_anchor);
+      let scopedScored = scored;
+      if (anchors.length > 0) {
+        const filtered = scored.filter(([, c]) => matchesAnchor(c, anchors));
+        if (filtered.length > 0) {
+          scopedScored = filtered;
+        } else {
+          console.warn(
+            `[koji-extract] Route: field '${fieldName}' section_anchor matched no section — using all sections.`,
+          );
+        }
+      }
+      const sel = selectCoverageMax(scopedScored, maxSections);
       topChunks = sel.chunks;
       if (sel.sectionsFound > maxSections) {
         console.warn(
