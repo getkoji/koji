@@ -296,6 +296,7 @@ koji corpus get insurance_policy 561c6e69 -o doc.pdf # download the source file 
 koji corpus get insurance_policy 561c6e69 --markdown # …or the parsed markdown text
 
 koji corpus add insurance_policy ./new-doc.pdf       # upload a doc into the corpus
+koji corpus rm insurance_policy 561c6e69             # remove a doc (wrong type / skewing validation)
 koji corpus tag insurance_policy 561c6e69 --add edge-case --remove synthetic
 
 koji corpus gt show insurance_policy 561c6e69        # show current ground truth
@@ -306,6 +307,8 @@ koji corpus gt set insurance_policy 561c6e69 --from truth.json
 A document is addressed by corpus-entry id (a unique prefix is enough — the id shown by `corpus ls` is truncated) or by filename (exact, or a unique substring). All `corpus` subcommands accept `--json` and `--profile`.
 
 `koji corpus get` downloads the document so you can read it directly — the source file by default (PDFs, images, etc.), or the parsed markdown with `--markdown`. This is how you settle a disagreement between an extraction and ground truth: pull the document, read what it actually says, and correct ground truth with `koji corpus gt set`.
+
+`koji corpus rm` removes a document from the corpus when it doesn't belong — e.g. a doc that isn't really of this schema's type and is skewing your validation numbers. It's a **soft-delete** (the row and file are retained for recovery and the entry drops out of every read path); it prompts for confirmation unless you pass `--yes`. Re-add a removed doc with `koji corpus add`.
 
 `koji corpus gt accept` reads the document's latest extraction (run `koji run` first) and saves those values as ground truth — the fast path for "this extraction is correct." `koji corpus gt set --from <file>` sets ground truth from a JSON file of `{field: value}`.
 

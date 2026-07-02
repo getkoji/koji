@@ -815,6 +815,37 @@ def corpus_add(
             console.print(f"  [green]✓[/green] {path.name} → {(resp.json().get('id') or '')[:8]}")
 
 
+@corpus_app.command("rm")
+def corpus_rm(
+    schema: str = typer.Argument(..., help="Schema slug."),
+    entry: str = typer.Argument(..., help="Corpus entry id or filename."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Remove a document from a schema's corpus.
+
+    Soft-delete: the entry drops out of every read path (lists, validate,
+    performance, dedup) but the row and its file are retained for recovery. Use
+    it to drop a document that isn't really this schema's type so it stops
+    skewing validation. Re-add it later with `koji corpus add`.
+    """
+    base_url, headers = resolve_api(profile_name)
+    slug, _, _ = _load_schema_arg(schema)
+    with httpx.Client(timeout=60) as client:
+        entries = _fetch_corpus(client, base_url, headers, slug)
+        matched = _resolve_entry(entries, entry)
+        filename = matched.get("filename") or matched["id"]
+        if not yes and not typer.confirm(f"Remove '{filename}' from the {slug} corpus?"):
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+        resp = client.delete(f"{base_url}/api/schemas/{slug}/corpus/{matched['id']}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 204):
+            _api_error(resp, f"remove {filename}")
+    console.print(f"[green]✓[/green] removed {filename} from the {slug} corpus")
+
+
 @corpus_app.command("tag")
 def corpus_tag(
     schema: str = typer.Argument(..., help="Schema slug."),

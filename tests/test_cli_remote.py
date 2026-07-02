@@ -37,6 +37,7 @@ runner = CliRunner()
         ["corpus", "diff", "--help"],
         ["corpus", "get", "--help"],
         ["corpus", "add", "--help"],
+        ["corpus", "rm", "--help"],
         ["corpus", "tag", "--help"],
         ["corpus", "gt", "show", "--help"],
         ["corpus", "gt", "accept", "--help"],
