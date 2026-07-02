@@ -9,11 +9,13 @@ import {
   renderContextChunks,
   buildGroupPrompt,
   buildGapFillPrompt,
+  buildEnumerationPrompt,
   unwrapNestedResult,
   extractLlmConfidence,
   extractSourceTexts,
   extractGroup,
   fillGap,
+  enumerateRows,
 } from "./group-extract";
 
 // ---------------------------------------------------------------------------
@@ -881,5 +883,67 @@ describe("fillGap", () => {
       provider,
     );
     expect(result.__llm_confidence).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enumerate_rows completion pass (oss-345)
+// ---------------------------------------------------------------------------
+
+describe("buildGroupPrompt — array enumeration directive", () => {
+  beforeEach(() => vi.spyOn(console, "log").mockImplementation(() => {}));
+
+  it("adds an 'enumerate EVERY row' directive when the group has an array field", () => {
+    const group: RouteGroup = {
+      fields: ["coverages"],
+      fieldSpecs: { coverages: { type: "array", items: { type: "object", properties: { code: { type: "string" } } } } },
+      chunks: [makeChunk({ index: 0, title: "Coverages", content: "| GL | $1M |\n| Prop | $2M |" })],
+    };
+    const prompt = buildGroupPrompt(group, "policy");
+    expect(prompt).toContain("enumerate EVERY");
+  });
+
+  it("does NOT add the enumeration directive for a scalar-only group", () => {
+    const group: RouteGroup = {
+      fields: ["policy_number"],
+      fieldSpecs: { policy_number: { type: "string" } },
+      chunks: [makeChunk({ index: 0, title: "Dec", content: "Policy No: ABC-123" })],
+    };
+    expect(buildGroupPrompt(group, "policy")).not.toContain("enumerate EVERY");
+  });
+});
+
+describe("buildEnumerationPrompt", () => {
+  const spec = { type: "array", items: { type: "object", properties: { code: { type: "string" } } } };
+  const chunks = [makeChunk({ index: 0, title: "Coverages", content: "GL, Property, Crime, D&O" })];
+
+  it("shows the already-extracted items and asks for the COMPLETE array", () => {
+    const p = buildEnumerationPrompt("coverages", spec, chunks, [{ code: "GL" }, { code: "PROP" }]);
+    expect(p).toContain("Already extracted (2)");
+    expect(p).toContain("COMPLETE array");
+    expect(p).toContain('"code":"GL"');
+  });
+});
+
+describe("enumerateRows", () => {
+  beforeEach(() => vi.spyOn(console, "log").mockImplementation(() => {}));
+  const spec = { type: "array", items: { type: "object", properties: { code: { type: "string" } } } };
+  const chunks = [makeChunk({ index: 0, title: "Coverages", content: "GL, Property, Crime, D&O" })];
+
+  it("returns the model's complete row list", async () => {
+    const provider = mockProvider(JSON.stringify({ coverages: [{ code: "GL" }, { code: "PROP" }, { code: "CRIME" }, { code: "DO" }] }));
+    const rows = await enumerateRows("coverages", spec, chunks, [{ code: "GL" }, { code: "PROP" }], provider);
+    expect(rows).toHaveLength(4);
+  });
+
+  it("returns [] on error rather than throwing", async () => {
+    const provider: ModelProvider = { generate: vi.fn().mockRejectedValue(new Error("boom")) };
+    const rows = await enumerateRows("coverages", spec, chunks, [{ code: "GL" }], provider);
+    expect(rows).toEqual([]);
+  });
+
+  it("returns [] when the model doesn't return an array", async () => {
+    const provider = mockProvider(JSON.stringify({ coverages: null }));
+    expect(await enumerateRows("coverages", spec, chunks, [{ code: "GL" }], provider)).toEqual([]);
   });
 });

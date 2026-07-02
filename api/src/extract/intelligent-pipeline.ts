@@ -17,7 +17,7 @@
 import { buildDocumentMap, type Chunk } from "./document-map";
 import { routeFields, routeAllChunks, groupRoutes } from "./router";
 import { toposortFields, resolveConditionalHints, resolveWaveFields, getSkippedFields } from "./waves";
-import { extractGroup, fillGap } from "./group-extract";
+import { enumerateRows, extractGroup, fillGap } from "./group-extract";
 import {
   reconcile,
   computeProvenanceStrength,
@@ -289,6 +289,32 @@ async function extractOneSection(
         accumulated.confidence[fieldName] = scoreLabel(score);
         gapFilled.push(fieldName);
       }
+    }
+  }
+
+  // ── enumerate_rows completion pass ────────────────────────────
+  // For an opted-in array field, re-prompt over its chunks to list EVERY row —
+  // catching the model's first-pass under-count of a co-located table (which no
+  // amount of routing fixes, since all rows are already in the chunk). The
+  // returned rows are unioned+deduped with what we have.
+  for (const [fieldName, fieldSpec] of Object.entries(fields)) {
+    const hints = fieldSpec.hints as Record<string, unknown> | undefined;
+    if (hints?.enumerate_rows !== true || (fieldSpec.type as string) !== "array") continue;
+    const current = accumulated.extracted[fieldName];
+    if (!Array.isArray(current) || current.length === 0) continue;
+    const enumChunks = routeByField.get(fieldName) ?? [];
+    if (enumChunks.length === 0) continue;
+
+    const resolved = resolveConditionalHints(fields[fieldName]!, accumulated.extracted);
+    const more = await enumerateRows(fieldName, resolved, enumChunks, current, provider, contextChunks);
+    const merged = unionArrayItems(current, more);
+    if (merged.length > current.length) {
+      console.log(`[koji-extract] enumerate_rows: ${fieldName} ${current.length} -> ${merged.length} rows`);
+      accumulated.extracted[fieldName] = merged;
+      const prov = computeProvenanceStrength(merged, enumChunks, "array");
+      const score = computeFieldConfidence({ provenanceStrength: prov, validationPassed: true });
+      accumulated.confidence_scores[fieldName] = score;
+      accumulated.confidence[fieldName] = scoreLabel(score);
     }
   }
 
@@ -610,6 +636,34 @@ function getMissingRequired(
   return Object.entries(accumulated.confidence)
     .filter(([name, conf]) => conf === "not_found" && fields[name]?.required)
     .map(([name]) => name);
+}
+
+/**
+ * Union two arrays of items, deduping by content. Mirrors reconcile's array
+ * dedup (canonical JSON of the item), but ignores `__`-prefixed provenance keys
+ * so a re-enumerated row that only differs by its `__source_text` doesn't
+ * duplicate an existing one. Keeps the first occurrence (existing items win).
+ */
+function unionArrayItems(current: unknown[], extra: unknown[]): unknown[] {
+  const canonical = (item: unknown): string => {
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const stripped: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+        if (!k.startsWith("__")) stripped[k] = v;
+      }
+      return JSON.stringify(stripped, Object.keys(stripped).sort());
+    }
+    return String(item);
+  };
+  const out: unknown[] = [];
+  const seen = new Set<string>();
+  for (const item of [...current, ...extra]) {
+    const key = canonical(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function emptyResult(

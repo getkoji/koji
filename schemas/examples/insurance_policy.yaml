@@ -157,6 +157,10 @@ fields:
       # Score with F1: match elements by coverage_name so validate reports
       # precision/recall honestly and recall (finding more parts) isn't penalized.
       element_key: coverage_name
+      # When multiple coverage parts are stacked in ONE section/table, a single
+      # pass under-counts the rows — enumerate_rows runs a completion pass to
+      # list every row.
+      enumerate_rows: true
       # On a big multi-part package, gate which sections per_section visits so it
       # doesn't emit spurious rows out of boilerplate. Uncomment + tune to your
       # carrier's section headings:
