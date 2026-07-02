@@ -44,6 +44,9 @@ export const schemaRuns = pgTable(
     costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
     durationMs: integer("duration_ms"),
     errorMessage: text("error_message"),
+    /** Full ValidateResult payload, persisted at finalize so async pollers
+     *  (CLI, dashboard) can fetch the finished run without recomputing. */
+    resultJson: jsonb("result_json"),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -57,6 +60,43 @@ export const schemaRuns = pgTable(
     baselineIdx: index("schema_runs_baseline_idx")
       .on(t.baselineVersionId)
       .where(sql`baseline_version_id IS NOT NULL`),
+  }),
+);
+
+/**
+ * Per-document progress rows for a validate run — one row per corpus entry,
+ * written by the `schema.validate.doc` job (or the sync loop) as each doc
+ * finishes. Drives poll-time progress (count rows vs docs_total), records
+ * per-doc failures, and carries the transient routing plan the finalizer
+ * needs for routing diagnosis on failing fields. The extracted values
+ * themselves live in extraction_runs (joined on schema_run_id + corpus
+ * entry) — this table never duplicates them.
+ */
+export const schemaRunDocs = pgTable(
+  "schema_run_docs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    schemaRunId: uuid("schema_run_id")
+      .notNull()
+      .references(() => schemaRuns.id, { onDelete: "cascade" }),
+    corpusEntryId: uuid("corpus_entry_id")
+      .notNull()
+      .references(() => corpusEntries.id, { onDelete: "cascade" }),
+    /** "ok" — extraction ran and persisted; "failed" — parse/extract error. */
+    status: varchar("status", { length: 16 }).notNull(),
+    errorMessage: text("error_message"),
+    /** Per-field chunk-routing record from the intelligent pipeline. Consumed
+     *  once by the run finalizer for routing diagnosis; not read elsewhere. */
+    routingPlanJson: jsonb("routing_plan_json"),
+    durationMs: integer("duration_ms"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // One row per (run, entry) — a retried job upserts instead of
+    // double-counting progress.
+    runEntryIdx: uniqueIndex("schema_run_docs_run_entry_idx").on(t.schemaRunId, t.corpusEntryId),
+    tenantIdx: index("schema_run_docs_tenant_idx").on(t.tenantId),
   }),
 );
 
