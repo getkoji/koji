@@ -11,11 +11,13 @@ from typer.testing import CliRunner
 from cli.main import app
 from cli.remote import (
     _diff_fields,
+    _elem_labels,
     _find_local_schema,
     _fmt_value,
     _load_schema_arg,
     _looks_like_path,
     _norm,
+    _render_array_element_diffs,
     _resolve_entry,
     err_console,
     resolve_api,
@@ -195,3 +197,81 @@ def test_load_schema_arg_missing_file_exits(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(typer.Exit):
         _load_schema_arg("does_not_exist.yaml")
+
+
+# ---------------------------------------------------------------------------
+# array element diagnostics (validate --explain)
+# ---------------------------------------------------------------------------
+
+
+def test_elem_labels_prefers_element_key():
+    elems = [{"status": "extra", "got": "{ code: UMB, limit: 5000000 }", "key": "UMB"}]
+    assert _elem_labels(elems, "got") == "UMB"
+
+
+def test_elem_labels_falls_back_to_formatted_value():
+    elems = [{"status": "missing", "expected": "{ code: PROP }"}]
+    assert _elem_labels(elems, "expected") == "{ code: PROP }"
+
+
+def test_elem_labels_truncates_long_lists():
+    elems = [{"status": "extra", "got": f"row{i}", "key": f"K{i}"} for i in range(9)]
+    out = _elem_labels(elems, "got")
+    assert out.endswith("…+3")
+    assert "K5" in out and "K6" not in out
+
+
+def _capture_render(payload: dict) -> str:
+    from rich.console import Console
+
+    import cli.remote as remote
+
+    rec = Console(record=True, width=200)
+    orig = remote.console
+    remote.console = rec
+    try:
+        _render_array_element_diffs(payload)
+    finally:
+        remote.console = orig
+    return rec.export_text()
+
+
+def test_render_array_element_diffs_lists_fp_and_fn_by_key():
+    payload = {
+        "fields": [
+            {
+                "name": "coverages",
+                "failingDocs": [
+                    {
+                        "filename": "pkg.pdf",
+                        "diff": {
+                            "kind": "array",
+                            "elements": [
+                                {"status": "matched", "expected": "{ code: GL }", "key": "GL"},
+                                {"status": "extra", "got": "{ code: UMB }", "key": "UMB"},
+                                {"status": "missing", "expected": "{ code: PROP }", "key": "PROP"},
+                                {"status": "changed", "expected": "x", "got": "y", "key": "CRIME"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    out = _capture_render(payload)
+    assert "array element diagnostics" in out
+    assert "UMB" in out  # FP column
+    assert "PROP" in out  # FN column
+    assert "GL" not in out  # matched elements are not listed
+
+
+def test_render_array_element_diffs_silent_without_array_diffs():
+    payload = {
+        "fields": [
+            {
+                "name": "insured_name",
+                "failingDocs": [{"filename": "a.pdf", "diff": {"kind": "scalar", "expected": "A", "got": "B"}}],
+            }
+        ]
+    }
+    assert _capture_render(payload) == ""

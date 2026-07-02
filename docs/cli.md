@@ -260,6 +260,8 @@ A failing field has two very different causes, and telling them apart decides th
 - **`answerInRoutedChunks: true` — a model misread.** The answer was in front of the model and it still got it wrong; tighten the field `description`, `type`, or enum aliases. A larger model is a last resort, justified only here.
 - **`answerInRoutedChunks: null`** — couldn't be determined (a non-scalar expected value, or the read-only `GET` path with no fresh routing data).
 
+For failing **array** fields, `--explain` additionally prints an **array element diagnostics** table with the per-element diff behind the field's precision/recall: which extracted elements were spurious (**FP** — they hurt precision), which expected elements were missed (**FN** — they hurt recall), and how many matched by key but differ in a sub-field (**~**). Elements are labeled by their `element_key` value when the schema declares one, so a set-level diff reads at a glance instead of requiring a by-hand comparison against ground truth. The same data is on each element of `fields[].failingDocs[].diff.elements` under `--json` (`status`: `matched` / `changed` / `missing` / `extra`, plus `key`). FP points at over-enumeration — tighten `section_anchor` / `skip_row_when`; FN points at routing/enumeration recall — check `per_section` / `enumerate_rows`.
+
 ### `koji run`
 
 Run one corpus document through a schema and show the extraction — the Build tab's **Run** button. Uses your local schema YAML if a file is found (so you can iterate without committing a version), otherwise the server's latest version.
