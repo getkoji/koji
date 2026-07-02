@@ -13,7 +13,7 @@
 
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
-import type { ModelProvider } from "./providers";
+import { isSystemicProviderError, type ModelProvider } from "./providers";
 import { vocabHint } from "./schema-tree";
 
 // ---------------------------------------------------------------------------
@@ -556,6 +556,9 @@ export async function extractGroup(
 
     return result;
   } catch (e) {
+    // A systemic error (bad model name → 404, bad key → 401) hits every call
+    // identically — surface it instead of silently returning empty extractions.
+    if (isSystemicProviderError(e)) throw e;
     console.log(`[koji-extract] Group ${JSON.stringify(group.fields)} error: ${e}`);
     return {};
   }
@@ -588,6 +591,7 @@ export async function fillGap(
     const result = unwrapNestedResult(parsed, new Set([fieldName]));
     return result;
   } catch (e) {
+    if (isSystemicProviderError(e)) throw e;
     console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
     return {};
   }
@@ -656,6 +660,7 @@ export async function enumerateRows(
     const value = result[fieldName];
     return Array.isArray(value) ? value : [];
   } catch (e) {
+    if (isSystemicProviderError(e)) throw e;
     console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
     return [];
   }
