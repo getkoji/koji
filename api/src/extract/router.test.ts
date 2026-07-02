@@ -1014,3 +1014,80 @@ describe("routeFields — per_section coverage-maximizing selection", () => {
     expect(routes[0]!.source).toBe("hint");
   });
 });
+
+describe("routeFields — per_section section_anchor precision filter (oss-339)", () => {
+  const covSignals = { has_dates: false, has_dollar_amounts: true, has_tables: true, has_key_value_pairs: true };
+
+  // Two real coverage-part declaration sections + two boilerplate sections that
+  // per_section would otherwise emit spurious rows from — all classified
+  // `declarations` so look_in passes them and only the anchor can filter them.
+  function packageWithBoilerplate(): Chunk[] {
+    return [
+      makeChunk({ index: 0, title: "COMMERCIAL PROPERTY COVERAGE PART DECLARATIONS", category: "declarations", content: "coverage limit deductible", signals: { ...covSignals } }),
+      makeChunk({ index: 1, title: "COMMERCIAL GENERAL LIABILITY COVERAGE PART DECLARATIONS", category: "declarations", content: "coverage limit deductible", signals: { ...covSignals } }),
+      // Boilerplate: a product-catalog menu (lists many coverage names, no "declarations").
+      makeChunk({ index: 2, title: "PRODUCTS AND SERVICES", category: "declarations", content: "Commercial Umbrella Excess Workers Compensation Farm Liquor Liability", signals: { ...covSignals } }),
+      // Boilerplate: a "who is an insured" text block.
+      makeChunk({ index: 3, title: "WHO IS AN INSURED", category: "declarations", content: "Condominium Unit Owners are insured with respect to coverage limit", signals: { ...covSignals } }),
+    ];
+  }
+
+  function schema(extraHints: Record<string, unknown>) {
+    return {
+      fields: {
+        coverages: {
+          type: "array",
+          hints: { look_in: ["declarations"], signals: ["has_tables"], patterns: ["coverage", "limit", "deductible"], ...extraHints },
+        },
+      },
+    };
+  }
+
+  it("without an anchor, per_section visits the boilerplate sections too", () => {
+    const routes = routeFields(schema({ per_section: true }), packageWithBoilerplate());
+    const titles = routes[0]!.chunks.map((c) => c.title);
+    expect(titles).toContain("PRODUCTS AND SERVICES");
+    expect(titles).toContain("WHO IS AN INSURED");
+    expect(routes[0]!.chunks.length).toBe(4);
+  });
+
+  it("with a section_anchor, only anchored sections are visited", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_anchor: "COVERAGE PART DECLARATIONS" }),
+      packageWithBoilerplate(),
+    );
+    const titles = routes[0]!.chunks.map((c) => c.title);
+    expect(titles).toEqual([
+      "COMMERCIAL PROPERTY COVERAGE PART DECLARATIONS",
+      "COMMERCIAL GENERAL LIABILITY COVERAGE PART DECLARATIONS",
+    ]);
+    expect(routes[0]!.source).toBe("per_section");
+  });
+
+  it("accepts a list of anchor patterns", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_anchor: ["COVERAGE PART DECLARATIONS", "RECORD OF ADDITIONAL INSUREDS"] }),
+      packageWithBoilerplate(),
+    );
+    expect(routes[0]!.chunks.length).toBe(2);
+  });
+
+  it("falls back to all sections when the anchor matches nothing", () => {
+    const routes = routeFields(
+      schema({ per_section: true, section_anchor: "THIS MATCHES NO SECTION XYZ" }),
+      packageWithBoilerplate(),
+    );
+    // Rather than vanish, the field keeps all sections (a too-narrow pattern
+    // shouldn't silently drop it).
+    expect(routes[0]!.chunks.length).toBe(4);
+  });
+
+  it("matches an anchor found in the body, not just the heading", () => {
+    const chunks: Chunk[] = [
+      makeChunk({ index: 0, title: "Page 3", category: "declarations", content: "COVERAGE PART DECLARATIONS coverage limit deductible", signals: { ...covSignals } }),
+      makeChunk({ index: 1, title: "Page 4", category: "declarations", content: "misc boilerplate text with no anchor", signals: { ...covSignals } }),
+    ];
+    const routes = routeFields(schema({ per_section: true, section_anchor: "COVERAGE PART DECLARATIONS" }), chunks);
+    expect(routes[0]!.chunks.map((c) => c.index)).toEqual([0]);
+  });
+});

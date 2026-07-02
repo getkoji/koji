@@ -805,6 +805,19 @@ hints:
 
 `per_section` is opt-in and scales with the document: a small monoline policy has one or two sections and behaves like a normal field, while a 200-page multi-part package pulls one chunk per part. Use it for array fields whose items are organized into repeating, separately-headed sections; leave it off for scalar fields and single-table arrays (where `max_chunks` is the right tool).
 
+**`section_anchor`** controls *which* sections `per_section` visits. By default it iterates every distinct section in the routed pool — which on a big package can include boilerplate (product-catalog menus, "who is an insured" text blocks) that the model then emits spurious rows from. Give it a regex (or a list of them) and it only visits sections whose heading — or the top of the section body — matches:
+
+```yaml
+coverages:
+  type: array
+  hints:
+    look_in: [declarations]
+    per_section: true
+    section_anchor: "COVERAGE PART DECLARATIONS"   # or a list of patterns
+```
+
+The pattern is case-insensitive. Provide several when the qualifying sections aren't uniformly named (`["COVERAGE PART DECLARATIONS", "RECORD OF ADDITIONAL INSUREDS"]`). If the anchor matches no section, `per_section` falls back to all sections and logs a warning — a too-narrow pattern won't make the field silently vanish. Use `section_anchor` to trade a little recall for a lot of precision once `per_section` is over-producing.
+
 ### isolate
 
 By default, fields routed to overlapping chunks are extracted **together** in one LLM call, over the union of their chunks, with every field's instructions in the same prompt. That's efficient, but it couples fields: a field's output can shift when an *unrelated* field's routing hint changes (different routing → different grouping → a different shared prompt). For a critical field whose value must be stable, that coupling is a liability.
