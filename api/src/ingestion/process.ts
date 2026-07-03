@@ -565,6 +565,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
                 (res.extracted ?? {}) as Record<string, unknown>,
               ).length,
               tokens: res.elapsed_ms ?? null,
+              ...(res.hint_leaks && res.hint_leaks.length > 0
+                ? { hint_leaks: res.hint_leaks }
+                : {}),
             },
           };
         },
