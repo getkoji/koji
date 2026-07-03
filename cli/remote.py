@@ -1160,12 +1160,15 @@ def _resolve_review_id(client: httpx.Client, base_url: str, headers: dict, raw: 
     if len(raw) == 36 and raw.count("-") == 4:
         return raw
     ids: list[str] = []
+    # __queue/ids returns every id for a status (no fetch limit). Matching
+    # against a limited /api/review page loses any item past the limit, so
+    # prefixes for deep-queue items resolved to "not found".
     for status in ("pending", "completed"):
-        resp = client.get(f"{base_url}/api/review", params={"status": status, "limit": 1000}, headers=headers)
+        resp = client.get(f"{base_url}/api/review/__queue/ids", params={"status": status}, headers=headers)
         if _auth_error(resp, base_url):
             raise typer.Exit(1)
         if resp.status_code == 200:
-            ids.extend(r["id"] for r in resp.json().get("data", []) if r.get("id"))
+            ids.extend(i for i in resp.json().get("data", []) if i)
     matches = [i for i in ids if i.startswith(raw)]
     if len(matches) == 1:
         return matches[0]

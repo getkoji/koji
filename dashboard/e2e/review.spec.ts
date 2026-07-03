@@ -14,6 +14,26 @@ test.describe("review queue", () => {
     await expect(page.getByText("IN QUEUE")).toBeVisible();
   });
 
+  test("metrics strip shows server-side queue counts", async ({ page }) => {
+    // The strip must bind to /api/review/__queue/stats (count(*), no fetch
+    // limit) — not to the fetched rows, which cap every stat at the page
+    // size (oss-360). Wait for the stats response and assert the rendered
+    // "In queue" number matches it exactly.
+    const tenantBase = await getTenantBase(page);
+    const statsPromise = page.waitForResponse((r) =>
+      r.url().includes("/api/review/__queue/stats"),
+    );
+    await page.goto(`${tenantBase}/review`);
+    const stats = (await statsPromise.then((r) => r.json())) as {
+      pending: number;
+    };
+
+    const inQueueValue = page
+      .getByText("IN QUEUE", { exact: false })
+      .locator("xpath=following-sibling::span[1]");
+    await expect(inQueueValue).toHaveText(stats.pending.toLocaleString());
+  });
+
   test("review queue shows pending items", async ({ page }) => {
     const tenantBase = await getTenantBase(page);
     await page.goto(`${tenantBase}/review`);

@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { CheckCheck } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { TableSkeleton } from "@/components/shared/TableSkeleton";
-import { review as reviewApi, type ReviewRow } from "@/lib/api";
+import { review as reviewApi, type ReviewRow, type ReviewQueueStats } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { reasonLabel, reasonTone, formatRelativeTime, urgentThreshold } from "./format";
 
@@ -36,23 +36,22 @@ export default function ReviewPage() {
     }, [status]),
   );
 
-  // Captured on mount so render is pure. Refreshes on remount (e.g. route change).
-  const [todayCutoff] = useState(() => Date.now() - 24 * 60 * 60 * 1000);
-  const metrics = useMemo(() => {
-    const rows = items ?? [];
-    const pending = rows.filter((r) => r.status === "pending");
-    const urgent = pending.filter(
-      (r) => r.confidence !== null && Number(r.confidence) < urgentThreshold,
-    );
-    const reviewedToday = rows.filter(
-      (r) => r.resolvedAt !== null && new Date(r.resolvedAt).getTime() >= todayCutoff,
-    );
-    return {
-      pending: pending.length,
-      urgent: urgent.length,
-      reviewedToday: reviewedToday.length,
-    };
-  }, [items, todayCutoff]);
+  // Counts come from a server-side count(*) endpoint, NOT from the fetched
+  // rows — the list is fetch-limited (server default 100), so row-derived
+  // stats silently cap at the page size (oss-360: thousands pending rendered
+  // as the fetch limit, and burning down the queue never moved the number).
+  const { data: stats } = useApi(
+    useCallback(() => reviewApi.stats({ urgentBelow: urgentThreshold }), []),
+  );
+  const totalForFilter =
+    stats == null
+      ? null
+      : status === "all"
+        ? stats.pending + stats.completed
+        : status === "pending"
+          ? stats.pending
+          : stats.completed;
+  const shownCount = (items ?? []).length;
 
   return (
     <ListLayout
@@ -75,7 +74,7 @@ export default function ReviewPage() {
           />
         </>
       }
-      metricsStrip={<MetricsStrip metrics={metrics} />}
+      metricsStrip={<MetricsStrip stats={stats ?? null} />}
       filterBar={
         <div className="flex items-center gap-2">
           {STATUS_OPTIONS.map((opt) => (
@@ -93,7 +92,9 @@ export default function ReviewPage() {
           ))}
           <span className="flex-1" />
           <span className="font-mono text-[10px] text-ink-4">
-            {(items ?? []).length} {(items ?? []).length === 1 ? "item" : "items"}
+            {totalForFilter !== null && totalForFilter > shownCount
+              ? `showing ${shownCount} of ${totalForFilter.toLocaleString()}`
+              : `${shownCount} ${shownCount === 1 ? "item" : "items"}`}
           </span>
         </div>
       }
@@ -128,23 +129,19 @@ export default function ReviewPage() {
 // ──────────────────────────────────────────────────────────────────────
 // Metrics strip
 
-function MetricsStrip({
-  metrics,
-}: {
-  metrics: { pending: number; urgent: number; reviewedToday: number };
-}) {
+function MetricsStrip({ stats }: { stats: ReviewQueueStats | null }) {
   return (
     <div className="grid grid-cols-3 gap-4 border border-border rounded-sm bg-cream overflow-hidden">
-      <Metric label="In queue" value={metrics.pending.toString()} />
+      <Metric label="In queue" value={stats ? stats.pending.toLocaleString() : "—"} />
       <Metric
         label="Urgent"
-        value={metrics.urgent.toString()}
-        tone={metrics.urgent > 0 ? "warn" : "neutral"}
+        value={stats ? stats.urgent.toLocaleString() : "—"}
+        tone={stats && stats.urgent > 0 ? "warn" : "neutral"}
         sub={`confidence < ${urgentThreshold}`}
       />
       <Metric
         label="Reviewed today"
-        value={metrics.reviewedToday.toString()}
+        value={stats ? stats.reviewedToday.toLocaleString() : "—"}
         tone="neutral"
       />
     </div>

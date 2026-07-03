@@ -520,6 +520,13 @@ export interface DocumentDelivery {
 
 // ── Review queue ──
 
+export interface ReviewQueueStats {
+  pending: number;
+  urgent: number;
+  completed: number;
+  reviewedToday: number;
+}
+
 export interface ReviewRow {
   id: string;
   fieldName: string;
@@ -559,6 +566,12 @@ export const review = {
     if (params?.status) qs.set("status", params.status);
     const q = qs.toString();
     return api.get<{ data: ReviewRow[] }>(`/api/review${q ? `?${q}` : ""}`).then((r) => r.data);
+  },
+  stats: (params?: { urgentBelow?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.urgentBelow != null) qs.set("urgent_below", String(params.urgentBelow));
+    const q = qs.toString();
+    return api.get<ReviewQueueStats>(`/api/review/__queue/stats${q ? `?${q}` : ""}`);
   },
   get: (id: string) => api.get<ReviewDetail>(`/api/review/${id}`),
   queueIds: (status = "pending") =>

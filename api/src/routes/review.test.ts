@@ -11,7 +11,7 @@
  * Permission gating mirrors the route's `requires("corpus:write")` guard.
  */
 import { describe, it, expect } from "vitest";
-import { resolvePromotion, isUuid } from "./review";
+import { resolvePromotion, isUuid, parseUrgentBelow } from "./review";
 import { resolvePermissions } from "../auth/roles";
 
 describe("isUuid — malformed ids are rejected (→ 404, not a Postgres 500)", () => {
@@ -99,5 +99,24 @@ describe("review promotion — permission gating", () => {
     expect(resolvePermissions(["schema-editor"]).has("corpus:write")).toBe(true);
     expect(resolvePermissions(["reviewer"]).has("corpus:write")).toBe(false);
     expect(resolvePermissions(["viewer"]).has("corpus:write")).toBe(false);
+  });
+});
+
+describe("parseUrgentBelow — stats threshold clamping", () => {
+  it("passes through a valid threshold", () => {
+    expect(parseUrgentBelow("0.5")).toBe(0.5);
+    expect(parseUrgentBelow("0")).toBe(0);
+    expect(parseUrgentBelow("1")).toBe(1);
+  });
+
+  it("defaults when the param is absent", () => {
+    expect(parseUrgentBelow(undefined)).toBe(0.7);
+  });
+
+  it("falls back to 0.7 on malformed or out-of-range values", () => {
+    expect(parseUrgentBelow("abc")).toBe(0.7);
+    expect(parseUrgentBelow("-1")).toBe(0.7);
+    expect(parseUrgentBelow("2")).toBe(0.7);
+    expect(parseUrgentBelow("NaN")).toBe(0.7);
   });
 });

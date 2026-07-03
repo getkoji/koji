@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { and, eq, desc, asc } from "drizzle-orm";
+import { and, eq, desc, asc, gte, lt, isNotNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -559,4 +559,53 @@ review.get("/__queue/ids", requires("review:read"), async (c) => {
       ),
   );
   return c.json({ data: rows.map((r) => r.id) });
+});
+
+/**
+ * Clamp the `urgent_below` query param to a sane confidence threshold.
+ * Malformed or out-of-range values fall back to 0.7 (the dashboard's
+ * urgentThreshold) instead of erroring — the stat is advisory, not a gate.
+ */
+export function parseUrgentBelow(raw: string | undefined): number {
+  const n = Number(raw ?? "0.7");
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.7;
+}
+
+// Queue-level counts for the dashboard metrics strip. Computed with count(*)
+// so they stay honest past any list fetch limit — deriving these from a
+// limited page of rows silently caps every stat at the page size (oss-360).
+// GET /api/review/__queue/stats?urgent_below=0.7
+review.get("/__queue/stats", requires("review:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const urgentBelow = parseUrgentBelow(c.req.query("urgent_below"));
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  const countWhere = (where: ReturnType<typeof and>) =>
+    withRLS(db, tenantId, (tx) =>
+      tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(schema.reviewItems)
+        .where(where),
+    ).then((rows) => rows[0]?.n ?? 0);
+
+  const [pending, urgent, completed, reviewedToday] = await Promise.all([
+    countWhere(eq(schema.reviewItems.status, "pending")),
+    countWhere(
+      and(
+        eq(schema.reviewItems.status, "pending"),
+        isNotNull(schema.reviewItems.confidence),
+        lt(schema.reviewItems.confidence, String(urgentBelow)),
+      ),
+    ),
+    countWhere(eq(schema.reviewItems.status, "completed")),
+    countWhere(
+      and(
+        isNotNull(schema.reviewItems.resolvedAt),
+        gte(schema.reviewItems.resolvedAt, dayAgo),
+      ),
+    ),
+  ]);
+
+  return c.json({ pending, urgent, completed, reviewedToday });
 });
