@@ -143,7 +143,26 @@ export function AppSidebar({
   const settingsExtensions = useSettingsExtensions();
   const router = useRouter();
 
-  const projectSlug = pathname.match(/\/projects\/([^/]+)/)?.[1] ?? tenantSlug;
+  // Selected project. It lives in the URL only on the overview + project
+  // settings routes; on every other nav item (pipelines, jobs, …) it would
+  // otherwise be lost — which is why switching a project used to "revert" on
+  // the next click. Persist it (like the schema picker) so the label, the
+  // active state, and the x-koji-project header the API client sends all stay
+  // consistent across navigation.
+  const projectStorageKey = `koji:project:${tenantSlug}`;
+  const urlProjectSlug = pathname.match(/\/projects\/([^/]+)/)?.[1];
+  const [storedProjectSlug, setStoredProjectSlug] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(projectStorageKey);
+  });
+  useEffect(() => {
+    if (urlProjectSlug && typeof window !== "undefined") {
+      localStorage.setItem(projectStorageKey, urlProjectSlug);
+      setStoredProjectSlug(urlProjectSlug);
+    }
+  }, [urlProjectSlug, projectStorageKey]);
+  const projectSlug = urlProjectSlug ?? storedProjectSlug ?? tenantSlug;
+
   const projectSettingsBase = `${base}/projects/${projectSlug}/settings`;
   const inProjectSettings = pathname.startsWith(projectSettingsBase);
 
@@ -160,6 +179,28 @@ export function AppSidebar({
   useEffect(() => on("projects:updated", refetchProjects), [refetchProjects]);
   const currentProject = projectList?.find((p) => p.slug === projectSlug);
   const currentProjectName = currentProject?.displayName ?? projectSlug;
+
+  // If the stored project no longer exists (deleted/renamed), drop it so we
+  // fall back to the tenant default instead of pinning a dead slug.
+  useEffect(() => {
+    if (!projectList || !storedProjectSlug) return;
+    if (!projectList.some((p) => p.slug === storedProjectSlug)) {
+      localStorage.removeItem(projectStorageKey);
+      setStoredProjectSlug(null);
+    }
+  }, [projectList, storedProjectSlug, projectStorageKey]);
+
+  function selectProject(slug: string) {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(projectStorageKey, slug);
+    }
+    setStoredProjectSlug(slug);
+    // Schemas are project-scoped, but the sidebar lives in the tenant layout
+    // and doesn't remount on this navigation — nudge its schema list to
+    // refetch for the newly-selected project so the picker isn't stale.
+    emit("schemas:updated");
+    router.push(`${base}/projects/${slug}`);
+  }
 
   const inOrgSettings = pathname.startsWith(`${base}/settings`);
   const isAdmin = hasPermission("tenant:admin");
@@ -240,7 +281,10 @@ export function AppSidebar({
           <SidebarGroupLabel className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 flex items-center justify-between">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1 hover:text-ink transition-colors text-left">
+                <button
+                  aria-label="Switch project"
+                  className="flex items-center gap-1 hover:text-ink transition-colors text-left"
+                >
                   <span className="truncate max-w-[120px]">{currentProjectName}</span>
                   <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-50" />
                 </button>
@@ -249,7 +293,7 @@ export function AppSidebar({
                 {projectList?.map((p) => (
                   <DropdownMenuItem
                     key={p.slug}
-                    onClick={() => router.push(`${base}/projects/${p.slug}`)}
+                    onClick={() => selectProject(p.slug)}
                     className={p.slug === projectSlug ? "bg-cream-2 font-medium" : ""}
                   >
                     <span className="truncate">{p.displayName}</span>

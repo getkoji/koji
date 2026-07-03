@@ -71,6 +71,29 @@ function getCurrentTenantSlug(): string | undefined {
   return match?.[1];
 }
 
+/** localStorage key holding the selected project slug for a tenant. */
+export function projectStorageKey(tenantSlug: string): string {
+  return `koji:project:${tenantSlug}`;
+}
+
+/**
+ * Resolve which project the current request is scoped to, sent as the
+ * `x-koji-project` header so the server's project RLS applies (the backend
+ * boundary landed in 0.48). Priority:
+ *   1. an explicit `/projects/<slug>` segment in the URL (overview + project
+ *      settings pages address a project directly), then
+ *   2. the persisted selection from the project switcher.
+ * Returns undefined when neither is known — the server then falls back to the
+ * tenant's default project, matching pre-0.48 behavior.
+ */
+function getCurrentProjectSlug(tenantSlug: string | undefined): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const inUrl = window.location.pathname.match(/\/projects\/([^/]+)/)?.[1];
+  if (inUrl) return inUrl;
+  if (!tenantSlug) return undefined;
+  return localStorage.getItem(projectStorageKey(tenantSlug)) ?? undefined;
+}
+
 async function request<T>(path: string, options?: RequestInit & { isFormData?: boolean }): Promise<T> {
   const url = `${API_BASE}${path}`;
   const tenantSlug = getCurrentTenantSlug();
@@ -99,6 +122,14 @@ async function request<T>(path: string, options?: RequestInit & { isFormData?: b
   } else if (tenantSlug) {
     // OSS / self-hosted: no auth token provider, use cookie auth + tenant header
     headers["x-koji-tenant"] = tenantSlug;
+  }
+
+  // Project scope. Sent on both auth paths — the JWT carries the org (tenant)
+  // but never the project, so the hosted path needs the header too. Omitted
+  // when unknown, so the server falls back to the tenant's default project.
+  const projectSlug = getCurrentProjectSlug(tenantSlug);
+  if (projectSlug) {
+    headers["x-koji-project"] = projectSlug;
   }
 
   const res = await fetch(url, {
