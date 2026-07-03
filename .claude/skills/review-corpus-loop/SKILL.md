@@ -32,11 +32,16 @@ Corpus / Validate tabs), driven entirely from the CLI.
 
 ## The commands (all take `--json`)
 
+- `koji review stats --json` → `{pending, urgent, completed, reviewedToday}` computed
+  server-side with `count(*)`. **This is the only correct way to measure queue size or
+  burn-down progress.** `--urgent-below 0.5` adjusts the urgent threshold.
 - `koji review ls --json` → `[{id, documentFilename, fieldName, reason, confidence,
   status, resolution, schemaSlug, pipelineSlug, documentId}]`. Pending items, worst
   confidence first. Filters: `--status pending|completed`, `--reason <reason>`,
   `--limit N`. `reason` is the routing cause — `low_confidence`, `validation_failed`,
-  `conflicting_values`, etc.
+  `conflicting_values`, etc. **This is a page, not the queue**: it returns at most
+  `--limit` rows (default 100). Never count its output to size the queue — a queue of
+  thousands reads as exactly `--limit` and burning items down never moves the number.
 - `koji review show <id> --json` → the full item: flagged field, reason, `proposedValue`,
   `confidence`, the document's **complete** `documentExtractionJson`, and the
   schema/pipeline it ran under. This is what you read to decide the correct value and
@@ -91,7 +96,10 @@ affect validation.
 ## The loop
 
 ### 1. Survey the queue
-`koji review ls --json` (and `--status completed --json`). Group by `schemaSlug` and
+`koji review stats --json` first — record `pending` as the true queue size (and the
+burn-down baseline you'll compare against in step 5). Then `koji review ls --json`
+(and `--status completed --json`) for the work list; page with `--limit` if you want
+more than the default 100. Group by `schemaSlug` and
 `fieldName`. A field that shows up repeatedly is a schema weakness, not bad luck — that
 `reason` (usually `low_confidence`) tells you the schema is missing a hint/pattern/
 description for that field, not that the model is broken.
@@ -118,9 +126,10 @@ generating review items. Re-run the relevant documents (`koji run <schema> <doc>
 and confirm the field's confidence is now above the pipeline's review threshold.
 
 ### 5. Report
-Summarize: how many review items you promoted, which fields kept failing, the schema
-change that fixed them, the before/after `overallAccuracy`, and (for provisional) how
-many drafts are awaiting human approval.
+Summarize: the queue's before/after `pending` count from `koji review stats --json`
+(never from counting `review ls` rows), how many review items you promoted, which
+fields kept failing, the schema change that fixed them, the before/after
+`overallAccuracy`, and (for provisional) how many drafts are awaiting human approval.
 
 ## Guardrails
 
