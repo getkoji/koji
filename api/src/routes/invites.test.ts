@@ -191,6 +191,8 @@ function createTestApp(opts: {
       const idx = queryIndex++;
       const chain = {
         from: () => chain,
+        innerJoin: () => chain,
+        orderBy: () => chain,
         where: () => chain,
         limit: () => {
           if (idx === 0) {
@@ -199,6 +201,10 @@ function createTestApp(opts: {
             return tenantId ? [{ id: tenantId }] : [];
           }
           if (idx === 1) {
+            // Default-project lookup — every tenant has one
+            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+          }
+          if (idx === 2) {
             const principal = c.get("principal") as Principal | undefined;
             const tenantId = c.get("tenantId") as string | undefined;
             if (principal && tenantId) {

@@ -13,14 +13,15 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, deletedAt, primaryKey, tenantId, updatedAt } from "./_shared";
-import { tenants, users } from "./tenants";
+import { createdAt, deletedAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { projects, tenants, users } from "./tenants";
 
 export const pipelines = pgTable(
   "pipelines",
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     schemaId: uuid("schema_id"),
@@ -66,9 +67,10 @@ export const pipelines = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("pipelines_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("pipelines_project_slug_idx")
+      .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    projectIdx: index("pipelines_project_idx").on(t.projectId).where(sql`deleted_at IS NULL`),
     tenantIdx: index("pipelines_tenant_idx").on(t.tenantId).where(sql`deleted_at IS NULL`),
     statusIdx: index("pipelines_status_idx")
       .on(t.tenantId, t.status)
@@ -81,6 +83,7 @@ export const sources = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     sourceType: varchar("source_type", { length: 32 }).notNull(),
@@ -99,9 +102,10 @@ export const sources = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("sources_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("sources_project_slug_idx")
+      .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    projectIdx: index("sources_project_idx").on(t.projectId).where(sql`deleted_at IS NULL`),
     tenantIdx: index("sources_tenant_idx").on(t.tenantId).where(sql`deleted_at IS NULL`),
     pipelineIdx: index("sources_pipeline_idx")
       .on(t.targetPipelineId)

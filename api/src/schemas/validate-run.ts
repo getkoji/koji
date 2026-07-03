@@ -118,6 +118,17 @@ export async function loadValidateRunContext(
   );
   if (!run) return null;
 
+  // Provider resolution below is confined to the schema's project —
+  // model/parse endpoints are project-scoped resources.
+  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ projectId: schema.schemas.projectId })
+      .from(schema.schemas)
+      .where(eq(schema.schemas.id, run.schemaId))
+      .limit(1),
+  );
+  const rlsScope = schemaRow ? { tenantId, projectId: schemaRow.projectId } : tenantId;
+
   const [version] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({ yamlSource: schema.schemaVersions.yamlSource })
@@ -134,12 +145,12 @@ export async function loadValidateRunContext(
     return null;
   }
 
-  const { provider, model: extractModel } = await resolveTenantProvider(db, tenantId, {
+  const { provider, model: extractModel } = await resolveTenantProvider(db, rlsScope, {
     preferModel: opts.model ?? null,
   });
   const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
-    tenantId,
+    rlsScope,
     {
       parseProviderId: null,
       defaultProvider: opts.defaultParseProvider,

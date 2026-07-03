@@ -42,7 +42,7 @@
  * {@link resolveParse}, then each surface cuts over one PR at a time.
  */
 
-import type { Db } from "@koji/db";
+import type { Db, RlsScope } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
 import type { ParseConfig } from "../parse/factory";
@@ -81,7 +81,7 @@ import {
  */
 export async function resolveParse(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   opts: {
     /** Pinned endpoint id (e.g. a pipeline's `parse_provider_id`), else null. */
     parseProviderId?: string | null;
@@ -94,7 +94,7 @@ export async function resolveParse(
   let resolved: ResolvedTenantParse | null = null;
   if (opts.parseConfig) {
     try {
-      resolved = await resolveTenantParse(db, tenantId, {
+      resolved = await resolveTenantParse(db, scope, {
         parseProviderId: opts.parseProviderId ?? null,
       });
     } catch (err) {

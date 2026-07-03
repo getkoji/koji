@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { eq, and, gte, desc } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 export const logs = new Hono<Env>();
 
@@ -63,7 +63,7 @@ logs.get("/:slug/logs", requires("trace:read"), async (c) => {
   }
 
   // Resolve project to verify it exists and belongs to this tenant
-  const [project] = await withRLS(db, tenantId, (tx) =>
+  const [project] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.projects.id })
       .from(schema.projects)
@@ -85,7 +85,7 @@ logs.get("/:slug/logs", requires("trace:read"), async (c) => {
       ? [gte(schema.traces.startedAt, sinceDate)]
       : [];
 
-    const traceRows = await withRLS(db, tenantId, (tx) => {
+    const traceRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
       const base = tx
         .select({
           traceId: schema.traces.traceExternalId,
@@ -131,7 +131,7 @@ logs.get("/:slug/logs", requires("trace:read"), async (c) => {
       auditConditions.push(gte(schema.auditLog.createdAt, sinceDate));
     }
 
-    const auditRows = await withRLS(db, tenantId, (tx) => {
+    const auditRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
       const base = tx
         .select({
           action: schema.auditLog.action,

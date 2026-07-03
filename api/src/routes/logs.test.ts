@@ -181,9 +181,12 @@ vi.mock("@koji/db", async (importOriginal) => {
     ...actual,
     withRLS: async (
       _db: unknown,
-      tenantId: string,
+      scope: string | { tenantId: string; projectId?: string | null },
       fn: (tx: unknown) => Promise<unknown>,
     ) => {
+      // Handlers now pass { tenantId, projectId } scopes; normalize to the
+      // tenantId for bucket lookup + call recording.
+      const tenantId = typeof scope === "string" ? scope : scope.tenantId;
       const seed = tenantData[tenantId] ?? {
         projects: [],
         traces: [],
@@ -248,6 +251,7 @@ function createLogsApp(tenantId: string) {
 
   app.use("*", async (c, next) => {
     c.set("tenantId", tenantId);
+    c.set("projectId", "00000000-0000-4000-8000-00000000aaaa");
     c.set("principal", {
       userId: "u-test",
       email: "test@koji.dev",

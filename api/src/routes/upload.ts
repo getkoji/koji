@@ -3,7 +3,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId } from "../auth/middleware";
 import { normalizeMimeTypeWithWarning } from "../ingestion/process";
 
 export const upload = new Hono<Env>();
@@ -36,7 +36,7 @@ upload.post("/presign", requires("corpus:write"), async (c) => {
     if (!body.schemaSlug) {
       return c.json({ error: "schemaSlug is required for corpus uploads" }, 400);
     }
-    const [s] = await withRLS(db, tenantId, (tx) =>
+    const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ id: schema.schemas.id })
         .from(schema.schemas)
         .where(eq(schema.schemas.slug, body.schemaSlug!))
@@ -85,7 +85,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
   }
 
   // Resolve schema
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, body.schemaSlug))
@@ -103,7 +103,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
   const contentHash = createHash("sha256").update(fileResult.data).digest("hex");
 
   // Check for existing entry with same hash
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select()
       .from(schema.corpusEntries)
       .where(and(
@@ -130,7 +130,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
     );
   }
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
       schemaId: s.id,

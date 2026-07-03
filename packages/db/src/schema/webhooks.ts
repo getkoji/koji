@@ -11,14 +11,15 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { bytea, createdAt, primaryKey, tenantId, updatedAt } from "./_shared";
-import { tenants, users } from "./tenants";
+import { bytea, createdAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { projects, tenants, users } from "./tenants";
 
 export const webhookTargets = pgTable(
   "webhook_targets",
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     url: varchar("url", { length: 2048 }).notNull(),
@@ -35,7 +36,10 @@ export const webhookTargets = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("webhook_targets_tenant_slug_idx").on(t.tenantId, t.slug),
+    projectSlugIdx: uniqueIndex("webhook_targets_project_slug_idx").on(t.projectId, t.slug),
+    projectActiveIdx: index("webhook_targets_project_idx")
+      .on(t.projectId)
+      .where(sql`status = 'active'`),
     tenantActiveIdx: index("webhook_targets_tenant_idx")
       .on(t.tenantId)
       .where(sql`status = 'active'`),

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getRlsScope } from "../auth/middleware";
 import { mimeTypeFor } from "../ingestion/mime";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import type { ModelProvider } from "../extract/providers";
@@ -116,7 +116,7 @@ classify.post("/", requires("job:run"), async (c) => {
   let provider: ModelProvider | undefined;
   if (config.maxTier >= Tier.LLM) {
     try {
-      ({ provider } = await resolveTenantProvider(db, tenantId));
+      ({ provider } = await resolveTenantProvider(db, getRlsScope(c)));
     } catch (err) {
       console.warn(
         "[classify] could not resolve a model provider; LLM/vision tiers unavailable:",

@@ -461,6 +461,26 @@ koji start  →  docker pull ghcr.io/getkoji/parse:latest
 
 The hosted version runs the same services with managed infrastructure. The architecture is identical — the only additions are auth, billing, and persistent multi-tenant storage.
 
+### Tenancy & project isolation
+
+Isolation is enforced in Postgres with row-level security, at two levels:
+
+- **Tenant** — every tenant-scoped table carries a denormalized `tenant_id`
+  and a permissive RLS policy that matches it against a per-transaction
+  setting. A transaction that never names a tenant sees zero rows.
+- **Project** — the boundary *within* a tenant. Directly-listed resources
+  (schemas, pipelines, jobs, sources, classifiers, review items, model/parse
+  endpoints, webhooks, API keys) also carry a `project_id` with a
+  **restrictive** policy: when a request resolves a project (via the
+  `x-koji-project` header, the API key's bound project, or the tenant's
+  default project), rows outside that project are invisible; when no project
+  is set — background workers, org-level queries — access stays tenant-wide.
+
+Every request path reaches the database through `withRLS(db, scope, fn)`,
+which applies both settings with `SET LOCAL` inside a transaction. Child rows
+that are only reachable through a project-checked parent (schema versions,
+documents, traces, corpus entries, …) inherit the boundary transitively.
+
 ## Hosted architecture (Koji Cloud)
 
 Best-of-breed services, each chosen for a specific strength. The hosted platform runs at console.getkoji.dev.

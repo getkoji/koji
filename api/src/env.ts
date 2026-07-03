@@ -22,6 +22,11 @@ export type Env = {
     db: Db;
     principal: Principal;
     tenantId: string;
+    /** Resolved project ID — the intra-tenant isolation boundary. Set by the
+     *  auth middleware from the x-koji-project header, the API key's bound
+     *  project, or the tenant's default project. Undefined only for tenants
+     *  with zero projects (mid-setup). */
+    projectId: string | undefined;
     grants: Set<Permission>;
     roles: string[];
     storage: StorageProvider;
@@ -59,5 +64,7 @@ export type Env = {
     parseConfig: ParseConfig | null;
     /** Tenant ID resolved from an API key (set by auth middleware). */
     apiKeyTenantId: string | undefined;
+    /** Project ID the API key is bound to (set by auth middleware). */
+    apiKeyProjectId: string | undefined;
   };
 };

@@ -129,6 +129,8 @@ async function start() {
 
       // Generic job.failed signal for every other kind so downstream consumers
       // (dashboards, alerting, customer webhooks) see queue-level failures.
+      // Queue jobs have no project linkage, so this fans out tenant-wide —
+      // the payload is queue metadata only (kind + reason), no document data.
       await emitWebhookEvent(job.tenantId, "job.failed", {
         job_id: job.id,
         kind: job.kind,

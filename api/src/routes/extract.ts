@@ -4,7 +4,7 @@ import { eq, and, desc, isNull } from "drizzle-orm";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, getRlsScope } from "../auth/middleware";
 import { resolveExtractEndpoint, pickActiveTenantModel } from "../extract/resolve-endpoint";
 import { createProvider, extractFields, extractKVPairs, kvPairsSummary, toProvenanceTextMap } from "../extract";
 import type { FlatTextMapSegment } from "../extract";
@@ -47,6 +47,7 @@ async function checkPreflightLimits(
   pages: number | null | undefined,
   fileSizeMb?: number,
 ): Promise<string | null> {
+  // Tenant-level read (plan limits) — no project narrowing applies.
   const [tenant] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
@@ -146,9 +147,9 @@ extract.post("/process", requires("job:run"), async (c) => {
   let ep1 = null;
   try {
     const requestedModel = (schemaDef.model as string) ?? null;
-    const found = await pickActiveTenantModel(db, tenantId, requestedModel);
+    const found = await pickActiveTenantModel(db, getRlsScope(c), requestedModel);
     if (found) {
-      ep1 = await resolveExtractEndpoint(db, tenantId, found);
+      ep1 = await resolveExtractEndpoint(db, getRlsScope(c), found);
     }
   } catch (err) {
     console.warn("[process] Failed to resolve model endpoint:", err instanceof Error ? err.message : err);
@@ -204,7 +205,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   }
 
   // Load corpus entry
-  const [entry] = await withRLS(db, tenantId, (tx) =>
+  const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         storageKey: schema.corpusEntries.storageKey,
@@ -238,7 +239,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   // (the build page is schema-scoped, so no pinned override — pin = null).
   const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
-    tenantId,
+    getRlsScope(c),
     {
       parseProviderId: null,
       defaultProvider: c.get("parseProvider"),
@@ -356,8 +357,8 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
       let ep2 = null;
       try {
         const requestedModel2 = body.model ?? null;
-        const found = await pickActiveTenantModel(db, tenantId, requestedModel2);
-        if (found) ep2 = await resolveExtractEndpoint(db, tenantId, found);
+        const found = await pickActiveTenantModel(db, getRlsScope(c), requestedModel2);
+        if (found) ep2 = await resolveExtractEndpoint(db, getRlsScope(c), found);
       } catch {}
       const extractModel = body.model ?? ep2?.model ?? process.env.KOJI_EXTRACT_MODEL ?? "gpt-4o-mini";
       const extractProvider = createProvider(extractModel, ep2);
@@ -473,8 +474,8 @@ async function handleExtractRunJSON(
   // Resolve model endpoint — look up by model name or use the first active one
   let endpointPayload = null;
   try {
-    const found = await pickActiveTenantModel(db, tenantId, model ?? null);
-    if (found) endpointPayload = await resolveExtractEndpoint(db, tenantId, found);
+    const found = await pickActiveTenantModel(db, getRlsScope(c), model ?? null);
+    if (found) endpointPayload = await resolveExtractEndpoint(db, getRlsScope(c), found);
   } catch (err) {
     console.warn("[extract/run] endpoint resolution failed:", err);
   }
@@ -494,7 +495,7 @@ async function handleExtractRunJSON(
     // Persist the run
     const yamlHash = crypto.createHash("sha256").update(schemaYaml).digest("hex");
     try {
-      const [run] = await withRLS(db, tenantId, (tx) =>
+      const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx.insert(schema.extractionRuns).values({
           tenantId,
           schemaId: entry.schemaId,
@@ -569,7 +570,7 @@ extract.get("/extract/runs/:corpusEntryId", requires("job:run"), async (c) => {
   const tenantId = getTenantId(c);
   const corpusEntryId = c.req.param("corpusEntryId")!;
 
-  const [run] = await withRLS(db, tenantId, (tx) =>
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.extractionRuns.id,
       model: schema.extractionRuns.model,
@@ -629,7 +630,7 @@ extract.post("/extract/compare", requires("job:run"), async (c) => {
 
   // Fetch latest extraction run for each entry
   const fetchRun = async (entryId: string) => {
-    const [run] = await withRLS(db, tenantId, (tx) =>
+    const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({
         id: schema.extractionRuns.id,
         extractedJson: schema.extractionRuns.extractedJson,
@@ -647,7 +648,7 @@ extract.post("/extract/compare", requires("job:run"), async (c) => {
 
   // Fetch corpus entry filenames
   const fetchEntry = async (entryId: string) => {
-    const [entry] = await withRLS(db, tenantId, (tx) =>
+    const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename })
         .from(schema.corpusEntries)
         .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))

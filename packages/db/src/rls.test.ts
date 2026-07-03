@@ -26,7 +26,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { createDb, RLS_POLICIES, schema, withRLS, type Db } from "./index";
+import { createDb, PROJECT_RLS_TABLES, RLS_POLICIES, schema, withRLS, type Db } from "./index";
 import { runMigrations } from "./migrate";
 
 let container: StartedPostgreSqlContainer;
@@ -39,6 +39,9 @@ const tenantA = randomUUID();
 const tenantB = randomUUID();
 const userA = randomUUID();
 const userB = randomUUID();
+// Default project per tenant — every project-scoped row needs one now.
+const defaultProjectA = randomUUID();
+const defaultProjectB = randomUUID();
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine")
@@ -90,6 +93,11 @@ beforeAll(async () => {
       (${userA}::uuid, 'a@example.com', 'local', 'local-a'),
       (${userB}::uuid, 'b@example.com', 'local', 'local-b');
   `);
+  await rootDb.execute(sql`
+    INSERT INTO projects (id, tenant_id, slug, display_name, created_by) VALUES
+      (${defaultProjectA}::uuid, ${tenantA}::uuid, 'tenant-a', 'Tenant A default', ${userA}::uuid),
+      (${defaultProjectB}::uuid, ${tenantB}::uuid, 'tenant-b', 'Tenant B default', ${userB}::uuid);
+  `);
 }, 120_000);
 
 afterAll(async () => {
@@ -110,6 +118,7 @@ describe("RLS round-trip", () => {
     await withRLS(db, tenantA, async (tx) => {
       await tx.insert(schema.schemas).values({
         tenantId: tenantA,
+        projectId: defaultProjectA,
         slug: "invoice",
         displayName: "Invoice",
         createdBy: userA,
@@ -119,6 +128,7 @@ describe("RLS round-trip", () => {
     await withRLS(db, tenantB, async (tx) => {
       await tx.insert(schema.schemas).values({
         tenantId: tenantB,
+        projectId: defaultProjectB,
         slug: "invoice",
         displayName: "Invoice (other tenant)",
         createdBy: userB,
@@ -258,40 +268,40 @@ describe("per-table isolation", () => {
 
     // Schemas (already seeded in earlier tests, add new ones with known IDs)
     await rootDb.execute(sql.raw(`
-      INSERT INTO schemas (id, tenant_id, slug, display_name, created_by)
-      VALUES ('${schemaAId}', '${tenantA}', 'iso-test-a', 'ISO Test A', '${userA}'),
-             ('${schemaBId}', '${tenantB}', 'iso-test-b', 'ISO Test B', '${userB}')
+      INSERT INTO schemas (id, tenant_id, project_id, slug, display_name, created_by)
+      VALUES ('${schemaAId}', '${tenantA}', '${projectAId}', 'iso-test-a', 'ISO Test A', '${userA}'),
+             ('${schemaBId}', '${tenantB}', '${projectBId}', 'iso-test-b', 'ISO Test B', '${userB}')
     `));
 
     // Pipelines
     await rootDb.execute(sql.raw(`
-      INSERT INTO pipelines (id, tenant_id, slug, display_name, schema_id, pipeline_type, created_by)
-      VALUES ('${pipelineAId}', '${tenantA}', 'pipe-a', 'Pipeline A', '${schemaAId}', 'extract', '${userA}'),
-             ('${pipelineBId}', '${tenantB}', 'pipe-b', 'Pipeline B', '${schemaBId}', 'extract', '${userB}')
+      INSERT INTO pipelines (id, tenant_id, project_id, slug, display_name, schema_id, pipeline_type, created_by)
+      VALUES ('${pipelineAId}', '${tenantA}', '${projectAId}', 'pipe-a', 'Pipeline A', '${schemaAId}', 'extract', '${userA}'),
+             ('${pipelineBId}', '${tenantB}', '${projectBId}', 'pipe-b', 'Pipeline B', '${schemaBId}', 'extract', '${userB}')
     `));
 
     // Model endpoints
     await rootDb.execute(sql.raw(`
-      INSERT INTO model_endpoints (id, tenant_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
-      VALUES ('${randomUUID()}', '${tenantA}', 'ep-a', 'EP-A', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userA}'),
-             ('${randomUUID()}', '${tenantB}', 'ep-b', 'EP-B', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userB}')
+      INSERT INTO model_endpoints (id, tenant_id, project_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
+      VALUES ('${randomUUID()}', '${tenantA}', '${projectAId}', 'ep-a', 'EP-A', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userA}'),
+             ('${randomUUID()}', '${tenantB}', '${projectBId}', 'ep-b', 'EP-B', 'openai', 'gpt-4o-mini', 'active', '{}', '{}', '${userB}')
     `));
 
     // Parse endpoints (BYO parse, oss-267) — tenant-scoped, holds encrypted
     // parse-vendor credentials, so cross-tenant isolation is critical.
     await rootDb.execute(sql.raw(`
-      INSERT INTO parse_endpoints (id, tenant_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
-      VALUES ('${randomUUID()}', '${tenantA}', 'pe-a', 'PE-A', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-a"}', '{}', '${userA}'),
-             ('${randomUUID()}', '${tenantB}', 'pe-b', 'PE-B', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-b"}', '{}', '${userB}')
+      INSERT INTO parse_endpoints (id, tenant_id, project_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
+      VALUES ('${randomUUID()}', '${tenantA}', '${projectAId}', 'pe-a', 'PE-A', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-a"}', '{}', '${userA}'),
+             ('${randomUUID()}', '${tenantB}', '${projectBId}', 'pe-b', 'PE-B', 'mistral-ocr', 'mistral-ocr-latest', 'active', '{"key_hint":"sk-b"}', '{}', '${userB}')
     `));
 
     // Provider credentials + tenant models (credential→model split, oss-232)
     const credAId = randomUUID();
     const credBId = randomUUID();
     await rootDb.execute(sql.raw(`
-      INSERT INTO provider_credentials (id, tenant_id, slug, display_name, provider, config_json, created_by)
-      VALUES ('${credAId}', '${tenantA}', 'cred-a', 'Cred A', 'openai', '{}', '${userA}'),
-             ('${credBId}', '${tenantB}', 'cred-b', 'Cred B', 'openai', '{}', '${userB}')
+      INSERT INTO provider_credentials (id, tenant_id, project_id, slug, display_name, provider, config_json, created_by)
+      VALUES ('${credAId}', '${tenantA}', '${projectAId}', 'cred-a', 'Cred A', 'openai', '{}', '${userA}'),
+             ('${credBId}', '${tenantB}', '${projectBId}', 'cred-b', 'Cred B', 'openai', '{}', '${userB}')
     `));
     await rootDb.execute(sql.raw(`
       INSERT INTO tenant_models (id, tenant_id, credential_id, model, capability)
@@ -301,18 +311,18 @@ describe("per-table isolation", () => {
 
     // Jobs
     await rootDb.execute(sql.raw(`
-      INSERT INTO jobs (id, tenant_id, slug, pipeline_id, status, trigger_type)
-      VALUES ('${jobAId}', '${tenantA}', 'job-a', '${pipelineAId}', 'completed', 'api'),
-             ('${jobBId}', '${tenantB}', 'job-b', '${pipelineBId}', 'completed', 'api')
+      INSERT INTO jobs (id, tenant_id, project_id, slug, pipeline_id, status, trigger_type)
+      VALUES ('${jobAId}', '${tenantA}', '${projectAId}', 'job-a', '${pipelineAId}', 'completed', 'api'),
+             ('${jobBId}', '${tenantB}', '${projectBId}', 'job-b', '${pipelineBId}', 'completed', 'api')
     `));
 
     // Classifiers (schema-sibling artifact) + a version each. Isolation of a
     // tenant's classifier configs is as critical as its schemas — the config is
     // proprietary IP and drives what documents get routed where.
     await rootDb.execute(sql.raw(`
-      INSERT INTO classifiers (id, tenant_id, slug, display_name, created_by)
-      VALUES ('${classifierAId}', '${tenantA}', 'clf-a', 'Classifier A', '${userA}'),
-             ('${classifierBId}', '${tenantB}', 'clf-b', 'Classifier B', '${userB}')
+      INSERT INTO classifiers (id, tenant_id, project_id, slug, display_name, created_by)
+      VALUES ('${classifierAId}', '${tenantA}', '${projectAId}', 'clf-a', 'Classifier A', '${userA}'),
+             ('${classifierBId}', '${tenantB}', '${projectBId}', 'clf-b', 'Classifier B', '${userB}')
     `));
     await rootDb.execute(sql.raw(`
       INSERT INTO classifier_versions
@@ -387,6 +397,88 @@ describe("per-table isolation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Project isolation (intra-tenant boundary)
+// ---------------------------------------------------------------------------
+
+describe("project isolation", () => {
+  // By this point tenant A has two projects with one schema each:
+  //   defaultProjectA → 'invoice' (round-trip test)
+  //   the per-table describe's 'proj-a' → 'iso-test-a'
+
+  test("project-scoped withRLS sees only that project's rows", async () => {
+    const seen = await withRLS(
+      db,
+      { tenantId: tenantA, projectId: defaultProjectA },
+      (tx) => tx.execute(sql`SELECT slug FROM schemas`),
+    );
+    expect(seen.map((r: any) => r.slug)).toEqual(["invoice"]);
+  });
+
+  test("tenant-wide withRLS (no projectId) sees all of the tenant's projects", async () => {
+    const seen = await withRLS(db, tenantA, (tx) =>
+      tx.execute(sql`SELECT slug FROM schemas ORDER BY slug`),
+    );
+    expect(seen.map((r: any) => r.slug)).toEqual(["invoice", "iso-test-a"]);
+  });
+
+  test("project policy is RESTRICTIVE — another tenant's project id yields zero rows, never a leak", async () => {
+    // Scope to tenant A but name tenant B's project: the tenant policy
+    // (permissive) already excludes B's rows and the project policy
+    // (restrictive) excludes A's rows — the intersection must be empty.
+    const seen = await withRLS(
+      db,
+      { tenantId: tenantA, projectId: defaultProjectB },
+      (tx) => tx.execute(sql`SELECT slug FROM schemas`),
+    );
+    expect(seen.length).toBe(0);
+  });
+
+  test("WITH CHECK blocks inserting a row into a different project than the scope", async () => {
+    // postgres-js wraps the RLS violation in a generic "Failed query" error,
+    // so assert on the outcome: the insert throws AND the row never lands.
+    await expect(
+      withRLS(db, { tenantId: tenantA, projectId: defaultProjectA }, async (tx) => {
+        await tx.execute(sql`
+          INSERT INTO schemas (tenant_id, project_id, slug, display_name, created_by)
+          VALUES (${tenantA}::uuid, (SELECT id FROM projects WHERE slug = 'proj-a'), 'sneaky', 'Sneaky', ${userA}::uuid)
+        `);
+      }),
+    ).rejects.toThrow();
+    const rows = await rootDb.execute(sql`SELECT id FROM schemas WHERE slug = 'sneaky'`);
+    expect(rows.length).toBe(0);
+  });
+
+  test("SET LOCAL ROLE path (production Neon pattern) also enforces project scope", async () => {
+    const seen = await withRLS(
+      ownerDb,
+      { tenantId: tenantA, projectId: defaultProjectA },
+      (tx) => tx.execute(sql`SELECT slug FROM schemas`),
+    );
+    expect(seen.map((r: any) => r.slug)).toEqual(["invoice"]);
+  });
+
+  test("withRLS rejects non-UUID project ids", async () => {
+    await expect(
+      withRLS(db, { tenantId: tenantA, projectId: "'; DROP TABLE schemas; --" }, async () => 1),
+    ).rejects.toThrow(/non-UUID/);
+  });
+
+  test("jobs and review-queue tables are project-scoped too", async () => {
+    // jobs: 'job-a' lives in per-table proj-a, so the default project sees none
+    const jobsInDefault = await withRLS(
+      db,
+      { tenantId: tenantA, projectId: defaultProjectA },
+      (tx) => tx.execute(sql`SELECT slug FROM jobs`),
+    );
+    expect(jobsInDefault.length).toBe(0);
+    const jobsTenantWide = await withRLS(db, tenantA, (tx) =>
+      tx.execute(sql`SELECT slug FROM jobs`),
+    );
+    expect(jobsTenantWide.map((r: any) => r.slug)).toEqual(["job-a"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Meta-tests: structural guarantees
 // ---------------------------------------------------------------------------
 
@@ -437,6 +529,36 @@ describe("structural RLS guarantees", () => {
 
     expect(missing).toEqual([]);
   });
+
+  test("every table with a project_id column has a RESTRICTIVE project policy, and vice versa", async () => {
+    const tablesWithProjectId = await rootDb.execute<{ table_name: string }>(sql`
+      SELECT DISTINCT table_name
+      FROM information_schema.columns
+      WHERE column_name = 'project_id'
+        AND table_schema = 'public'
+        AND table_name NOT LIKE 'drizzle%'
+    `);
+
+    const projectPolicies = await rootDb.execute<{ tablename: string; permissive: string }>(sql`
+      SELECT tablename, permissive FROM pg_policies
+      WHERE schemaname = 'public' AND policyname LIKE '%_project_isolation'
+    `);
+    const covered = new Set(projectPolicies.map((r) => r.tablename));
+
+    // Every project policy must be RESTRICTIVE — a PERMISSIVE one would OR
+    // with the tenant policy and silently disable tenant isolation.
+    for (const p of projectPolicies) {
+      expect(p.permissive).toBe("RESTRICTIVE");
+    }
+
+    const missingPolicy = tablesWithProjectId
+      .map((r) => r.table_name)
+      .filter((t) => t !== "projects" && !covered.has(t));
+    expect(missingPolicy).toEqual([]);
+
+    // Lock-step with the exported list.
+    expect(new Set(PROJECT_RLS_TABLES)).toEqual(covered);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -449,15 +571,17 @@ describe("structural RLS guarantees", () => {
 
 describe("credential→model backfill", () => {
   // Mirrors the two INSERT...SELECT statements in
-  // packages/db/drizzle/0020_credential_model_backfill_rls.sql.
+  // packages/db/drizzle/0020_credential_model_backfill_rls.sql, adapted for
+  // the post-0029 shape (project_id is carried through — the 0020 migration
+  // itself only ever runs before 0029 adds the column).
   async function runBackfill(endpointId: string) {
     await rootDb.execute(sql.raw(`
       INSERT INTO provider_credentials (
-        id, tenant_id, slug, display_name, provider, config_json, auth_json, status,
+        id, tenant_id, project_id, slug, display_name, provider, config_json, auth_json, status,
         last_health_check_at, consecutive_failures, last_success_at, last_failure_at,
         last_failure_reason, health_state, created_by, created_at, updated_at, deleted_at
       )
-      SELECT md5('cred:' || id::text)::uuid, tenant_id, slug, display_name, provider, config_json, auth_json, status,
+      SELECT md5('cred:' || id::text)::uuid, tenant_id, project_id, slug, display_name, provider, config_json, auth_json, status,
         last_health_check_at, consecutive_failures, last_success_at, last_failure_at,
         last_failure_reason, health_state, created_by, created_at, updated_at, deleted_at
       FROM model_endpoints WHERE id = '${endpointId}'
@@ -478,8 +602,8 @@ describe("credential→model backfill", () => {
   test("an endpoint backfills to a credential + a reused-id model, idempotently", async () => {
     const endpointId = randomUUID();
     await rootDb.execute(sql.raw(`
-      INSERT INTO model_endpoints (id, tenant_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
-      VALUES ('${endpointId}', '${tenantA}', 'bf-ep', 'Backfill EP', 'mistral', 'pixtral-large', 'active',
+      INSERT INTO model_endpoints (id, tenant_id, project_id, slug, display_name, provider, model, status, auth_json, config_json, created_by)
+      VALUES ('${endpointId}', '${tenantA}', '${defaultProjectA}', 'bf-ep', 'Backfill EP', 'mistral', 'pixtral-large', 'active',
               '{"key_hint":"sk-xyz"}', '{"base_url":"https://api.mistral.ai/v1"}', '${userA}')
     `));
 

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 /**
  * Routes for the credential→model split. Exposes the credentials a tenant
@@ -36,7 +36,7 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const credRows = await withRLS(db, tenantId, (tx) =>
+  const credRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.providerCredentials.id,
@@ -54,7 +54,7 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
       .where(sql`${schema.providerCredentials.deletedAt} IS NULL`),
   );
 
-  const modelRows = await withRLS(db, tenantId, (tx) =>
+  const modelRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.tenantModels.id,
@@ -155,7 +155,7 @@ credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) 
   }
 
   // Confirm the credential exists for this tenant before inserting.
-  const [cred] = await withRLS(db, tenantId, (tx) =>
+  const [cred] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.providerCredentials.id })
       .from(schema.providerCredentials)
@@ -172,7 +172,7 @@ credentials.post("/:credentialId/models", requires("endpoint:write"), async (c) 
   const modelName = body.model.trim();
   const label = body.label?.trim() || modelName;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.tenantModels)
       .values(
@@ -234,7 +234,7 @@ credentials.patch("/:credentialId/models/:modelId", requires("endpoint:write"), 
     updates.status = body.status;
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.tenantModels)
       .set(updates)
@@ -270,7 +270,7 @@ credentials.delete("/:credentialId/models/:modelId", requires("endpoint:write"),
   const modelId = c.req.param("modelId")!;
   const now = new Date();
 
-  const result = await withRLS(db, tenantId, async (tx) => {
+  const result = await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     const rows = await tx
       .update(schema.tenantModels)
       .set({ deletedAt: now })

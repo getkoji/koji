@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import { withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 export const overview = new Hono<Env>();
 
@@ -17,7 +17,7 @@ overview.get("/", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const [result] = await withRLS(db, tenantId, (tx) =>
+  const [result] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.execute(sql`
       WITH
         metrics AS (
@@ -227,7 +227,7 @@ overview.get("/", requires("schema:read"), async (c) => {
   if (d.latestValidate?.regressions_count > 0) {
     // Look up schema slug for the validate run
     const validateSchemaId = d.latestValidate.schema_id;
-    const [slugRow] = await withRLS(db, tenantId, (tx) =>
+    const [slugRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.execute(sql`SELECT slug FROM schemas WHERE id = ${validateSchemaId} LIMIT 1`),
     );
     if (slugRow) {

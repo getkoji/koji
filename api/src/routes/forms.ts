@@ -19,6 +19,7 @@ import { resolveParse } from "../ingestion/seam";
 const { formMappings, schemas: schemasTable } = schema;
 
 function getTenantId(c: any): string { return c.get("tenantId"); }
+function getProjectId(c: any): string | null { return c.get("projectId") ?? null; }
 function getPrincipal(c: any): { userId: string } { return c.get("principal"); }
 function requires(perm: string) {
   return async (c: any, next: any) => {
@@ -28,16 +29,20 @@ function requires(perm: string) {
   };
 }
 
-async function withRLS<T>(db: any, tenantId: string, fn: (tx: any) => Promise<T>): Promise<T> {
+async function withRLS<T>(
+  db: any,
+  scope: string | { tenantId: string; projectId?: string | null },
+  fn: (tx: any) => Promise<T>,
+): Promise<T> {
   const { withRLS: rls } = await import("@koji/db");
-  return rls(db, tenantId, fn);
+  return rls(db, scope, fn);
 }
 
 /** Resolve schema ID from the ?schema= query param. Required on all endpoints. */
 async function resolveSchemaId(c: any, db: any, tenantId: string): Promise<string | null> {
   const schemaSlug = c.req.query("schema");
   if (!schemaSlug) return null;
-  const [s] = await withRLS(db, tenantId, (tx: any) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx: any) =>
     tx.select({ id: schemasTable.id })
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
@@ -60,7 +65,7 @@ forms.get("/", requires("schema:read"), async (c) => {
     return c.json({ error: "schema query param is required" }, 400);
   }
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schemasTable.id })
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
@@ -68,7 +73,7 @@ forms.get("/", requires("schema:read"), async (c) => {
   ) as any[];
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: formMappings.id,
       slug: formMappings.slug,
@@ -119,7 +124,7 @@ forms.post("/", requires("schema:write"), async (c) => {
     return c.json({ error: "schema_slug, display_name, and slug are required" }, 400);
   }
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schemasTable.id })
       .from(schemasTable)
       .where(eq(schemasTable.slug, schemaSlug))
@@ -139,7 +144,7 @@ forms.post("/", requires("schema:write"), async (c) => {
     // TODO: extract page count from PDF
   }
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(formMappings).values({
       tenantId,
       schemaId: s.id,
@@ -170,7 +175,7 @@ forms.get("/:slug", requires("schema:read"), async (c) => {
   ];
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select()
       .from(formMappings)
       .where(and(...conditions))
@@ -210,7 +215,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
   const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
-  const [current] = await withRLS(db, tenantId, (tx) =>
+  const [current] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: formMappings.id,
       version: formMappings.version,
@@ -235,7 +240,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
       // the global-default c.get("parseProvider") here was the oss-308 bug on
       // this surface — a tenant on Doc AI would fingerprint against docling
       // (oss-310 step 7). Gate on `.parse` (all we need), not extractCoordinates.
-      const { provider: parseProvider } = await resolveParse(db, tenantId, {
+      const { provider: parseProvider } = await resolveParse(db, { tenantId, projectId: getProjectId(c) }, {
         parseProviderId: null,
         defaultProvider: (c as any).get("parseProvider"),
         parseConfig: c.get("parseConfig"),
@@ -259,7 +264,7 @@ forms.patch("/:slug", requires("schema:write"), async (c) => {
     }
   }
 
-  const [updated] = await withRLS(db, tenantId, (tx) =>
+  const [updated] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(formMappings)
       .set(updates)
       .where(eq(formMappings.id, current.id))
@@ -281,7 +286,7 @@ forms.delete("/:slug", requires("schema:write"), async (c) => {
   const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId)];
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.delete(formMappings).where(and(...conditions)),
   );
 
@@ -301,7 +306,7 @@ forms.get("/:slug/sample-url", requires("schema:read"), async (c) => {
   const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ sampleStorageKey: formMappings.sampleStorageKey })
       .from(formMappings)
       .where(and(...conditions))
@@ -329,7 +334,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
   const conditions: any[] = [eq(formMappings.slug, slug), eq(formMappings.tenantId, tenantId), isNull(formMappings.deletedAt)];
   if (schemaId) conditions.push(eq(formMappings.schemaId, schemaId));
 
-  const [form] = await withRLS(db, tenantId, (tx) =>
+  const [form] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ mappingsJson: formMappings.mappingsJson })
       .from(formMappings)
       .where(and(...conditions))
@@ -368,7 +373,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
   let schemaYaml: string | null = null;
   if (schemaId) {
     // Try latest committed version first
-    const [ver] = await withRLS(db, tenantId, (tx) =>
+    const [ver] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ yamlSource: schema.schemaVersions.yamlSource })
         .from(schema.schemaVersions)
         .where(eq(schema.schemaVersions.schemaId, schemaId))
@@ -379,7 +384,7 @@ forms.post("/:slug/test", requires("schema:read"), async (c) => {
       schemaYaml = ver.yamlSource;
     } else {
       // Fall back to draft
-      const [s] = await withRLS(db, tenantId, (tx) =>
+      const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx.select({ draftYaml: schemasTable.draftYaml })
           .from(schemasTable)
           .where(eq(schemasTable.id, schemaId))

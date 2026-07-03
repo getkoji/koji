@@ -3,7 +3,7 @@ import { eq, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId, getRlsScope } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { compileSchema } from "../schemas/compiler";
 import { extractFieldMetas } from "../schemas/field-meta";
@@ -48,7 +48,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.schemas.id,
       slug: schema.schemas.slug,
@@ -62,7 +62,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
   const enriched = [];
   for (const row of rows) {
     let latestVersion: number | null = null;
-    const [sv] = await withRLS(db, tenantId, (tx) =>
+    const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ versionNumber: schema.schemaVersions.versionNumber })
         .from(schema.schemaVersions)
         .where(eq(schema.schemaVersions.schemaId, row.id))
@@ -71,7 +71,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
     );
     if (sv) latestVersion = sv.versionNumber;
 
-    const [cc] = await withRLS(db, tenantId, (tx) =>
+    const [cc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` })
         .from(schema.corpusEntries)
         .where(and(eq(schema.corpusEntries.schemaId, row.id), isNull(schema.corpusEntries.deletedAt)))
@@ -89,13 +89,13 @@ schemas.get("/:slug", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select().from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
   let latestVersion: { versionNumber: number; yamlSource: string; commitMessage: string | null; createdAt: Date } | null = null;
-  const [sv] = await withRLS(db, tenantId, (tx) =>
+  const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       versionNumber: schema.schemaVersions.versionNumber,
       yamlSource: schema.schemaVersions.yamlSource,
@@ -126,7 +126,7 @@ schemas.get("/:slug/fields", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
@@ -134,7 +134,7 @@ schemas.get("/:slug/fields", requires("schema:read"), async (c) => {
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const [sv] = await withRLS(db, tenantId, (tx) =>
+  const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ yamlSource: schema.schemaVersions.yamlSource })
       .from(schema.schemaVersions)
       .where(eq(schema.schemaVersions.schemaId, s.id))
@@ -155,6 +155,8 @@ schemas.post(
   requireQuantityGate("max_schemas", async (c) => {
     const db = c.get("db");
     const tenantId = getTenantId(c);
+    // Plan quantity limits are per-TENANT — count tenant-wide, not per-project,
+    // or each new project would multiply the quota.
     const [row] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` }).from(schema.schemas).where(sql`deleted_at IS NULL`),
     );
@@ -183,9 +185,10 @@ schemas.post(
 
   const yamlHash = createHash("sha256").update(yamlSource).digest("hex");
 
-  const [newSchema] = await withRLS(db, tenantId, (tx) =>
+  const [newSchema] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.schemas).values({
       tenantId,
+      projectId: requireProjectId(c),
       slug: body.slug,
       displayName: body.display_name,
       description: body.description ?? null,
@@ -194,7 +197,7 @@ schemas.post(
     }).returning()
   );
 
-  const [v1] = await withRLS(db, tenantId, (tx) =>
+  const [v1] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.schemaVersions).values({
       tenantId,
       schemaId: newSchema!.id,
@@ -207,7 +210,7 @@ schemas.post(
     }).returning()
   );
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.schemas)
       .set({ currentVersionId: v1!.id })
       .where(eq(schema.schemas.id, newSchema!.id))
@@ -227,7 +230,7 @@ schemas.patch("/:slug", requires("schema:write"), async (c) => {
   if (body.description !== undefined) updates.description = body.description;
   if (body.draft_yaml !== undefined) { updates.draftYaml = body.draft_yaml; updates.draftUpdatedAt = new Date(); }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.schemas).set(updates).where(eq(schema.schemas.slug, slug)).returning()
   );
   if (rows.length === 0) return c.json({ error: "Schema not found" }, 404);
@@ -239,7 +242,7 @@ schemas.delete("/:slug", requires("schema:write"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.schemas).set({ deletedAt: new Date() }).where(eq(schema.schemas.slug, slug))
   );
   return c.body(null, 204);
@@ -252,13 +255,13 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
       .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.schemaVersions.id,
       versionNumber: schema.schemaVersions.versionNumber,
@@ -279,7 +282,7 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
   // validate accuracy — drives both the Build version list and `koji schema versions`.
   const data = [];
   for (const v of rows) {
-    const [run] = await withRLS(db, tenantId, (tx) =>
+    const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ accuracy: schema.schemaRuns.accuracy, regressionsCount: schema.schemaRuns.regressionsCount })
         .from(schema.schemaRuns)
         .where(and(eq(schema.schemaRuns.schemaVersionId, v.id), eq(schema.schemaRuns.status, "completed")))
@@ -304,12 +307,12 @@ schemas.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   const slug = c.req.param("slug")!;
   const versionNum = parseInt(c.req.param("v")!, 10);
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const [version] = await withRLS(db, tenantId, (tx) =>
+  const [version] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select().from(schema.schemaVersions)
       .where(sql`${schema.schemaVersions.schemaId} = ${s.id} AND ${schema.schemaVersions.versionNumber} = ${versionNum}`)
       .limit(1)
@@ -332,7 +335,7 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
     return c.json({ error: "Schema validation failed", details: result.errors }, 422);
   }
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
@@ -381,14 +384,14 @@ schemas.post("/:slug/promote", requires("schema:deploy"), async (c) => {
     .json<{ versionId?: string; requireNoRegressions?: boolean }>()
     .catch(() => ({}) as { versionId?: string; requireNoRegressions?: boolean });
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
   let versionId = body.versionId;
   if (!versionId) {
-    const [latestRc] = await withRLS(db, tenantId, (tx) =>
+    const [latestRc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ id: schema.schemaVersions.id })
         .from(schema.schemaVersions)
         .where(and(eq(schema.schemaVersions.schemaId, s.id), isNotNull(schema.schemaVersions.prerelease)))
@@ -400,7 +403,7 @@ schemas.post("/:slug/promote", requires("schema:deploy"), async (c) => {
   }
 
   if (body.requireNoRegressions) {
-    const [run] = await withRLS(db, tenantId, (tx) =>
+    const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ regressionsCount: schema.schemaRuns.regressionsCount })
         .from(schema.schemaRuns)
         .where(and(eq(schema.schemaRuns.schemaVersionId, versionId!), eq(schema.schemaRuns.status, "completed")))
@@ -434,7 +437,7 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
   const principal = getPrincipal(c);
   const body = await c.req.json<{ yaml?: string }>().catch(() => ({}) as { yaml?: string });
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
       .from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
@@ -468,12 +471,12 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
       filename: schema.corpusEntries.filename,
@@ -509,7 +512,7 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
@@ -539,7 +542,7 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
   });
 
   // Check if this file already exists in the corpus for this schema
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select()
       .from(schema.corpusEntries)
       .where(and(
@@ -557,7 +560,7 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
     return c.json(existing, 200);
   }
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
       schemaId: s.id,
@@ -585,7 +588,7 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
   const storage = c.get("storage");
   const entryId = c.req.param("entryId")!;
 
-  const [entry] = await withRLS(db, tenantId, (tx) =>
+  const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ storageKey: schema.corpusEntries.storageKey })
       .from(schema.corpusEntries)
       .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
@@ -610,7 +613,7 @@ schemas.patch("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.tags !== undefined) updates.tags = body.tags;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.corpusEntries).set(updates)
       .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
       .returning()
@@ -632,12 +635,12 @@ schemas.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => 
   const slug = c.req.param("slug")!;
   const entryId = c.req.param("entryId")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.corpusEntries)
       .set({ deletedAt: new Date(), updatedAt: new Date() })
       .where(and(
@@ -660,13 +663,13 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [s] = await withRLS(db, tenantId, (tx) =>
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
   // Get all runs for this schema ordered by version
-  const runs = await withRLS(db, tenantId, (tx) =>
+  const runs = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.schemaRuns.id,
       schemaVersionId: schema.schemaRuns.schemaVersionId,
@@ -693,7 +696,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   // filename. Powers the failed-run detail on the Performance page so a doc
   // dropped before scoring stays diagnosable after the HTTP response is gone.
   const runIds = runs.map((r) => r.id);
-  const failureRows = runIds.length === 0 ? [] : await withRLS(db, tenantId, (tx) =>
+  const failureRows = runIds.length === 0 ? [] : await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       schemaRunId: schema.schemaRunDocs.schemaRunId,
       entryId: schema.schemaRunDocs.corpusEntryId,
@@ -722,7 +725,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
     let version: string | null = null;
     let released: boolean | null = null;
     if (run.schemaVersionId) {
-      const [sv] = await withRLS(db, tenantId, (tx) =>
+      const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx.select({
           versionNumber: schema.schemaVersions.versionNumber,
           major: schema.schemaVersions.major,
@@ -745,7 +748,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   const perRunFieldAccuracy: Array<{ runId: string; fields: Record<string, number> }> = [];
 
   // Get all corpus entries with ground truth for this schema
-  const corpusRows = await withRLS(db, tenantId, (tx) =>
+  const corpusRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.corpusEntries.id, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries)
       .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
@@ -759,7 +762,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
 
   for (const run of enrichedRuns) {
     // Get extraction_runs linked to this schema_run
-    const exRuns = await withRLS(db, tenantId, (tx) =>
+    const exRuns = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({
         corpusEntryId: schema.extractionRuns.corpusEntryId,
         extractedJson: schema.extractionRuns.extractedJson,
@@ -793,7 +796,7 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
   }
 
   // Corpus count
-  const [corpusCount] = await withRLS(db, tenantId, (tx) =>
+  const [corpusCount] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ count: sql<number>`count(*)::int` })
       .from(schema.corpusEntries)
       .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
@@ -820,7 +823,7 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   if (!body.values) return c.json({ error: "values is required" }, 400);
 
   // Get the latest GT to set supersedes_id
-  const [latest] = await withRLS(db, tenantId, (tx) =>
+  const [latest] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.corpusEntryGroundTruth.id })
       .from(schema.corpusEntryGroundTruth)
       .where(eq(schema.corpusEntryGroundTruth.corpusEntryId, entryId))
@@ -828,7 +831,7 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
       .limit(1)
   );
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.corpusEntryGroundTruth).values({
       tenantId,
       corpusEntryId: entryId,
@@ -840,7 +843,7 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   );
 
   // Also update the corpus entry's ground_truth_json for quick access
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.corpusEntries)
       .set({ groundTruthJson: body.values, updatedAt: new Date() })
       .where(eq(schema.corpusEntries.id, entryId))
@@ -857,7 +860,7 @@ schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), asyn
   const tenantId = getTenantId(c);
   const entryId = c.req.param("entryId")!;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.corpusEntryGroundTruth.id,
       payloadJson: schema.corpusEntryGroundTruth.payloadJson,
@@ -892,7 +895,7 @@ schemas.post(
     const gtId = c.req.param("gtId")!;
     const principal = getPrincipal(c);
 
-    const [gt] = await withRLS(db, tenantId, (tx) =>
+    const [gt] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .select({
           id: schema.corpusEntryGroundTruth.id,
@@ -910,7 +913,7 @@ schemas.post(
     );
     if (!gt) return c.json({ error: "Ground-truth version not found" }, 404);
 
-    const [updated] = await withRLS(db, tenantId, (tx) =>
+    const [updated] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.corpusEntryGroundTruth)
         .set({
@@ -924,7 +927,7 @@ schemas.post(
     );
 
     // Promote into the denormalized copy that `validate` scores.
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.corpusEntries)
         .set({ groundTruthJson: gt.payloadJson, updatedAt: new Date() })
@@ -958,7 +961,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 
   const principal = getPrincipal(c);
 
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.schemas.id,
       draftYaml: schema.schemas.draftYaml,
@@ -971,7 +974,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
 
   // Ground truth gates the whole run — check before snapshotting a candidate so
   // a contentless validate (empty corpus) doesn't litter the version history.
-  const entries = await withRLS(db, tenantId, (tx) =>
+  const entries = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
       filename: schema.corpusEntries.filename,
@@ -1026,7 +1029,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     bump = snap.bump;
     deduped = snap.deduped;
   } else {
-    const [latestVersion] = await withRLS(db, tenantId, (tx) =>
+    const [latestVersion] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({
         id: schema.schemaVersions.id,
         versionNumber: schema.schemaVersions.versionNumber,
@@ -1063,7 +1066,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const isAsync = body.async === true;
 
   // Create the schema_run record (ties to the candidate or the latest version).
-  const [schemaRun] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRun] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.insert(schema.schemaRuns).values({
       tenantId,
       schemaId: schemaRow.id,
@@ -1111,7 +1114,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   // parallelism. Kept so clients that don't pass `async` (older CLIs, direct
   // API callers) still get the full result in one response.
   const storage = c.get("storage");
-  const { provider, model: extractModel } = await resolveTenantProvider(db, tenantId, {
+  const { provider, model: extractModel } = await resolveTenantProvider(db, getRlsScope(c), {
     preferModel: body.model ?? null,
   });
 
@@ -1123,7 +1126,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   // (oss-310).
   const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
-    tenantId,
+    getRlsScope(c),
     {
       parseProviderId: null,
       defaultProvider: c.get("parseProvider"),
@@ -1180,12 +1183,12 @@ schemas.get("/:slug/validate/runs/:runId", requires("job:run"), async (c) => {
   const slug = c.req.param("slug")!;
   const runId = c.req.param("runId")!;
 
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
-  const [run] = await withRLS(db, tenantId, (tx) =>
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.schemaRuns.id,
       schemaId: schema.schemaRuns.schemaId,
@@ -1197,7 +1200,7 @@ schemas.get("/:slug/validate/runs/:runId", requires("job:run"), async (c) => {
   );
   if (!run || run.schemaId !== schemaRow.id) return c.json({ error: "Run not found" }, 404);
 
-  const [progress] = await withRLS(db, tenantId, (tx) =>
+  const [progress] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ count: sql<number>`count(*)::int` })
       .from(schema.schemaRunDocs)
       .where(eq(schema.schemaRunDocs.schemaRunId, run.id))
@@ -1229,12 +1232,12 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   const slug = c.req.param("slug")!;
   const startTime = Date.now();
 
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
-  const [latestVersion] = await withRLS(db, tenantId, (tx) =>
+  const [latestVersion] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ versionNumber: schema.schemaVersions.versionNumber, yamlSource: schema.schemaVersions.yamlSource })
       .from(schema.schemaVersions).where(eq(schema.schemaVersions.schemaId, schemaRow.id))
       .orderBy(desc(schema.schemaVersions.versionNumber)).limit(1)
@@ -1254,7 +1257,7 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
     }
   }
 
-  const entries = await withRLS(db, tenantId, (tx) =>
+  const entries = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
       .from(schema.corpusEntries).where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
@@ -1269,7 +1272,7 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   const prevExtractedMap = new Map<string, Record<string, unknown>>();
 
   for (const entry of entriesWithGT) {
-    const runs = await withRLS(db, tenantId, (tx) =>
+    const runs = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ extractedJson: schema.extractionRuns.extractedJson, confidenceScoresJson: schema.extractionRuns.confidenceScoresJson })
         .from(schema.extractionRuns).where(eq(schema.extractionRuns.corpusEntryId, entry.id))
         .orderBy(desc(schema.extractionRuns.createdAt)).limit(2)

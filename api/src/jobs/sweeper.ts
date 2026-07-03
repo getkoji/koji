@@ -77,10 +77,11 @@ export async function sweepStuckJobs(
         started_at < ${hardCutoff}
         OR (started_at < ${noProgressCutoff} AND docs_processed = 0)
       )
-    RETURNING id, tenant_id, slug, started_at, docs_processed, docs_total
+    RETURNING id, tenant_id, project_id, slug, started_at, docs_processed, docs_total
   `)) as unknown as Array<{
     id: string;
     tenant_id: string;
+    project_id: string;
     slug: string;
     started_at: Date;
     docs_processed: number;
@@ -97,7 +98,7 @@ export async function sweepStuckJobs(
         : `Job exceeded max running time (${Math.round(ageMs / 60_000)}m, ${row.docs_processed} of ${row.docs_total} docs processed)`;
 
     try {
-      await emitWebhookEvent(row.tenant_id, "job.failed", {
+      await emitWebhookEvent({ tenantId: row.tenant_id, projectId: row.project_id }, "job.failed", {
         job_id: row.id,
         slug: row.slug,
         reason,

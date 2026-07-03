@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
@@ -19,7 +19,7 @@ export const cliAuth = new Hono<Env>();
 cliAuth.post("/authorize", async (c) => {
   const db = c.get("db");
   const principal = getPrincipal(c);
-  const body = await c.req.json<{ tenant_id: string }>();
+  const body = await c.req.json<{ tenant_id: string; project_slug?: string }>();
 
   if (!body.tenant_id) {
     return c.json({ error: "tenant_id is required" }, 400);
@@ -41,6 +41,29 @@ cliAuth.post("/authorize", async (c) => {
     return c.json({ error: "You are not a member of this workspace" }, 403);
   }
 
+  // Resolve the project the key is bound to: explicit slug from the
+  // authorize page, else the tenant's default project.
+  const [project] = await db
+    .select({ id: schema.projects.id })
+    .from(schema.projects)
+    .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
+    .where(
+      and(
+        eq(schema.projects.tenantId, body.tenant_id),
+        isNull(schema.projects.deletedAt),
+        ...(body.project_slug ? [eq(schema.projects.slug, body.project_slug)] : []),
+      ),
+    )
+    .orderBy(
+      sql`(${schema.projects.slug} = ${schema.tenants.slug}) DESC`,
+      schema.projects.createdAt,
+    )
+    .limit(1);
+
+  if (!project) {
+    return c.json({ error: body.project_slug ? "Project not found" : "Workspace has no projects" }, 404);
+  }
+
   // Generate the key
   const rawKey = `koji_${randomBytes(32).toString("hex")}`;
   const prefix = rawKey.slice(0, 8) + "..." + rawKey.slice(-4); // fits varchar(16)
@@ -51,6 +74,7 @@ cliAuth.post("/authorize", async (c) => {
 
   await db.insert(schema.apiKeys).values({
     tenantId: body.tenant_id,
+    projectId: project.id,
     name: keyName,
     keyPrefix: prefix,
     keyHash,

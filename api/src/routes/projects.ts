@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { eq, sql } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId } from "../auth/middleware";
 
 export const projects = new Hono<Env>();
 
@@ -10,7 +10,7 @@ projects.get("/", requires("tenant:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.projects.id,
@@ -30,7 +30,7 @@ projects.get("/:slug", requires("tenant:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select()
       .from(schema.projects)
@@ -138,7 +138,7 @@ projects.post("/", requires("tenant:admin"), async (c) => {
     return c.json({ error: "Display name is required" }, 400);
   }
 
-  const existing = await withRLS(db, tenantId, (tx) =>
+  const existing = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.projects.id })
       .from(schema.projects)
@@ -149,7 +149,7 @@ projects.post("/", requires("tenant:admin"), async (c) => {
     return c.json({ error: `Project "${body.slug}" already exists` }, 409);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.projects)
       .values({
@@ -174,7 +174,7 @@ projects.patch("/:slug", requires("tenant:admin"), async (c) => {
   if (body.display_name) updates.displayName = body.display_name;
   if (body.description !== undefined) updates.description = body.description;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.projects)
       .set(updates)
@@ -192,7 +192,19 @@ projects.delete("/:slug", requires("tenant:admin"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  // A tenant must always keep at least one live project — resources can only
+  // be created inside a project, and API keys/nav resolve against one.
+  const live = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.projects.id, slug: schema.projects.slug })
+      .from(schema.projects)
+      .where(isNull(schema.projects.deletedAt)),
+  );
+  if (live.length === 1 && live[0]!.slug === slug) {
+    return c.json({ error: "Cannot delete the last project in a workspace" }, 400);
+  }
+
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.projects)
       .set({ deletedAt: new Date() })

@@ -13,8 +13,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, deletedAt, primaryKey, tenantId, updatedAt } from "./_shared";
-import { tenants, users } from "./tenants";
+import { createdAt, deletedAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { projects, tenants, users } from "./tenants";
 
 export const modelCatalog = pgTable(
   "model_catalog",
@@ -42,6 +42,7 @@ export const modelEndpoints = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -65,8 +66,11 @@ export const modelEndpoints = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("model_endpoints_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("model_endpoints_project_slug_idx")
+      .on(t.projectId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    projectIdx: index("model_endpoints_project_idx")
+      .on(t.projectId)
       .where(sql`deleted_at IS NULL`),
     tenantIdx: index("model_endpoints_tenant_idx")
       .on(t.tenantId)
@@ -97,6 +101,7 @@ export const parseEndpoints = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -120,8 +125,11 @@ export const parseEndpoints = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("parse_endpoints_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("parse_endpoints_project_slug_idx")
+      .on(t.projectId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    projectIdx: index("parse_endpoints_project_idx")
+      .on(t.projectId)
       .where(sql`deleted_at IS NULL`),
     tenantIdx: index("parse_endpoints_tenant_idx")
       .on(t.tenantId)
@@ -143,6 +151,7 @@ export const providerCredentials = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -164,8 +173,11 @@ export const providerCredentials = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("provider_credentials_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("provider_credentials_project_slug_idx")
+      .on(t.projectId, t.slug)
+      .where(sql`deleted_at IS NULL`),
+    projectIdx: index("provider_credentials_project_idx")
+      .on(t.projectId)
       .where(sql`deleted_at IS NULL`),
     tenantIdx: index("provider_credentials_tenant_idx")
       .on(t.tenantId)

@@ -288,6 +288,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   const [pipeline] = await withRLS(db, tenantId, (tx) =>
     tx.select({
       yamlSource: schema.pipelines.yamlSource,
+      projectId: schema.pipelines.projectId,
       modelProviderId: schema.pipelines.modelProviderId,
       configJson: schema.pipelines.configJson,
       reviewThreshold: schema.pipelines.reviewThreshold,
@@ -337,7 +338,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       // provider when none is configured (dormant-until-configured).
       const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
         db,
-        tenantId,
+        { tenantId, projectId: pipeline.projectId },
         {
           parseProviderId: readParseProviderPin(pipeline.configJson),
           defaultProvider: _parseProvider,
@@ -382,7 +383,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   }
 
   // Resolve model endpoint
-  const endpoint = await resolveExtractEndpoint(db, tenantId, pipeline.modelProviderId);
+  const endpoint = await resolveExtractEndpoint(db, { tenantId, projectId: pipeline.projectId }, pipeline.modelProviderId);
 
   // Walk the DAG — start from startStepId (split child resume) or the first step with no incoming edges
   const withIncoming = new Set(pEdges.map(e => e.to));

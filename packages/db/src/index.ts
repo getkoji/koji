@@ -6,7 +6,7 @@ import type { Db } from "./rls";
 
 export * as schema from "./schema";
 export { withRLS } from "./rls";
-export type { Db } from "./rls";
+export type { Db, RlsScope } from "./rls";
 
 /**
  * Opens a Drizzle client against `databaseUrl`. The client is NOT tenant-
@@ -79,6 +79,35 @@ export const RLS_POLICIES: readonly string[] = [
   `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
   `CREATE POLICY ${table}_tenant_isolation ON ${table} FOR ALL USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid) WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);`,
 ]);
+
+/**
+ * Tables that carry a denormalized `project_id` — the intra-tenant isolation
+ * boundary. Each gets a RESTRICTIVE policy on top of its permissive tenant
+ * policy:
+ *
+ *   - RESTRICTIVE means it ANDs with the tenant policy. (A second PERMISSIVE
+ *     policy would OR with it and silently disable tenant isolation.)
+ *   - `NULLIF(current_setting(...), '') IS NULL` ⇒ the policy passes when no
+ *     project is set — background workers and org-level queries legitimately
+ *     operate tenant-wide. Tenant isolation still applies regardless.
+ *
+ * The policy DDL lives in `drizzle/0001_rls.sql` (re-applied on every
+ * migrate run) and MUST stay in lock-step with this list. rls.test.ts
+ * round-trips a row per table here to prove project isolation.
+ */
+export const PROJECT_RLS_TABLES: readonly string[] = [
+  "pipelines",
+  "sources",
+  "schemas",
+  "classifiers",
+  "model_endpoints",
+  "parse_endpoints",
+  "provider_credentials",
+  "webhook_targets",
+  "api_keys",
+  "jobs",
+  "review_items",
+];
 
 /**
  * Tables intentionally global (not tenant-scoped). RLS is NOT enabled on

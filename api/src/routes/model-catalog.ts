@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 // No encryption needed here — credentials are passed inline for fetch
 // and never stored by this route
 
@@ -17,7 +17,7 @@ modelCatalog.get("/", requires("endpoint:read"), async (c) => {
   const tenantId = getTenantId(c);
   const providerFilter = c.req.query("provider");
 
-  const rows = await withRLS(db, tenantId, (tx) => {
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
     let q = tx
       .select({
         id: schema.modelCatalog.id,
@@ -61,7 +61,7 @@ modelCatalog.post("/", requires("endpoint:write"), async (c) => {
     return c.json({ error: "provider, model_id, and display_name are required" }, 400);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.modelCatalog)
       .values({
@@ -95,7 +95,7 @@ modelCatalog.delete("/:id", requires("endpoint:write"), async (c) => {
   const tenantId = getTenantId(c);
   const modelId = c.req.param("id")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.delete(schema.modelCatalog).where(eq(schema.modelCatalog.id, modelId))
   );
 
@@ -194,7 +194,7 @@ modelCatalog.post("/bulk", requires("endpoint:write"), async (c) => {
 
   let added = 0;
   for (const m of body.models) {
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .insert(schema.modelCatalog)
         .values({

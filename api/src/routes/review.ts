@@ -4,7 +4,7 @@ import { and, eq, desc, asc, gte, lt, isNotNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal, generatePreviewToken } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, generatePreviewToken, getProjectId, getRlsScope } from "../auth/middleware";
 import { requireFeature } from "../billing/middleware";
 import { resolveMimeType } from "../ingestion/mime";
 
@@ -86,7 +86,7 @@ review.get("/", requires("review:read"), async (c) => {
     ? and(eq(schema.reviewItems.status, status), eq(schema.reviewItems.reason, reason))
     : eq(schema.reviewItems.status, status);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.reviewItems.id,
@@ -133,7 +133,7 @@ review.get("/:id", requires("review:read"), async (c) => {
   const id = c.req.param("id")!;
   if (!isUuid(id)) return c.json({ error: "Review item not found" }, 404);
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.reviewItems.id,
@@ -225,7 +225,7 @@ async function resolveItem(
     ? fieldOverrides
     : undefined;
 
-  const [updated] = await withRLS(db, tenantId, (tx) =>
+  const [updated] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.reviewItems)
       .set({
@@ -259,7 +259,7 @@ async function resolveItem(
     }
     if (Object.keys(allEdits).length > 0) {
       // Read the current extraction, merge edits, write back
-      const [doc] = await withRLS(db, tenantId, (tx) =>
+      const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx
           .select({ extractionJson: schema.documents.extractionJson })
           .from(schema.documents)
@@ -268,7 +268,7 @@ async function resolveItem(
       );
       if (doc?.extractionJson) {
         const merged = { ...(doc.extractionJson as Record<string, unknown>), ...allEdits };
-        await withRLS(db, tenantId, (tx) =>
+        await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
           tx
             .update(schema.documents)
             .set({ extractionJson: merged })
@@ -286,7 +286,7 @@ review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review")
   const id = c.req.param("id")!;
   const body = await c.req.json<{ note?: string; fieldOverrides?: Record<string, unknown> }>()
     .catch(() => ({} as { note?: string; fieldOverrides?: Record<string, unknown> }));
-  const [item] = await withRLS(c.get("db"), getTenantId(c), (tx) =>
+  const [item] = await withRLS(c.get("db"), getRlsScope(c), (tx) =>
     tx
       .select({ proposedValue: schema.reviewItems.proposedValue })
       .from(schema.reviewItems)
@@ -367,7 +367,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   const provisional = body.provisional === true;
 
   // Load the review item with its document + schema context.
-  const [item] = await withRLS(db, tenantId, (tx) =>
+  const [item] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         reviewId: schema.reviewItems.id,
@@ -427,7 +427,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
 
   // Dedup by (schemaId, contentHash). If the doc is already in the corpus,
   // append a new ground-truth version rather than duplicating the entry.
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.corpusEntries.id })
       .from(schema.corpusEntries)
@@ -466,7 +466,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
       tags,
       addedBy: principal.userId,
     };
-    const [entry] = await withRLS(db, tenantId, (tx) =>
+    const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.insert(schema.corpusEntries).values(entryValues).returning({ id: schema.corpusEntries.id }),
     );
     if (!entry) return c.json({ error: "Failed to create corpus entry" }, 500);
@@ -474,7 +474,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   }
 
   // Append the ground-truth version (history is append-only via supersedesId).
-  const [latestGt] = await withRLS(db, tenantId, (tx) =>
+  const [latestGt] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.corpusEntryGroundTruth.id })
       .from(schema.corpusEntryGroundTruth)
@@ -483,7 +483,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
       .limit(1),
   );
 
-  const [gt] = await withRLS(db, tenantId, (tx) =>
+  const [gt] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.corpusEntryGroundTruth)
       .values({
@@ -506,7 +506,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   // For a re-promoted (deduped) entry, refresh the denormalized GT too — but
   // only when approved, to preserve the provisional-excluded-from-validate rule.
   if (deduped && decision.writeDenormalizedGt) {
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.corpusEntries)
         .set({ groundTruthJson: payload, updatedAt: new Date() })
@@ -547,7 +547,7 @@ review.get("/__queue/ids", requires("review:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const status = c.req.query("status") ?? "pending";
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.reviewItems.id })
       .from(schema.reviewItems)
@@ -582,7 +582,7 @@ review.get("/__queue/stats", requires("review:read"), async (c) => {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const countWhere = (where: ReturnType<typeof and>) =>
-    withRLS(db, tenantId, (tx) =>
+    withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .select({ n: sql<number>`count(*)::int` })
         .from(schema.reviewItems)

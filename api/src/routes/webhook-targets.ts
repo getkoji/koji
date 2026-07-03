@@ -3,7 +3,7 @@ import { eq, and, sql, desc } from "drizzle-orm";
 import { randomBytes, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 
@@ -75,7 +75,7 @@ webhookTargets.get("/", requires("webhook:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.webhookTargets.id,
@@ -117,6 +117,8 @@ webhookTargets.post(
   requireQuantityGate("max_webhooks", async (c) => {
     const db = c.get("db");
     const tenantId = getTenantId(c);
+    // Plan quantity limits are per-TENANT — count tenant-wide, not per-project,
+    // or each new project would multiply the quota.
     const [row] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` }).from(schema.webhookTargets),
     );
@@ -190,11 +192,12 @@ webhookTargets.post(
     ? Buffer.from(encrypt(JSON.stringify(body.headers), masterKey, tenantId), "utf8")
     : null;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.webhookTargets)
       .values({
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.name,
         url: body.url,
@@ -263,7 +266,7 @@ webhookTargets.patch("/:id", requires("webhook:write"), async (c) => {
     }
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.webhookTargets)
       .set(updates)
@@ -286,7 +289,7 @@ webhookTargets.delete("/:id", requires("webhook:write"), async (c) => {
   const tenantId = getTenantId(c);
   const targetId = c.req.param("id")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.delete(schema.webhookTargets).where(eq(schema.webhookTargets.id, targetId))
   );
 
@@ -306,7 +309,7 @@ webhookTargets.post("/:id/test", requires("webhook:write"), async (c) => {
     return c.json({ error: "KOJI_MASTER_KEY is not set" }, 500);
   }
 
-  const [target] = await withRLS(db, tenantId, (tx) =>
+  const [target] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select()
       .from(schema.webhookTargets)
@@ -383,7 +386,7 @@ webhookTargets.get("/:id/deliveries", requires("webhook:read"), async (c) => {
   const tenantId = getTenantId(c);
   const targetId = c.req.param("id")!;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.webhookDeliveries.id,

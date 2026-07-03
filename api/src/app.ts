@@ -24,6 +24,7 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
 import { logger as honoLogger } from "hono/logger";
 
 import type { Db } from "@koji/db";
@@ -174,6 +175,11 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   const app = new Hono<Env>();
 
   app.onError((err, c) => {
+    // HTTPException carries an intentional status + message (e.g. the 400
+    // from requireProjectId) — pass it through instead of masking it as 500.
+    if (err instanceof HTTPException) {
+      return c.json({ error: err.message }, err.status);
+    }
     console.error(`[koji-api] ${c.req.method} ${c.req.path} ERROR:`, err.message);
     console.error(err.stack?.split("\n").slice(0, 5).join("\n"));
     return c.text("Internal Server Error", 500);

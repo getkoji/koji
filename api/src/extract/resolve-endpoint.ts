@@ -23,7 +23,7 @@
 
 import { eq, and } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
-import type { Db } from "@koji/db";
+import type { Db, RlsScope } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { createProvider } from "./providers";
 import type { ModelProvider } from "./providers";
@@ -59,10 +59,12 @@ export interface ExtractEndpointPayload {
  */
 export async function pickActiveTenantModel(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   preferModel: string | null,
 ): Promise<string | null> {
-  const rows = await withRLS(db, tenantId, (tx) =>
+  // provider_credentials is project-scoped: passing a project in the scope
+  // confines "first active model" to the request's project.
+  const rows = await withRLS(db, scope, (tx) =>
     tx
       .select({ id: schema.tenantModels.id, model: schema.tenantModels.model })
       .from(schema.tenantModels)
@@ -93,12 +95,13 @@ export async function pickActiveTenantModel(
 
 export async function resolveExtractEndpoint(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   modelProviderId: string | null,
 ): Promise<ExtractEndpointPayload | null> {
   if (!modelProviderId) return null;
+  const tenantId = typeof scope === "string" ? scope : scope.tenantId;
 
-  const [endpoint] = await withRLS(db, tenantId, (tx) =>
+  const [endpoint] = await withRLS(db, scope, (tx) =>
     tx
       .select({
         id: schema.tenantModels.id,
@@ -211,7 +214,7 @@ export async function resolveExtractEndpoint(
  */
 export async function resolveTenantProvider(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   opts?: {
     /** Use a specific endpoint by ID (e.g. from a pipeline's modelProviderId) */
     modelProviderId?: string | null;
@@ -223,10 +226,10 @@ export async function resolveTenantProvider(
 
   try {
     if (opts?.modelProviderId) {
-      endpointPayload = await resolveExtractEndpoint(db, tenantId, opts.modelProviderId);
+      endpointPayload = await resolveExtractEndpoint(db, scope, opts.modelProviderId);
     } else {
-      const found = await pickActiveTenantModel(db, tenantId, opts?.preferModel ?? null);
-      if (found) endpointPayload = await resolveExtractEndpoint(db, tenantId, found);
+      const found = await pickActiveTenantModel(db, scope, opts?.preferModel ?? null);
+      if (found) endpointPayload = await resolveExtractEndpoint(db, scope, found);
     }
   } catch {}
 

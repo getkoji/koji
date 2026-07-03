@@ -184,6 +184,15 @@ tenants.post("/", async (c) => {
     roles: ["owner"],
   });
 
+  // Every workspace needs a default project — resources can only be created
+  // inside one, and headerless requests resolve to it. Mirrors /projects/setup.
+  await db.insert(schema.projects).values({
+    tenantId: tenant!.id,
+    slug: tenant!.slug,
+    displayName: tenant!.displayName,
+    createdBy: principal.userId,
+  });
+
   return c.json({
     id: tenant!.id,
     slug: tenant!.slug,

@@ -12,8 +12,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, deletedAt, primaryKey, tenantId, updatedAt } from "./_shared";
-import { tenants, users } from "./tenants";
+import { createdAt, deletedAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { projects, tenants, users } from "./tenants";
 
 /**
  * Classifier config artifact — the schema-sibling of `schemas`.
@@ -29,6 +29,7 @@ export const classifiers = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     description: text("description"),
@@ -43,9 +44,10 @@ export const classifiers = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    tenantSlugIdx: uniqueIndex("classifiers_tenant_slug_idx")
-      .on(t.tenantId, t.slug)
+    projectSlugIdx: uniqueIndex("classifiers_project_slug_idx")
+      .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    projectIdx: index("classifiers_project_idx").on(t.projectId).where(sql`deleted_at IS NULL`),
     tenantIdx: index("classifiers_tenant_idx").on(t.tenantId).where(sql`deleted_at IS NULL`),
   }),
 );

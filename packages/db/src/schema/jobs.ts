@@ -14,16 +14,19 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKey, tenantId, updatedAt } from "./_shared";
+import { createdAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
 import { ingestions, pipelines } from "./pipelines";
 import { schemaVersions, schemas } from "./schemas";
-import { tenants, users } from "./tenants";
+import { projects, tenants, users } from "./tenants";
 
 export const jobs = pgTable(
   "jobs",
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    // Denormalized from the pipeline at creation time — jobs are listed
+    // directly (not via their pipeline), so RLS needs a literal column.
+    projectId: projectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     pipelineId: uuid("pipeline_id")
       .notNull()
@@ -47,6 +50,10 @@ export const jobs = pgTable(
     tenantSlugIdx: uniqueIndex("jobs_tenant_slug_idx").on(t.tenantId, t.slug),
     tenantCreatedIdx: index("jobs_tenant_created_idx").on(
       t.tenantId,
+      sql`${t.createdAt} DESC`,
+    ),
+    projectCreatedIdx: index("jobs_project_created_idx").on(
+      t.projectId,
       sql`${t.createdAt} DESC`,
     ),
     pipelineCreatedIdx: index("jobs_pipeline_created_idx").on(

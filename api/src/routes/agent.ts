@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import { eq, and, desc, lt } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, getRlsScope } from "../auth/middleware";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { extractKVPairs } from "../extract/kv-pairs";
 import { classifyDocType, getTemplate } from "../extract/schema-templates";
@@ -39,7 +39,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   const slug = c.req.param("slug")!;
 
   // 1. Verify schema exists
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
@@ -48,7 +48,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   // 2. Find or create agent session
-  let [session] = await withRLS(db, tenantId, (tx) =>
+  let [session] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.agentSessions.id, status: schema.agentSessions.status })
       .from(schema.agentSessions)
       .where(and(
@@ -59,7 +59,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
       .limit(1),
   );
   if (!session) {
-    const [created] = await withRLS(db, tenantId, (tx) =>
+    const [created] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.insert(schema.agentSessions).values({
         tenantId,
         userId: principal.userId,
@@ -71,7 +71,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   }
 
   // 3. Load conversation history (last 12 messages = 6 turns)
-  const dbMessages = await withRLS(db, tenantId, (tx) =>
+  const dbMessages = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       role: schema.agentMessages.role,
       content: schema.agentMessages.content,
@@ -89,7 +89,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   let markdown = "";
   if (body.corpus_entry_id) {
     // Try extraction_runs first (has stored markdown)
-    const [run] = await withRLS(db, tenantId, (tx) =>
+    const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ markdownText: schema.extractionRuns.markdownText })
         .from(schema.extractionRuns)
         .where(eq(schema.extractionRuns.corpusEntryId, body.corpus_entry_id!))
@@ -116,7 +116,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   }
 
   // 6. Resolve model endpoint
-  const { provider } = await resolveTenantProvider(db, tenantId);
+  const { provider } = await resolveTenantProvider(db, getRlsScope(c));
 
   // 7. Build prompt and call LLM
   const prompt = buildAgentPrompt(
@@ -165,14 +165,14 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
 
   // 10. Persist messages sequentially (so created_at ordering is deterministic)
   try {
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.insert(schema.agentMessages).values({ tenantId, sessionId: session.id, role: "user", content: body.message }),
     );
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.insert(schema.agentMessages).values({ tenantId, sessionId: session.id, role: "assistant", content: rawResponse }),
     );
     // Update session timestamp
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.update(schema.agentSessions)
         .set({ updatedAt: new Date() })
         .where(eq(schema.agentSessions.id, session.id)),
@@ -202,7 +202,7 @@ agentRouter.get("/:slug/agent/history", requires("schema:read"), async (c) => {
   const cursor = c.req.query("cursor"); // ISO timestamp
 
   // Find schema
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
@@ -211,7 +211,7 @@ agentRouter.get("/:slug/agent/history", requires("schema:read"), async (c) => {
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   // Find session
-  const [session] = await withRLS(db, tenantId, (tx) =>
+  const [session] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.agentSessions.id })
       .from(schema.agentSessions)
       .where(and(
@@ -229,7 +229,7 @@ agentRouter.get("/:slug/agent/history", requires("schema:read"), async (c) => {
     conditions.push(lt(schema.agentMessages.createdAt, new Date(cursor)));
   }
 
-  const messages = await withRLS(db, tenantId, (tx) =>
+  const messages = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.agentMessages.id,
       role: schema.agentMessages.role,
@@ -267,7 +267,7 @@ agentRouter.delete("/:slug/agent/history", requires("schema:write"), async (c) =
   const principal = getPrincipal(c);
   const slug = c.req.param("slug")!;
 
-  const [schemaRow] = await withRLS(db, tenantId, (tx) =>
+  const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
@@ -276,7 +276,7 @@ agentRouter.delete("/:slug/agent/history", requires("schema:write"), async (c) =
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   // Delete session (cascade deletes messages)
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.delete(schema.agentSessions)
       .where(and(
         eq(schema.agentSessions.context, "schema_builder"),
