@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  computeFieldConfidences,
+  resolveFieldConfidences,
   aggregateDocConfidence,
   findLowestField,
 } from "../extract/field-confidence";
@@ -25,21 +25,27 @@ const FOUND: ProvenanceSpan = { offset: 10, length: 5 };
 
 /**
  * Replicate the routing decision from `process.ts` so tests can verify
- * the full chain (schema sweep → min aggregation → low-field detection
- * → routeToReview boolean).
+ * the full chain (engine scores + schema sweep → min aggregation →
+ * low-field detection → routeToReview boolean).
  */
 function decideRouting(
   schemaDef: Record<string, unknown>,
   extracted: Record<string, unknown>,
   threshold: number,
   provenance?: Record<string, ProvenanceSpan | null>,
+  engineScores?: Record<string, number> | null,
 ): {
   fieldScores: Record<string, number>;
   docConfidence: number | null;
   lowField: { name: string; confidence: number } | null;
   routeToReview: boolean;
 } {
-  const fieldScores = computeFieldConfidences(schemaDef, extracted, provenance);
+  const fieldScores = resolveFieldConfidences(
+    schemaDef,
+    extracted,
+    engineScores ?? null,
+    provenance,
+  );
   const docConfidence = aggregateDocConfidence(fieldScores);
   const lowField = Number.isFinite(threshold)
     ? findLowestField(fieldScores, threshold)
@@ -215,5 +221,82 @@ describe("confidence-gate routing (regression for oss-172)", () => {
     );
     expect(fieldScores.age).toBe(0.0);
     expect(routeToReview).toBe(true);
+  });
+});
+
+describe("routing flags off engine confidence scores (regression for oss-356)", () => {
+  // The bug: routing recomputed per-field confidence from the schema alone
+  // instead of using the engine's confidence_scores, so an array field the
+  // engine scored 0.9+ produced a review item at 0.0000 and the review
+  // queue refilled on every rerun regardless of extraction quality.
+  const ARRAY_SCHEMA = {
+    fields: {
+      policy_number: { type: "string" },
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            coverage_name: { type: "string" },
+            limit: { type: "string" },
+          },
+        },
+      },
+    },
+  };
+  const EXTRACTED = {
+    policy_number: "POL-123",
+    coverages: [
+      { coverage_name: "General Liability", limit: "$1,000,000" },
+      { coverage_name: "Property", limit: "$500,000" },
+    ],
+  };
+
+  it("does NOT route an array field with high engine confidence at threshold 0.9", () => {
+    const { routeToReview, fieldScores } = decideRouting(
+      ARRAY_SCHEMA,
+      EXTRACTED,
+      0.9,
+      undefined,
+      { policy_number: 1.0, coverages: 0.93 },
+    );
+    expect(fieldScores.coverages).toBe(0.93);
+    expect(routeToReview).toBe(false);
+  });
+
+  it("routes an array field the engine scored low, with the engine's score on the review item", () => {
+    const { routeToReview, lowField } = decideRouting(
+      ARRAY_SCHEMA,
+      EXTRACTED,
+      0.9,
+      undefined,
+      { policy_number: 1.0, coverages: 0.42 },
+    );
+    expect(routeToReview).toBe(true);
+    expect(lowField).toEqual({ name: "coverages", confidence: 0.42 });
+  });
+
+  it("persisted field scores match the routing decision (same map, no parallel path)", () => {
+    // The map written to documents.confidenceScoresJson is the same object
+    // routing reads — the review item's confidence can no longer disagree
+    // with the document's per-field scores.
+    const { fieldScores, docConfidence } = decideRouting(
+      ARRAY_SCHEMA,
+      EXTRACTED,
+      0.9,
+      undefined,
+      { policy_number: 1.0, coverages: 0.93 },
+    );
+    expect(fieldScores).toEqual({ policy_number: 1.0, coverages: 0.93 });
+    expect(docConfidence).toBe(0.93);
+  });
+
+  it("still scores arrays via the schema fallback when engine scores are absent", () => {
+    // Defensive path only — a populated array must never zero out (oss-338).
+    const { fieldScores } = decideRouting(ARRAY_SCHEMA, EXTRACTED, 0.9, {
+      policy_number: FOUND,
+      coverages: null,
+    });
+    expect(fieldScores.coverages).toBeGreaterThan(0.0);
   });
 });

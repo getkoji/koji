@@ -3,14 +3,14 @@
  *
  * One describe block per field type covers every branch of the scoring
  * matrix documented in `field-confidence.ts`. The final block covers the
- * helper functions `computeFieldConfidences` and `aggregateDocConfidence`
+ * helper functions `resolveFieldConfidences` and `aggregateDocConfidence`
  * which the routing layer in `ingestion/process.ts` actually consumes.
  */
 
 import { describe, it, expect } from "vitest";
 import {
   computeFieldConfidence,
-  computeFieldConfidences,
+  resolveFieldConfidences,
   aggregateDocConfidence,
   findLowestField,
 } from "./field-confidence";
@@ -297,8 +297,43 @@ describe("computeFieldConfidence — null / absent value", () => {
 // Aggregation helpers — what process.ts actually calls
 // ---------------------------------------------------------------------------
 
-describe("computeFieldConfidences (schema sweep)", () => {
-  it("scores every schema field, even ones the LLM returned null for", () => {
+describe("resolveFieldConfidences (engine scores + schema sweep)", () => {
+  it("uses the engine's score verbatim for non-null values", () => {
+    const schemaDef = {
+      fields: {
+        coverages: { type: "array", items: { type: "object", properties: { limit: { type: "string" } } } },
+        name: { type: "string" },
+      },
+    };
+    const extracted = {
+      coverages: [{ limit: "$1,000,000" }],
+      name: "Acme",
+    };
+    const scores = resolveFieldConfidences(schemaDef, extracted, {
+      coverages: 0.93,
+      name: 1.0,
+    });
+    expect(scores.coverages).toBe(0.93);
+    expect(scores.name).toBe(1.0);
+  });
+
+  it("re-credits optional nulls the engine scored 0.0 as not_found", () => {
+    const schemaDef = {
+      fields: {
+        required_field: { type: "string", required: true },
+        optional_field: { type: "string" },
+      },
+    };
+    const extracted = { required_field: null, optional_field: null };
+    const scores = resolveFieldConfidences(schemaDef, extracted, {
+      required_field: 0.0,
+      optional_field: 0.0,
+    });
+    expect(scores.required_field).toBe(0.0); // required null still flags
+    expect(scores.optional_field).toBe(1.0); // optional null is not a review reason
+  });
+
+  it("falls back to the deterministic scorer when the engine has no score", () => {
     const schemaDef = {
       fields: {
         name: { type: "string" },
@@ -313,7 +348,7 @@ describe("computeFieldConfidences (schema sweep)", () => {
       status: "active",
       missing_optional: null,
     };
-    const scores = computeFieldConfidences(schemaDef, extracted, {
+    const scores = resolveFieldConfidences(schemaDef, extracted, null, {
       name: FOUND,
       amount: FOUND,
       status: FOUND,
@@ -325,15 +360,23 @@ describe("computeFieldConfidences (schema sweep)", () => {
     expect(scores.missing_optional).toBe(1.0); // optional null
   });
 
-  it("handles missing provenance map gracefully", () => {
+  it("handles missing provenance map gracefully on the fallback path", () => {
     const schemaDef = { fields: { name: { type: "string" } } };
-    const scores = computeFieldConfidences(schemaDef, { name: "Acme" });
+    const scores = resolveFieldConfidences(schemaDef, { name: "Acme" }, {});
     expect(scores.name).toBe(0.7); // string, non-empty, no provenance
   });
 
+  it("ignores non-finite engine scores", () => {
+    const schemaDef = { fields: { name: { type: "string" } } };
+    const scores = resolveFieldConfidences(schemaDef, { name: "Acme" }, {
+      name: Number.NaN,
+    });
+    expect(scores.name).toBe(0.7); // fallback, not NaN
+  });
+
   it("returns empty object when schema has no fields", () => {
-    expect(computeFieldConfidences({}, {})).toEqual({});
-    expect(computeFieldConfidences(undefined, {})).toEqual({});
+    expect(resolveFieldConfidences({}, {}, {})).toEqual({});
+    expect(resolveFieldConfidences(undefined, {}, null)).toEqual({});
   });
 });
 

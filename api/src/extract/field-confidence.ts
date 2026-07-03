@@ -436,25 +436,47 @@ function provenanceHit(span: ProvenanceSpan | null | undefined): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Score every field declared in a schema against the extracted values.
+ * Resolve the per-field confidence map used for review routing.
  *
- * Returns a `Record<field, score>` covering every schema field — including
- * ones the LLM returned `null` for, because the null-branch scoring (above)
- * matters for routing decisions.
+ * The extract engine already computes a per-field confidence for every
+ * extracted value (`confidence_scores` on the extraction result — provenance
+ * strength + validation, see extract/reconcile.ts). Those scores are what
+ * the build page shows and what other write paths persist, so review routing
+ * must flag off the SAME numbers — recomputing confidence here from the
+ * schema alone was a second, divergent opinion on the same extraction
+ * (oss-356: review items said 0.0 while the engine said 0.9+).
  *
- * `provenanceByField` is the provenance map produced by `resolveProvenance`.
+ * Per field declared in the schema:
+ *   - null/undefined value: required → 0.0, optional → 1.0. The engine
+ *     scores every null 0.0 ("not_found"), but an optional field that is
+ *     legitimately absent from the document is not a review reason.
+ *   - non-null value: the engine's score, verbatim.
+ *   - non-null value the engine didn't score (defensive — the standard
+ *     extraction paths score every extracted field): fall back to the
+ *     deterministic schema-based scorer above.
+ *
+ * `provenanceByField` is the provenance map produced by `resolveProvenance`;
+ * it is only consulted on the fallback path.
  */
-export function computeFieldConfidences(
+export function resolveFieldConfidences(
   schemaDef: Record<string, unknown> | undefined,
   extractedValues: Record<string, unknown>,
+  engineScores: Record<string, number> | null | undefined,
   provenanceByField?: Record<string, ProvenanceSpan | null | undefined>,
 ): Record<string, number> {
   const fields = (schemaDef?.fields ?? {}) as Record<string, FieldSchema>;
   const scores: Record<string, number> = {};
   for (const [name, schema] of Object.entries(fields)) {
     const value = extractedValues[name];
-    const prov = provenanceByField?.[name] ?? null;
-    scores[name] = computeFieldConfidence(value, schema, prov);
+    if (value === null || value === undefined) {
+      scores[name] = Boolean(schema.required) ? 0.0 : 1.0;
+      continue;
+    }
+    const engine = engineScores?.[name];
+    scores[name] =
+      typeof engine === "number" && Number.isFinite(engine)
+        ? engine
+        : computeFieldConfidence(value, schema, provenanceByField?.[name] ?? null);
   }
   return scores;
 }

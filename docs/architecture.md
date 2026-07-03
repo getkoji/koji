@@ -263,6 +263,8 @@ Per-type scoring rules:
 
 **Doc-level confidence = `min` of per-field scores** (strict). The document is only as confident as its weakest field. The HITL review gate routes the doc to review when *any* field falls below the pipeline's `review_threshold` (default 0.85). Optional fields that come back null are scored 1.0 (legitimate absence) so they don't drag the doc down.
 
+**Review routing uses the engine's scores, not a recomputation.** The ingestion review gate flags off the same per-field `confidence_scores` the extraction engine emits — the numbers persisted with the document and shown in the UI — so a review item's confidence can never disagree with the document's own scores. The only adjustment at the gate is for null values: the engine scores every null 0.0 (`not_found`), so the gate re-credits optional nulls at 1.0 (required nulls stay 0.0). The schema-based scoring matrix above serves as the fallback when a non-null field is missing an engine score.
+
 The final output includes the extracted data, per-field confidence scores, and metadata about the extraction process (chunk count, group count, timing, gap-filled fields).
 
 ## Configuration system
