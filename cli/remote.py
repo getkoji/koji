@@ -1242,7 +1242,51 @@ def review_ls(
             cells.append(f"[{color}]{res or '—'}[/{color}]")
         table.add_row(*cells)
     console.print(table)
-    console.print(f"\n[dim]{len(rows)} item(s)[/dim]")
+    if len(rows) >= limit:
+        console.print(
+            f"\n[dim]showing first {len(rows)} — the queue may be larger; "
+            f"run [bold]koji review stats[/bold] for true counts[/dim]"
+        )
+    else:
+        console.print(f"\n[dim]{len(rows)} item(s)[/dim]")
+
+
+@review_app.command("stats")
+def review_stats(
+    urgent_below: float = typer.Option(0.7, "--urgent-below", help="Confidence threshold for the urgent count (0-1)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Queue-level counts, computed server-side with count(*).
+
+    Use this for queue size — `review ls` returns at most `--limit` rows
+    (default 100), so counting its output caps every number at the fetch
+    limit and a burn-down loop watching that count never sees it move.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(
+            f"{base_url}/api/review/__queue/stats",
+            params={"urgent_below": urgent_below},
+            headers=headers,
+        )
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, "fetch review queue stats")
+        stats = resp.json()
+
+    if as_json:
+        emit_json(stats)
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Metric")
+    table.add_column("Count", justify="right")
+    table.add_row("pending", f"{stats.get('pending', 0):,}")
+    table.add_row(f"urgent (conf < {urgent_below})", f"{stats.get('urgent', 0):,}")
+    table.add_row("completed", f"{stats.get('completed', 0):,}")
+    table.add_row("reviewed in last 24h", f"{stats.get('reviewedToday', 0):,}")
+    console.print(table)
 
 
 @review_app.command("show")

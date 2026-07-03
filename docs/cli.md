@@ -330,6 +330,9 @@ A document is addressed by corpus-entry id (a unique prefix is enough — the id
 Inspect the human-review queue and promote reviewed documents into the corpus. Documents land in this queue when a pipeline routes them for review — a field's confidence fell below the pipeline's review threshold, a validation rule failed, etc. These are the highest-signal documents to add to your corpus, because they're exactly the ones the current schema struggles with.
 
 ```bash
+koji review stats                                    # true queue counts (count(*), server-side)
+koji review stats --urgent-below 0.5 --json          # adjust the urgent threshold
+
 koji review ls                                       # pending items, worst confidence first
 koji review ls --status completed                    # resolved items (ready to promote)
 koji review ls --reason low_confidence               # filter by routing reason
@@ -341,6 +344,8 @@ koji review promote <id>                             # resolved+approved → cor
 koji review promote <id> --to edge-case              # …and tag the new corpus entry
 koji review promote <id> --provisional --gt-from label.json   # agent draft label (needs approval)
 ```
+
+`koji review stats` reports `pending` / `urgent` / `completed` / `reviewedToday` computed server-side — use it for queue size and burn-down progress. `koji review ls` is a page, not the queue: it returns at most `--limit` rows (default 100), so counting its output caps every number at the fetch limit.
 
 `koji review promote` closes the **review → corpus** loop. By default it requires the item to be resolved and approved (in the dashboard); the human's corrected record becomes ground truth that `koji validate` scores immediately. With `--provisional`, an agent-supplied label is written as a **draft** that stays out of validation until a human approves it in the dashboard Corpus tab. A review item is addressed by its id (a unique prefix is enough). All `review` subcommands accept `--json` and `--profile`.
 
