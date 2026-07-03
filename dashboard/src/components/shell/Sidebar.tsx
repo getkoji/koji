@@ -281,7 +281,10 @@ export function AppSidebar({
           <SidebarGroupLabel className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 flex items-center justify-between">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1 hover:text-ink transition-colors text-left">
+                <button
+                  aria-label="Switch project"
+                  className="flex items-center gap-1 hover:text-ink transition-colors text-left"
+                >
                   <span className="truncate max-w-[120px]">{currentProjectName}</span>
                   <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-50" />
                 </button>

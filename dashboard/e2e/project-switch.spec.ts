@@ -43,12 +43,14 @@ test("selected project survives navigation and scopes requests", async ({ page }
   // Reload so the sidebar picks up the freshly-provisioned project list.
   await page.reload();
 
-  // Open the project switcher (its trigger shows the current project name)
-  // and pick "Side Project".
-  await page.getByRole("button", { name: /Acme|acme/ }).first().click();
+  // Open the project switcher and pick "Side Project". Target the trigger by
+  // its stable aria-label rather than the tenant's display name, which varies
+  // by seed.
+  await page.getByRole("button", { name: "Switch project" }).click();
   await page.getByRole("menuitem", { name: "Side Project" }).click();
   await expect(page).toHaveURL(/\/projects\/side/);
-  await expect(page.getByText("Side Project")).toBeVisible();
+  const switcher = page.getByRole("button", { name: "Switch project" });
+  await expect(switcher).toContainText("Side Project");
 
   // Navigate to a nav item whose URL has NO /projects/ segment — the exact
   // case that used to drop the selection — and assert the client still sends
@@ -60,8 +62,8 @@ test("selected project survives navigation and scopes requests", async ({ page }
   const req = await schemasReq;
   expect(req.headers()["x-koji-project"]).toBe("side");
 
-  // No revert: the label still shows Side Project, and the sidebar's schema
-  // list is the side project's.
-  await expect(page.getByText("Side Project")).toBeVisible();
+  // No revert: the switcher still shows Side Project, and the sidebar's
+  // schema list is the side project's.
+  await expect(switcher).toContainText("Side Project");
   await expect(page.getByText("side_only_schema")).toBeVisible();
 });
