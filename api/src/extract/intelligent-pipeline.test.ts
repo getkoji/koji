@@ -461,4 +461,61 @@ describe("intelligentExtract", () => {
       expect(maxGroupChunks).toBeLessThan(total);
     });
   });
+
+  describe("hint-example leak guard", () => {
+    const markdown = [
+      "# Policy",
+      "POLICY",
+      "CR1556312",
+      "# Cover Sheet",
+      "RETAIL AGENCY ADDRESS COVER SHEET",
+    ].join("\n");
+
+    const schema = {
+      name: "policy",
+      fields: {
+        insured_name: {
+          type: "string",
+          extraction_hint:
+            "Return the named insured — the organization on the line below the caption, " +
+            "e.g. below 'NAMED INSURED AND ADDRESS:' the value is 'EXAMPLEVILLE OWNERS ASSOCIATION'.",
+        },
+        policy_number: { type: "string" },
+      },
+    };
+
+    it("nulls a value the model copied verbatim from its extraction hint", async () => {
+      // Model echoes the hint's worked example — a value nowhere in the document.
+      const provider = mockProvider(
+        JSON.stringify({
+          insured_name: "EXAMPLEVILLE OWNERS ASSOCIATION",
+          policy_number: "CR1556312",
+        }),
+      );
+
+      const result = await intelligentExtract(markdown, schema, provider, "gpt-4o-mini");
+
+      expect(result.extracted.insured_name).toBeNull();
+      expect(result.confidence.insured_name).toBe("not_found");
+      expect(result.confidence_scores.insured_name).toBe(0);
+      expect(result.hint_leaks).toEqual(["insured_name"]);
+      // The sourced field is untouched.
+      expect(result.extracted.policy_number).toBe("CR1556312");
+    });
+
+    it("keeps a hint-matching value that is actually present in the document", async () => {
+      const docWithInsured = markdown + "\nNAMED INSURED AND ADDRESS:\nEXAMPLEVILLE OWNERS ASSOCIATION";
+      const provider = mockProvider(
+        JSON.stringify({
+          insured_name: "EXAMPLEVILLE OWNERS ASSOCIATION",
+          policy_number: "CR1556312",
+        }),
+      );
+
+      const result = await intelligentExtract(docWithInsured, schema, provider, "gpt-4o-mini");
+
+      expect(result.extracted.insured_name).toBe("EXAMPLEVILLE OWNERS ASSOCIATION");
+      expect(result.hint_leaks).toBeUndefined();
+    });
+  });
 });

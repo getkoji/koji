@@ -1008,6 +1008,8 @@ Extraction hints are rendered into a dedicated `## Extraction notes` block in th
 
 Hints also flow into the gap-fill pass, so fields that time out on the main extraction attempt still get the guidance on retry. Fields without an `extraction_hint` don't get an "Extraction notes" block — it's only rendered when at least one field in the group provides one.
 
+**Worked examples in hints are guarded against prompt echo.** A hint that shows the model an example value ("below the caption the value is 'EXAMPLEVILLE OWNERS ASSOCIATION'") risks the model returning that example verbatim when the document has no real candidate. The engine detects this automatically: an extracted value that appears verbatim in its field's own hint text *and* cannot be located anywhere in the document is treated as a prompt echo and nulled (reported as `hint_leaks` in the extraction result). A hint example that genuinely appears in the document is unaffected — the guard only fires when the value has no source. Still, prefer obviously synthetic example values in hints so any echo that does occur is self-evident rather than a plausible-looking wrong answer.
+
 ### Conditional hints based on other fields
 
 Sometimes the right guidance for a field depends on another field's value. Classic SEC example: `period_of_report` means different things across form types — "fiscal year ended" for a 10-K, "quarterly period ended" for a 10-Q, "Date of Report" for an 8-K, and the annual meeting date for a DEF 14A. Writing one `extraction_hint` covering all of them would overwhelm the model; writing a narrow one would only help for one form.

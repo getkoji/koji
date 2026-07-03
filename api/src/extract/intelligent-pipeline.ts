@@ -42,6 +42,7 @@ import type { TextMap } from "./provenance";
 import { resolveProvenance } from "./provenance";
 import type { ParseChunk } from "../parse/chunk";
 import { applyKeepRaw, schemaHasKeepRaw } from "./keep-raw";
+import { stripHintLeaks } from "./hint-leak";
 
 export type { Chunk };
 
@@ -65,6 +66,7 @@ interface SectionResult {
   confidence: Record<string, string>;
   confidence_scores: Record<string, number>;
   gap_filled: string[];
+  hint_leaks: string[];
   groups: Array<{ fields: string[]; chunkCount: number }>;
   source_texts: Record<string, string[]>;
   scalar_source_texts: Record<string, string>;
@@ -352,6 +354,31 @@ async function extractOneSection(
     }
   }
 
+  // ── Hint-example leak guard ───────────────────────────────────
+  // A value the model copied verbatim from its field's own extraction_hint
+  // (and that provenance can't locate anywhere in the section) is a prompt
+  // echo, not an extraction — null it and rescore. See ./hint-leak.ts.
+
+  const hintLeaks = stripHintLeaks(
+    accumulated.extracted, fields, sectionChunks, allScalarSourceTexts,
+  );
+  for (const fieldName of hintLeaks) {
+    const remaining = accumulated.extracted[fieldName];
+    if (remaining == null || (Array.isArray(remaining) && remaining.length === 0)) {
+      accumulated.confidence[fieldName] = "not_found";
+      accumulated.confidence_scores[fieldName] = 0;
+    } else {
+      const fieldType = (fields[fieldName]?.type as string) ?? "string";
+      const prov = computeProvenanceStrength(remaining, sectionChunks, fieldType);
+      const score = computeFieldConfidence({ provenanceStrength: prov, validationPassed: true });
+      accumulated.confidence_scores[fieldName] = score;
+      accumulated.confidence[fieldName] = scoreLabel(score);
+    }
+    console.log(
+      `[koji-extract] Hint-leak guard: ${fieldName} matched its extraction hint with no source in section — nulled`,
+    );
+  }
+
   // Materialize the per-field routing plan: chunks ordered by document position,
   // with their concatenated content for downstream answer-presence checks.
   const routing_plan: Record<string, RoutingPlanEntry> = {};
@@ -369,6 +396,7 @@ async function extractOneSection(
     confidence: accumulated.confidence,
     confidence_scores: accumulated.confidence_scores,
     gap_filled: gapFilled,
+    hint_leaks: hintLeaks,
     groups: allGroups,
     source_texts: allSourceTexts,
     scalar_source_texts: allScalarSourceTexts,
@@ -506,6 +534,7 @@ export async function intelligentExtract(
     confidence_scores: sectionResult.confidence_scores,
     provenance,
     gap_filled: sectionResult.gap_filled,
+    ...(sectionResult.hint_leaks.length > 0 ? { hint_leaks: sectionResult.hint_leaks } : {}),
     document_map_summary: { total_chunks: chunks.length },
     routing_plan: sectionResult.routing_plan,
     groups: sectionResult.groups,
@@ -610,6 +639,7 @@ async function classifierPath(
     confidence: first.confidence,
     confidence_scores: first.confidence_scores,
     gap_filled: first.gap_filled,
+    ...(first.hint_leaks.length > 0 ? { hint_leaks: first.hint_leaks } : {}),
     document_map_summary: { total_chunks: chunks.length },
     routing_plan: first.routing_plan,
     groups: first.groups,

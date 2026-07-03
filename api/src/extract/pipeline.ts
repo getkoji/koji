@@ -49,6 +49,10 @@ export interface ExtractionResult {
   kv_pairs?: Array<{ label: string; value: string }>;
   /** Fields that were filled by gap-fill retries (intelligent pipeline). */
   gap_filled?: string[];
+  /** Fields nulled by the hint-example leak guard (intelligent pipeline) —
+   * the model returned text copied from the field's own extraction_hint with
+   * no source in the document. See extract/hint-leak.ts. */
+  hint_leaks?: string[];
   /** Document map summary (intelligent pipeline). */
   document_map_summary?: Record<string, unknown>;
   /** Routing plan (intelligent pipeline). */
