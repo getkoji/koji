@@ -727,6 +727,26 @@ List review-queue items, joined with their document/pipeline/schema context.
 
 **Response** `200 OK` — `{ "data": [ … ] }`, each item carrying `id`, `fieldName`, `reason`, `proposedValue`, `confidence`, `status`, `resolution`, `documentId`, `documentFilename`, `schemaSlug`, `pipelineSlug`.
 
+### `GET /api/review/__queue/stats`
+
+Queue-level counts, computed server-side with `count(*)` so they stay accurate regardless of any list fetch limit. Use this for queue-size displays — deriving counts from a limited `GET /api/review` page caps every number at the page size.
+
+**Auth:** Bearer token. Requires `review:read` permission.
+
+**Query parameters**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `urgent_below` | number | `0.7` | Confidence threshold for the `urgent` count. Clamped to `[0, 1]`; malformed values fall back to the default. |
+
+**Response** `200 OK`
+
+```json
+{ "pending": 3351, "urgent": 214, "completed": 633, "reviewedToday": 41 }
+```
+
+`pending`/`completed` are status counts, `urgent` counts pending items with `confidence < urgent_below`, and `reviewedToday` counts items resolved in the last 24 hours.
+
 ### `GET /api/review/{id}`
 
 A single review item with full document context — the flagged field, the document's complete `documentExtractionJson`, the schema/pipeline it ran under, and an inline `documentPreviewUrl` + `documentToken` for the shared viewer.
