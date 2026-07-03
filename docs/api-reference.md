@@ -11,6 +11,41 @@ Base URL: `http://localhost:9401`
 
 ---
 
+## Tenant & project scoping
+
+Tenant-scoped endpoints identify the workspace via the `x-koji-tenant` header
+(or, on hosted deployments, the auth token's organization claim).
+
+Within a tenant, **projects are the isolation boundary**: schemas, pipelines,
+jobs, sources, classifiers, review items, model/parse endpoints, webhooks, and
+API keys each belong to exactly one project, and requests only see the
+resources of the project they resolve to. Resolution order:
+
+1. `x-koji-project: <project-slug>` header, when present (`404` if the slug
+   doesn't exist in the tenant).
+2. The API key's own project — every API key is created inside a project.
+3. The tenant's default project (the one whose slug matches the tenant slug,
+   falling back to the oldest project).
+
+```
+Authorization: Bearer koji_yourkey
+x-koji-tenant: your-tenant-slug
+x-koji-project: your-project-slug   # optional with session auth
+```
+
+**API keys are a project boundary, not a default.** A key can only operate
+inside the project it was created in: an `x-koji-project` header naming any
+other project answers `404`, a key is rejected (`403`) for any tenant other
+than its own, and a key whose project has been deleted stops working (`403`).
+To work in another project, create a key there. Session-authenticated
+requests (the dashboard) may name any live project in the tenant.
+
+Resource slugs are unique **per project**, not per tenant: two projects can
+each have a pipeline named `invoices`. Deleting a workspace's last remaining
+project is rejected (`400`).
+
+---
+
 ## Health
 
 ### `GET /health`

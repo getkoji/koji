@@ -10,16 +10,19 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKey, tenantId } from "./_shared";
+import { createdAt, primaryKey, projectId, tenantId } from "./_shared";
 import { documents } from "./jobs";
 import { schemas } from "./schemas";
-import { tenants, users } from "./tenants";
+import { projects, tenants, users } from "./tenants";
 
 export const reviewItems = pgTable(
   "review_items",
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    // Denormalized from the owning job at creation time — the review queue is
+    // listed directly (not via document→job), so RLS needs a literal column.
+    projectId: projectId().references(() => projects.id),
     documentId: uuid("document_id")
       .notNull()
       .references(() => documents.id, { onDelete: "cascade" }),
@@ -45,6 +48,11 @@ export const reviewItems = pgTable(
   (t) => ({
     tenantStatusIdx: index("review_items_tenant_status_idx").on(
       t.tenantId,
+      t.status,
+      t.createdAt,
+    ),
+    projectStatusIdx: index("review_items_project_status_idx").on(
+      t.projectId,
       t.status,
       t.createdAt,
     ),

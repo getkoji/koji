@@ -4,14 +4,19 @@ import type { Env } from "../env";
 import type { Permission } from "../auth/roles";
 
 // Mock withRLS to bypass the real DB transaction, but capture the tenantId it is
-// called with so we can assert the delete is tenant-scoped.
+// called with so we can assert the delete is tenant-scoped. The scope param may
+// be a bare tenantId string or a { tenantId, projectId } object.
 const rlsTenants: string[] = [];
 vi.mock("@koji/db", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    withRLS: (_db: any, tenantId: string, fn: (tx: any) => Promise<any>) => {
-      rlsTenants.push(tenantId);
+    withRLS: (
+      _db: any,
+      scope: string | { tenantId: string; projectId?: string | null },
+      fn: (tx: any) => Promise<any>,
+    ) => {
+      rlsTenants.push(typeof scope === "string" ? scope : scope.tenantId);
       return fn(_db);
     },
   };
@@ -62,6 +67,7 @@ function createApp(opts: {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
     c.set("tenantId", TENANT_ID);
+    c.set("projectId", "00000000-0000-4000-8000-00000000aaaa");
     c.set("principal", { userId: USER_ID, email: "test@koji.dev", name: "Test" } as any);
     c.set("grants", new Set(grants));
     c.set("roles", ["owner"]);

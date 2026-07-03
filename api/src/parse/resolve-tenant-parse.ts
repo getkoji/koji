@@ -19,6 +19,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
+import type { RlsScope } from "@koji/db";
 import type { Db } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import type { ParseProvider } from "./provider";
@@ -77,14 +78,14 @@ type ParseAuthBlob = {
  */
 export async function pickActiveParseEndpoint(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   preferProvider: string | null,
 ): Promise<string | null> {
   const conditions = [eq(schema.parseEndpoints.status, "active")];
   if (preferProvider) {
     conditions.push(eq(schema.parseEndpoints.provider, preferProvider));
   }
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, scope, (tx) =>
     tx
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
@@ -114,12 +115,13 @@ export async function pickActiveParseEndpoint(
  */
 export async function resolveParseEndpoint(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   parseProviderId: string | null,
 ): Promise<ParseEndpointPayload | null> {
   if (!parseProviderId) return null;
+  const tenantId = typeof scope === "string" ? scope : scope.tenantId;
 
-  const [endpoint] = await withRLS(db, tenantId, (tx) =>
+  const [endpoint] = await withRLS(db, scope, (tx) =>
     tx
       .select({
         id: schema.parseEndpoints.id,
@@ -231,7 +233,7 @@ export interface ResolvedTenantParse {
  */
 export async function resolveTenantParse(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   opts?: {
     /** Use a specific endpoint by id (e.g. a pipeline's pinned parseProviderId). */
     parseProviderId?: string | null;
@@ -243,10 +245,10 @@ export async function resolveTenantParse(
 
   try {
     if (opts?.parseProviderId) {
-      payload = await resolveParseEndpoint(db, tenantId, opts.parseProviderId);
+      payload = await resolveParseEndpoint(db, scope, opts.parseProviderId);
     } else {
-      const found = await pickActiveParseEndpoint(db, tenantId, opts?.preferProvider ?? null);
-      if (found) payload = await resolveParseEndpoint(db, tenantId, found);
+      const found = await pickActiveParseEndpoint(db, scope, opts?.preferProvider ?? null);
+      if (found) payload = await resolveParseEndpoint(db, scope, found);
     }
   } catch (err) {
     console.warn(
@@ -275,12 +277,12 @@ export async function resolveTenantParse(
  */
 export async function resolveTenantParseProvider(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   opts?: {
     parseProviderId?: string | null;
     preferProvider?: string | null;
   },
 ): Promise<ParseProvider | null> {
-  const resolved = await resolveTenantParse(db, tenantId, opts);
+  const resolved = await resolveTenantParse(db, scope, opts);
   return resolved?.provider ?? null;
 }

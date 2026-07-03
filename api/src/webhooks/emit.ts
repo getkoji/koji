@@ -15,7 +15,7 @@
 
 import { eq } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
-import type { Db } from "@koji/db";
+import type { Db, RlsScope } from "@koji/db";
 import type { QueueProvider } from "../queue/provider";
 import { randomBytes } from "node:crypto";
 
@@ -51,7 +51,7 @@ export interface PreparedWebhookEvent {
  * visible to the worker.
  */
 export async function prepareWebhookEvent(
-  tenantId: string,
+  scope: RlsScope,
   eventType: string,
   data: object,
 ): Promise<PreparedWebhookEvent> {
@@ -66,7 +66,11 @@ export async function prepareWebhookEvent(
 
   if (!_db) return { eventId, payload, targets: [] };
 
-  const targets = await withRLS(_db, tenantId, (tx) =>
+  // Webhook targets are project-scoped: pass the event source's project in
+  // the scope so the RESTRICTIVE policy confines the fan-out to that
+  // project's targets. A bare tenantId (tenant-wide fan-out) is only correct
+  // for events with no project association (queue-level failures).
+  const targets = await withRLS(_db, scope, (tx) =>
     tx
       .select({
         id: schema.webhookTargets.id,
@@ -97,11 +101,12 @@ export interface EnqueueDeliveriesOptions {
  * stage row is written so the worker can always find it.
  */
 export async function enqueueWebhookDeliveries(
-  tenantId: string,
+  scope: RlsScope,
   prepared: PreparedWebhookEvent,
   opts: EnqueueDeliveriesOptions = {},
 ): Promise<void> {
   if (!_queue) return;
+  const tenantId = typeof scope === "string" ? scope : scope.tenantId;
 
   for (const target of prepared.targets) {
     await _queue.enqueue(
@@ -124,10 +129,10 @@ export async function enqueueWebhookDeliveries(
  * route handler — there's no document timeline to attach to).
  */
 export async function emitWebhookEvent(
-  tenantId: string,
+  scope: RlsScope,
   eventType: string,
   data: object,
 ): Promise<void> {
-  const prepared = await prepareWebhookEvent(tenantId, eventType, data);
-  await enqueueWebhookDeliveries(tenantId, prepared);
+  const prepared = await prepareWebhookEvent(scope, eventType, data);
+  await enqueueWebhookDeliveries(scope, prepared);
 }

@@ -26,6 +26,7 @@ function createTestApp(opts: {
   users?: Map<string, Principal>;
   memberships?: Map<string, { roles: string[] }>; // key: `${userId}:${tenantId}`
   tenants?: Map<string, string>; // slug → id
+  projects?: Map<string, string>; // slug → id (for x-koji-project header tests)
   /**
    * Sets `c.masterKey` before the auth middleware runs. Required for
    * the doc-endpoint matcher branch (HMAC preview-token validation
@@ -48,15 +49,18 @@ function createTestApp(opts: {
   app.use("*", async (c, next) => {
     let queryIndex = 0;
 
-    // The middleware issues exactly 2 queries for tenant-scoped routes:
+    // The middleware issues exactly 3 queries for tenant-scoped routes:
     // 1. SELECT from tenants WHERE slug = x-koji-tenant
-    // 2. SELECT from memberships WHERE userId = principal.userId AND tenantId = resolved
+    // 2. SELECT from projects (default-project resolution)
+    // 3. SELECT from memberships WHERE userId = principal.userId AND tenantId = resolved
     //
     // We return the right mock data based on call order.
     const fakeChain = () => {
       const idx = queryIndex++;
       const chain = {
         from: () => chain,
+        innerJoin: () => chain,
+        orderBy: () => chain,
         where: () => chain,
         limit: () => {
           if (idx === 0) {
@@ -66,6 +70,16 @@ function createTestApp(opts: {
             return tenantId ? [{ id: tenantId }] : [];
           }
           if (idx === 1) {
+            // Project lookup: header slug against the configured projects map,
+            // else the default-project fallback (every tenant has one).
+            const projSlug = c.req.header("x-koji-project");
+            if (projSlug) {
+              const projId = opts.projects?.get(projSlug);
+              return projId ? [{ id: projId }] : [];
+            }
+            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+          }
+          if (idx === 2) {
             // Membership lookup
             const principal = c.get("principal") as Principal | undefined;
             const tenantId = c.get("tenantId") as string | undefined;
@@ -158,6 +172,52 @@ describe("authMiddleware", () => {
     const body = await res.json() as Record<string, unknown>;
     expect(body.userId).toBe("u1");
     expect(body.tenantId).toBe("t1");
+  });
+
+  it("answers an unknown x-koji-project with 403 for non-members (no slug oracle)", async () => {
+    // A non-member must not learn whether a project slug exists — the
+    // membership 403 wins over the project 404.
+    const app = createTestApp({ users, tenants, memberships: new Map(), projects: new Map() });
+    app.get("/api/schemas", (c) => c.json([]));
+    const res = await app.request("/api/schemas", {
+      headers: {
+        Cookie: "koji_session=valid-token",
+        "x-koji-tenant": "acme",
+        "x-koji-project": "secret-codename",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("answers an unknown x-koji-project with 404 for members", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const app = createTestApp({ users, tenants, memberships, projects: new Map() });
+    app.get("/api/schemas", (c) => c.json([]));
+    const res = await app.request("/api/schemas", {
+      headers: {
+        Cookie: "koji_session=valid-token",
+        "x-koji-tenant": "acme",
+        "x-koji-project": "nope",
+      },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("resolves a known x-koji-project for members", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({ users, tenants, memberships, projects });
+    app.get("/api/schemas", (c) => c.json({ projectId: c.get("projectId") }));
+    const res = await app.request("/api/schemas", {
+      headers: {
+        Cookie: "koji_session=valid-token",
+        "x-koji-tenant": "acme",
+        "x-koji-project": "side",
+      },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.projectId).toBe("00000000-0000-4000-8000-00000000bbbb");
   });
 
   it("allows /api/me without x-koji-tenant", async () => {

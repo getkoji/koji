@@ -58,14 +58,20 @@ def emit_json(data: Any) -> None:
 def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
     """Resolve (base_url, auth_headers) from env vars or a CLI profile.
 
-    KOJI_API_URL + KOJI_API_KEY override everything (CI / local clusters).
-    Otherwise the named profile, else the active profile, is used. Exits with a
-    helpful message if no credentials are available.
+    KOJI_API_URL + KOJI_API_KEY override everything (CI / local clusters);
+    KOJI_PROJECT optionally scopes those to a project. Otherwise the named
+    profile, else the active profile, is used. A profile's `project` (set via
+    `koji login --project`) is sent as the `x-koji-project` header — without
+    it the server scopes requests to the API key's own project.
     """
     env_url = os.environ.get("KOJI_API_URL")
     env_key = os.environ.get("KOJI_API_KEY")
+    env_project = os.environ.get("KOJI_PROJECT")
     if env_url and env_key:
-        return env_url.rstrip("/"), {"Authorization": f"Bearer {env_key}"}
+        headers = {"Authorization": f"Bearer {env_key}"}
+        if env_project:
+            headers["x-koji-project"] = env_project
+        return env_url.rstrip("/"), headers
 
     if profile_name:
         creds = load_credentials()
@@ -81,7 +87,10 @@ def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
             "[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]"
         )
         raise typer.Exit(1)
-    return profile.url.rstrip("/"), {"Authorization": f"Bearer {profile.api_key}"}
+    headers = {"Authorization": f"Bearer {profile.api_key}"}
+    if profile.project:
+        headers["x-koji-project"] = profile.project
+    return profile.url.rstrip("/"), headers
 
 
 def _auth_error(resp: httpx.Response, base_url: str) -> bool:
@@ -110,6 +119,18 @@ def _api_error(resp: httpx.Response, context: str) -> None:
     console.print(f"[red]✗[/red] {context} — HTTP {resp.status_code}: {msg}")
     if detail:
         console.print(f"  [dim]detail:[/dim] {detail}")
+    # Every request is project-scoped since 0.48: a stored profile project (or
+    # KOJI_PROJECT) that doesn't match a server project slug 404s everything.
+    # Say so — the bare "Project not found" gives no hint the fix is local.
+    if resp.status_code == 404 and isinstance(msg, str) and "Project not found" in msg:
+        sent = resp.request.headers.get("x-koji-project") if resp.request else None
+        if sent:
+            console.print(
+                f"  [yellow]Your credentials are pinned to project [bold]{sent}[/bold], "
+                f"which doesn't exist on the server.[/yellow]\n"
+                f"  Fix: re-run [bold]koji login[/bold] (optionally with --project <slug>), "
+                f"or unset KOJI_PROJECT."
+            )
     raise typer.Exit(1)
 
 

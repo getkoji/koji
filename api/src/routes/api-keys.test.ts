@@ -28,6 +28,8 @@ function createTestApp(opts: {
       const idx = qi++;
       const obj = {
         from: () => obj,
+        innerJoin: () => obj,
+        orderBy: () => obj,
         where: () => obj,
         limit: () => {
           if (idx === 0) {
@@ -36,6 +38,10 @@ function createTestApp(opts: {
             return tid ? [{ id: tid }] : [];
           }
           if (idx === 1) {
+            // Default-project lookup — every tenant has one
+            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+          }
+          if (idx === 2) {
             const p = c.get("principal") as Principal | undefined;
             const t = c.get("tenantId") as string | undefined;
             if (p && t) {

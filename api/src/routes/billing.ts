@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 export const billing = new Hono<Env>();
 
@@ -19,7 +19,7 @@ billing.get("/usage", requires("tenant:read"), async (c) => {
   const db = c.get("db");
   const usage = await billingAdapter.getUsageSummary(tenantId);
 
-  const [tenant] = await withRLS(db, tenantId, (tx) =>
+  const [tenant] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ plan: schema.tenants.plan })
       .from(schema.tenants)

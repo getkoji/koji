@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 import { hasParseDriver } from "../parse/drivers";
 import { resolveWifIdentity } from "../parse/auth/wif-identity";
@@ -270,7 +270,7 @@ parseProviders.get("/", requires("endpoint:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.parseEndpoints.id,
@@ -422,7 +422,7 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
   const authJson = buildParseAuthJson(body.provider, body, masterKey, tenantId);
 
   // First active endpoint is the default; later ones are added disabled.
-  const [activeRow] = await withRLS(db, tenantId, (tx) =>
+  const [activeRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
@@ -433,11 +433,12 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
 
   let rows;
   try {
-    rows = await withRLS(db, tenantId, (tx) =>
+    rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .insert(schema.parseEndpoints)
         .values({
           tenantId,
+          projectId: requireProjectId(c),
           slug,
           displayName: body.name!,
           provider: body.provider!,
@@ -513,7 +514,7 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     aws_secret_access_key?: string;
   }>();
 
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         provider: schema.parseEndpoints.provider,
@@ -556,7 +557,7 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     updates.authJson = buildParseAuthJson(provider, body, masterKey, tenantId);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.parseEndpoints)
       .set(updates)
@@ -586,7 +587,7 @@ parseProviders.post("/:id/default", requires("endpoint:write"), async (c) => {
   const endpointId = c.req.param("id")!;
   const now = new Date();
 
-  const result = await withRLS(db, tenantId, async (tx) => {
+  const result = await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     const [target] = await tx
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
@@ -626,7 +627,7 @@ parseProviders.post("/:id/test", requires("endpoint:write"), async (c) => {
   const endpointId = c.req.param("id")!;
   const masterKey = c.get("masterKey") as string | null;
 
-  const [endpoint] = await withRLS(db, tenantId, (tx) =>
+  const [endpoint] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         provider: schema.parseEndpoints.provider,
@@ -694,7 +695,7 @@ parseProviders.delete("/:id", requires("endpoint:write"), async (c) => {
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.parseEndpoints)
       .set({ deletedAt: new Date() })

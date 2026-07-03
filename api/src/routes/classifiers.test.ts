@@ -19,13 +19,18 @@ import type { Permission } from "../auth/roles";
 import { resolvePermissions } from "../auth/roles";
 
 // Capture the tenantId every withRLS call is scoped to; run fn against the fake db.
+// The scope param may be a bare tenantId string or a { tenantId, projectId } object.
 const rlsTenants: string[] = [];
 vi.mock("@koji/db", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    withRLS: (_db: any, tenantId: string, fn: (tx: any) => Promise<any>) => {
-      rlsTenants.push(tenantId);
+    withRLS: (
+      _db: any,
+      scope: string | { tenantId: string; projectId?: string | null },
+      fn: (tx: any) => Promise<any>,
+    ) => {
+      rlsTenants.push(typeof scope === "string" ? scope : scope.tenantId);
       return fn(_db);
     },
   };
@@ -34,6 +39,7 @@ vi.mock("@koji/db", async (importOriginal) => {
 const { classifiers } = await import("./classifiers");
 
 const TENANT_ID = "00000000-0000-0000-0000-000000000001";
+const PROJECT_ID = "00000000-0000-4000-8000-00000000aaaa";
 const OTHER_TENANT_ID = "00000000-0000-0000-0000-0000000000ff";
 const USER_ID = "00000000-0000-0000-0000-000000000099";
 const CLASSIFIER_ID = "00000000-0000-0000-0000-000000000010";
@@ -98,6 +104,7 @@ function createApp(opts: {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
     c.set("tenantId", TENANT_ID);
+    c.set("projectId", PROJECT_ID);
     c.set("principal", { userId: USER_ID, email: "test@koji.dev", name: "Test" } as any);
     c.set("grants", new Set(grants));
     c.set("roles", ["owner"]);

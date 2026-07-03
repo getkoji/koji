@@ -207,6 +207,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
         job: {
           id: schema.jobs.id,
           slug: schema.jobs.slug,
+          projectId: schema.jobs.projectId,
         },
         pipeline: {
           id: schema.pipelines.id,
@@ -261,6 +262,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   }
   const jobId = docJob.id;
   const jobSlug = docJob.slug;
+  // Model/parse endpoint resolution below is confined to the job's project —
+  // provider credentials are project-scoped resources.
+  const rlsScope = { tenantId, projectId: docJob.projectId };
 
   if (!pipeline) {
     await markDocFailed(db, tenantId, documentId, jobId, "Job's pipeline was deleted");
@@ -287,7 +291,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   // aware fingerprint keys the parse cache so a provider switch re-parses (oss-298).
   const { provider: parseProvider, fingerprint: parseFingerprint } = await resolveParse(
     db,
-    tenantId,
+    rlsScope,
     {
       parseProviderId: readParseProviderPin(pipeline.configJson),
       defaultProvider: defaultParseProvider,
@@ -345,7 +349,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     const legibilityCfg = readLegibilityConfig(pipeline.configJson);
     if (legibilityCfg.enabled) {
       const verdict = await recorder.run("legibility", async () => {
-        const { provider } = await resolveTenantProvider(db, tenantId);
+        const { provider } = await resolveTenantProvider(db, rlsScope);
         const v = await checkLegibility(markdown, provider);
         const badScan = isBadScan(v, legibilityCfg.threshold);
         if (badScan) {
@@ -375,7 +379,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
             }
             const { provider: visionProvider, model: visionModel } = await resolveTenantProvider(
               db,
-              tenantId,
+              rlsScope,
               { modelProviderId: legibilityCfg.fallbackModelId },
             );
             const blob = await storage.getBuffer(document.storageKey);
@@ -448,7 +452,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
             ([, m]: [string, any]) => m.mapping_type === "llm_interpret",
           );
           if (llmRegions.length > 0) {
-            const { provider } = await resolveTenantProvider(db, tenantId);
+            const { provider } = await resolveTenantProvider(db, rlsScope);
             const schemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
             const schemaFields = ((schemaDef.fields ?? {}) as Record<string, Record<string, unknown>>);
 
@@ -503,7 +507,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
               `[ingestion] form-mapping: ${nullFields.length} unmapped fields, backfilling with LLM`,
             );
             try {
-              const { provider, model: modelStr } = await resolveTenantProvider(db, tenantId, {
+              const { provider, model: modelStr } = await resolveTenantProvider(db, rlsScope, {
                 modelProviderId: pipeline.modelProviderId,
               });
               const llmResult = await extractFields(markdown, schemaDef, provider, modelStr, textMap, chunks);
@@ -542,7 +546,7 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
       // ── Standard LLM extraction ───────────────────────────────────────
       const endpointPayload = await resolveExtractEndpoint(
         db,
-        tenantId,
+        rlsScope,
         pipeline.modelProviderId,
       );
       extractResult = await recorder.run(
@@ -756,6 +760,9 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 export interface CreateExtractionJobArgs {
   db: Db;
   tenantId: string;
+  /** Project the job belongs to. When omitted it is looked up from the
+   *  pipeline — jobs always inherit their pipeline's project. */
+  projectId?: string;
   pipelineId: string;
   schemaId: string;
   schemaVersionId: string;
@@ -785,11 +792,25 @@ export async function createExtractionJob(
 ): Promise<CreatedExtractionJob> {
   const jobSlug = makeJobSlug();
 
+  let projectId = args.projectId;
+  if (!projectId) {
+    const [pl] = await withRLS(args.db, args.tenantId, (tx) =>
+      tx
+        .select({ projectId: schema.pipelines.projectId })
+        .from(schema.pipelines)
+        .where(eq(schema.pipelines.id, args.pipelineId))
+        .limit(1),
+    );
+    if (!pl) throw new Error(`createExtractionJob: pipeline ${args.pipelineId} not found`);
+    projectId = pl.projectId;
+  }
+
   const [createdJob] = await withRLS(args.db, args.tenantId, (tx) =>
     tx
       .insert(schema.jobs)
       .values({
         tenantId: args.tenantId,
+        projectId,
         slug: jobSlug,
         pipelineId: args.pipelineId,
         triggerType: args.triggerType,
@@ -1352,6 +1373,14 @@ export async function markDocFailed(
   reason: string,
 ): Promise<void> {
   const now = new Date();
+  // Webhook fan-out below is confined to the job's project.
+  const [jobRow] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ projectId: schema.jobs.projectId })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.id, jobId))
+      .limit(1),
+  );
   await withRLS(db, tenantId, (tx) =>
     tx
       .update(schema.documents)
@@ -1400,5 +1429,9 @@ export async function markDocFailed(
   });
 
   // Webhook event for document failure
-  emitWebhookEvent(tenantId, "document.failed", { documentId, jobId, reason });
+  emitWebhookEvent(
+    jobRow ? { tenantId, projectId: jobRow.projectId } : tenantId,
+    "document.failed",
+    { documentId, jobId, reason },
+  );
 }

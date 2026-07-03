@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, sql, desc, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId } from "../auth/middleware";
+import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 export const notifications = new Hono<Env>();
 
@@ -16,7 +16,7 @@ notifications.get("/", requires("notification:read"), async (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 20), 100);
   const unreadOnly = c.req.query("unread_only") === "true";
 
-  const rows = await withRLS(db, tenantId, (tx) => {
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
     let q = tx
       .select({
         id: schema.notifications.id,
@@ -48,7 +48,7 @@ notifications.get("/count", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.notifications)
@@ -66,7 +66,7 @@ notifications.patch("/:id/read", requires("notification:read"), async (c) => {
   const tenantId = getTenantId(c);
   const id = c.req.param("id")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.notifications)
       .set({ readAt: new Date() })
@@ -88,7 +88,7 @@ notifications.post("/read-all", requires("notification:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const result = await withRLS(db, tenantId, (tx) =>
+  const result = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.notifications)
       .set({ readAt: new Date() })

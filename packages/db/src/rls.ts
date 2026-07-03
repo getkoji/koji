@@ -6,6 +6,15 @@ import * as schema from "./schema";
 export type Db = ReturnType<typeof drizzle<typeof schema>>;
 
 /**
+ * The isolation scope for a transaction. A bare string is shorthand for
+ * `{ tenantId }` — tenant-wide access, no project narrowing. Passing
+ * `projectId` additionally sets `app.current_project_id`, which the
+ * RESTRICTIVE project policies (see PROJECT_RLS_TABLES in ./index.ts) match
+ * against `project_id` on every project-scoped table.
+ */
+export type RlsScope = string | { tenantId: string; projectId?: string | null };
+
+/**
  * Runs `fn` inside a transaction with `SET LOCAL app.current_tenant_id = <uuid>`
  * applied at the very start. Every tenant-scoped RLS policy reads this setting
  * via `current_setting('app.current_tenant_id', true)::uuid`; a missing or
@@ -15,7 +24,13 @@ export type Db = ReturnType<typeof drizzle<typeof schema>>;
  *
  *     import { withRLS } from "@koji/db/rls";
  *
+ *     // tenant-wide (background workers, org-level queries)
  *     const jobs = await withRLS(db, tenantId, async (tx) => {
+ *       return tx.select().from(schema.jobs).limit(50);
+ *     });
+ *
+ *     // project-scoped (request handlers — pass the resolved scope)
+ *     const jobs = await withRLS(db, { tenantId, projectId }, async (tx) => {
  *       return tx.select().from(schema.jobs).limit(50);
  *     });
  *
@@ -30,12 +45,20 @@ export type Db = ReturnType<typeof drizzle<typeof schema>>;
  */
 export async function withRLS<T>(
   db: Db,
-  tenantId: string,
+  scope: RlsScope,
   fn: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>,
 ): Promise<T> {
+  const tenantId = typeof scope === "string" ? scope : scope.tenantId;
+  const projectId = typeof scope === "string" ? null : (scope.projectId ?? null);
+
   if (!TENANT_ID_PATTERN.test(tenantId)) {
     throw new Error(
       `withRLS: refusing to set app.current_tenant_id to a non-UUID value (got ${JSON.stringify(tenantId)})`,
+    );
+  }
+  if (projectId !== null && !TENANT_ID_PATTERN.test(projectId)) {
+    throw new Error(
+      `withRLS: refusing to set app.current_project_id to a non-UUID value (got ${JSON.stringify(projectId)})`,
     );
   }
 
@@ -45,6 +68,9 @@ export async function withRLS<T>(
     // same connection. Quoting via sql.raw is safe because we reject any
     // value that doesn't match the strict UUID regex above.
     await tx.execute(sql.raw(`SET LOCAL app.current_tenant_id = '${tenantId}'`));
+    if (projectId !== null) {
+      await tx.execute(sql.raw(`SET LOCAL app.current_project_id = '${projectId}'`));
+    }
 
     // On managed Postgres (Neon, Supabase, etc.) the default role often
     // has BYPASSRLS, which silently disables all RLS policies. SET ROLE

@@ -252,3 +252,71 @@ CREATE POLICY webhook_deliveries_tenant_isolation ON webhook_deliveries FOR ALL
 -- are NOT part of the core product. Their RLS policies live in
 -- platform/packages/billing/drizzle/0001_billing_rls.sql and are applied by
 -- the commercial hosting layer's migration runner.
+
+-- ────────────────────────────────────────────────────────────────────────
+-- Project isolation (intra-tenant boundary).
+--
+-- Every table with a denormalized `project_id` gets a RESTRICTIVE policy on
+-- top of its permissive tenant policy. RESTRICTIVE means it ANDs with the
+-- tenant policy — a second PERMISSIVE policy would OR with it and silently
+-- disable tenant isolation. The NULLIF(...) IS NULL arm means "no project
+-- set ⇒ tenant-wide": background workers and org-level queries legitimately
+-- operate across projects, and tenant isolation still applies regardless.
+--
+-- MUST stay in lock-step with PROJECT_RLS_TABLES in src/index.ts.
+-- ────────────────────────────────────────────────────────────────────────
+
+DROP POLICY IF EXISTS pipelines_project_isolation ON pipelines;
+CREATE POLICY pipelines_project_isolation ON pipelines AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS sources_project_isolation ON sources;
+CREATE POLICY sources_project_isolation ON sources AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS schemas_project_isolation ON schemas;
+CREATE POLICY schemas_project_isolation ON schemas AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS classifiers_project_isolation ON classifiers;
+CREATE POLICY classifiers_project_isolation ON classifiers AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS model_endpoints_project_isolation ON model_endpoints;
+CREATE POLICY model_endpoints_project_isolation ON model_endpoints AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS parse_endpoints_project_isolation ON parse_endpoints;
+CREATE POLICY parse_endpoints_project_isolation ON parse_endpoints AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS provider_credentials_project_isolation ON provider_credentials;
+CREATE POLICY provider_credentials_project_isolation ON provider_credentials AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS webhook_targets_project_isolation ON webhook_targets;
+CREATE POLICY webhook_targets_project_isolation ON webhook_targets AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS api_keys_project_isolation ON api_keys;
+CREATE POLICY api_keys_project_isolation ON api_keys AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS jobs_project_isolation ON jobs;
+CREATE POLICY jobs_project_isolation ON jobs AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS review_items_project_isolation ON review_items;
+CREATE POLICY review_items_project_isolation ON review_items AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);

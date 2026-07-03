@@ -230,6 +230,14 @@ The corpus format is the convention used by [getkoji/corpus](https://github.com/
 
 These commands drive the **Build → Validate → Corpus** workflow from the dashboard, but from the terminal. They talk to a running Koji platform (the same API the dashboard uses), so they need credentials: run `koji login` first, or set `KOJI_API_URL` + `KOJI_API_KEY`. Pass `--profile` to target a specific saved profile.
 
+Every request is scoped to a **project** — the isolation boundary within a
+workspace. An API key is bound to the project it was created in and cannot
+reach any other project; to work in a different project, mint a key there.
+Setting the profile's project (`koji login --project <slug>`) or
+`KOJI_PROJECT=<slug>` with env-var credentials sends the `x-koji-project`
+header as an explicit assertion — useful to fail fast when the credentials
+don't match the project you meant to target.
+
 Every command below accepts `--json` to emit raw machine-readable output instead of a table — handy for scripting and for driving the loop from an agent.
 
 The inner loop is: edit the schema YAML → `koji validate` to backtest it (safely) against ground truth → drill into a failing doc with `koji corpus diff` → repeat → `koji schema promote` once it performs well.

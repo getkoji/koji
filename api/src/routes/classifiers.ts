@@ -3,7 +3,7 @@ import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 import { loadClassifierConfig, ClassifierConfigError } from "../classify";
 import type { ClassifierConfig } from "../classify";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
@@ -49,7 +49,7 @@ classifiers.get("/", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.classifiers.id,
@@ -66,7 +66,7 @@ classifiers.get("/", requires("schema:read"), async (c) => {
   const enriched = [];
   for (const row of rows) {
     let latestVersion: number | null = null;
-    const [cv] = await withRLS(db, tenantId, (tx) =>
+    const [cv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .select({ versionNumber: schema.classifierVersions.versionNumber })
         .from(schema.classifierVersions)
@@ -86,7 +86,7 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select().from(schema.classifiers).where(eq(schema.classifiers.slug, slug)).limit(1),
   );
   if (!cls) return c.json({ error: "Classifier not found" }, 404);
@@ -97,7 +97,7 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
     commitMessage: string | null;
     createdAt: Date;
   } | null = null;
-  const [cv] = await withRLS(db, tenantId, (tx) =>
+  const [cv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         versionNumber: schema.classifierVersions.versionNumber,
@@ -138,11 +138,12 @@ classifiers.post("/", requires("schema:write"), async (c) => {
 
   const yamlHash = createHash("sha256").update(yamlSource).digest("hex");
 
-  const [newClassifier] = await withRLS(db, tenantId, (tx) =>
+  const [newClassifier] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.classifiers)
       .values({
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.display_name,
         description: body.description ?? null,
@@ -152,7 +153,7 @@ classifiers.post("/", requires("schema:write"), async (c) => {
       .returning(),
   );
 
-  const [v1] = await withRLS(db, tenantId, (tx) =>
+  const [v1] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.classifierVersions)
       .values({
@@ -168,7 +169,7 @@ classifiers.post("/", requires("schema:write"), async (c) => {
       .returning(),
   );
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.classifiers)
       .set({ currentVersionId: v1!.id })
@@ -196,7 +197,7 @@ classifiers.patch("/:slug", requires("schema:write"), async (c) => {
     updates.draftUpdatedAt = new Date();
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.classifiers).set(updates).where(eq(schema.classifiers.slug, slug)).returning(),
   );
   if (rows.length === 0) return c.json({ error: "Classifier not found" }, 404);
@@ -208,7 +209,7 @@ classifiers.delete("/:slug", requires("schema:write"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.classifiers)
       .set({ deletedAt: new Date() })
@@ -224,7 +225,7 @@ classifiers.get("/:slug/versions", requires("schema:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.classifiers.id, currentVersionId: schema.classifiers.currentVersionId })
       .from(schema.classifiers)
@@ -233,7 +234,7 @@ classifiers.get("/:slug/versions", requires("schema:read"), async (c) => {
   );
   if (!cls) return c.json({ error: "Classifier not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.classifierVersions.id,
@@ -267,7 +268,7 @@ classifiers.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   const slug = c.req.param("slug")!;
   const versionNum = parseInt(c.req.param("v")!, 10);
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.classifiers.id })
       .from(schema.classifiers)
@@ -276,7 +277,7 @@ classifiers.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   );
   if (!cls) return c.json({ error: "Classifier not found" }, 404);
 
-  const [version] = await withRLS(db, tenantId, (tx) =>
+  const [version] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select()
       .from(schema.classifierVersions)
@@ -314,7 +315,7 @@ classifiers.post("/:slug/versions", requires("schema:write"), async (c) => {
     return c.json({ error: "Classifier validation failed", details: result.error }, 400);
   }
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.classifiers.id })
       .from(schema.classifiers)
@@ -372,7 +373,7 @@ classifiers.post("/:slug/promote", requires("schema:deploy"), async (c) => {
     .json<{ versionId?: string }>()
     .catch(() => ({}) as { versionId?: string });
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.classifiers.id })
       .from(schema.classifiers)
@@ -383,7 +384,7 @@ classifiers.post("/:slug/promote", requires("schema:deploy"), async (c) => {
 
   let versionId = body.versionId;
   if (!versionId) {
-    const [latestRc] = await withRLS(db, tenantId, (tx) =>
+    const [latestRc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .select({ id: schema.classifierVersions.id })
         .from(schema.classifierVersions)
@@ -426,7 +427,7 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
     .json<{ yaml_source?: string; yaml?: string }>()
     .catch(() => ({}) as { yaml_source?: string; yaml?: string });
 
-  const [cls] = await withRLS(db, tenantId, (tx) =>
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.classifiers.id, draftYaml: schema.classifiers.draftYaml })
       .from(schema.classifiers)

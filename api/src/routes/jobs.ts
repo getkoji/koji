@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { and, eq, desc, asc, gte, lt, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, generatePreviewToken } from "../auth/middleware";
+import { requires, getTenantId, generatePreviewToken, getProjectId } from "../auth/middleware";
 
 export const jobs = new Hono<Env>();
 
@@ -127,7 +127,7 @@ jobs.get("/", requires("job:read"), async (c) => {
     }
   }
 
-  const rows = await withRLS(db, tenantId, (tx) => {
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
     const base = tx
       .select({
         slug: schema.jobs.slug,
@@ -167,7 +167,7 @@ jobs.get("/", requires("job:read"), async (c) => {
 
   // Per-status counts — uses base filters (no cursor) so counts reflect
   // the full dataset, not just the current page.
-  const counts = await withRLS(db, tenantId, (tx) => {
+  const counts = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) => {
     const base = tx
       .select({
         status: schema.jobs.status,
@@ -204,7 +204,7 @@ jobs.get("/documents/search", requires("job:read"), async (c) => {
     return c.json({ data: [] });
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         documentId: schema.documents.id,
@@ -242,7 +242,7 @@ jobs.get("/traces/lookup", requires("job:read"), async (c) => {
     return c.json({ error: "id query param is required" }, 400);
   }
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         traceExternalId: schema.traces.traceExternalId,
@@ -286,7 +286,7 @@ jobs.get("/:slug/documents/:docId/stream", async (c) => {
   const tenantId = c.get("tenantId") as string | undefined;
 
   async function query<T>(fn: (tx: typeof db) => Promise<T>): Promise<T> {
-    if (tenantId) return withRLS(db, tenantId, fn as any);
+    if (tenantId) return withRLS(db, { tenantId, projectId: getProjectId(c) }, fn as any);
     return fn(db);
   }
 
@@ -428,7 +428,7 @@ jobs.get("/:slug", requires("job:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.jobs.id,
@@ -476,7 +476,7 @@ jobs.get("/:slug/documents", requires("job:read"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
 
-  const [job] = await withRLS(db, tenantId, (tx) =>
+  const [job] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.jobs.id })
       .from(schema.jobs)
@@ -487,7 +487,7 @@ jobs.get("/:slug/documents", requires("job:read"), async (c) => {
     return c.json({ error: "Job not found" }, 404);
   }
 
-  const docs = await withRLS(db, tenantId, (tx) =>
+  const docs = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.documents.id,
@@ -529,7 +529,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
   const slug = c.req.param("slug")!;
   const docId = c.req.param("docId")!;
 
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         documentId: schema.documents.id,
@@ -571,7 +571,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const [trace] = await withRLS(db, tenantId, (tx) =>
+  const [trace] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.traces.id,
@@ -588,7 +588,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
   );
 
   const stages = trace
-    ? await withRLS(db, tenantId, (tx) =>
+    ? await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx
           .select({
             id: schema.traceStages.id,
@@ -608,7 +608,7 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     : [];
 
   // Query DAG step runs (for DAG pipelines)
-  const stepRuns = await withRLS(db, tenantId, (tx) =>
+  const stepRuns = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelineStepRuns.id,
@@ -705,7 +705,7 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
   const body = await c.req.json<{ skip_cache?: boolean }>().catch(() => ({}) as { skip_cache?: boolean });
   const skipCache = body.skip_cache === true;
 
-  const [doc] = await withRLS(db, tenantId, (tx) =>
+  const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         documentId: schema.documents.id,
@@ -731,7 +731,7 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
 
   // Reset document — clear stale extraction results so the UI shows a clean
   // "extracting" state instead of the previous run's data.
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.documents)
       .set({
@@ -748,7 +748,7 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
   );
 
   // Reset job back to running so the dashboard reflects the rerun.
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.jobs)
       .set({
@@ -759,13 +759,13 @@ jobs.post("/:slug/documents/:docId/rerun", requires("job:run"), async (c) => {
   );
 
   // Clear old step runs so the DAG runner starts fresh
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.delete(schema.pipelineStepRuns)
       .where(eq(schema.pipelineStepRuns.documentId, doc.documentId)),
   );
 
   // Route to DAG runner if the pipeline has DAG steps, otherwise legacy
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ pipelineType: schema.pipelines.pipelineType })
       .from(schema.pipelines)
       .where(eq(schema.pipelines.id, doc.pipelineId))
@@ -805,7 +805,7 @@ jobs.post("/:slug/documents/:docId/fail", requires("job:run"), async (c) => {
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
   const reason = body.reason ?? "Manually failed by operator";
 
-  const [doc] = await withRLS(db, tenantId, (tx) =>
+  const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.documents.id,
       jobId: schema.documents.jobId,
@@ -824,7 +824,7 @@ jobs.post("/:slug/documents/:docId/fail", requires("job:run"), async (c) => {
   if (doc.status === "failed") return c.json({ error: "Document is already failed" }, 409);
 
   const now = new Date();
-  await withRLS(db, tenantId, async (tx) => {
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     await tx.update(schema.documents).set({
       status: "failed",
       validationJson: { error_cause: "force_failed", message: reason },
@@ -1217,7 +1217,7 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
   const slug = c.req.param("slug")!;
   const docId = c.req.param("docId")!;
 
-  const [doc] = await withRLS(db, tenantId, (tx) =>
+  const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         contentHash: schema.documents.contentHash,
@@ -1232,7 +1232,7 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const [cached] = await withRLS(db, tenantId, (tx) =>
+  const [cached] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         storageKey: schema.parseCache.storageKey,
@@ -1309,7 +1309,7 @@ jobs.get("/:slug/documents/:docId/deliveries", requires("job:read"), async (c) =
   const slug = c.req.param("slug")!;
   const docId = c.req.param("docId")!;
 
-  const [doc] = await withRLS(db, tenantId, (tx) =>
+  const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.documents.id })
       .from(schema.documents)
@@ -1322,7 +1322,7 @@ jobs.get("/:slug/documents/:docId/deliveries", requires("job:read"), async (c) =
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.webhookDeliveries.id,
@@ -1365,7 +1365,7 @@ jobs.get("/:slug/documents/:docId/steps", requires("job:read"), async (c) => {
   const docId = c.req.param("docId")!;
 
   // Verify the document exists and belongs to this job
-  const [doc] = await withRLS(db, tenantId, (tx) =>
+  const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.documents.id })
       .from(schema.documents)
@@ -1378,7 +1378,7 @@ jobs.get("/:slug/documents/:docId/steps", requires("job:read"), async (c) => {
     return c.json({ error: "Document not found" }, 404);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelineStepRuns.id,

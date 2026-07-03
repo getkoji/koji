@@ -3,7 +3,7 @@ import { eq, and, sql, desc } from "drizzle-orm";
 import { randomBytes, createHash, createHmac } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { encrypt, keyHint } from "../crypto/envelope";
 import { createExtractionJob, normalizeMimeTypeWithWarning } from "../ingestion/process";
@@ -17,7 +17,7 @@ sources.get("/", requires("endpoint:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.sources.id,
@@ -45,7 +45,7 @@ sources.get("/:id", requires("endpoint:read"), async (c) => {
   const tenantId = getTenantId(c);
   const sourceId = c.req.param("id")!;
 
-  const [source] = await withRLS(db, tenantId, (tx) =>
+  const [source] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.sources.id,
@@ -77,6 +77,8 @@ sources.post(
   requireQuantityGate("max_sources", async (c) => {
     const db = c.get("db");
     const tenantId = getTenantId(c);
+    // Plan quantity limits are per-TENANT — count tenant-wide, not per-project,
+    // or each new project would multiply the quota.
     const [row] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` }).from(schema.sources).where(sql`deleted_at IS NULL`),
     );
@@ -115,11 +117,12 @@ sources.post(
     }
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.sources)
       .values({
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.name,
         sourceType: body.source_type,
@@ -168,7 +171,7 @@ sources.patch("/:id", requires("source:write"), async (c) => {
   if (body.target_pipeline_id !== undefined) updates.targetPipelineId = body.target_pipeline_id;
   if (body.filter_config !== undefined) updates.filterConfigJson = body.filter_config;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.sources).set(updates).where(eq(schema.sources.id, sourceId)).returning()
   );
 
@@ -184,7 +187,7 @@ sources.delete("/:id", requires("source:write"), async (c) => {
   const tenantId = getTenantId(c);
   const sourceId = c.req.param("id")!;
 
-  const [source] = await withRLS(db, tenantId, (tx) =>
+  const [source] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ sourceType: schema.sources.sourceType }).from(schema.sources)
       .where(eq(schema.sources.id, sourceId)).limit(1)
   );
@@ -194,7 +197,7 @@ sources.delete("/:id", requires("source:write"), async (c) => {
     return c.json({ error: "Cannot delete the default upload source" }, 400);
   }
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.sources).set({ deletedAt: new Date() }).where(eq(schema.sources.id, sourceId))
   );
 
@@ -209,7 +212,7 @@ sources.post("/:id/pause", requires("source:write"), async (c) => {
   const tenantId = getTenantId(c);
   const sourceId = c.req.param("id")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.sources).set({ status: "paused", updatedAt: new Date() })
       .where(eq(schema.sources.id, sourceId))
   );
@@ -225,7 +228,7 @@ sources.post("/:id/resume", requires("source:write"), async (c) => {
   const tenantId = getTenantId(c);
   const sourceId = c.req.param("id")!;
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.sources).set({ status: "active", updatedAt: new Date() })
       .where(eq(schema.sources.id, sourceId))
   );
@@ -241,7 +244,7 @@ sources.get("/:id/ingestions", requires("endpoint:read"), async (c) => {
   const tenantId = getTenantId(c);
   const sourceId = c.req.param("id")!;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.ingestions.id,
@@ -377,6 +380,7 @@ sources.post("/:id/webhook", async (c) => {
     const [target] = await db
       .select({
         pipelineId: schema.pipelines.id,
+        projectId: schema.pipelines.projectId,
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         pipelineType: schema.pipelines.pipelineType,
@@ -431,6 +435,7 @@ sources.post("/:id/webhook", async (c) => {
     const created = await createExtractionJob({
       db,
       tenantId: source.tenantId,
+      projectId: target!.projectId,
       pipelineId: target!.pipelineId,
       schemaId: target!.schemaId || "",
       schemaVersionId: target!.activeSchemaVersionId || "",

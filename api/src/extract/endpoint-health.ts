@@ -38,6 +38,7 @@ interface HealthRow {
   id: string;
   credentialId: string;
   tenantId: string;
+  projectId: string;
   slug: string;
   consecutiveFailures: number;
   healthState: string;
@@ -59,6 +60,7 @@ async function transitionAndEmit(
       id: schema.tenantModels.id,
       credentialId: schema.providerCredentials.id,
       tenantId: schema.providerCredentials.tenantId,
+      projectId: schema.providerCredentials.projectId,
       slug: schema.providerCredentials.slug,
       consecutiveFailures: schema.providerCredentials.consecutiveFailures,
       healthState: schema.providerCredentials.healthState,
@@ -136,7 +138,7 @@ async function emitEvent(
   data: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await emitWebhookEvent(r.tenantId, type, data);
+    await emitWebhookEvent({ tenantId: r.tenantId, projectId: r.projectId }, type, data);
   } catch (err) {
     console.warn(
       `[endpoint-health] webhook emit failed for ${type} on ${r.id}:`,

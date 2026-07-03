@@ -6,12 +6,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const emittedWebhooks: Array<{ tenantId: string; type: string; data: any }> = [];
+const emittedWebhooks: Array<{ tenantId: string; projectId: string | null; type: string; data: any }> = [];
 const createdNotifications: Array<{ tenantId: string; notification: any }> = [];
 
 vi.mock("../webhooks/emit", () => ({
-  emitWebhookEvent: vi.fn(async (tenantId: string, type: string, data: any) => {
-    emittedWebhooks.push({ tenantId, type, data });
+  emitWebhookEvent: vi.fn(async (scope: string | { tenantId: string; projectId?: string | null }, type: string, data: any) => {
+    const tenantId = typeof scope === "string" ? scope : scope.tenantId;
+    const projectId = typeof scope === "string" ? null : (scope.projectId ?? null);
+    emittedWebhooks.push({ tenantId, projectId, type, data });
   }),
 }));
 vi.mock("../notifications/emit", () => ({

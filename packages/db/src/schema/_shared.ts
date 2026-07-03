@@ -49,6 +49,20 @@ export const deletedAt = () => timestamp("deleted_at", { withTimezone: true, mod
 export const tenantId = () => uuid("tenant_id").notNull();
 
 /**
+ * `project_id` — the intra-tenant isolation boundary. Denormalized onto every
+ * directly-listed resource (pipelines, schemas, jobs, …) the same way
+ * `tenant_id` is, so RLS can filter on a literal column. Children that are
+ * only reachable through a project-checked parent id (schema_versions,
+ * documents, traces, …) do NOT carry it.
+ *
+ * Unlike the tenant policy (permissive, unset ⇒ zero rows), the project
+ * policy is RESTRICTIVE and unset ⇒ all rows of the current tenant: project
+ * scope narrows an already tenant-scoped transaction, and background workers
+ * legitimately operate tenant-wide. See PROJECT_RLS_TABLES in ../index.ts.
+ */
+export const projectId = () => uuid("project_id").notNull();
+
+/**
  * The RLS policy body used on every tenant-scoped table. Read at migration
  * time via `GET_TENANT_ISOLATION_POLICY(tableName)`.
  *

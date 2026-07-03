@@ -3,7 +3,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 
 export const apiKeys = new Hono<Env>();
 
@@ -13,6 +13,8 @@ export const apiKeys = new Hono<Env>();
 apiKeys.get("/", requires("api_key:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
+  // This route uses raw db (not withRLS), so the project filter is explicit.
+  const projectId = getProjectId(c);
 
   const rows = await db
     .select({
@@ -28,7 +30,12 @@ apiKeys.get("/", requires("api_key:write"), async (c) => {
     })
     .from(schema.apiKeys)
     .innerJoin(schema.users, eq(schema.users.id, schema.apiKeys.createdBy))
-    .where(eq(schema.apiKeys.tenantId, tenantId))
+    .where(
+      and(
+        eq(schema.apiKeys.tenantId, tenantId),
+        ...(projectId ? [eq(schema.apiKeys.projectId, projectId)] : []),
+      ),
+    )
     .orderBy(schema.apiKeys.createdAt);
 
   return c.json({
@@ -80,6 +87,7 @@ apiKeys.post("/", requires("api_key:write"), async (c) => {
     .insert(schema.apiKeys)
     .values({
       tenantId,
+      projectId: requireProjectId(c),
       name: body.name.trim(),
       keyPrefix: prefix,
       keyHash,

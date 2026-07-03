@@ -126,11 +126,24 @@ export async function persistDocumentOutcome(args: {
 
   let prepared: PreparedWebhookEvent | null = null;
 
+  // The outcome belongs to the job's project: review items are filed under
+  // it, and webhook fan-out is confined to that project's targets.
+  const [jobRow] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ projectId: schema.jobs.projectId })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.id, jobId))
+      .limit(1),
+  );
+  if (!jobRow) throw new Error(`persistDocumentOutcome: job ${jobId} not found`);
+  const scope = { tenantId, projectId: jobRow.projectId };
+
   if (outcome.routeToReview && args.schemaId) {
     const reviewConfidence = outcome.reviewConfidence.toFixed(4);
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, scope, (tx) =>
       tx.insert(schema.reviewItems).values({
         tenantId,
+        projectId: jobRow.projectId,
         documentId,
         schemaId: args.schemaId!,
         fieldName: outcome.reviewField,
@@ -160,7 +173,7 @@ export async function persistDocumentOutcome(args: {
         .where(eq(schema.jobs.id, jobId)),
     );
 
-    prepared = await prepareWebhookEvent(tenantId, "document.review_requested", {
+    prepared = await prepareWebhookEvent(scope, "document.review_requested", {
       document_id: documentId,
       job_id: jobId,
       job_slug: jobSlug,
@@ -204,7 +217,7 @@ export async function persistDocumentOutcome(args: {
         .where(eq(schema.jobs.id, jobId)),
     );
 
-    prepared = await prepareWebhookEvent(tenantId, "document.delivered", {
+    prepared = await prepareWebhookEvent(scope, "document.delivered", {
       document_id: documentId,
       job_id: jobId,
       job_slug: jobSlug,

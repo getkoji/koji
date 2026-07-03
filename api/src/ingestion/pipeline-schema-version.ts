@@ -37,18 +37,13 @@ export async function resolvePipelineSchemaVersion(
   pipelineId: string,
   schemaSlug: string,
 ): Promise<{ parsedJson: Record<string, unknown>; schemaId: string } | null> {
-  const [s] = await withRLS(db, tenantId, (tx) =>
-    tx
-      .select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
-      .from(schema.schemas)
-      .where(eq(schema.schemas.slug, schemaSlug))
-      .limit(1),
-  );
-  if (!s) return null;
-
+  // Load the pipeline first: schema slugs are only unique per PROJECT, so the
+  // slug lookup below must be confined to the pipeline's project or a
+  // same-slug schema in a sibling project could win the race.
   const [p] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
+        projectId: schema.pipelines.projectId,
         versionMode: schema.pipelines.versionMode,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
       })
@@ -56,6 +51,16 @@ export async function resolvePipelineSchemaVersion(
       .where(eq(schema.pipelines.id, pipelineId))
       .limit(1),
   );
+  if (!p) return null;
+
+  const [s] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
+      .from(schema.schemas)
+      .where(and(eq(schema.schemas.slug, schemaSlug), eq(schema.schemas.projectId, p.projectId)))
+      .limit(1),
+  );
+  if (!s) return null;
 
   // A pin is honored only if it points at a version of *this* schema.
   let pinBelongsToSchema = false;

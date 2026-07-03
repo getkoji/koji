@@ -13,6 +13,7 @@
 import { createHash, createHmac } from "node:crypto";
 import type { Context, Next } from "hono";
 import { getCookie } from "hono/cookie";
+import { HTTPException } from "hono/http-exception";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { AuthAdapter, Principal } from "./adapter";
@@ -145,6 +146,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       const [row] = await db
         .select({
           tenantId: schema.apiKeys.tenantId,
+          projectId: schema.apiKeys.projectId,
           userId: schema.apiKeys.createdBy,
           email: schema.users.email,
           name: schema.users.name,
@@ -165,9 +167,10 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
           email: row.email,
           name: row.name,
         };
-        // Stash the tenant from the key so tenant resolution can use it
-        // when no x-koji-tenant header is present.
+        // Stash the tenant + project from the key so tenant/project
+        // resolution can use them when no headers are present.
         c.set("apiKeyTenantId", row.tenantId);
+        c.set("apiKeyProjectId", row.projectId);
       }
     }
 
@@ -217,7 +220,86 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return c.json({ error: "Tenant not found" }, 404);
     }
 
+    // An API key is a credential FOR its tenant — a header naming a different
+    // tenant must not widen it, even when the key's creator is a member of
+    // that other tenant. (Session/org auth is unaffected.)
+    if (apiKeyTenantId && tenant.id !== apiKeyTenantId) {
+      return c.json({ error: "API key is not valid for this workspace" }, 403);
+    }
+
     c.set("tenantId", tenant.id);
+
+    // --- Stage 2.5: Resolve project ---
+    // Projects are the intra-tenant isolation boundary. Resolution:
+    //   1. x-koji-project header — session auth may name any live project in
+    //      the tenant; API-key auth may only name the key's own project (the
+    //      binding is a boundary, not a default).
+    //   2. the API key's bound project (checked to still be live).
+    //   3. the tenant's default project (slug matches the tenant slug,
+    //      falling back to the oldest live project).
+    // The resolved id rides into withRLS via getRlsScope(c), where the
+    // RESTRICTIVE project policies narrow every project-scoped table.
+    //
+    // A header naming an unknown project is answered only AFTER the
+    // membership check below — answering here would let any authenticated
+    // non-member probe which project slugs exist in a tenant.
+    const projectSlug = c.req.header("x-koji-project");
+    const apiKeyProjectId = c.get("apiKeyProjectId") as string | undefined;
+    let projectNotFound = false;
+
+    if (projectSlug) {
+      const [project] = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(
+          and(
+            eq(schema.projects.tenantId, tenant.id),
+            eq(schema.projects.slug, projectSlug),
+            isNull(schema.projects.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!project || (apiKeyProjectId && project.id !== apiKeyProjectId)) {
+        // A key naming a project other than its own gets the same answer as
+        // a missing project — the key cannot see outside its binding.
+        projectNotFound = true;
+      } else {
+        c.set("projectId", project.id);
+      }
+    } else if (apiKeyProjectId) {
+      // Re-validate the binding: a soft-deleted project must not remain an
+      // operable ghost scope for previously-issued keys.
+      const [project] = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(
+          and(
+            eq(schema.projects.id, apiKeyProjectId),
+            eq(schema.projects.tenantId, tenant.id),
+            isNull(schema.projects.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!project) {
+        return c.json({ error: "The project this API key belongs to has been deleted" }, 403);
+      }
+      c.set("projectId", project.id);
+    } else {
+      const [project] = await db
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
+        .where(and(eq(schema.projects.tenantId, tenant.id), isNull(schema.projects.deletedAt)))
+        .orderBy(
+          sql`(${schema.projects.slug} = ${schema.tenants.slug}) DESC`,
+          schema.projects.createdAt,
+          schema.projects.id,
+        )
+        .limit(1);
+      // A tenant with zero projects (mid-setup) proceeds tenant-wide; the
+      // setup flow creates the default project before any resource exists.
+      if (project) c.set("projectId", project.id);
+    }
 
     // --- Stage 3: Load grants ---
     let [membership] = await db
@@ -284,6 +366,11 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return c.json({ error: "You are not a member of this workspace" }, 403);
     }
 
+    // Deferred from Stage 2.5 — only members learn whether a project exists.
+    if (projectNotFound) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
     const grants = resolvePermissions(membership.roles);
     c.set("grants", grants);
     c.set("roles", membership.roles);
@@ -332,6 +419,37 @@ export function getPrincipal(c: Context<Env>): Principal {
 export function getTenantId(c: Context<Env>): string {
   const id = c.get("tenantId");
   if (!id) throw new Error("No tenantId on context — tenant resolution not applied?");
+  return id;
+}
+
+/** Get the resolved project ID, or null when the request is tenant-wide
+ *  (no header, no key binding, tenant has no projects yet). */
+export function getProjectId(c: Context<Env>): string | null {
+  return (c.get("projectId") as string | undefined) ?? null;
+}
+
+/**
+ * The RLS scope for the current request — pass this to `withRLS` so
+ * project-scoped tables are narrowed to the resolved project. Handlers that
+ * genuinely need tenant-wide access (none today) should pass a bare tenantId
+ * instead, with a comment saying why.
+ */
+export function getRlsScope(c: Context<Env>): { tenantId: string; projectId: string | null } {
+  return { tenantId: getTenantId(c), projectId: getProjectId(c) };
+}
+
+/**
+ * Like getProjectId but for write paths that create project-scoped rows —
+ * a request that resolved no project cannot create resources (only possible
+ * for a tenant with zero projects, i.e. mid-setup).
+ */
+export function requireProjectId(c: Context<Env>): string {
+  const id = getProjectId(c);
+  if (!id) {
+    throw new HTTPException(400, {
+      message: "No project resolved — create a project before creating resources",
+    });
+  }
   return id;
 }
 

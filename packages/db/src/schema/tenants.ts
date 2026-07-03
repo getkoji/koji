@@ -19,6 +19,7 @@ import {
   deletedAt,
   inet,
   primaryKey,
+  projectId,
   tenantId,
   updatedAt,
 } from "./_shared";
@@ -180,6 +181,9 @@ export const apiKeys = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    // The project this key is bound to. API-key requests without an explicit
+    // x-koji-project header are scoped to this project (see auth middleware).
+    projectId: projectId().references(() => projects.id),
     name: varchar("name", { length: 255 }).notNull(),
     keyPrefix: varchar("key_prefix", { length: 16 }).notNull(),
     keyHash: bytea("key_hash").notNull(),
@@ -193,9 +197,10 @@ export const apiKeys = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "date" }),
   },
   (t) => ({
-    tenantNameIdx: uniqueIndex("api_keys_tenant_name_idx").on(t.tenantId, t.name),
+    projectNameIdx: uniqueIndex("api_keys_project_name_idx").on(t.projectId, t.name),
     hashIdx: index("api_keys_hash_idx").on(t.keyHash).where(sql`revoked_at IS NULL`),
     tenantIdx: index("api_keys_tenant_idx").on(t.tenantId),
+    projectIdx: index("api_keys_project_idx").on(t.projectId),
   }),
 );
 

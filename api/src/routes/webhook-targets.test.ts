@@ -41,7 +41,9 @@ vi.mock("@koji/db", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    withRLS: async (_db: unknown, _tenantId: string, fn: (tx: unknown) => Promise<unknown>) => {
+    // Scope param may be a bare tenantId string or { tenantId, projectId } —
+    // this mock ignores it either way (RLS itself is tested elsewhere).
+    withRLS: async (_db: unknown, _scope: unknown, fn: (tx: unknown) => Promise<unknown>) => {
       const tx: any = {
         select: (proj?: Record<string, unknown>) => {
           // Distinguish requireQuantityGate's count query (single "count"
@@ -108,6 +110,7 @@ function createApp(opts: { masterKey?: string | null } = {}) {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
     c.set("tenantId", TENANT_A);
+    c.set("projectId", "00000000-0000-4000-8000-00000000aaaa");
     c.set("principal", { userId: USER, email: "test@koji.dev", name: "Test" } as any);
     c.set("grants", new Set(["webhook:read", "webhook:write"]));
     c.set("roles", ["owner"]);

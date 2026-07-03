@@ -4,7 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 
 /**
@@ -201,7 +201,7 @@ modelProviders.get("/", requires("endpoint:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.modelEndpoints.id,
@@ -335,11 +335,12 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   const configJson = buildConfigJson(body.provider, body);
   const authJson = buildAuthJson(body.provider, body, masterKey, tenantId);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.modelEndpoints)
       .values({
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
@@ -366,12 +367,13 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   // the 0020 backfill convention so a row created here looks identical to
   // one the migration would have produced.
   const credentialId = deriveCredentialId(row.id);
-  await withRLS(db, tenantId, async (tx) => {
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     await tx
       .insert(schema.providerCredentials)
       .values({
         id: credentialId,
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
@@ -457,7 +459,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     aws_session_token?: string;
   }>();
 
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       provider: schema.modelEndpoints.provider,
       configJson: schema.modelEndpoints.configJson,
@@ -518,7 +520,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     updates.authJson = buildAuthJson(provider, body, masterKey, tenantId);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.modelEndpoints)
       .set(updates)
@@ -546,7 +548,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   if (body.name) modelUpdates.displayName = body.name;
   if (body.model) modelUpdates.model = body.model;
 
-  await withRLS(db, tenantId, async (tx) => {
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     if (Object.keys(credentialUpdates).length > 1) {
       await tx
         .update(schema.providerCredentials)
@@ -574,7 +576,7 @@ modelProviders.delete("/:id", requires("endpoint:write"), async (c) => {
   const now = new Date();
   const credentialId = deriveCredentialId(endpointId);
 
-  await withRLS(db, tenantId, async (tx) => {
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     await tx
       .update(schema.modelEndpoints)
       .set({ deletedAt: now })
@@ -608,7 +610,7 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
   const endpointId = c.req.param("id")!;
   const masterKey = requireMasterKey(c);
 
-  const [existing] = await withRLS(db, tenantId, (tx) =>
+  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       provider: schema.modelEndpoints.provider,
     })
@@ -645,7 +647,7 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
   }
 
   const now = new Date();
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.modelEndpoints)
       .set({ authJson, updatedAt: now })
@@ -657,7 +659,7 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
 
   // Mirror to the credential — auth lives there in the split shape.
   const credentialId = deriveCredentialId(endpointId);
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.providerCredentials)
       .set({ authJson, updatedAt: now })
@@ -685,7 +687,7 @@ modelProviders.post("/:id/fetch-models", requires("endpoint:write"), async (c) =
   const endpointId = c.req.param("id")!;
   const masterKey = requireMasterKey(c);
 
-  const [endpoint] = await withRLS(db, tenantId, (tx) =>
+  const [endpoint] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         provider: schema.modelEndpoints.provider,

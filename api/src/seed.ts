@@ -5,7 +5,7 @@
  */
 import crypto from "node:crypto";
 import { createDb, schema } from "@koji/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { hashPassword } from "./auth/password";
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://koji:koji@localhost:5433/koji";
@@ -26,6 +26,28 @@ async function seed() {
   const USER = userRow.id;
   console.log(`  tenant=${TENANT}`);
   console.log(`  user=${USER}`);
+
+  // Resolve the tenant's default project the same way the API middleware
+  // does: prefer the project whose slug matches the tenant slug, then the
+  // oldest live project. Seeding into any other project would make the data
+  // invisible to a fresh dashboard session.
+  const [projectRow] = await db
+    .select({ id: schema.projects.id })
+    .from(schema.projects)
+    .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
+    .where(and(eq(schema.projects.tenantId, TENANT), isNull(schema.projects.deletedAt)))
+    .orderBy(
+      sql`(${schema.projects.slug} = ${schema.tenants.slug}) DESC`,
+      schema.projects.createdAt,
+      schema.projects.id,
+    )
+    .limit(1);
+  if (!projectRow) {
+    console.error("No project found for tenant. Complete /setup first.");
+    process.exit(1);
+  }
+  const PROJECT = projectRow.id;
+  console.log(`  project=${PROJECT}`);
 
   // ── E2E test user ──
   const TEST_EMAIL = "test@koji.test";
@@ -59,9 +81,9 @@ async function seed() {
   const [invoiceSchema, receiptSchema, claimSchema] = await db
     .insert(schema.schemas)
     .values([
-      { tenantId: TENANT, slug: "invoice", displayName: "Invoice", description: "Commercial invoice extraction — number, dates, parties, line items, totals.", createdBy: USER },
-      { tenantId: TENANT, slug: "receipt", displayName: "Receipt", description: "POS receipt extraction — store, date, items, total.", createdBy: USER },
-      { tenantId: TENANT, slug: "insurance-claim", displayName: "Insurance Claim", description: "First notice of loss — claimant, policy, incident, damages.", createdBy: USER },
+      { tenantId: TENANT, projectId: PROJECT, slug: "invoice", displayName: "Invoice", description: "Commercial invoice extraction — number, dates, parties, line items, totals.", createdBy: USER },
+      { tenantId: TENANT, projectId: PROJECT, slug: "receipt", displayName: "Receipt", description: "POS receipt extraction — store, date, items, total.", createdBy: USER },
+      { tenantId: TENANT, projectId: PROJECT, slug: "insurance-claim", displayName: "Insurance Claim", description: "First notice of loss — claimant, policy, incident, damages.", createdBy: USER },
     ])
     .returning();
   console.log("  3 schemas created");
@@ -162,6 +184,7 @@ fields:
   const seedEndpoints = [
     {
       tenantId: TENANT,
+      projectId: PROJECT,
       slug: "openai-primary",
       displayName: "OpenAI primary",
       provider: "openai",
@@ -172,6 +195,7 @@ fields:
     },
     {
       tenantId: TENANT,
+      projectId: PROJECT,
       slug: "anthropic-fallback",
       displayName: "Anthropic fallback",
       provider: "anthropic",
@@ -196,7 +220,7 @@ fields:
   await db.insert(schema.providerCredentials).values(
     credentialsSeed.map(({ ep, credId, src }) => ({
       id: credId,
-      tenantId: TENANT,
+      tenantId: TENANT, projectId: PROJECT,
       slug: src.slug,
       displayName: src.displayName,
       provider: src.provider,
@@ -224,7 +248,7 @@ fields:
     .insert(schema.pipelines)
     .values([
       {
-        tenantId: TENANT,
+        tenantId: TENANT, projectId: PROJECT,
         slug: "claims-intake",
         displayName: "Claims Intake",
         schemaId: claimSchema!.id,
@@ -246,7 +270,7 @@ fields:
         createdBy: USER,
       },
       {
-        tenantId: TENANT,
+        tenantId: TENANT, projectId: PROJECT,
         slug: "invoice-ingest",
         displayName: "Invoice Ingest",
         schemaId: invoiceSchema!.id,
@@ -268,7 +292,7 @@ fields:
         createdBy: USER,
       },
       {
-        tenantId: TENANT,
+        tenantId: TENANT, projectId: PROJECT,
         slug: "receipt-scan",
         displayName: "Receipt Scan",
         schemaId: receiptSchema!.id,
@@ -296,7 +320,7 @@ fields:
   //    "Connected sources" section has real rows ──
   await db.insert(schema.sources).values([
     {
-      tenantId: TENANT,
+      tenantId: TENANT, projectId: PROJECT,
       slug: "acme-invoices-inbound",
       displayName: "acme-invoices-inbound",
       sourceType: "s3",
@@ -307,7 +331,7 @@ fields:
       createdBy: USER,
     },
     {
-      tenantId: TENANT,
+      tenantId: TENANT, projectId: PROJECT,
       slug: "partner-claims-webhook",
       displayName: "Partner claims webhook",
       sourceType: "webhook",
@@ -319,7 +343,7 @@ fields:
       createdBy: USER,
     },
     {
-      tenantId: TENANT,
+      tenantId: TENANT, projectId: PROJECT,
       slug: "receipts-inbox",
       displayName: "Receipts inbox",
       sourceType: "email",
@@ -369,7 +393,7 @@ fields:
         const startedAt = new Date(now.getTime() - j.ago * 60 * 1000);
         const completedAt = j.status === "running" ? null : new Date(startedAt.getTime() + (j.latency ?? 0));
         return {
-          tenantId: TENANT,
+          tenantId: TENANT, projectId: PROJECT,
           slug: j.slug,
           pipelineId: j.pipeline,
           triggerType: j.trigger,
@@ -791,6 +815,7 @@ fields:
           : null;
       return {
         tenantId: TENANT,
+        projectId: PROJECT,
         documentId: doc.id,
         schemaId: doc.schemaId!,
         fieldName: r.fieldName,

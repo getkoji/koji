@@ -6,7 +6,7 @@ import { schema, withRLS } from "@koji/db";
 import { compilePipeline, calculatePipelineCosts } from "@koji/pipeline";
 import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId, getRlsScope } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
 import { formatSemver } from "../schemas/semver";
 import { requireUploadRateLimit } from "../billing/rate-limits";
@@ -85,20 +85,26 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
  * Resolve the pipeline UUID from a URL segment that may be either a UUID or a slug.
- * Slugs are unique per (tenant, slug) among non-deleted rows.
+ * Slugs are unique per (project, slug) among non-deleted rows, so the lookup
+ * runs under the caller's full RLS scope.
  */
 async function resolvePipelineId(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
-  tenantId: string,
+  scope: { tenantId: string; projectId: string | null },
   idOrSlug: string,
 ): Promise<string | null> {
-  if (UUID_RE.test(idOrSlug)) return idOrSlug;
-  const [row] = await withRLS(db, tenantId, (tx) =>
+  // A raw UUID is looked up under the same scope as a slug — short-circuiting
+  // it unverified would let a caller smuggle another project's pipeline id
+  // into paths that then operate tenant-wide (e.g. job creation).
+  const matcher = UUID_RE.test(idOrSlug)
+    ? eq(schema.pipelines.id, idOrSlug)
+    : eq(schema.pipelines.slug, idOrSlug);
+  const [row] = await withRLS(db, scope, (tx) =>
     tx
       .select({ id: schema.pipelines.id })
       .from(schema.pipelines)
-      .where(and(eq(schema.pipelines.slug, idOrSlug), sql`deleted_at IS NULL`))
+      .where(and(matcher, sql`deleted_at IS NULL`))
       .limit(1),
   );
   return row?.id ?? null;
@@ -113,7 +119,7 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelines.id,
@@ -160,7 +166,7 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
   );
 
   // Aggregate per-pipeline job stats in a single query
-  const stats = await withRLS(db, tenantId, (tx) =>
+  const stats = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         pipelineId: schema.jobs.pipelineId,
@@ -195,10 +201,10 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const idOrSlug = c.req.param("idOrSlug")!;
-  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelines.id,
@@ -258,7 +264,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
     | null = null;
   if (pipeline.activeSchemaVersionId) {
     const activeVersionId = pipeline.activeSchemaVersionId;
-    const [sv] = await withRLS(db, tenantId, (tx) =>
+    const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .select({
           id: schema.schemaVersions.id,
@@ -286,7 +292,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
   }
 
   // Connected sources
-  const connectedSources = await withRLS(db, tenantId, (tx) =>
+  const connectedSources = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.sources.id,
@@ -306,7 +312,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
   );
 
   // Recent jobs (last 10)
-  const recentJobs = await withRLS(db, tenantId, (tx) =>
+  const recentJobs = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.jobs.id,
@@ -328,7 +334,7 @@ pipelinesRouter.get("/:idOrSlug", requires("pipeline:read"), async (c) => {
   );
 
   // Per-pipeline rollup
-  const [stats] = await withRLS(db, tenantId, (tx) =>
+  const [stats] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         docsTotal: sql<number>`COALESCE(SUM(${schema.jobs.docsTotal}), 0)::int`,
@@ -387,6 +393,8 @@ pipelinesRouter.post(
   requireQuantityGate("max_pipelines", async (c) => {
     const db = c.get("db");
     const tenantId = getTenantId(c);
+    // Plan quantity limits are per-TENANT — count tenant-wide, not per-project,
+    // or each new project would multiply the quota.
     const [row] = await withRLS(db, tenantId, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` }).from(schema.pipelines).where(sql`deleted_at IS NULL`),
     );
@@ -424,11 +432,12 @@ pipelinesRouter.post(
     dagJson = {};
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.pipelines)
       .values({
         tenantId,
+        projectId: requireProjectId(c),
         slug: body.slug,
         displayName: body.name,
         pipelineType,
@@ -454,7 +463,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const idOrSlug = c.req.param("idOrSlug")!;
-  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const body = await c.req.json<{
@@ -501,7 +510,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
         }
         if (Object.keys(encryptedHeaders).length > 0) {
           // Store encrypted headers alongside the pipeline config
-          const existingConfig = (await withRLS(db, tenantId, (tx) =>
+          const existingConfig = (await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
             tx.select({ configJson: schema.pipelines.configJson })
               .from(schema.pipelines)
               .where(eq(schema.pipelines.id, pipelineId))
@@ -524,7 +533,7 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
     updates.reviewThreshold = body.review_threshold.toString();
   if (body.config !== undefined) updates.configJson = body.config;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.pipelines).set(updates).where(eq(schema.pipelines.id, pipelineId)).returning(),
   );
 
@@ -545,7 +554,7 @@ pipelinesRouter.patch("/:idOrSlug/retry-policy", requires("pipeline:write"), asy
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const idOrSlug = c.req.param("idOrSlug")!;
-  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const body = (await c.req.json().catch(() => undefined)) as unknown;
@@ -559,7 +568,7 @@ pipelinesRouter.patch("/:idOrSlug/retry-policy", requires("pipeline:write"), asy
     nextValue = parsed;
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.pipelines)
       .set({ retryPolicyJson: nextValue, updatedAt: new Date() })
@@ -608,10 +617,10 @@ pipelinesRouter.post("/:idOrSlug/validate", requires("pipeline:write"), async (c
 pipelinesRouter.get("/:idOrSlug/cost", requires("pipeline:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         pipelineType: schema.pipelines.pipelineType,
@@ -632,7 +641,7 @@ pipelinesRouter.get("/:idOrSlug/cost", requires("pipeline:read"), async (c) => {
   }
 
   // For DAG pipelines, compile the YAML and calculate costs
-  const [full] = await withRLS(db, tenantId, (tx) =>
+  const [full] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ yamlSource: schema.pipelines.yamlSource })
       .from(schema.pipelines)
       .where(eq(schema.pipelines.id, pipelineId))
@@ -665,7 +674,7 @@ pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const principal = getPrincipal(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const body = await c.req.json<{
@@ -677,7 +686,7 @@ pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c
   if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
 
   // Get the next version number
-  const [latest] = await withRLS(db, tenantId, (tx) =>
+  const [latest] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ maxVersion: sql<number>`COALESCE(MAX(version_number), 0)::int` })
       .from(schema.pipelineVersions)
@@ -693,7 +702,7 @@ pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c
   }
   const dagJson = compiled.pipeline;
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.pipelineVersions)
       .values({
@@ -711,7 +720,7 @@ pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c
 
   // If deploying, update the pipeline's active state
   if (body.deploy && rows[0]) {
-    await withRLS(db, tenantId, (tx) =>
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.pipelines)
         .set({
@@ -733,10 +742,10 @@ pipelinesRouter.post("/:idOrSlug/versions", requires("pipeline:write"), async (c
 pipelinesRouter.get("/:idOrSlug/versions", requires("pipeline:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelineVersions.id,
@@ -761,17 +770,17 @@ pipelinesRouter.delete("/:idOrSlug", requires("pipeline:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const idOrSlug = c.req.param("idOrSlug")!;
-  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.sources)
       .set({ targetPipelineId: null, updatedAt: new Date() })
       .where(eq(schema.sources.targetPipelineId, pipelineId)),
   );
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.pipelines)
       .set({ deletedAt: new Date() })
@@ -789,7 +798,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
   const tenantId = getTenantId(c);
   const idOrSlug = c.req.param("idOrSlug")!;
   const principal = getPrincipal(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, idOrSlug);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), idOrSlug);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const body = await c.req.json<{ schema_version_id?: string; mode?: "auto" | "pinned" }>();
@@ -797,7 +806,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
   // Unpin: set the pipeline back to `auto` so it follows the schema's live
   // release again. No specific version needed.
   if (body.mode === "auto") {
-    const rows = await withRLS(db, tenantId, (tx) =>
+    const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.pipelines)
         .set({ versionMode: "auto", updatedAt: new Date() })
@@ -812,7 +821,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
   }
   const schemaVersionId: string = body.schema_version_id;
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelines.id,
@@ -824,7 +833,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
   );
   if (!pipeline) return c.json({ error: "Pipeline not found" }, 404);
 
-  const [sv] = await withRLS(db, tenantId, (tx) =>
+  const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.schemaVersions.id,
@@ -840,7 +849,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
     return c.json({ error: "Schema version does not belong to this pipeline's schema" }, 422);
   }
 
-  const rows = await withRLS(db, tenantId, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.pipelines)
       .set({
@@ -853,7 +862,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
       .returning(),
   );
 
-  await emitWebhookEvent(tenantId, "schema.deployed", {
+  await emitWebhookEvent(getRlsScope(c), "schema.deployed", {
     pipeline_id: pipelineId,
     schema_version_id: schemaVersionId,
     version_number: sv.versionNumber,
@@ -874,10 +883,10 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
 pipelinesRouter.post("/:idOrSlug/pause", requires("pipeline:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.pipelines)
       .set({ status: "paused", updatedAt: new Date() })
@@ -891,10 +900,10 @@ pipelinesRouter.post("/:idOrSlug/pause", requires("pipeline:write"), async (c) =
 pipelinesRouter.post("/:idOrSlug/resume", requires("pipeline:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  await withRLS(db, tenantId, (tx) =>
+  await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .update(schema.pipelines)
       .set({ status: "active", updatedAt: new Date() })
@@ -917,13 +926,14 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
   const storage = c.get("storage");
   const queue = c.get("queue");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         id: schema.pipelines.id,
+        projectId: schema.pipelines.projectId,
         schemaId: schema.pipelines.schemaId,
         activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
         pipelineType: schema.pipelines.pipelineType,
@@ -1009,6 +1019,7 @@ pipelinesRouter.post("/:idOrSlug/run", requires("job:run"), requireUploadRateLim
   const created = await createExtractionJob({
     db,
     tenantId,
+    projectId: pipeline.projectId,
     pipelineId,
     schemaId: pipeline.schemaId || "",
     schemaVersionId: pipeline.activeSchemaVersionId || "",
@@ -1058,13 +1069,13 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
   const storage = c.get("storage");
   const queue = c.get("queue");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const jobId = c.req.param("jobId")!;
 
   // Verify job exists and belongs to this pipeline
-  const [job] = await withRLS(db, tenantId, (tx) =>
+  const [job] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.jobs.id, pipelineId: schema.jobs.pipelineId })
       .from(schema.jobs)
       .where(eq(schema.jobs.id, jobId))
@@ -1074,7 +1085,7 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
     return c.json({ error: "Job not found" }, 404);
   }
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       schemaId: schema.pipelines.schemaId,
       activeSchemaVersionId: schema.pipelines.activeSchemaVersionId,
@@ -1568,13 +1579,13 @@ async function executeTestStep(
 pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  const pipelineId = await resolvePipelineId(db, tenantId, c.req.param("idOrSlug")!);
+  const pipelineId = await resolvePipelineId(db, getRlsScope(c), c.req.param("idOrSlug")!);
   if (!pipelineId) return c.json({ error: "Pipeline not found" }, 404);
 
   const stream = c.req.query("stream") === "true";
   const mode = c.req.query("mode") || "auto";
 
-  const [pipeline] = await withRLS(db, tenantId, (tx) =>
+  const [pipeline] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.pipelines.id,
       yamlSource: schema.pipelines.yamlSource,
@@ -1628,7 +1639,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   // (honoring a pipeline-pinned override) via the shared seam, instead of the
   // global default `c.get("parseProvider")` — otherwise a scanned/degraded doc
   // that only the tenant's Doc AI handles parses empty here (oss-308/oss-310).
-  const { provider: parseProvider } = await resolveParse(db, tenantId, {
+  const { provider: parseProvider } = await resolveParse(db, getRlsScope(c), {
     parseProviderId: readParseProviderPin(pipeline.configJson),
     defaultProvider: (c as any).get("parseProvider"),
     parseConfig: c.get("parseConfig"),
