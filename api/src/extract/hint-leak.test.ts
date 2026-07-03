@@ -193,4 +193,103 @@ describe("stripHintLeaks", () => {
     expect(affected).toEqual([]);
     expect(extracted.policy_number).toBe("TOTALLY-FABRICATED-123");
   });
+
+  describe("canonical (enum/mapping) values are exempt", () => {
+    it("keeps a mapping-typed scalar whose canonical value appears in its own hint", () => {
+      const mappingFields = {
+        package_type: {
+          type: "mapping",
+          extraction_hint: 'Resolve to a code, e.g. "Businessowners" → businessowners_package.',
+          mappings: { businessowners_package: ["Businessowners", "BOP"] },
+        },
+      };
+      // Canonical code: never in the doc, always in the hint — NOT a leak.
+      const extracted: Record<string, unknown> = { package_type: "businessowners_package" };
+      const affected = stripHintLeaks(extracted, mappingFields, [chunk("BUSINESSOWNERS POLICY DECLARATIONS")]);
+
+      expect(affected).toEqual([]);
+      expect(extracted.package_type).toBe("businessowners_package");
+    });
+
+    it("keeps mapping-typed array-item properties (coverage_code scenario)", () => {
+      const coverageFields = {
+        coverages: {
+          type: "array",
+          extraction_hint: "One row per coverage part.",
+          items: {
+            type: "object",
+            properties: {
+              coverage_code: {
+                type: "mapping",
+                extraction_hint:
+                  'Worked examples: "Commercial General Liability" → general_liability; "Commercial Property" → property.',
+                mappings: {
+                  general_liability: ["Commercial General Liability", "GL"],
+                  property: ["Commercial Property"],
+                },
+              },
+              label: { type: "string" },
+            },
+          },
+        },
+      };
+      const extracted: Record<string, unknown> = {
+        coverages: [
+          { coverage_code: "general_liability", label: "Commercial General Liability" },
+          { coverage_code: "property", label: "Commercial Property" },
+        ],
+      };
+      // Doc contains the printed labels but never the canonical codes.
+      const chunks = [chunk("Commercial General Liability\nCommercial Property\nLimits of Insurance")];
+
+      const affected = stripHintLeaks(extracted, coverageFields, chunks);
+
+      expect(affected).toEqual([]);
+      expect(extracted.coverages).toEqual([
+        { coverage_code: "general_liability", label: "Commercial General Liability" },
+        { coverage_code: "property", label: "Commercial Property" },
+      ]);
+    });
+
+    it("keeps enum values declared via options", () => {
+      const enumFields = {
+        billing_type: {
+          type: "enum",
+          extraction_hint: 'Pick "direct_bill_installments" when the dec page says DIRECT BILL.',
+          options: ["direct_bill_installments", "agency_bill"],
+        },
+      };
+      const extracted: Record<string, unknown> = { billing_type: "direct_bill_installments" };
+      const affected = stripHintLeaks(extracted, enumFields, [chunk("DIRECT BILL")]);
+
+      expect(affected).toEqual([]);
+      expect(extracted.billing_type).toBe("direct_bill_installments");
+    });
+
+    it("still strips a non-canonical sibling property next to an exempt one", () => {
+      const coverageFields = {
+        coverages: {
+          type: "array",
+          extraction_hint:
+            'e.g. a Crime part underwritten by "EXAMPLE UNDERWRITERS OF AMERICA INC" maps to fidelity_crime.',
+          items: {
+            type: "object",
+            properties: {
+              coverage_code: { type: "mapping", mappings: { fidelity_crime: ["Crime"] } },
+              underwriter: { type: "string" },
+            },
+          },
+        },
+      };
+      const extracted: Record<string, unknown> = {
+        coverages: [{ coverage_code: "fidelity_crime", underwriter: "EXAMPLE UNDERWRITERS OF AMERICA INC" }],
+      };
+      const chunks = [chunk("CRIME COVERAGE PART DECLARATIONS")];
+
+      const affected = stripHintLeaks(extracted, coverageFields, chunks);
+
+      expect(affected).toEqual(["coverages"]);
+      expect(extracted.coverages).toEqual([{ coverage_code: "fidelity_crime", underwriter: null }]);
+    });
+  });
 });

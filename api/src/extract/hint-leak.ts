@@ -89,6 +89,33 @@ function isLeakedLeaf(
 }
 
 /**
+ * True when a spec's values are CANONICAL — an enum/mapping domain the schema
+ * declares rather than text transcribed from the document. Canonical values
+ * (e.g. a mapping's `general_liability`) by design never appear verbatim in
+ * the source AND legitimately appear in the field's hint (worked examples
+ * explaining the mapping), so the leak signature is meaningless for them —
+ * guarding would null every correctly mapped value.
+ */
+function isCanonicalValueSpec(spec: Record<string, unknown> | undefined): boolean {
+  if (!spec) return false;
+  const t = spec.type as string | undefined;
+  if (t === "enum" || t === "mapping") return true;
+  if (Array.isArray(spec.options) && spec.options.length > 0) return true;
+  if (spec.mappings && typeof spec.mappings === "object") return true;
+  return false;
+}
+
+/** The declared sub-field specs of an object/array-item (either vocabulary). */
+function propSpecs(
+  spec: Record<string, unknown> | undefined,
+): Record<string, Record<string, unknown>> {
+  const props = (spec?.properties ?? spec?.fields) as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  return props && typeof props === "object" ? props : {};
+}
+
+/**
  * Null every extracted value that was copied verbatim from its field's own
  * extraction hint and cannot be located anywhere in the section text.
  *
@@ -96,6 +123,8 @@ function isLeakedLeaf(
  * - String array items that leak are removed.
  * - Object properties (top-level objects and array-of-object items) that leak
  *   are nulled; an array item whose properties all end up null is removed.
+ * - Enum/mapping-typed leaves are exempt — their canonical values are
+ *   schema-declared, not transcribed (see isCanonicalValueSpec).
  *
  * Mutates `extracted` in place and returns the names of affected fields so
  * the caller can rescore them and surface the guard in the trace.
@@ -110,7 +139,9 @@ export function stripHintLeaks(
 
   for (const [fieldName, value] of Object.entries(extracted)) {
     if (value == null) continue;
-    const hint = collectHintText(fields[fieldName]);
+    const fieldSpec = fields[fieldName];
+    if (isCanonicalValueSpec(fieldSpec)) continue;
+    const hint = collectHintText(fieldSpec);
     if (!hint) continue;
 
     if (typeof value === "string") {
@@ -122,16 +153,20 @@ export function stripHintLeaks(
     }
 
     if (Array.isArray(value)) {
+      const itemSpec = fieldSpec?.items as Record<string, unknown> | undefined;
+      const itemCanonical = isCanonicalValueSpec(itemSpec);
+      const itemProps = propSpecs(itemSpec);
       let changed = false;
       const kept = value.filter((item) => {
         if (typeof item === "string") {
-          const leaked = isLeakedLeaf(item, hint, sectionChunks);
+          const leaked = !itemCanonical && isLeakedLeaf(item, hint, sectionChunks);
           if (leaked) changed = true;
           return !leaked;
         }
         if (item && typeof item === "object" && !Array.isArray(item)) {
           const obj = item as Record<string, unknown>;
           for (const [prop, pv] of Object.entries(obj)) {
+            if (isCanonicalValueSpec(itemProps[prop])) continue;
             if (isLeakedLeaf(pv, hint, sectionChunks)) {
               obj[prop] = null;
               changed = true;
@@ -150,9 +185,11 @@ export function stripHintLeaks(
     }
 
     if (typeof value === "object") {
+      const props = propSpecs(fieldSpec);
       const obj = value as Record<string, unknown>;
       let changed = false;
       for (const [prop, pv] of Object.entries(obj)) {
+        if (isCanonicalValueSpec(props[prop])) continue;
         if (isLeakedLeaf(pv, hint, sectionChunks)) {
           obj[prop] = null;
           changed = true;
