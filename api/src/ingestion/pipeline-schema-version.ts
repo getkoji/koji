@@ -36,7 +36,7 @@ export async function resolvePipelineSchemaVersion(
   tenantId: string,
   pipelineId: string,
   schemaSlug: string,
-): Promise<{ parsedJson: Record<string, unknown> } | null> {
+): Promise<{ parsedJson: Record<string, unknown>; schemaId: string } | null> {
   const [s] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({ id: schema.schemas.id, currentVersionId: schema.schemas.currentVersionId })
@@ -85,5 +85,5 @@ export async function resolvePipelineSchemaVersion(
       .where(eq(schema.schemaVersions.id, versionId))
       .limit(1),
   );
-  return ver?.parsedJson ? { parsedJson: ver.parsedJson as Record<string, unknown> } : null;
+  return ver?.parsedJson ? { parsedJson: ver.parsedJson as Record<string, unknown>, schemaId: s.id } : null;
 }

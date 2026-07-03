@@ -26,6 +26,8 @@ import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
 import { readParseProviderPin } from "./process";
 import { resolveParse, parseDocument } from "./seam";
+import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
+import { enqueueWebhookDeliveries } from "../webhooks/emit";
 
 let _db: Db | null = null;
 let _storage: StorageProvider | null = null;
@@ -288,6 +290,8 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       yamlSource: schema.pipelines.yamlSource,
       modelProviderId: schema.pipelines.modelProviderId,
       configJson: schema.pipelines.configJson,
+      reviewThreshold: schema.pipelines.reviewThreshold,
+      schemaId: schema.pipelines.schemaId,
     })
     .from(schema.pipelines)
     .where(eq(schema.pipelines.id, pipelineId))
@@ -390,6 +394,11 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   let totalCost = 0;
   let finalExtraction: Record<string, unknown> | null = null;
   let finalConfidence: number | null = null;
+  // Full engine result + schema of the LAST extract step — the outcome module
+  // needs confidence_scores/provenance/fit and the schema for review routing.
+  let finalResult: OutcomeExtraction | null = null;
+  let finalSchemaDef: Record<string, unknown> | undefined;
+  let finalSchemaId: string | null = null;
 
   while (currentId && stepOrder < 20) {
     const step = pSteps.find(s => s.id === currentId);
@@ -458,6 +467,9 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               output = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
               finalExtraction = result.extracted;
               finalConfidence = avgConf;
+              finalResult = result as OutcomeExtraction;
+              finalSchemaDef = ver.parsedJson;
+              finalSchemaId = ver.schemaId;
             }
           }
           if (!output.schema) output = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
@@ -819,6 +831,9 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                     branchOutput = { schema: schemaSlug, fields: result.extracted, fieldCount: nonNull.length, totalFields: fieldNames.length, confidence: avgConf };
                     finalExtraction = result.extracted;
                     finalConfidence = avgConf;
+                    finalResult = result as OutcomeExtraction;
+                    finalSchemaDef = ver.parsedJson;
+                    finalSchemaId = ver.schemaId;
                   }
                 }
                 if (!branchOutput.schema) branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
@@ -902,15 +917,57 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
     }
   }
 
-  // Update document with final result
+  // ── Finalize (entrypoint parity, oss-359) ────────────────────────────────
+  // A DAG document that ends on an extract step gets the SAME post-extraction
+  // contract as a simple-pipeline document: engine per-field confidence scores
+  // persisted, low-confidence routing to the review queue, provenance/fit JSON,
+  // job counters, and the document.review_requested / document.delivered
+  // webhook + notification. Previously the DAG path wrote only extractionJson
+  // plus a naive average confidence and marked everything `delivered`, so DAG
+  // documents silently bypassed HITL review.
   const lastOutput = stepOutputs[Object.keys(stepOutputs).pop() ?? ""];
   const wasSplit = lastOutput?.fan_out === true;
+  const runDurationMs = Date.now() - (doc as any).startedAt?.getTime?.() || 0;
+
+  if (!wasSplit && finalResult) {
+    const [jobRow] = await withRLS(db, tenantId, (tx) =>
+      tx.select({ id: schema.jobs.id, slug: schema.jobs.slug }).from(schema.jobs)
+        .where(eq(schema.jobs.id, doc.jobId)).limit(1),
+    );
+    const outcome = decideDocumentOutcome({
+      schemaDef: finalSchemaDef,
+      extractResult: finalResult,
+      reviewThreshold: pipeline.reviewThreshold,
+    });
+    const prepared = await persistDocumentOutcome({
+      db,
+      tenantId,
+      documentId,
+      jobId: doc.jobId,
+      jobSlug: jobRow?.slug ?? "",
+      pipelineId,
+      schemaId: finalSchemaId ?? pipeline.schemaId ?? null,
+      threshold: Number(pipeline.reviewThreshold),
+      outcome,
+      extractResult: finalResult,
+      durationMs: runDurationMs,
+      extraDocUpdates: { pageCount, costUsd: String(totalCost) },
+    });
+    // No trace-stage ordering to respect on this path — enqueue immediately.
+    if (prepared) {
+      await enqueueWebhookDeliveries(tenantId, prepared, { documentId });
+    }
+    return;
+  }
+
+  // Split fan-outs and non-extract terminal steps (tag/webhook/filter) keep the
+  // original minimal bookkeeping — there is no extraction outcome to score.
   const updates: Record<string, unknown> = {
     status: wasSplit ? "split" : "delivered",
     completedAt: new Date(),
     pageCount,
     costUsd: String(totalCost),
-    durationMs: Date.now() - (doc as any).startedAt?.getTime?.() || 0,
+    durationMs: runDurationMs,
   };
   if (finalExtraction) {
     updates.extractionJson = finalExtraction;
