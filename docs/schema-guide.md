@@ -1299,6 +1299,57 @@ items:
 
 The validate output reports `precision` and `recall` (percentages) per array field alongside `accuracy` (the F1). A low F1 with high recall / low precision means spurious or wrong elements; high precision / low recall means missed elements — the distinction tells you whether to tighten extraction or broaden it. `koji validate --json` includes all three.
 
+## Deterministic form tables (`forms:`)
+
+When a document family prints a critical table in a **regular, recurring form**
+— a summary page, a schedule, a fee table — LLM extraction of that table is
+solving a problem you don't have: the structure is fixed, only the values
+change. The top-level `forms:` block declares a deterministic grammar for such
+a table; the engine parses it directly and uses the result as the
+**authoritative row set** for one array field, with LLM extraction enriching
+each row's remaining sub-fields.
+
+```yaml
+forms:
+  - id: premium_summary
+    detect: "SUMMARY OF PREMIUMS CHARGED"   # optional: spec is inactive unless this matches
+    anchor: "SUMMARY OF PREMIUMS CHARGED"   # regex locating the table region
+    end: "ANNUAL TOTAL|PAYMENTS"            # regex terminating the region (optional)
+    field: coverages                        # the array field this table feeds
+    row:
+      pattern: "(?<label>[A-Z][A-Za-z /&]+ Coverage Part)\\s*\\$\\s*(?<amount>[\\d,]+|INCL)?"
+      require: [label]                      # groups that must be non-empty
+      skip_when_blank: [amount]             # a blank group means the row isn't real data
+    set:
+      label: "{label}"
+      coverage_code: { resolve: "{label}", via: coverage_code }   # resolve through the sub-field's mapping vocab
+      premium: { money: "{amount}", null_tokens: [INCL] }         # numeric parse; INCL → null
+```
+
+**How rows merge (`element_key` join).** The parser's rows decide **row
+membership** — which elements exist. LLM-extracted rows that share the field's
+`element_key` value contribute the sub-fields the grammar didn't capture (e.g.
+per-part limits from elsewhere in the document); parser-captured values always
+win; LLM rows with no matching parser row are dropped; parser rows with no LLM
+match are kept as parsed. Without an `element_key`, the parser rows simply
+replace the extraction for that field. Per-row provenance is the matched table
+text, so highlighting and `skip_row_when` keep working.
+
+**Matching model.** The region between `anchor` and `end` is normalized before
+matching — table pipes become spaces, whitespace collapses — so one grammar
+matches plain lines, pipe-table rows, and parser-flattened run-on lines. The
+`row.pattern` runs globally over the region with JS named groups.
+
+**Failure behavior.** A spec that doesn't apply (`detect`/`anchor` miss, zero
+matching rows, malformed regex) is simply inactive and the field falls back to
+normal LLM extraction — a form grammar can narrow a document's behavior but
+never lose data on documents it doesn't fit. The compiler validates the spec
+shape (field exists and is an array, `row.pattern` compiles) at push time.
+
+Form grammars are deterministic: they either parse a document or they don't,
+so iterating on one against a validation corpus gives attributable, noise-free
+failures — well suited to automated authoring loops.
+
 ## Enum matching
 
 Enum fields constrain extraction to a predefined set of values. Koji applies fuzzy matching in this order:

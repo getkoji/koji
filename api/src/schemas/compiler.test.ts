@@ -504,3 +504,36 @@ fields:
     }
   });
 });
+
+describe("forms block validation (oss-367)", () => {
+  const base = `
+name: t
+fields:
+  parts:
+    type: array
+    items:
+      type: object
+      properties:
+        code: { type: string }
+`;
+  it("accepts a valid forms block", () => {
+    const r = compileSchema(base + `
+forms:
+  - id: x
+    field: parts
+    anchor: "SUMMARY"
+    row: { pattern: "(?<label>\\\\w+)" }
+    set: { label: "{label}" }
+`);
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects missing row.pattern, unknown field, and invalid regex", () => {
+    const r1 = compileSchema(base + "forms:\n  - field: parts\n    anchor: A\n");
+    expect(r1.ok).toBe(false);
+    const r2 = compileSchema(base + `forms:\n  - field: nope\n    anchor: A\n    row: { pattern: x }\n`);
+    expect(r2.ok).toBe(false);
+    const r3 = compileSchema(base + `forms:\n  - field: parts\n    anchor: A\n    row: { pattern: "([" }\n`);
+    expect(r3.ok).toBe(false);
+  });
+});

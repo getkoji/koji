@@ -16,6 +16,7 @@ import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
 import { arrayItemProperties, objectProperties, resolveVocab } from "./schema-tree";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
+import { applyFormTables } from "./form-tables";
 import type { FitReport } from "./fit";
 import type { ParseChunk } from "../parse/chunk";
 
@@ -946,6 +947,12 @@ export async function extractFields(
   // nulled required field surfaces as not-found (→ review), not a wrong value.
   const captionNulled = rejectCaptionValues(result.extracted, fields);
 
+  // `forms:` table grammars (oss-367): deterministic parsers seed the
+  // authoritative row set for their target array fields; LLM rows join by
+  // element_key to enrich. Runs FIRST in the array post-processing chain so
+  // collapse/skip operate on the seeded set.
+  const formReports = applyFormTables(markdown, schemaDef, result.extracted, result.source_texts);
+
   // `element_key` collapse: multi-pass extraction (per_section groups,
   // enumerate_rows) emits one row variant per place a logical element appears;
   // same-key rows collapse to the richest. Runs before skip_row_when so the
@@ -977,6 +984,7 @@ export async function extractFields(
       ...captionNulled.map(
         (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
       ),
+      ...formReports,
       ...collapsedRows.map(
         ({ field, collapsed }) => `${field}: collapsed ${collapsed} duplicate row(s) by element_key`,
       ),
