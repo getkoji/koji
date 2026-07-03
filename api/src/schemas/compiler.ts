@@ -193,6 +193,46 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
   // must reference another property of the same item.
   validateVocabTree(fields, errors, "");
 
+  // Top-level `forms:` — deterministic form-table grammars (oss-367).
+  if (doc.forms !== undefined) {
+    if (!Array.isArray(doc.forms)) {
+      errors.push({ message: "'forms' must be a list of form-table specs" });
+    } else {
+      (doc.forms as unknown[]).forEach((raw, i) => {
+        const f = raw as Record<string, unknown>;
+        const label = `forms[${i}]`;
+        if (!f || typeof f !== "object") {
+          errors.push({ message: `${label}: must be a mapping` });
+          return;
+        }
+        for (const req of ["field", "anchor"]) {
+          if (typeof f[req] !== "string" || !f[req]) {
+            errors.push({ message: `${label}: '${req}' is required and must be a string` });
+          }
+        }
+        const row = f.row as Record<string, unknown> | undefined;
+        if (!row || typeof row !== "object" || typeof row.pattern !== "string" || !row.pattern) {
+          errors.push({ message: `${label}: 'row.pattern' is required and must be a string` });
+        } else {
+          try {
+            new RegExp(row.pattern as string, "g");
+          } catch (e) {
+            errors.push({ message: `${label}: 'row.pattern' is not a valid regex: ${e instanceof Error ? e.message : "parse error"}` });
+          }
+        }
+        const target = typeof f.field === "string" ? (fields[f.field] as Record<string, unknown> | undefined) : undefined;
+        if (typeof f.field === "string" && !target) {
+          errors.push({ message: `${label}: field '${f.field}' is not declared in 'fields'` });
+        } else if (target && target.type !== "array") {
+          errors.push({ message: `${label}: field '${f.field}' must be an array field` });
+        }
+        if (f.set !== undefined && (typeof f.set !== "object" || Array.isArray(f.set))) {
+          errors.push({ message: `${label}: 'set' must be a mapping of sub-field rules` });
+        }
+      });
+    }
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
