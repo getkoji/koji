@@ -69,7 +69,7 @@ import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { checkLegibility, isBadScan, DEFAULT_LEGIBILITY_THRESHOLD } from "../parse/legibility";
 import { visionOcrPages } from "../parse/vision-ocr";
 import {
-  computeFieldConfidences,
+  resolveFieldConfidences,
   aggregateDocConfidence,
   findLowestField,
 } from "../extract/field-confidence";
@@ -628,12 +628,14 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
 
   // ── Confidence gate (recorded as the 'validate' stage) ──────────────────
   //
-  // Per-field confidence is computed deterministically from the schema +
-  // extracted value (and provenance, for free-text strings). We do NOT use
-  // the LLM's self-emitted __confidence — it's conservatively calibrated
-  // noise that flagged unambiguous correct extractions against the default
-  // 0.85 review threshold. See extract/field-confidence.ts for the per-
-  // type scoring matrix.
+  // Routing flags off the engine's own per-field confidence scores
+  // (`confidence_scores` on the extraction result — provenance strength +
+  // validation) so the number that decides review is the same number shown
+  // and persisted everywhere else. Null-valued fields are the exception:
+  // the engine scores every null 0.0 ("not_found"), so
+  // resolveFieldConfidences re-credits optional nulls at 1.0 (required
+  // nulls stay 0.0). We do NOT use the LLM's self-emitted __confidence —
+  // it's conservatively calibrated noise. See extract/field-confidence.ts.
   //
   // Doc-level confidence = min(per-field scores). Strict aggregation: the
   // document is only as confident as its weakest field. Routing logic
@@ -652,9 +654,10 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   const provenanceByField = (extractResult.provenance ?? undefined) as
     | Record<string, import("../extract/provenance").ProvenanceSpan | null>
     | undefined;
-  const fieldScores = computeFieldConfidences(
+  const fieldScores = resolveFieldConfidences(
     validateSchemaDef,
     extractedValues,
+    extractResult.confidence_scores ?? null,
     provenanceByField,
   );
   const confidence = aggregateDocConfidence(fieldScores);
