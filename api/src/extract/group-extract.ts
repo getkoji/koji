@@ -15,6 +15,7 @@ import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import { isSystemicProviderError, type ModelProvider } from "./providers";
 import { vocabHint } from "./schema-tree";
+import { estimateTokens, packChunksToBudget, promptCharBudget, promptFits } from "./context-budget";
 
 // ---------------------------------------------------------------------------
 // Shape rendering — recursive array/object description for prompts
@@ -531,17 +532,14 @@ function parseJsonResponse(raw: string): Record<string, unknown> | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract fields from a group of co-located fields.
- * Port of Python extract_group (without semaphore — caller handles concurrency).
+ * One provider call for a group prompt: generate, parse, harvest provenance
+ * keys, unwrap. Returns {} on invalid JSON or a non-systemic provider error.
  */
-export async function extractGroup(
+async function extractGroupCall(
+  prompt: string,
   group: RouteGroup,
-  schemaName: string,
   provider: ModelProvider,
-  contextChunks?: Chunk[] | null,
-  schemaConfig?: Record<string, unknown> | null,
 ): Promise<Record<string, unknown>> {
-  const prompt = buildGroupPrompt(group, schemaName, contextChunks, schemaConfig);
   const expectedFields = new Set(Object.keys(group.fieldSpecs ?? {}));
 
   try {
@@ -574,12 +572,6 @@ export async function extractGroup(
       result.__source_contexts = sourceContexts;
     }
 
-    // Log fields that came back null
-    const nullFields = [...expectedFields].filter((f) => result[f] == null);
-    if (nullFields.length > 0) {
-      console.log(`[koji-extract] Group ${JSON.stringify(group.fields)} returned null for: ${JSON.stringify(nullFields)}`);
-    }
-
     return result;
   } catch (e) {
     // A systemic error (bad model name → 404, bad key → 401) hits every call
@@ -588,6 +580,170 @@ export async function extractGroup(
     console.log(`[koji-extract] Group ${JSON.stringify(group.fields)} error: ${e}`);
     return {};
   }
+}
+
+/** Canonical key for an array item, ignoring `__`-prefixed provenance keys, so
+ * the same row seen by two budget-split calls (overlap at a split boundary)
+ * dedupes even when their `__source_context` differs. */
+function canonicalItemKey(item: unknown): string {
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    const stripped: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+      if (!k.startsWith("__")) stripped[k] = v;
+    }
+    return JSON.stringify(stripped, Object.keys(stripped).sort());
+  }
+  return String(item);
+}
+
+/**
+ * Merge the results of one group's budget-split calls back into the shape a
+ * single call returns. Scalars: first non-null in document order (the subsets
+ * are consecutive runs). Arrays: union across calls with content dedup, each
+ * call's index-aligned `__source_texts` carried through in the same order so
+ * per-row provenance survives the merge.
+ */
+function mergeGroupResults(
+  subResults: Array<Record<string, unknown>>,
+  group: RouteGroup,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  const sourceTexts: Record<string, string[]> = {};
+  const scalarSourceTexts: Record<string, string> = {};
+  const sourceContexts: Record<string, string> = {};
+
+  for (const [name, spec] of Object.entries(group.fieldSpecs ?? {})) {
+    if (((spec.type as string) ?? "string") === "array") {
+      const items: unknown[] = [];
+      const texts: string[] = [];
+      const seen = new Set<string>();
+      for (const sub of subResults) {
+        const value = sub[name];
+        if (!Array.isArray(value)) continue;
+        const subTexts = (sub.__source_texts as Record<string, string[]> | undefined)?.[name] ?? [];
+        for (let i = 0; i < value.length; i++) {
+          const key = canonicalItemKey(value[i]);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push(value[i]);
+          texts.push(subTexts[i] ?? "");
+        }
+      }
+      merged[name] = items.length > 0 ? items : null;
+      if (items.length > 0 && texts.some((t) => t.length > 0)) {
+        sourceTexts[name] = texts;
+      }
+      continue;
+    }
+
+    merged[name] = null;
+    for (const sub of subResults) {
+      const value = sub[name];
+      if (value == null) continue;
+      merged[name] = value;
+      const sst = (sub.__scalar_source_texts as Record<string, string> | undefined)?.[name];
+      if (typeof sst === "string") scalarSourceTexts[name] = sst;
+      const sc = (sub.__source_contexts as Record<string, string> | undefined)?.[name];
+      if (typeof sc === "string") sourceContexts[name] = sc;
+      break;
+    }
+  }
+
+  if (Object.keys(sourceTexts).length > 0) merged.__source_texts = sourceTexts;
+  if (Object.keys(scalarSourceTexts).length > 0) merged.__scalar_source_texts = scalarSourceTexts;
+  if (Object.keys(sourceContexts).length > 0) merged.__source_contexts = sourceContexts;
+  return merged;
+}
+
+/** Floor on the per-call content budget when scaffolding (field descriptions,
+ * context chunks) is unusually large — below this, splitting degenerates into
+ * one call per tiny sliver. */
+const MIN_CONTENT_BUDGET_CHARS = 20_000;
+
+/**
+ * Resolve the per-call chunk-content character budget for a prompt whose
+ * scaffolding (everything except the routed chunks' content) costs
+ * `overheadChars`. Warns when even the floor can't honestly fit.
+ */
+function contentBudgetFor(overheadChars: number, label: string): number {
+  const budget = promptCharBudget() - overheadChars;
+  if (budget < MIN_CONTENT_BUDGET_CHARS) {
+    console.warn(
+      `[koji-extract] ${label}: prompt scaffolding is ${overheadChars} chars, ` +
+        `leaving under the ${MIN_CONTENT_BUDGET_CHARS}-char content floor per call — ` +
+        `calls may still exceed the model context window.`,
+    );
+    return MIN_CONTENT_BUDGET_CHARS;
+  }
+  return budget;
+}
+
+/** Sum of the routed chunks' raw content lengths — subtracted from a built
+ * prompt's length to get the scaffolding overhead. Line-filtering
+ * (`exclude_contains`) only shrinks content, so this overestimates overhead
+ * slightly, which errs toward smaller (safer) subsets. */
+function totalContentChars(chunks: Chunk[]): number {
+  let total = 0;
+  for (const c of chunks) total += c.content.length;
+  return total;
+}
+
+/**
+ * Extract fields from a group of co-located fields.
+ * Port of Python extract_group (without semaphore — caller handles concurrency).
+ *
+ * When the group's chunks don't fit the model context window in one call, the
+ * chunk set is packed into consecutive budget-fitting subsets, one call runs
+ * per subset (context chunks dropped first if they're what's blowing the
+ * budget), and the results are merged — scalars first-found, arrays unioned.
+ */
+export async function extractGroup(
+  group: RouteGroup,
+  schemaName: string,
+  provider: ModelProvider,
+  contextChunks?: Chunk[] | null,
+  schemaConfig?: Record<string, unknown> | null,
+): Promise<Record<string, unknown>> {
+  const prompt = buildGroupPrompt(group, schemaName, contextChunks, schemaConfig);
+  let result: Record<string, unknown>;
+
+  if (promptFits(prompt)) {
+    result = await extractGroupCall(prompt, group, provider);
+  } else {
+    let ctx = contextChunks;
+    let overhead = Math.max(0, prompt.length - totalContentChars(group.chunks));
+    if (promptCharBudget() - overhead < MIN_CONTENT_BUDGET_CHARS && ctx && ctx.length > 0) {
+      // Context chunks are per-call constants — when they're what's eating the
+      // budget, dropping them frees far more room than tighter packing would.
+      ctx = null;
+      const bare = buildGroupPrompt(group, schemaName, null, schemaConfig);
+      overhead = Math.max(0, bare.length - totalContentChars(group.chunks));
+    }
+    const bins = packChunksToBudget(
+      group.chunks,
+      contentBudgetFor(overhead, `Group ${JSON.stringify(group.fields)}`),
+    );
+    console.log(
+      `[koji-extract] Group ${JSON.stringify(group.fields)} prompt ~${estimateTokens(prompt)} tokens ` +
+        `exceeds the context budget — splitting ${group.chunks.length} chunks into ${bins.length} calls`,
+    );
+    const subResults = await Promise.all(
+      bins.map((bin) => {
+        const subPrompt = buildGroupPrompt({ ...group, chunks: bin }, schemaName, ctx, schemaConfig);
+        return extractGroupCall(subPrompt, group, provider);
+      }),
+    );
+    result = mergeGroupResults(subResults, group);
+  }
+
+  // Log fields that came back null
+  const expectedFields = Object.keys(group.fieldSpecs ?? {});
+  const nullFields = expectedFields.filter((f) => result[f] == null);
+  if (nullFields.length > 0 && Object.keys(result).length > 0) {
+    console.log(`[koji-extract] Group ${JSON.stringify(group.fields)} returned null for: ${JSON.stringify(nullFields)}`);
+  }
+
+  return result;
 }
 
 /**
@@ -603,24 +759,51 @@ export async function fillGap(
   contextChunks?: Chunk[] | null,
 ): Promise<Record<string, unknown>> {
   const prompt = buildGapFillPrompt(fieldName, fieldSpec, chunks, schemaName, contextChunks);
+  const chunkSets = fitOrSplit(prompt, chunks, `Gap fill for ${fieldName}`);
 
-  try {
-    const raw = await provider.generate(prompt, true);
+  // Over budget: one call per consecutive subset, first hit wins (sequential —
+  // a gap-fill usually resolves in the first subset, so later calls are saved).
+  let last: Record<string, unknown> = {};
+  for (const subset of chunkSets) {
+    const subPrompt =
+      chunkSets.length === 1
+        ? prompt
+        : buildGapFillPrompt(fieldName, fieldSpec, subset, schemaName, contextChunks);
+    try {
+      const raw = await provider.generate(subPrompt, true);
 
-    const parsed = parseJsonResponse(raw);
-    if (!parsed) {
-      console.log(`[koji-extract] Gap fill for ${fieldName} returned invalid JSON`);
-      return {};
+      const parsed = parseJsonResponse(raw);
+      if (!parsed) {
+        console.log(`[koji-extract] Gap fill for ${fieldName} returned invalid JSON`);
+        continue;
+      }
+
+      // `__confidence` is stripped at parse time — see parseJsonResponse.
+      const result = unwrapNestedResult(parsed, new Set([fieldName]));
+      if (result[fieldName] != null) return result;
+      last = result;
+    } catch (e) {
+      if (isSystemicProviderError(e)) throw e;
+      console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
     }
-
-    // `__confidence` is stripped at parse time — see parseJsonResponse.
-    const result = unwrapNestedResult(parsed, new Set([fieldName]));
-    return result;
-  } catch (e) {
-    if (isSystemicProviderError(e)) throw e;
-    console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
-    return {};
   }
+  return last;
+}
+
+/**
+ * Budget gate shared by the single-field passes (gap-fill, enumeration): when
+ * `prompt` fits, one call over the full chunk set; otherwise pack the chunks
+ * into consecutive budget-fitting subsets and log the split.
+ */
+function fitOrSplit(prompt: string, chunks: Chunk[], label: string): Chunk[][] {
+  if (promptFits(prompt)) return [chunks];
+  const overhead = Math.max(0, prompt.length - totalContentChars(chunks));
+  const bins = packChunksToBudget(chunks, contentBudgetFor(overhead, label));
+  console.log(
+    `[koji-extract] ${label}: prompt ~${estimateTokens(prompt)} tokens exceeds the ` +
+      `context budget — splitting ${chunks.length} chunks into ${bins.length} calls`,
+  );
+  return bins;
 }
 
 /**
@@ -685,16 +868,30 @@ export async function enumerateRows(
   contextChunks?: Chunk[] | null,
 ): Promise<unknown[]> {
   const prompt = buildEnumerationPrompt(fieldName, fieldSpec, chunks, currentItems, contextChunks);
-  try {
-    const raw = await provider.generate(prompt, true);
-    const parsed = parseJsonResponse(raw);
-    if (!parsed) return [];
-    const result = unwrapNestedResult(parsed, new Set([fieldName]));
-    const value = result[fieldName];
-    return Array.isArray(value) ? value : [];
-  } catch (e) {
-    if (isSystemicProviderError(e)) throw e;
-    console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
-    return [];
-  }
+  const chunkSets = fitOrSplit(prompt, chunks, `enumerate_rows for ${fieldName}`);
+
+  // Over budget: enumerate each consecutive subset and concatenate — the
+  // caller unions the returned rows with the current items (content dedup),
+  // so overlap at a split boundary is harmless.
+  const rows = await Promise.all(
+    chunkSets.map(async (subset) => {
+      const subPrompt =
+        chunkSets.length === 1
+          ? prompt
+          : buildEnumerationPrompt(fieldName, fieldSpec, subset, currentItems, contextChunks);
+      try {
+        const raw = await provider.generate(subPrompt, true);
+        const parsed = parseJsonResponse(raw);
+        if (!parsed) return [];
+        const result = unwrapNestedResult(parsed, new Set([fieldName]));
+        const value = result[fieldName];
+        return Array.isArray(value) ? value : [];
+      } catch (e) {
+        if (isSystemicProviderError(e)) throw e;
+        console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
+        return [];
+      }
+    }),
+  );
+  return rows.flat();
 }

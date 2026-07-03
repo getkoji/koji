@@ -222,6 +222,8 @@ For example, if `policy_number`, `effective_date`, and `insured_name` all route 
 
 Each group's prompt contains only the relevant document chunks and field specifications. Groups run concurrently (up to 5 in parallel by default). Schemas without any `depends_on` declarations always produce a single wave, so grouping maximizes across every field as before.
 
+Every prompt is checked against the model's **context window budget** before it's sent (128k tokens assumed, minus the 16k completion reserve). When a group's chunks are too large for one call — big packets, heading-poor scans, wide tables — the chunk set is packed into consecutive window-sized subsets and one call runs per subset. Scalar fields take the first value found in document order; array fields union their rows across subsets (deduplicated by content, per-row provenance preserved). The same guard applies to gap-fill and row-enumeration passes, so no document is too large to extract.
+
 ### Phase 4: Validate
 
 Each extracted value is validated and normalized against its field spec:
