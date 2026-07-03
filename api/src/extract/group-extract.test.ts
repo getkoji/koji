@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import type { ModelProvider } from "./providers";
+import { promptFits } from "./context-budget";
 import {
   describeArrayItem,
   describeProperty,
@@ -976,5 +977,125 @@ describe("enumerateRows", () => {
   it("returns [] when the model doesn't return an array", async () => {
     const provider = mockProvider(JSON.stringify({ coverages: null }));
     expect(await enumerateRows("coverages", spec, chunks, [{ code: "GL" }], provider)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Context-budget splitting — prompts that exceed the model window fan out
+// into multiple calls whose results are merged (oss-362)
+// ---------------------------------------------------------------------------
+
+describe("context-budget splitting", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  // Three chunks of ~180k chars each — far past the ~356k-char prompt budget,
+  // so the group must split. Each carries a marker so the mock can answer
+  // per-subset.
+  const hugeChunks = [
+    makeChunk({ index: 0, title: "Part A", content: "ALPHA_MARKER policy PN-1\n" + "a".repeat(180_000) }),
+    makeChunk({ index: 1, title: "Part B", content: "BRAVO_MARKER row b\n" + "b".repeat(180_000) }),
+    makeChunk({ index: 2, title: "Part C", content: "CHARLIE_MARKER rows a c\n" + "c".repeat(180_000) }),
+  ];
+
+  function markerProvider(answers: Record<string, unknown>): ModelProvider {
+    return {
+      generate: vi.fn().mockImplementation((prompt: string) => {
+        for (const [marker, answer] of Object.entries(answers)) {
+          if (prompt.includes(marker)) return Promise.resolve(JSON.stringify(answer));
+        }
+        return Promise.resolve("{}");
+      }),
+    };
+  }
+
+  it("splits an over-budget group into multiple calls that each fit the window", async () => {
+    const provider = markerProvider({
+      ALPHA_MARKER: {
+        policy_number: "PN-1",
+        rows: [{ code: "A" }],
+        __source_text: { policy_number: "PN-1" },
+      },
+      BRAVO_MARKER: { policy_number: null, rows: [{ code: "B", __source_text: "row b" }] },
+      CHARLIE_MARKER: { rows: [{ code: "A" }, { code: "C" }] },
+    });
+    const group = makeGroup({
+      fieldSpecs: {
+        policy_number: { type: "string" },
+        rows: { type: "array", items: { type: "object", properties: { code: { type: "string" } } } },
+      },
+      chunks: hugeChunks,
+    });
+
+    const result = await extractGroup(group, "test", provider);
+
+    const calls = (provider.generate as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBeGreaterThan(1);
+    for (const [prompt] of calls) {
+      expect(promptFits(prompt as string)).toBe(true);
+    }
+
+    // Scalar: first subset that found it wins; its verbatim source rides along.
+    expect(result.policy_number).toBe("PN-1");
+    expect((result.__scalar_source_texts as Record<string, string>).policy_number).toBe("PN-1");
+
+    // Array: union across subsets, deduped by content, source texts aligned.
+    expect(result.rows).toEqual([{ code: "A" }, { code: "B" }, { code: "C" }]);
+    expect((result.__source_texts as Record<string, string[]>).rows).toEqual(["", "row b", ""]);
+  });
+
+  it("does not split a group that fits", async () => {
+    const provider = mockProvider(JSON.stringify({ name: "Acme" }));
+    const group = makeGroup({
+      fieldSpecs: { name: { type: "string" } },
+      chunks: [makeChunk({ index: 0, title: "D", content: "Acme" })],
+    });
+    await extractGroup(group, "test", provider);
+    expect(provider.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("gap-fill walks subsets sequentially and stops at the first hit", async () => {
+    const provider = markerProvider({
+      ALPHA_MARKER: { policy_number: null },
+      BRAVO_MARKER: { policy_number: "PN-9" },
+      CHARLIE_MARKER: { policy_number: "PN-WRONG" },
+    });
+
+    const result = await fillGap("policy_number", { type: "string" }, hugeChunks, "test", provider);
+
+    expect(result.policy_number).toBe("PN-9");
+    // Third subset never queried — the second already answered.
+    expect(provider.generate).toHaveBeenCalledTimes(2);
+    const calls = (provider.generate as ReturnType<typeof vi.fn>).mock.calls;
+    for (const [prompt] of calls) {
+      expect(promptFits(prompt as string)).toBe(true);
+    }
+  });
+
+  it("gap-fill returns null field when no subset finds it", async () => {
+    const provider = markerProvider({
+      ALPHA_MARKER: { policy_number: null },
+      BRAVO_MARKER: { policy_number: null },
+      CHARLIE_MARKER: { policy_number: null },
+    });
+    const result = await fillGap("policy_number", { type: "string" }, hugeChunks, "test", provider);
+    expect(result.policy_number ?? null).toBeNull();
+    expect(provider.generate).toHaveBeenCalledTimes(3);
+  });
+
+  it("enumeration concatenates rows across subsets", async () => {
+    const provider = markerProvider({
+      ALPHA_MARKER: { coverages: [{ code: "GL" }] },
+      BRAVO_MARKER: { coverages: [{ code: "PROP" }] },
+      CHARLIE_MARKER: { coverages: [{ code: "CRIME" }] },
+    });
+    const spec = { type: "array", items: { type: "object", properties: { code: { type: "string" } } } };
+
+    const rows = await enumerateRows("coverages", spec, hugeChunks, [{ code: "GL" }], provider);
+
+    expect(provider.generate).toHaveBeenCalledTimes(3);
+    expect(rows).toEqual([{ code: "GL" }, { code: "PROP" }, { code: "CRIME" }]);
   });
 });
