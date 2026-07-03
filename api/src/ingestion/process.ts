@@ -68,11 +68,7 @@ import { matchFormMapping } from "../extract/form-match";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { checkLegibility, isBadScan, DEFAULT_LEGIBILITY_THRESHOLD } from "../parse/legibility";
 import { visionOcrPages } from "../parse/vision-ocr";
-import {
-  resolveFieldConfidences,
-  aggregateDocConfidence,
-  findLowestField,
-} from "../extract/field-confidence";
+import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
 import { isTransientError } from "./errors";
 import type { BillingAdapter } from "../billing/adapter";
 import { NoOpBillingAdapter } from "../billing/noop";
@@ -641,7 +637,6 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
   // document is only as confident as its weakest field. Routing logic
   // collapses to "any field below threshold => review".
   const validateStart = Date.now();
-  const extractedValues = (extractResult.extracted ?? {}) as Record<string, unknown>;
   let validateSchemaDef: Record<string, unknown> | undefined;
   try {
     validateSchemaDef = parseYaml(schemaVersion.yamlSource) as Record<string, unknown>;
@@ -651,147 +646,42 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     // confidence map will be empty and routing skips automatically.
     validateSchemaDef = undefined;
   }
-  const provenanceByField = (extractResult.provenance ?? undefined) as
-    | Record<string, import("../extract/provenance").ProvenanceSpan | null>
-    | undefined;
-  const fieldScores = resolveFieldConfidences(
-    validateSchemaDef,
-    extractedValues,
-    extractResult.confidence_scores ?? null,
-    provenanceByField,
-  );
-  const confidence = aggregateDocConfidence(fieldScores);
   const threshold = Number(pipeline.reviewThreshold);
-  const lowField = Number.isFinite(threshold)
-    ? findLowestField(fieldScores, threshold)
-    : null;
-
-  const routeToReview = lowField !== null;
+  const outcome = decideDocumentOutcome({
+    schemaDef: validateSchemaDef,
+    extractResult: extractResult as OutcomeExtraction,
+    reviewThreshold: pipeline.reviewThreshold,
+  });
+  const routeToReview = outcome.routeToReview;
 
   recorder.record("validate", Date.now() - validateStart, routeToReview ? "warn" : "ok", {
     threshold,
-    doc_confidence: confidence,
+    doc_confidence: outcome.docConfidence,
     route_to_review: routeToReview,
-    ...(lowField ? { low_field: lowField.name, low_confidence: lowField.confidence } : {}),
+    ...(outcome.lowField ? { low_field: outcome.lowField.name, low_confidence: outcome.lowField.confidence } : {}),
   });
 
   const now = new Date();
-  const docConfidence = confidence === null ? null : confidence.toFixed(4);
-  const docExtraction = extractResult.extracted ?? null;
 
-  // Webhook event prepared (but not enqueued) below — we write the Deliver
-  // trace stage first and only enqueue delivery jobs after the trace is
-  // flushed, so the worker never races `advanceDeliverStage` against a
-  // stage row that hasn't been written yet.
-  let prepared: PreparedWebhookEvent | null = null;
+  // Webhook event prepared (but not enqueued) inside persistDocumentOutcome —
+  // we write the Deliver trace stage first and only enqueue delivery jobs
+  // after the trace is flushed, so the worker never races
+  // `advanceDeliverStage` against a stage row that hasn't been written yet.
+  const prepared: PreparedWebhookEvent | null = await persistDocumentOutcome({
+    db,
+    tenantId,
+    documentId,
+    jobId,
+    jobSlug,
+    pipelineId: pipeline.id,
+    schemaId: pipeline.schemaId,
+    threshold,
+    outcome,
+    extractResult: extractResult as OutcomeExtraction,
+    durationMs: extractDurationMs,
+  });
+  if (prepared) recorder.recordDeliverStage(prepared);
 
-  if (routeToReview) {
-    // Insert review item. Prefer the worst-field details; fall back to doc-level.
-    const reviewField = lowField?.name ?? firstFieldName(fieldScores) ?? "document";
-    const reviewConfidence = (lowField?.confidence ?? confidence ?? 0).toFixed(4);
-    const proposedValue = lowField?.name
-      ? ((docExtraction as Record<string, unknown>)?.[lowField.name] ?? null)
-      : docExtraction;
-
-    await withRLS(db, tenantId, (tx) =>
-      tx.insert(schema.reviewItems).values({
-        tenantId,
-        documentId,
-        schemaId: pipeline.schemaId!,
-        fieldName: reviewField,
-        reason: "low_confidence",
-        proposedValue,
-        confidence: reviewConfidence,
-        status: "pending",
-      }),
-    );
-
-    await withRLS(db, tenantId, (tx) =>
-      tx
-        .update(schema.documents)
-        .set({
-          status: "review",
-          extractionJson: docExtraction,
-          confidenceScoresJson: fieldScores,
-          provenanceJson: extractResult.provenance ?? null,
-          fitJson: extractResult.fit ?? null,
-          confidence: docConfidence,
-          durationMs: extractDurationMs,
-          completedAt: now,
-        })
-        .where(eq(schema.documents.id, documentId)),
-    );
-
-    await withRLS(db, tenantId, (tx) =>
-      tx
-        .update(schema.jobs)
-        .set({
-          docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-          docsReviewing: sql`${schema.jobs.docsReviewing} + 1`,
-          completedAt: now, // single-doc jobs complete immediately
-          status: "complete",
-        })
-        .where(eq(schema.jobs.id, jobId)),
-    );
-
-    prepared = await prepareWebhookEvent(tenantId, "document.review_requested", {
-      document_id: documentId,
-      job_id: jobId,
-      job_slug: jobSlug,
-      pipeline_id: pipeline.id,
-      field: reviewField,
-      confidence: reviewConfidence,
-      threshold,
-    });
-    recorder.recordDeliverStage(prepared);
-
-    createNotification(tenantId, {
-      type: "document.review_requested",
-      title: "Document needs review",
-      body: `Low confidence on ${reviewField} (${(reviewConfidence * 100).toFixed(0)}%)`,
-      data: { documentId, jobId, field: reviewField, confidence: reviewConfidence },
-    });
-  } else {
-    // Delivered
-    await withRLS(db, tenantId, (tx) =>
-      tx
-        .update(schema.documents)
-        .set({
-          status: "delivered",
-          extractionJson: docExtraction,
-          confidenceScoresJson: fieldScores,
-          provenanceJson: extractResult.provenance ?? null,
-          fitJson: extractResult.fit ?? null,
-          confidence: docConfidence,
-          durationMs: extractDurationMs,
-          completedAt: now,
-          emittedAt: now,
-        })
-        .where(eq(schema.documents.id, documentId)),
-    );
-
-    await withRLS(db, tenantId, (tx) =>
-      tx
-        .update(schema.jobs)
-        .set({
-          docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-          docsPassed: sql`${schema.jobs.docsPassed} + 1`,
-          completedAt: now,
-          status: "complete",
-        })
-        .where(eq(schema.jobs.id, jobId)),
-    );
-
-    prepared = await prepareWebhookEvent(tenantId, "document.delivered", {
-      document_id: documentId,
-      job_id: jobId,
-      job_slug: jobSlug,
-      pipeline_id: pipeline.id,
-      extraction: docExtraction,
-      confidence: docConfidence,
-    });
-    recorder.recordDeliverStage(prepared);
-  }
 
   // Close out the ingestion (if any) + pipeline last-run timestamp
   if (document.ingestionId) {
@@ -1424,10 +1314,6 @@ class TraceRecorder {
 // `findLowestField` in extract/field-confidence.ts (no extractedValues
 // filter needed since null fields now score based on schema's required flag).
 
-function firstFieldName(scores: Record<string, number>): string | null {
-  const keys = Object.keys(scores);
-  return keys.length > 0 ? (keys[0] ?? null) : null;
-}
 
 function numberOr<T>(v: unknown, fallback: T): number | T {
   const n = Number(v);
