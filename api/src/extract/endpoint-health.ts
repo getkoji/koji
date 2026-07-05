@@ -153,7 +153,7 @@ async function emitEvent(
     type === "endpoint.unhealthy"
       ? `${(data.consecutive_failures as number) ?? UNHEALTHY_THRESHOLD} consecutive failures. Last error: ${data.reason ?? "unknown"}`
       : `Endpoint is responding again after a string of failures.`;
-  createNotification(r.tenantId, { type, title, body, data });
+  createNotification({ tenantId: r.tenantId, projectId: r.projectId }, { type, title, body, data });
 }
 
 /**

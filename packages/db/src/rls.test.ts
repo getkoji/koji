@@ -26,7 +26,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { createDb, PROJECT_RLS_TABLES, RLS_POLICIES, schema, withRLS, type Db } from "./index";
+import { createDb, PROJECT_NULLABLE_RLS_TABLES, PROJECT_RLS_TABLES, RLS_POLICIES, schema, withRLS, type Db } from "./index";
 import { runMigrations } from "./migrate";
 
 let container: StartedPostgreSqlContainer;
@@ -332,6 +332,14 @@ describe("per-table isolation", () => {
         ('${tenantB}', '${classifierBId}', 1, 'classes:\\n  b: {}', repeat('b', 64), '{"classes":[{"id":"b"}]}', '${userB}')
     `));
 
+    // Agent sessions (project-scoped, oss-368) — a schema-builder chat is
+    // about a schema and inherits its project.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO agent_sessions (id, tenant_id, project_id, user_id, context, context_entity_id)
+      VALUES ('${randomUUID()}', '${tenantA}', '${projectAId}', '${userA}', 'schema_builder', '${schemaAId}'),
+             ('${randomUUID()}', '${tenantB}', '${projectBId}', '${userB}', 'schema_builder', '${schemaBId}')
+    `));
+
     // NOTE: Additional tables (webhook_targets, api_keys, extraction_runs, etc.)
     // are not seeded here due to complex NOT NULL constraints. Their RLS policies
     // are verified by the "every table with tenant_id has a policy" meta-test below.
@@ -344,6 +352,7 @@ describe("per-table isolation", () => {
   // The meta-test below ensures ALL tenant_id tables have policies;
   // this data-driven test verifies actual row isolation.
   const tablesToTest = [
+    "agent_sessions",
     "schemas",
     "projects",
     "pipelines",
@@ -556,8 +565,83 @@ describe("structural RLS guarantees", () => {
       .filter((t) => t !== "projects" && !covered.has(t));
     expect(missingPolicy).toEqual([]);
 
-    // Lock-step with the exported list.
-    expect(new Set(PROJECT_RLS_TABLES)).toEqual(covered);
+    // Lock-step with the exported lists: strict tables + the null-aware ones
+    // (notifications) together account for every project policy.
+    expect(covered).toEqual(
+      new Set([...PROJECT_RLS_TABLES, ...PROJECT_NULLABLE_RLS_TABLES]),
+    );
+  });
+
+  test("every project-scoped table has FORCE row level security, not just ENABLE", async () => {
+    // ENABLE alone lets the table OWNER bypass RLS; withRLS's SET LOCAL ROLE
+    // app_user is best-effort (it no-ops where CREATE ROLE is blocked), so an
+    // isolation-bearing table without FORCE can leak when the connection runs
+    // as the owner. Every project table must be FORCEd.
+    const tables = [...PROJECT_RLS_TABLES, ...PROJECT_NULLABLE_RLS_TABLES];
+    // Constant, code-defined table names — safe to inline as a SQL array literal.
+    const arrayLiteral = `ARRAY[${tables.map((t) => `'${t}'`).join(",")}]::text[]`;
+    const forced = await rootDb.execute<{ relname: string; relforcerowsecurity: boolean }>(
+      sql.raw(`SELECT relname, relforcerowsecurity FROM pg_class WHERE relname = ANY(${arrayLiteral})`),
+    );
+    const notForced = forced.filter((r) => !r.relforcerowsecurity).map((r) => r.relname);
+    expect(notForced).toEqual([]);
+    // Sanity: we actually inspected every table (no typo'd name silently absent).
+    expect(forced.length).toBe(tables.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notifications — null-aware project policy
+// ---------------------------------------------------------------------------
+
+describe("notifications project scoping (null-aware)", () => {
+  const projA = randomUUID();
+  const projA2 = randomUUID();
+
+  beforeAll(async () => {
+    await rootDb.execute(sql.raw(`
+      INSERT INTO projects (id, tenant_id, slug, display_name, created_by)
+      VALUES ('${projA}', '${tenantA}', 'notif-a', 'Notif A', '${userA}'),
+             ('${projA2}', '${tenantA}', 'notif-a2', 'Notif A2', '${userA}')
+    `));
+    await rootDb.execute(sql.raw(`
+      INSERT INTO notifications (tenant_id, project_id, type, title)
+      VALUES ('${tenantA}', '${projA}', 'x', 'in project A'),
+             ('${tenantA}', '${projA2}', 'x', 'in project A2'),
+             ('${tenantA}', NULL, 'x', 'tenant-wide')
+    `));
+  }, 30_000);
+
+  test("a project scope sees that project's notifications AND tenant-wide ones", async () => {
+    const rows = await withRLS(db, { tenantId: tenantA, projectId: projA }, (tx) =>
+      tx.execute(sql`SELECT title FROM notifications ORDER BY title`),
+    );
+    expect(rows.map((r: any) => r.title)).toEqual(["in project A", "tenant-wide"]);
+  });
+
+  test("a different project does not see project A's notifications, still sees tenant-wide", async () => {
+    const rows = await withRLS(db, { tenantId: tenantA, projectId: projA2 }, (tx) =>
+      tx.execute(sql`SELECT title FROM notifications ORDER BY title`),
+    );
+    expect(rows.map((r: any) => r.title)).toEqual(["in project A2", "tenant-wide"]);
+  });
+
+  test("tenant-wide scope (no project) sees all of the tenant's notifications", async () => {
+    const rows = await withRLS(db, tenantA, (tx) =>
+      tx.execute(sql`SELECT title FROM notifications ORDER BY title`),
+    );
+    expect(rows.map((r: any) => r.title)).toEqual([
+      "in project A",
+      "in project A2",
+      "tenant-wide",
+    ]);
+  });
+
+  test("another tenant sees none of tenant A's notifications", async () => {
+    const rows = await withRLS(db, { tenantId: tenantB, projectId: projA }, (tx) =>
+      tx.execute(sql`SELECT title FROM notifications`),
+    );
+    expect(rows.length).toBe(0);
   });
 });
 

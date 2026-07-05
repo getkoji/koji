@@ -11,14 +11,17 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKey, tenantId, updatedAt } from "./_shared";
-import { tenants, users } from "./tenants";
+import { createdAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { projects, tenants, users } from "./tenants";
 
 export const agentSessions = pgTable(
   "agent_sessions",
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    // A session is always about a schema (context=schema_builder,
+    // contextEntityId=schema.id), so it inherits that schema's project.
+    projectId: projectId().references(() => projects.id),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id),
@@ -36,6 +39,7 @@ export const agentSessions = pgTable(
       t.contextEntityId,
       sql`${t.updatedAt} DESC`,
     ),
+    projectIdx: index("agent_sessions_project_idx").on(t.projectId),
   }),
 );
 

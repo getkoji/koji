@@ -40,7 +40,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
 
   // 1. Verify schema exists
   const [schemaRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ id: schema.schemas.id })
+    tx.select({ id: schema.schemas.id, projectId: schema.schemas.projectId })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
       .limit(1),
@@ -62,6 +62,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
     const [created] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.insert(schema.agentSessions).values({
         tenantId,
+        projectId: schemaRow.projectId,
         userId: principal.userId,
         context: "schema_builder",
         contextEntityId: schemaRow.id,
