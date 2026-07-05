@@ -470,8 +470,8 @@ Isolation is enforced in Postgres with row-level security, at two levels:
   setting. A transaction that never names a tenant sees zero rows.
 - **Project** — the boundary *within* a tenant. Directly-listed resources
   (schemas, pipelines, jobs, sources, classifiers, review items, model/parse
-  endpoints, webhooks, API keys) also carry a `project_id` with a
-  **restrictive** policy: when a request resolves a project (via the
+  endpoints, webhooks, API keys, agent sessions) also carry a `project_id`
+  with a **restrictive** policy: when a request resolves a project (via the
   `x-koji-project` header, the API key's bound project, or the tenant's
   default project), rows outside that project are invisible; when no project
   is set — background workers, org-level queries — access stays tenant-wide.
@@ -480,6 +480,13 @@ Every request path reaches the database through `withRLS(db, scope, fn)`,
 which applies both settings with `SET LOCAL` inside a transaction. Child rows
 that are only reachable through a project-checked parent (schema versions,
 documents, traces, corpus entries, …) inherit the boundary transitively.
+
+`notifications` is a special case: its `project_id` is **nullable** and its
+restrictive policy is null-aware — a notification with no project (queue
+failures, billing alerts) stays visible in every project, while a
+project-scoped notification is only visible in its project. This lets the
+dashboard notification bell scope to the selected project without hiding
+tenant-level alerts.
 
 ## Hosted architecture (Koji Cloud)
 

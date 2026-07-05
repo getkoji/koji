@@ -1421,7 +1421,7 @@ export async function markDocFailed(
     });
 
   // In-app notification for document failure
-  createNotification(tenantId, {
+  createNotification(jobRow ? { tenantId, projectId: jobRow.projectId } : tenantId, {
     type: "document.failed",
     title: "Document extraction failed",
     body: reason,

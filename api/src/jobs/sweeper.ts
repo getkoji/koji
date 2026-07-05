@@ -112,7 +112,7 @@ export async function sweepStuckJobs(
       );
     }
 
-    createNotification(row.tenant_id, {
+    createNotification({ tenantId: row.tenant_id, projectId: row.project_id }, {
       type: "job.failed",
       title: `Job failed: ${row.slug}`,
       body: reason,

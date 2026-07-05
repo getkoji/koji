@@ -869,7 +869,7 @@ pipelinesRouter.post("/:idOrSlug/deploy", requires("schema:deploy"), async (c) =
     deployed_by: principal.userId,
   });
 
-  createNotification(tenantId, {
+  createNotification(getRlsScope(c), {
     type: "schema.deployed",
     title: `Schema deployed`,
     body: `Pipeline updated to schema version ${sv.versionNumber}`,

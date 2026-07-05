@@ -211,6 +211,13 @@
       "when": 1783083957677,
       "tag": "0029_brave_forge",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1783292828761,
+      "tag": "0030_flimsy_talisman",
+      "breakpoints": true
     }
   ]
 }

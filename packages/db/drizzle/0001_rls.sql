@@ -320,3 +320,27 @@ DROP POLICY IF EXISTS review_items_project_isolation ON review_items;
 CREATE POLICY review_items_project_isolation ON review_items AS RESTRICTIVE FOR ALL
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+-- ────────────────────────────────────────────────────────────────────────
+-- Project isolation, second wave (oss-368): agent_sessions (strict, like the
+-- other project tables) and notifications (null-aware — tenant-level
+-- notifications have a NULL project_id and stay visible in every project).
+-- ────────────────────────────────────────────────────────────────────────
+
+DROP POLICY IF EXISTS agent_sessions_project_isolation ON agent_sessions;
+CREATE POLICY agent_sessions_project_isolation ON agent_sessions AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+-- notifications got its tenant policy in 0016 with ENABLE but NOT FORCE row
+-- level security — so the table owner (the role most self-hosted/managed
+-- deployments actually connect as when app_user provisioning is a no-op) would
+-- bypass BOTH the tenant and project policies. Every other isolated table is
+-- FORCEd via the RLS_POLICIES list; notifications was the lone gap, and it now
+-- carries project isolation, so close it here. ENABLE+FORCE are idempotent.
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS notifications_project_isolation ON notifications;
+CREATE POLICY notifications_project_isolation ON notifications AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);

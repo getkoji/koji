@@ -397,8 +397,10 @@ export async function maybeFinalizeValidateRun(
         docsTotal: schema.schemaRuns.docsTotal,
         startedAt: schema.schemaRuns.startedAt,
         createdAt: schema.schemaRuns.createdAt,
+        projectId: schema.schemas.projectId,
       })
       .from(schema.schemaRuns)
+      .innerJoin(schema.schemas, eq(schema.schemas.id, schema.schemaRuns.schemaId))
       .where(eq(schema.schemaRuns.id, schemaRunId))
       .limit(1),
   );
@@ -558,7 +560,7 @@ export async function maybeFinalizeValidateRun(
   );
 
   if (validateResult.regressions.length > 0) {
-    createNotification(tenantId, {
+    createNotification({ tenantId, projectId: run.projectId }, {
       type: "validate.regression",
       title: `Validate regression detected`,
       body: `${validateResult.regressions.length} field regression(s) on ${validateResult.docsTotal} docs (${validateResult.overallAccuracy.toFixed(1)}% accuracy)`,

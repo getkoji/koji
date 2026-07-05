@@ -183,7 +183,7 @@ export async function persistDocumentOutcome(args: {
       threshold: args.threshold,
     });
 
-    createNotification(tenantId, {
+    createNotification(scope, {
       type: "document.review_requested",
       title: "Document needs review",
       body: `Low confidence on ${outcome.reviewField} (${(outcome.reviewConfidence * 100).toFixed(0)}%)`,

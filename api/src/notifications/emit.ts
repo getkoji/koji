@@ -6,7 +6,7 @@
  */
 
 import { schema, withRLS } from "@koji/db";
-import type { Db } from "@koji/db";
+import type { Db, RlsScope } from "@koji/db";
 
 let _db: Db | null = null;
 
@@ -15,7 +15,7 @@ export function initNotifications(db: Db) {
 }
 
 export async function createNotification(
-  tenantId: string,
+  scope: RlsScope,
   notification: {
     type: string;
     title: string;
@@ -25,10 +25,17 @@ export async function createNotification(
 ): Promise<void> {
   if (!_db) return;
 
+  const tenantId = typeof scope === "string" ? scope : scope.tenantId;
+  // A bare tenantId means a tenant-level notification (no project) — visible
+  // in every project via the null-aware RLS policy. A scope object carries
+  // the originating project so the bell can file it under that project.
+  const projectId = typeof scope === "string" ? null : (scope.projectId ?? null);
+
   try {
     await withRLS(_db, tenantId, (tx) =>
       tx.insert(schema.notifications).values({
         tenantId,
+        projectId,
         type: notification.type,
         title: notification.title,
         body: notification.body ?? null,

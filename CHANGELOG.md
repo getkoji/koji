@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.49.0 — 2026-07-05
+
+**Project isolation, second wave.** The in-app notification bell and the
+schema-agent chat sessions are now project-scoped, completing the isolation
+that landed in 0.48 for the remaining user-facing surfaces.
+
+- The notification bell now shows the selected project's notifications plus
+  tenant-level ones (queue failures, billing alerts) — the latter stay
+  visible in every project. Existing notifications are backfilled to the
+  project of the job/document/pipeline they reference.
+- Schema-agent (schema builder) chat sessions belong to their schema's
+  project and are only visible there.
+
 ## 0.48.0 — 2026-07-03
 
 **Projects are now a real isolation boundary.** Previously a project was an

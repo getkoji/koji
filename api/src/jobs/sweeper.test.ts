@@ -27,7 +27,8 @@ vi.mock("../webhooks/emit", () => ({
 }));
 
 vi.mock("../notifications/emit", () => ({
-  createNotification: vi.fn((tenantId: string, notification: any) => {
+  createNotification: vi.fn((scope: string | { tenantId: string; projectId?: string | null }, notification: any) => {
+    const tenantId = typeof scope === "string" ? scope : scope.tenantId;
     createdNotifications.push({ tenantId, notification });
   }),
 }));

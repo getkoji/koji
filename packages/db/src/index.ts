@@ -107,7 +107,19 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
   "api_keys",
   "jobs",
   "review_items",
+  "agent_sessions",
 ];
+
+/**
+ * `notifications` is project-scoped too, but its `project_id` is NULLABLE:
+ * tenant-level notifications (queue failures, billing) belong to no project
+ * and must stay visible in every project view. So it gets a null-AWARE
+ * variant of the project policy — `project_id IS NULL` always passes — rather
+ * than the strict predicate the tables above use. It is deliberately NOT in
+ * PROJECT_RLS_TABLES (whose policy is strict); rls.test.ts covers it
+ * separately. See `drizzle/0001_rls.sql`.
+ */
+export const PROJECT_NULLABLE_RLS_TABLES: readonly string[] = ["notifications"];
 
 /**
  * Tables intentionally global (not tenant-scoped). RLS is NOT enabled on
