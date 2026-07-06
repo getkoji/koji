@@ -70,6 +70,31 @@ export interface HighlightTheme {
   inactiveColor?: string;
 }
 
+/**
+ * A region of a page the user selected, in the repo-wide bbox convention:
+ * normalized [0,1] fractions of the page, origin top-left, page 1-indexed.
+ * This is exactly the shape `POST .../resolve-region` accepts.
+ */
+export interface RegionSelection {
+  page: number;
+  bbox: { x: number; y: number; w: number; h: number };
+}
+
+/**
+ * Region-selection config (highlight-to-correct). When `active`, a crosshair
+ * drag layer sits over each page; releasing the drag reports the normalized
+ * region via `onRegionSelected`. The viewer stays network-free: the host
+ * resolves the region (resolve-region endpoint) and passes the result back
+ * as `snapped`, which renders as an echo highlight so the drag visibly snaps
+ * to the matched words. `snapped` renders whether or not `active` is still
+ * set, so the echo survives the host disarming selection mode after a pick.
+ */
+export interface SelectionConfig {
+  active: boolean;
+  onRegionSelected: (region: RegionSelection) => void;
+  snapped?: BBoxHighlight | null;
+}
+
 /** Display mode: paginated (arrow nav, one page) or scroll (all pages stacked). */
 export type ViewMode = "paginated" | "scroll";
 /** Scrollbar behavior for the viewer container. */
@@ -117,6 +142,8 @@ interface PdfViewerProps {
   mode?: ViewMode;
   /** Optional element rendered at the start of the toolbar (e.g. a field picker). Constrained so it can't crowd out the page nav. */
   toolbarSlot?: React.ReactNode;
+  /** Region selection (highlight-to-correct) — see SelectionConfig. */
+  selection?: SelectionConfig;
 }
 
 // Tailwind only ships classes it can see as literal strings. Mapping the
@@ -134,7 +161,7 @@ const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, onVisibleFieldChange, theme, overflow = "auto", mode = "paginated", toolbarSlot }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, onVisibleFieldChange, theme, overflow = "auto", mode = "paginated", toolbarSlot, selection }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   // Mirror currentPage into a ref so the (mount-once) visible-field observer
@@ -477,6 +504,9 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
                   theme={theme}
                 />
               )}
+              {selection && (selection.active || selection.snapped) && (
+                <SelectionLayer page={currentPage} selection={selection} theme={theme} />
+              )}
             </ReactPdfPage>
           ) : (
             allPageNumbers.map((pageNum) => (
@@ -499,6 +529,9 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
                       onFieldClick={onFieldClick}
                       theme={theme}
                     />
+                  )}
+                  {selection && (selection.active || selection.snapped) && (
+                    <SelectionLayer page={pageNum} selection={selection} theme={theme} />
                   )}
                 </ReactPdfPage>
               </LazyPage>
@@ -590,6 +623,154 @@ function LazyPage({
           Page {pageNumber}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Selection layer — rendered as a child of <Page>, above the highlight
+// overlay. While armed it captures pointer input (crosshair, marquee drag)
+// and reports the released rectangle in normalized page coordinates — the
+// exact shape resolve-region accepts. The percentage math is the highlight
+// overlay's transform in reverse: page-relative pixels ÷ rendered page size.
+// It also renders the host's `snapped` result (the resolved words) as an
+// echo highlight, so a sloppy drag visibly snaps to clean word boundaries.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drags smaller than this many rendered pixels in either dimension are
+ * discarded as click noise rather than reported as a selection.
+ */
+const MIN_DRAG_PX = 4;
+
+function SelectionLayer({
+  page,
+  selection,
+  theme,
+}: {
+  page: number;
+  selection: SelectionConfig;
+  theme?: HighlightTheme;
+}) {
+  const layerRef = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
+  const toPageFraction = (e: React.PointerEvent) => {
+    const rect = layerRef.current!.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  // Escape cancels an in-flight drag without emitting a selection.
+  useEffect(() => {
+    if (!drag) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDrag(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drag]);
+
+  const marquee = drag
+    ? {
+        x: Math.min(drag.x0, drag.x1),
+        y: Math.min(drag.y0, drag.y1),
+        w: Math.abs(drag.x1 - drag.x0),
+        h: Math.abs(drag.y1 - drag.y0),
+      }
+    : null;
+
+  const marqueeColor = theme?.activeColor;
+  const snapped = selection.snapped;
+
+  return (
+    <div
+      ref={layerRef}
+      data-selection-layer={page}
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
+        zIndex: 4,
+        // While armed the layer owns the pointer (highlight clicks and text
+        // selection underneath are intentionally suspended — the user is
+        // aiming). When only echoing `snapped`, stay click-through.
+        pointerEvents: selection.active ? "auto" : "none",
+        cursor: selection.active ? "crosshair" : undefined,
+        // Let pointer events drive the drag on touch devices instead of
+        // scrolling the page.
+        touchAction: selection.active ? "none" : undefined,
+      }}
+      onPointerDown={(e) => {
+        if (!selection.active || e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const p = toPageFraction(e);
+        setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+      }}
+      onPointerMove={(e) => {
+        if (!drag) return;
+        const p = toPageFraction(e);
+        setDrag((d) => (d ? { ...d, x1: p.x, y1: p.y } : d));
+      }}
+      onPointerUp={(e) => {
+        if (!drag || !marquee) return;
+        setDrag(null);
+        const rect = layerRef.current!.getBoundingClientRect();
+        if (marquee.w * rect.width < MIN_DRAG_PX || marquee.h * rect.height < MIN_DRAG_PX) return;
+        selection.onRegionSelected({ page, bbox: marquee });
+      }}
+      onPointerCancel={() => setDrag(null)}
+    >
+      {marquee && (
+        <div
+          data-selection-marquee=""
+          className={
+            marqueeColor
+              ? "absolute rounded-sm pointer-events-none"
+              : "absolute rounded-sm pointer-events-none border-2 border-vermillion-2/80 bg-vermillion-3/20"
+          }
+          style={{
+            left: `${marquee.x * 100}%`,
+            top: `${marquee.y * 100}%`,
+            width: `${marquee.w * 100}%`,
+            height: `${marquee.h * 100}%`,
+            ...(marqueeColor
+              ? { backgroundColor: marqueeColor, boxShadow: `0 0 0 2px ${marqueeColor}` }
+              : {}),
+          }}
+        />
+      )}
+      {snapped &&
+        (snapped.words && snapped.words.length > 0
+          ? snapped.words.filter((w) => w.page === page)
+          : snapped.page === page && snapped.bbox
+            ? [{ ...snapped.bbox, page: snapped.page }]
+            : []
+        ).map((box, i) => (
+          <div
+            key={`snap-${i}`}
+            data-selection-snapped=""
+            className={
+              marqueeColor
+                ? "absolute rounded-sm pointer-events-none animate-pulse"
+                : "absolute rounded-sm pointer-events-none animate-pulse bg-vermillion-3/40 ring-2 ring-vermillion-2/60"
+            }
+            style={{
+              left: `${box.x * 100}%`,
+              top: `${box.y * 100}%`,
+              width: `${box.w * 100}%`,
+              height: `${box.h * 100}%`,
+              ...(marqueeColor
+                ? { backgroundColor: marqueeColor, boxShadow: `0 0 0 2px ${marqueeColor}` }
+                : {}),
+            }}
+          />
+        ))}
     </div>
   );
 }

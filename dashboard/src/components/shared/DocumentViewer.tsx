@@ -23,7 +23,7 @@
 import dynamic from "next/dynamic";
 import { Eye, FileText } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BBoxHighlight } from "./PdfViewer";
+import type { BBoxHighlight, SelectionConfig } from "./PdfViewer";
 import { ParsedMarkdownView } from "./ParsedMarkdownView";
 
 export type DocumentRenderer = "pdf" | "image" | "unsupported";
@@ -135,6 +135,11 @@ export interface DocumentViewerProps {
    * surface explicitly wants page-at-a-time navigation.
    */
   mode?: "paginated" | "scroll";
+  /**
+   * Region selection for highlight-to-correct (PDFs only — ignored for
+   * images and the parsed view). See `SelectionConfig` in PdfViewer.
+   */
+  selection?: SelectionConfig;
   /** Optional override for the wrapper element's className. */
   className?: string;
   /**
@@ -178,6 +183,7 @@ export function DocumentViewer({
   activeField,
   overflow = "auto",
   mode = "scroll",
+  selection,
   className,
   lazy = true,
   markdown,
@@ -299,6 +305,7 @@ export function DocumentViewer({
             activeField={activeField ?? null}
             overflow={overflow}
             mode={mode}
+            selection={selection}
           />
         </div>
       );
