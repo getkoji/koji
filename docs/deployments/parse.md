@@ -55,6 +55,15 @@ If a segment is rejected as too large (e.g. very image-heavy pages), Koji
 automatically bisects it into smaller slices and retries; a segment that still
 can't be processed surfaces a clear error rather than silently dropping pages.
 
+**Encrypted PDFs are handled automatically.** Many carrier and law-firm PDFs
+ship with owner-password ("no print") encryption that also hides the page
+structure from Koji's local slicer. When Koji detects this, it re-saves the
+document once through its parse service (decrypting it — these files open
+without a password) and slices the normalized copy as usual. If that
+normalization is impossible, documents up to 30 pages still go through a
+single synchronous call; larger ones fail with an error that says exactly why
+and suggests batch mode.
+
 ### Tuning (optional)
 
 | Config field | Default | Meaning |

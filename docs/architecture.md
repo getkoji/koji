@@ -112,6 +112,11 @@ Table- vs text-heaviness is a **geometric** signal (the fraction of lines that r
 - Runs Docling conversion in a thread pool to avoid blocking the event loop
 - Returns markdown text, page count, and a `text_map` of word-level bounding boxes
 - Caches Hugging Face and Torch model weights in Docker volumes for fast restarts
+- Also exposes `/normalize-pdf`: a pypdfium2 re-save (with security removal)
+  for PDFs the API's local pdf-lib tooling can't read — owner-password
+  encryption with object-stream page trees. The API calls it once before
+  slicing such documents (Doc AI slice-and-merge, chunked parse); see
+  `api/src/parse/pdf-normalize.ts`.
 
 This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.
 

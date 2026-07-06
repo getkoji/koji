@@ -1757,6 +1757,62 @@ async def slice_pdf(request: Request):
         tmp_path.unlink(missing_ok=True)
 
 
+@app.function(
+    image=image,
+    timeout=60,
+    memory=512,
+    cpu=1.0,
+)
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+async def normalize_pdf(request: Request):
+    """Re-save a PDF through MuPDF into a structure pdf-lib can read.
+
+    The API's local PDF tooling (pdf-lib) cannot read a real-world document
+    class: owner-password-encrypted PDFs (empty user password) whose page tree
+    lives in compressed object streams — pdf-lib skips decryption, so the page
+    tree never inflates and both counting and slicing throw. MuPDF decrypts
+    the empty-user-password case transparently; a garbage-collected re-save
+    (the same recovery slice_pdf uses) yields a plain PDF the API's pdf-lib
+    paths handle end to end. See api/src/parse/pdf-normalize.ts.
+
+    Accepts multipart form with ``file`` — the PDF bytes. Response mirrors
+    slice_pdf: ``{pdf_base64, pages, byte_size}``; unreadable input → 422.
+    """
+    import base64
+
+    import pymupdf
+    from fastapi.responses import JSONResponse
+
+    try:
+        form = await request.form()
+    except Exception as e:
+        return JSONResponse({"error": f"invalid form body: {e}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "missing 'file' field"}, status_code=400)
+
+    file_bytes = await upload.read()
+
+    try:
+        doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+        n_pages = len(doc)
+        out = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+    except Exception as e:
+        print(f"[normalize_pdf] failed: {e}")
+        return JSONResponse({"error": f"normalize failed: {e}"}, status_code=422)
+
+    print(f"[normalize_pdf] {len(file_bytes)} → {len(out)} bytes, {n_pages} pages")
+    return JSONResponse(
+        {
+            "pdf_base64": base64.b64encode(out).decode("ascii"),
+            "pages": n_pages,
+            "byte_size": len(out),
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Analyze pages — rich structural analysis for split boundary detection
 # ---------------------------------------------------------------------------

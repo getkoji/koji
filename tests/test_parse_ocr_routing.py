@@ -30,6 +30,7 @@ def _install_stubs():
     stubs = {}
     for mod_name in [
         "pypdfium2",
+        "pypdfium2.raw",
         "docling",
         "docling.datamodel",
         "docling.datamodel.base_models",
@@ -43,6 +44,10 @@ def _install_stubs():
             m = types.ModuleType(mod_name)
             stubs[mod_name] = m
             sys.modules[mod_name] = m
+
+    # `import pypdfium2.raw as pdfium_c` (normalize-pdf's FPDF_REMOVE_SECURITY)
+    # needs the submodule reachable as an attribute of the parent stub.
+    sys.modules["pypdfium2"].raw = sys.modules["pypdfium2.raw"]
 
     # Provide the names the module imports at top level
     docling_base = sys.modules["docling.datamodel.base_models"]

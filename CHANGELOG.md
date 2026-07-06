@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.54.3 — 2026-07-06
+
+**Fix: encrypted PDFs no longer break large-document parsing.** PDFs with the
+common owner-password / print-restriction encryption (empty user password)
+that also store their page tree in compressed object streams could not be
+page-counted or sliced locally. With a Google Document AI parse endpoint this
+sent the whole document to a single synchronous `:process` call, which Google
+rejects above 30 pages (`PAGE_LIMIT_EXCEEDED`); with the default engine, large
+documents of this shape silently lost chunked parsing. Koji now detects the
+case, re-saves the document once through the parse service's new
+`/normalize-pdf` endpoint (decrypting it), and slices the normalized copy as
+usual. If normalization is impossible the error now says why and what to do,
+instead of surfacing Google's bare page-limit error.
+
 ## 0.54.2 — 2026-07-06
 
 **`koji push` now actually pushes DAG pipelines.** Pipeline files with a

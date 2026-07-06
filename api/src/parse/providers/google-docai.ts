@@ -54,10 +54,22 @@
  * `roles/storage.objectAdmin` on that bucket.
  *
  * Auth reuses the existing Bearer token (`payload.api_key`). When the page count
- * can't be determined (e.g. a non-PDF or an unreadable PDF), the provider falls
- * back to a single online `:process` call. Slice size and concurrency are
- * configurable via `config_json` (`slice_pages` default 15, `online_concurrency`
- * default 6).
+ * can't be determined (e.g. a non-PDF or a PDF unreadable by both pdf-lib and
+ * pdfjs), the provider falls back to a single online `:process` call. Slice size
+ * and concurrency are configurable via `config_json` (`slice_pages` default 15,
+ * `online_concurrency` default 6).
+ *
+ * **pdf-lib-unreadable PDFs (oss-377).** Some real PDFs defeat pdf-lib while
+ * remaining perfectly parseable: owner-password encryption (empty user
+ * password) combined with a page tree in compressed object streams. pdf-lib's
+ * `ignoreEncryption` skips decryption, so the page tree never materializes and
+ * both counting and slicing throw. For those, the count comes from pdfjs
+ * (which decrypts properly) via {@link probePdf}; a large doc is then
+ * **normalized once** through the parse service's `/normalize-pdf` (a
+ * PDFium/MuPDF re-save, see `pdf-normalize.ts`) so the standard sliced path
+ * runs on the normalized bytes. If normalization fails, ≤30pg docs retry as a
+ * single imageless online call; larger ones surface an actionable error
+ * instead of Doc AI's bare PAGE_LIMIT_EXCEEDED.
  *
  * Credentials are resolved per-tenant via `resolveTenantParseProvider`
  * (`parse_endpoints` → decrypt → driver registry) — never from raw env vars.
@@ -86,7 +98,8 @@ import {
   unionBBox,
 } from "../chunk";
 import { GcsClient, joinGcsPath, parseGcsUri, toGcsUri } from "./gcs";
-import { slicePdfPages, mapWithConcurrency } from "../pdf-slice";
+import { slicePdfPages, mapWithConcurrency, probePdf } from "../pdf-slice";
+import { normalizePdfViaService } from "../pdf-normalize";
 import { resolveMimeType } from "../../ingestion/mime";
 
 // ---------------------------------------------------------------------------
@@ -715,12 +728,18 @@ export class GoogleDocAiProvider implements ParseProvider {
       IMAGELESS_MAX_PAGES,
     );
 
-    // Route by page count. An unknown count (non-PDF / unreadable PDF) falls
-    // back to a single online `:process` call — the smallest, safest path.
-    const pageCount = await countPdfPages(input.fileBuffer, input.mimeType);
+    // Route by page count. `probePdf` counts via pdf-lib and, when pdf-lib
+    // can't read the file (owner-password encryption + object-stream page
+    // trees — see pdf-normalize.ts), falls back to pdfjs for the count alone.
+    // An unknown count (non-PDF / unreadable by both) falls back to a single
+    // online `:process` call — the smallest, safest path.
+    const probe = await probePdf(input.fileBuffer, input.mimeType);
+    let pageCount = probe.pageCount;
 
     // Opt-in batch path for bulk / high-volume historical imports. Requires a
     // GCS bucket; gated behind config_json.parse_mode="batch" or use_batch=true.
+    // Doc AI reads the original bytes from GCS — no local pdf-lib needed, so
+    // this path works regardless of sliceability.
     if (cfg.useBatch && pageCount !== null && pageCount > sliceSize) {
       return this.processBatch(cfg, token, input);
     }
@@ -731,10 +750,81 @@ export class GoogleDocAiProvider implements ParseProvider {
       return this.processOnline(cfg, token, input, imageless);
     }
 
+    // Large doc → the sliced path, which carves the PDF locally with pdf-lib.
+    // When pdf-lib can't read the file, normalize it once through the parse
+    // service (a PDFium/MuPDF re-save) and slice the normalized bytes. Without
+    // this, the pre-oss-377 behavior was a doomed whole-doc online call that
+    // Doc AI rejected with PAGE_LIMIT_EXCEEDED.
+    if (!probe.pdfLibLoadable) {
+      let normalized: Buffer;
+      try {
+        normalized = await normalizePdfViaService(input.fileBuffer, input.filename);
+      } catch (err) {
+        return this.handleUnsliceable(cfg, token, input, pageCount, err);
+      }
+      // Recount from the normalized bytes — authoritative for range building.
+      // A normalize that pdf-lib still can't read is treated like a failure.
+      const recount = await countPdfPages(normalized, input.mimeType);
+      if (recount === null) {
+        return this.handleUnsliceable(
+          cfg,
+          token,
+          input,
+          pageCount,
+          new Error("normalized PDF is still not readable by pdf-lib"),
+        );
+      }
+      console.log(
+        `[google-docai] ${input.filename}: pdf-lib cannot read this PDF ` +
+          `(likely owner-password encryption with object streams); normalized ` +
+          `via parse service (${pageCount} → ${recount}pg).`,
+      );
+      input = { ...input, fileBuffer: normalized };
+      pageCount = recount;
+      if (pageCount <= sliceSize) {
+        // Rare: the re-save collapsed the count under the slice size.
+        return this.processOnline(cfg, token, input, pageCount > ONLINE_MAX_PAGES);
+      }
+    }
+
     // Default large-doc path: slice into ≤sliceSize segments, run each through
     // online `:process` in parallel (concurrency-capped), merge with global
     // page renumbering. GCS-free.
     return this.processSliced(cfg, token, input, pageCount, sliceSize);
+  }
+
+  /**
+   * Last resorts for a large PDF that pdf-lib can't slice and the parse
+   * service couldn't normalize. Up to {@link IMAGELESS_MAX_PAGES} a single
+   * imageless online call still fits, so try that; beyond it there is no
+   * online path at all — surface an actionable error instead of letting Doc
+   * AI reject the whole document with a bare PAGE_LIMIT_EXCEEDED.
+   */
+  private async handleUnsliceable(
+    cfg: GoogleDocAiConfig,
+    token: string,
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    pageCount: number,
+    cause: unknown,
+  ): Promise<ParseResponse> {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    if (pageCount <= IMAGELESS_MAX_PAGES) {
+      console.warn(
+        `[google-docai] ${input.filename}: ${pageCount}pg PDF is not locally ` +
+          `sliceable and normalization failed (${reason}); ` +
+          `falling back to a single imageless online call.`,
+      );
+      return this.processOnline(cfg, token, input, true);
+    }
+    throw new Error(
+      `google-docai: ${input.filename} has ${pageCount} pages but its PDF ` +
+        `structure cannot be sliced locally (typically owner-password ` +
+        `encryption with compressed object streams), and normalizing it via ` +
+        `the parse service failed: ${reason}. A single online :process call ` +
+        `is capped at ${IMAGELESS_MAX_PAGES} pages, so the document cannot be ` +
+        `parsed as-is. Configure batch mode (config_json.parse_mode="batch" ` +
+        `with a GCS bucket) or re-save the PDF at the source.`,
+    );
   }
 
   /** Build the `documentai.googleapis.com` host for this config. */
