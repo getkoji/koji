@@ -220,6 +220,8 @@ export interface SchemaRow {
   draftYaml?: string | null;
   currentVersionId?: string | null;
   latestVersion?: number | null;
+  /** Semver label of the latest version (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+  latestVersionLabel?: string | null;
   corpusCount?: number;
 }
 
@@ -241,6 +243,8 @@ export interface JobRow {
   pipelineName: string | null;
   schemaName: string | null;
   schemaVersion: number | null;
+  /** Semver label of the schema version (e.g. `v1.2.0`). */
+  schemaVersionLabel: string | null;
 }
 
 export interface JobDetail extends JobRow {
@@ -327,6 +331,8 @@ export interface DocumentDetail {
   schemaSlug: string | null;
   schemaName: string | null;
   schemaVersion: number | null;
+  /** Semver label of the schema version (e.g. `v1.2.0`). */
+  schemaVersionLabel: string | null;
   trace: TraceSummary | null;
   stages: TraceStageRow[];
   documentPreviewUrl: string | null;
@@ -425,6 +431,8 @@ export interface ClassifierRow {
   createdAt: string;
   /** Latest version number (list route), or null if none committed. */
   latestVersion: number | null;
+  /** Semver label of the latest version (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+  latestVersionLabel: string | null;
 }
 
 export interface ClassifierDetail {
@@ -437,6 +445,8 @@ export interface ClassifierDetail {
   currentVersionId: string | null;
   latestVersion: {
     versionNumber: number;
+    /** Semver label (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+    version: string;
     yamlSource: string;
     commitMessage: string | null;
     createdAt: string;
@@ -606,6 +616,8 @@ export interface ReviewDetail extends ReviewRow {
   documentPageCount: number | null;
   documentPreviewUrl: string | null;
   schemaVersion: number | null;
+  /** Semver label of the schema version (e.g. `v1.2.0`). */
+  schemaVersionLabel: string | null;
 }
 
 export const review = {
@@ -660,6 +672,8 @@ export interface PipelineRow {
   schemaSlug: string | null;
   schemaName: string | null;
   deployedVersion: number | null;
+  /** Semver label of the deployed version (e.g. `v1.2.0`). */
+  deployedVersionLabel: string | null;
   modelProviderName: string | null;
   modelProviderModel: string | null;
   pipelineType?: string;
@@ -755,6 +769,12 @@ export interface PipelineDetail {
 export interface SchemaVersion {
   id: string;
   versionNumber: number;
+  /** Semver label (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+  version: string;
+  prerelease: string | null;
+  released: boolean;
+  /** True when this is the schema's live release (`currentVersionId`). */
+  active: boolean;
   commitMessage: string | null;
   committedByName: string | null;
   createdAt: string;

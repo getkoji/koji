@@ -326,7 +326,7 @@ export default function TraceViewPage() {
 
   const badge = statusBadge(data.status);
   const schemaLabel = data.schemaName && data.schemaVersion !== null
-    ? `${data.schemaName} v${data.schemaVersion}`
+    ? `${data.schemaName} ${data.schemaVersionLabel ?? `v${data.schemaVersion}`}`
     : data.schemaName ?? "—";
   const startedLabel = formatTimestamp(data.trace?.startedAt ?? data.startedAt ?? data.createdAt);
   const traceIdLabel = data.trace?.traceExternalId ?? "—";

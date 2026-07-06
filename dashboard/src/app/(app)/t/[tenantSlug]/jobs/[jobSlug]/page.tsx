@@ -220,7 +220,7 @@ function JobHeader({
               >
                 {job.schemaName}
                 {job.schemaVersion !== null && (
-                  <span className="text-ink-4 ml-1">v{job.schemaVersion}</span>
+                  <span className="text-ink-4 ml-1">{job.schemaVersionLabel ?? `v${job.schemaVersion}`}</span>
                 )}
               </Link>
             </>

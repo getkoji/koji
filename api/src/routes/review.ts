@@ -7,6 +7,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, generatePreviewToken, getProjectId, getRlsScope } from "../auth/middleware";
 import { requireFeature } from "../billing/middleware";
 import { resolveMimeType } from "../ingestion/mime";
+import { formatSemverLabel } from "../schemas/semver";
 
 export const review = new Hono<Env>();
 
@@ -162,6 +163,10 @@ review.get("/:id", requires("review:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         schemaVersion: schema.schemaVersions.versionNumber,
+        svMajor: schema.schemaVersions.major,
+        svMinor: schema.schemaVersions.minor,
+        svPatch: schema.schemaVersions.patch,
+        svPrerelease: schema.schemaVersions.prerelease,
       })
       .from(schema.reviewItems)
       .leftJoin(schema.documents, eq(schema.documents.id, schema.reviewItems.documentId))
@@ -204,7 +209,13 @@ review.get("/:id", requires("review:read"), async (c) => {
     }
   }
 
-  return c.json({ ...row, documentPreviewUrl, documentToken });
+  const { svMajor, svMinor, svPatch, svPrerelease, ...item } = row;
+  return c.json({
+    ...item,
+    schemaVersionLabel: formatSemverLabel({ major: svMajor, minor: svMinor, patch: svPatch, prerelease: svPrerelease }),
+    documentPreviewUrl,
+    documentToken,
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────

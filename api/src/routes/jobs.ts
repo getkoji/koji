@@ -4,6 +4,7 @@ import { and, eq, desc, asc, gte, lt, isNull, ilike, sql, type SQL } from "drizz
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, generatePreviewToken, getProjectId } from "../auth/middleware";
+import { formatSemverLabel } from "../schemas/semver";
 
 export const jobs = new Hono<Env>();
 
@@ -147,6 +148,10 @@ jobs.get("/", requires("job:read"), async (c) => {
         pipelineName: schema.pipelines.displayName,
         schemaName: schema.schemas.displayName,
         schemaVersion: schema.schemaVersions.versionNumber,
+        svMajor: schema.schemaVersions.major,
+        svMinor: schema.schemaVersions.minor,
+        svPatch: schema.schemaVersions.patch,
+        svPrerelease: schema.schemaVersions.prerelease,
       })
       .from(schema.jobs)
       .leftJoin(schema.pipelines, eq(schema.pipelines.id, schema.jobs.pipelineId))
@@ -187,7 +192,11 @@ jobs.get("/", requires("job:read"), async (c) => {
     total += row.count;
   }
 
-  return c.json({ data: rows, nextCursor, counts: { total, byStatus: statusCounts } });
+  const data = rows.map(({ svMajor, svMinor, svPatch, svPrerelease, ...rest }) => ({
+    ...rest,
+    schemaVersionLabel: formatSemverLabel({ major: svMajor, minor: svMinor, patch: svPatch, prerelease: svPrerelease }),
+  }));
+  return c.json({ data, nextCursor, counts: { total, byStatus: statusCounts } });
 });
 
 /**
@@ -450,6 +459,10 @@ jobs.get("/:slug", requires("job:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         schemaVersion: schema.schemaVersions.versionNumber,
+        svMajor: schema.schemaVersions.major,
+        svMinor: schema.schemaVersions.minor,
+        svPatch: schema.schemaVersions.patch,
+        svPrerelease: schema.schemaVersions.prerelease,
       })
       .from(schema.jobs)
       .leftJoin(schema.pipelines, eq(schema.pipelines.id, schema.jobs.pipelineId))
@@ -465,7 +478,11 @@ jobs.get("/:slug", requires("job:read"), async (c) => {
   if (!row) {
     return c.json({ error: "Job not found" }, 404);
   }
-  return c.json(row);
+  const { svMajor, svMinor, svPatch, svPrerelease, ...job } = row;
+  return c.json({
+    ...job,
+    schemaVersionLabel: formatSemverLabel({ major: svMajor, minor: svMinor, patch: svPatch, prerelease: svPrerelease }),
+  });
 });
 
 /**
@@ -554,6 +571,10 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         schemaVersion: schema.schemaVersions.versionNumber,
+        svMajor: schema.schemaVersions.major,
+        svMinor: schema.schemaVersions.minor,
+        svPatch: schema.schemaVersions.patch,
+        svPrerelease: schema.schemaVersions.prerelease,
         pipelineId: schema.jobs.pipelineId,
       })
       .from(schema.documents)
@@ -659,8 +680,10 @@ jobs.get("/:slug/documents/:docId", requires("job:read"), async (c) => {
     errorMessage: sr.errorMessage,
   }));
 
+  const { svMajor, svMinor, svPatch, svPrerelease, ...doc } = row;
   return c.json({
-    ...row,
+    ...doc,
+    schemaVersionLabel: formatSemverLabel({ major: svMajor, minor: svMinor, patch: svPatch, prerelease: svPrerelease }),
     trace: trace ?? null,
     stages: dagStages.length > 0 ? dagStages : stages,
     stepRuns: stepRuns.length > 0 ? stepRuns : undefined,

@@ -1244,7 +1244,12 @@ function DeployDialog({
                 />
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <div className="flex items-center gap-2">
-                    <code className="font-mono text-[12px] text-ink">v{v.versionNumber}</code>
+                    <code className="font-mono text-[12px] text-ink">{v.version ?? `v${v.versionNumber}`}</code>
+                    {!v.released && (
+                      <span className="font-mono text-[9.5px] text-ink-4 bg-cream-2 px-1.5 py-0.5 rounded-sm uppercase tracking-[0.08em]">
+                        rc
+                      </span>
+                    )}
                     {pipeline.activeSchemaVersionId === v.id && (
                       <span className="font-mono text-[9.5px] text-green bg-green/10 px-1.5 py-0.5 rounded-sm uppercase tracking-[0.08em]">
                         current

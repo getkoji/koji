@@ -19,6 +19,8 @@ interface RunFailure {
 interface PerformanceRun {
   id: string;
   versionNumber: number | null;
+  /** Semver label of the version the run scored (e.g. `v1.2.0-rc.3`). */
+  version: string | null;
   status: string;
   errorMessage: string | null;
   failures: RunFailure[];
@@ -262,18 +264,21 @@ export default function PerformancePage() {
 
   const fieldData = validRuns.map((r, i) => ({
     version: r.versionNumber ?? 0,
+    semver: r.version,
     accuracy: parseFloat(r.accuracy!) * 100,
     label: `#${i + 1}`,
   }));
 
   const docData = validRuns.map((r, i) => ({
     version: r.versionNumber ?? 0,
+    semver: r.version,
     accuracy: r.docsTotal > 0 ? (r.docsPassed / r.docsTotal) * 100 : 0,
     label: `#${i + 1}`,
   }));
 
   const compositeData = fieldData.map((d, i) => ({
     version: d.version,
+    semver: d.semver,
     accuracy: docData[i] ? d.accuracy * 0.6 + docData[i].accuracy * 0.4 : d.accuracy,
     label: `#${i + 1}`,
   }));
@@ -334,7 +339,7 @@ export default function PerformancePage() {
             // The latest run may be a FAILED one (accuracy null, excluded from
             // the chart) — say so instead of silently labeling it with the
             // last successful run's version.
-            { label: "Last run", value: latestRun.completedAt ? timeAgo(latestRun.completedAt) : "—", delta: latestRun.status === "failed" ? "failed" : current ? `v${current.version}` : null, up: latestRun.status !== "failed" },
+            { label: "Last run", value: latestRun.completedAt ? timeAgo(latestRun.completedAt) : "—", delta: latestRun.status === "failed" ? "failed" : current ? (current.semver ?? `v${current.version}`) : null, up: latestRun.status !== "failed" },
           ].map((m) => (
             <div key={m.label} className="bg-cream px-4 py-3.5 flex flex-col gap-0.5">
               <span className="font-mono text-[9px] font-medium tracking-[0.12em] uppercase text-ink-4">{m.label}</span>
@@ -496,7 +501,7 @@ export default function PerformancePage() {
                             onClick={failures.length > 0 ? () => setExpandedRunId(expanded ? null : r.id) : undefined}
                           >
                             <td className="px-3 py-2 font-mono text-[11px] text-ink">
-                              v{r.versionNumber}
+                              {r.version ?? `v${r.versionNumber}`}
                               {i === 0 && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">latest</span>}
                               {r.status === "failed" && <span className="font-mono text-[8px] font-medium text-vermillion-2 bg-vermillion-3/40 px-1 py-0.5 rounded-sm uppercase ml-1.5">failed</span>}
                               {r.status === "running" && <span className="font-mono text-[8px] text-ink-4 bg-cream-2 px-1 py-0.5 rounded-sm uppercase ml-1.5">running</span>}

@@ -26,6 +26,20 @@ export function formatSemver(v: Semver): string {
   return v.prerelease ? `${base}-${v.prerelease}` : base;
 }
 
+/**
+ * `formatSemver` over components that may be null — the shape a LEFT JOIN
+ * produces when there is no matching version row. Null in, null out.
+ */
+export function formatSemverLabel(v: {
+  major: number | null;
+  minor: number | null;
+  patch: number | null;
+  prerelease: string | null;
+}): string | null {
+  if (v.major === null || v.minor === null || v.patch === null) return null;
+  return formatSemver({ major: v.major, minor: v.minor, patch: v.patch, prerelease: v.prerelease });
+}
+
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
 /** Parse `v1.2.3[-rc.7]` (leading `v` optional). Returns null if malformed. */

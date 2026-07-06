@@ -8,7 +8,7 @@ import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId, getRlsScope } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
-import { formatSemver } from "../schemas/semver";
+import { formatSemver, formatSemverLabel } from "../schemas/semver";
 import { requireUploadRateLimit } from "../billing/rate-limits";
 import { requireConcurrencySlot } from "../billing/concurrency";
 import { emitWebhookEvent } from "../webhooks/emit";
@@ -138,6 +138,10 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
         schemaSlug: schema.schemas.slug,
         schemaName: schema.schemas.displayName,
         deployedVersion: schema.schemaVersions.versionNumber,
+        deployedMajor: schema.schemaVersions.major,
+        deployedMinor: schema.schemaVersions.minor,
+        deployedPatch: schema.schemaVersions.patch,
+        deployedPrerelease: schema.schemaVersions.prerelease,
         modelProviderName: schema.providerCredentials.displayName,
         modelProviderModel: schema.tenantModels.model,
         parseProviderName: schema.parseEndpoints.displayName,
@@ -181,8 +185,15 @@ pipelinesRouter.get("/", requires("pipeline:read"), async (c) => {
 
   const enriched = rows.map((row) => {
     const s = statsByPipeline.get(row.id);
+    const { deployedMajor, deployedMinor, deployedPatch, deployedPrerelease, ...rest } = row;
     return {
-      ...row,
+      ...rest,
+      deployedVersionLabel: formatSemverLabel({
+        major: deployedMajor,
+        minor: deployedMinor,
+        patch: deployedPatch,
+        prerelease: deployedPrerelease,
+      }),
       docsTotal: s?.docsTotal ?? 0,
       docsPassed: s?.docsPassed ?? 0,
       docsFailed: s?.docsFailed ?? 0,
