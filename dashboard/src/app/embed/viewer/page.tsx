@@ -2,14 +2,17 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { Crosshair } from "lucide-react";
 import {
   PdfViewer,
   type BBoxHighlight,
   type EmbedMessage,
   type EmbedOutboundMessage,
   type HighlightTheme,
+  type RegionSelection,
   type ViewMode,
   type ViewOverflow,
+  type WordBox,
 } from "@/components/shared/PdfViewer";
 
 /**
@@ -40,6 +43,14 @@ import {
  *   default when highlights exist; selecting one jumps to its highlight. Hide
  *   it with ?fieldPicker=off (e.g. when the host drives selection itself).
  *
+ * Tools (optional): ?tools=select — comma-separated list of optional tools,
+ *   all OFF by default. `select` enables region selection
+ *   (highlight-to-correct): a crosshair toolbar toggle appears, the host can
+ *   arm/disarm it via koji:setSelectionMode, and a completed drag emits
+ *   koji:regionSelected. In Document mode the viewer resolves the region to
+ *   the text underneath via POST .../resolve-region (same HMAC token) before
+ *   emitting; in URL mode it emits the raw rectangle with text: null.
+ *
  * Outbound origin (optional): ?parentOrigin=<https://host> — the targetOrigin
  * the viewer posts outbound messages to. Falls back to the embedding page's
  * origin (document.referrer). Never posts to "*" unless neither is known.
@@ -51,12 +62,14 @@ import {
  *   { type: "koji:setToken", token: "<fresh documentToken>" }   // refresh w/o iframe reload
  *   { type: "koji:setTheme", theme: { activeColor, inactiveColor } }
  *   { type: "koji:setViewMode", mode: "scroll", overflow: "auto" }  // both optional
+ *   { type: "koji:setSelectionMode", field: "carrier" | null }  // arm/disarm region select (?tools=select)
  *
  * Outbound postMessage (viewer → parent), posted to parentOrigin (never "*"):
  *   { type: "koji:ready", pageCount: 5 }                          // PDF loaded, controllable
  *   { type: "koji:fieldClicked", field: "carrier", page: 2 }     // user clicked a highlight
  *   { type: "koji:pageChanged", page: 3 }                        // most-visible page changed
  *   { type: "koji:visibleField", field: "carrier" | null, page: 3 }  // most-visible field changed
+ *   { type: "koji:regionSelected", field, page, bbox, text, words }  // region picked + resolved (?tools=select)
  *
  * The koji:pageChanged / koji:visibleField events fire on scroll (mode=scroll)
  * and on page navigation (mode=paginated), for both user and programmatic
@@ -124,6 +137,26 @@ function EmbedViewerInner() {
     const v = searchParams.get("fieldPicker");
     return v !== "off" && v !== "0" && v !== "false";
   }, [searchParams]);
+  // Optional tools are all OFF unless listed in ?tools= (comma-separated).
+  // Unknown names are ignored so a future tool name doesn't break old embeds.
+  const selectToolEnabled = useMemo(() => {
+    const v = searchParams.get("tools");
+    return v != null && v.split(",").map((t) => t.trim()).includes("select");
+  }, [searchParams]);
+  // Region-selection state (?tools=select). `field` is what the host armed
+  // selection for via koji:setSelectionMode (null when the built-in toolbar
+  // toggle armed it); it is echoed back on koji:regionSelected.
+  const [selectState, setSelectState] = useState<{ armed: boolean; field: string | null }>({
+    armed: false,
+    field: null,
+  });
+  const [snapped, setSnapped] = useState<BBoxHighlight | null>(null);
+  // Document-mode context for resolve-region calls. Mirrors the query params;
+  // koji:setToken refreshes the token here too so resolution keeps working
+  // through long review sessions.
+  const [docCtx, setDocCtx] = useState<{ job: string; doc: string; token: string | null } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -256,6 +289,7 @@ function EmbedViewerInner() {
     // deliberate: the embed is cookieless and must NOT depend on a session;
     // auth is the HMAC token in the query string.
     if (job && doc) {
+      setDocCtx({ job, doc, token });
       const qs = token ? `?token=${encodeURIComponent(token)}` : "";
       fetch(`/api/jobs/${job}/documents/${doc}/embed-data${qs}`)
         .then((r) => {
@@ -299,6 +333,22 @@ function EmbedViewerInner() {
           // authorized through a long review session. The PdfViewer component
           // stays mounted, so the current page and selection are preserved.
           setPdfUrl((prev) => (prev ? swapToken(prev, msg.token) : prev));
+          setDocCtx((prev) => (prev ? { ...prev, token: msg.token } : prev));
+          break;
+        case "koji:setSelectionMode":
+          if (!selectToolEnabled) {
+            console.warn(
+              "[embed] koji:setSelectionMode ignored — enable the tool with ?tools=select",
+            );
+            break;
+          }
+          if (msg.field === null) {
+            setSelectState({ armed: false, field: null });
+            setSnapped(null);
+          } else {
+            setSelectState({ armed: true, field: msg.field });
+            setSnapped(null);
+          }
           break;
         case "koji:setTheme":
           setTheme(msg.theme);
@@ -314,7 +364,62 @@ function EmbedViewerInner() {
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, []);
+  }, [selectToolEnabled]);
+
+  // A completed selection drag: resolve the region to the text underneath
+  // (Document mode — raw fetch with the HMAC token, same cookieless posture
+  // as embed-data), echo the snapped words on the page, and emit
+  // koji:regionSelected. URL mode has no document to resolve against, so the
+  // raw rectangle is emitted with text: null for the host to handle.
+  const handleRegionSelected = useCallback(
+    async (region: RegionSelection) => {
+      let text: string | null = null;
+      let words: WordBox[] = [];
+      let bbox = region.bbox;
+      if (docCtx) {
+        try {
+          const qs = docCtx.token ? `?token=${encodeURIComponent(docCtx.token)}` : "";
+          const r = await fetch(
+            `/api/jobs/${docCtx.job}/documents/${docCtx.doc}/resolve-region${qs}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(region),
+            },
+          );
+          if (r.ok) {
+            const data = (await r.json()) as {
+              text: string | null;
+              words: WordBox[];
+              bbox: { x: number; y: number; w: number; h: number } | null;
+            };
+            if (data.text != null) {
+              text = data.text;
+              words = data.words ?? [];
+              bbox = data.bbox ?? region.bbox;
+            }
+          }
+        } catch {
+          // Resolution failed (network, expired token) — emit text: null so
+          // the host falls back to manual input rather than hanging.
+        }
+      }
+      setSnapped(
+        text != null
+          ? { field: selectState.field ?? "__selection", page: region.page, bbox, words }
+          : null,
+      );
+      postToParent({
+        type: "koji:regionSelected",
+        field: selectState.field,
+        page: region.page,
+        bbox,
+        text,
+        words,
+      });
+    },
+    [docCtx, selectState.field, postToParent],
+  );
 
   if (loading) {
     return (
@@ -366,6 +471,37 @@ function EmbedViewerInner() {
       </select>
     ) : undefined;
 
+  // Self-serve entry to selection mode: a small crosshair toggle next to the
+  // field picker, only when the tool is enabled. Hosts that drive selection
+  // via koji:setSelectionMode can keep using it — the states are shared.
+  const selectionToggle = selectToolEnabled ? (
+    <button
+      type="button"
+      aria-label={selectState.armed ? "Exit region selection" : "Select a region on the document"}
+      title={selectState.armed ? "Exit region selection" : "Select a region on the document"}
+      data-testid="embed-select-toggle"
+      onClick={() => {
+        setSnapped(null);
+        setSelectState((s) => ({ armed: !s.armed, field: s.armed ? null : s.field }));
+      }}
+      className={`shrink-0 rounded border px-1.5 py-0.5 transition-colors ${
+        selectState.armed
+          ? "border-neutral-700 bg-neutral-800 text-white"
+          : "border-neutral-300 bg-white text-neutral-500 hover:text-neutral-800"
+      }`}
+    >
+      <Crosshair className="h-3.5 w-3.5" />
+    </button>
+  ) : undefined;
+
+  const toolbarSlot =
+    fieldPicker || selectionToggle ? (
+      <div className="flex min-w-0 items-center gap-1.5">
+        {selectionToggle}
+        {fieldPicker}
+      </div>
+    ) : undefined;
+
   return (
     <div className="h-screen w-screen bg-white">
       <PdfViewer
@@ -376,7 +512,12 @@ function EmbedViewerInner() {
         theme={theme}
         mode={viewMode}
         overflow={overflow}
-        toolbarSlot={fieldPicker}
+        toolbarSlot={toolbarSlot}
+        selection={
+          selectToolEnabled
+            ? { active: selectState.armed, onRegionSelected: handleRegionSelected, snapped }
+            : undefined
+        }
         onPageChange={handlePageChange}
         onVisibleFieldChange={handleVisibleFieldChange}
         onLoad={({ pageCount }) => {

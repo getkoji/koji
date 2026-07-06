@@ -107,14 +107,32 @@ export type EmbedMessage =
   | { type: "koji:goToPage"; page: number }
   | { type: "koji:setToken"; token: string }
   | { type: "koji:setTheme"; theme: HighlightTheme }
-  | { type: "koji:setViewMode"; mode?: ViewMode; overflow?: ViewOverflow };
+  | { type: "koji:setViewMode"; mode?: ViewMode; overflow?: ViewOverflow }
+  // Arm region selection on behalf of a field (requires ?tools=select on the
+  // embed URL); `field: null` disarms and clears the snapped echo.
+  | { type: "koji:setSelectionMode"; field: string | null };
 
 /** Messages the embed viewer emits to its parent frame (outbound). */
 export type EmbedOutboundMessage =
   | { type: "koji:ready"; pageCount: number }
   | { type: "koji:fieldClicked"; field: string; page: number }
   | { type: "koji:pageChanged"; page: number }
-  | { type: "koji:visibleField"; field: string | null; page: number };
+  | { type: "koji:visibleField"; field: string | null; page: number }
+  // The user selected a region (?tools=select). In Document mode the viewer
+  // has already resolved the region to the text underneath (resolve-region):
+  // `text` is null when nothing was there — treat that as "fall back to
+  // manual input". `field` echoes the koji:setSelectionMode field (null when
+  // the built-in toolbar toggle armed the selection). In URL mode there is
+  // no document to resolve against: text is null, words is empty, and bbox
+  // is the raw drag rectangle for the host to resolve itself.
+  | {
+      type: "koji:regionSelected";
+      field: string | null;
+      page: number;
+      bbox: { x: number; y: number; w: number; h: number };
+      text: string | null;
+      words: WordBox[];
+    };
 
 interface PdfViewerProps {
   url: string;
