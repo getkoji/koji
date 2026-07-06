@@ -4,7 +4,7 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, getGrants, getRoles, getAccessibleProjectIds } from "../auth/middleware";
 import type { Permission } from "../auth/roles";
-import { highestRoleRank, isValidProjectRole } from "../auth/roles";
+import { highestRoleRank, isValidProjectRole, shouldRestrictByDefault, projectRoleCovering } from "../auth/roles";
 import { moveResource, MOVE_PERMISSION, type MovableType } from "../projects/move";
 
 export const projects = new Hono<Env>();
@@ -308,11 +308,57 @@ async function findProject(db: any, tenantId: string, slug: string) {
 }
 
 /**
+ * Materialize an unrestricted member's implicit all-projects access into
+ * explicit per-project grants, then flip them to restricted — one transaction
+ * (oss-388). Every live project gets a grant at the project role covering the
+ * member's workspace role, so their capability elsewhere is preserved; the
+ * project being edited is skipped (revoke) or written with the requested roles
+ * (grant/role-change). Never called for owners/tenant-admins.
+ */
+async function materializeAccess(
+  db: any,
+  tenantId: string,
+  m: { id: string; userId: string; roles: string[] },
+  actorId: string,
+  opts: { skipProjectId?: string; override?: { projectId: string; roles: string[] } },
+) {
+  const coverRoles = [projectRoleCovering(m.roles)];
+  await withRLS(db, tenantId, async (tx) => {
+    const live = await tx
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(isNull(schema.projects.deletedAt));
+    // Clear any stale grant rows (none expected while unrestricted), then
+    // write the full explicit set.
+    await tx.delete(schema.projectAccess).where(eq(schema.projectAccess.userId, m.userId));
+    const values = live
+      .filter((p: { id: string }) => p.id !== opts.skipProjectId)
+      .map((p: { id: string }) => ({
+        tenantId,
+        userId: m.userId,
+        projectId: p.id,
+        roles: opts.override?.projectId === p.id ? opts.override.roles : coverRoles,
+        createdBy: actorId,
+      }));
+    if (values.length > 0) await tx.insert(schema.projectAccess).values(values);
+    await tx
+      .update(schema.memberships)
+      .set({ projectRestricted: true, updatedAt: new Date() })
+      .where(eq(schema.memberships.id, m.id));
+  });
+}
+
+const ADMIN_ALL_ACCESS_ERROR =
+  "Workspace owners and admins always have access to every project. Change their workspace role to manage their access.";
+
+/**
  * GET /api/projects/:slug/members — who can access this project.
  *   - `members`: everyone with access. `access:"granted"` = a restricted member
  *     explicitly granted here (with their project `roles`); `access:"all"` = an
- *     unrestricted member (owner/admin) who sees every project (workspace role,
- *     managed from the Members page).
+ *     unrestricted member who sees every project. For those, `workspaceAdmin`
+ *     says whether that's by design (owner/tenant-admin — not editable here)
+ *     and `defaultRole` is the project role their workspace role maps to (what
+ *     a PUT/DELETE materialization would grant them elsewhere).
  *   - `candidates`: restricted members NOT yet on this project (the add picker).
  *
  * Admin-gated (member:invite) — this is a management surface, and it would
@@ -354,7 +400,13 @@ projects.get("/:slug/members", requires("member:invite"), async (c) => {
   for (const m of allMembers) {
     const base = { membershipId: m.membershipId, userId: m.userId, name: m.name, email: m.email };
     if (!m.restricted) {
-      members.push({ ...base, access: "all", roles: m.roles });
+      members.push({
+        ...base,
+        access: "all",
+        roles: m.roles,
+        workspaceAdmin: !shouldRestrictByDefault(m.roles),
+        defaultRole: projectRoleCovering(m.roles),
+      });
     } else if (grantByUser.has(m.userId)) {
       members.push({ ...base, access: "granted", roles: grantByUser.get(m.userId) });
     } else {
@@ -366,10 +418,15 @@ projects.get("/:slug/members", requires("member:invite"), async (c) => {
 });
 
 /**
- * PUT /api/projects/:slug/members/:membershipId — grant/update a restricted
- * member's role in THIS project. Body: { roles: ProjectRole[] }. The member
- * must be project-restricted (an all-access member is managed from the Members
- * page — restrict them there first).
+ * PUT /api/projects/:slug/members/:membershipId — grant/update a member's role
+ * in THIS project. Body: { roles: ProjectRole[] }. For a restricted member this
+ * upserts their grant here. For an unrestricted (all-access) member it
+ * materializes their implicit access into explicit grants — this project at the
+ * requested roles, every other live project at the role covering their
+ * workspace role — and flips them to restricted, so per-project management
+ * works without a separate "restrict them first" step (which hosted
+ * deployments, where workspace membership lives in the IdP, don't have).
+ * Owners/tenant-admins are all-access by design → 400.
  */
 projects.put("/:slug/members/:membershipId", requires("member:invite"), async (c) => {
   const db = c.get("db");
@@ -394,14 +451,21 @@ projects.put("/:slug/members/:membershipId", requires("member:invite"), async (c
   if (highestRoleRank(m.roles) > highestRoleRank(getRoles(c))) {
     return c.json({ error: "Cannot modify a member with a higher role than your own" }, 403);
   }
-  if (!m.restricted) {
-    return c.json({ error: "This member already has access to all projects. Restrict them on the Members page first." }, 400);
-  }
 
   const body = await c.req.json<{ roles?: string[] }>();
   const roles = body.roles && body.roles.length > 0 ? body.roles : ["project-member"];
   for (const r of roles) {
     if (!isValidProjectRole(r)) return c.json({ error: `Invalid project role: ${r}` }, 400);
+  }
+
+  if (!m.restricted) {
+    if (!shouldRestrictByDefault(m.roles)) {
+      return c.json({ error: ADMIN_ALL_ACCESS_ERROR }, 400);
+    }
+    await materializeAccess(db, tenantId, m, principal.userId, {
+      override: { projectId: project.id, roles },
+    });
+    return c.json({ ok: true, roles, materialized: true });
   }
 
   await withRLS(db, tenantId, async (tx) => {
@@ -422,16 +486,28 @@ projects.put("/:slug/members/:membershipId", requires("member:invite"), async (c
 
 /**
  * DELETE /api/projects/:slug/members/:membershipId — revoke a member's access
- * to THIS project (removes the grant row). No-op for all-access members.
+ * to THIS project. For a restricted member this removes their grant row. For an
+ * unrestricted member it materializes their implicit access into explicit
+ * grants on every OTHER live project (at the role covering their workspace
+ * role) and flips them to restricted — "remove from this project" keeps
+ * working when workspace membership is managed in an IdP. Owners/tenant-admins
+ * are all-access by design → 400.
  */
 projects.delete("/:slug/members/:membershipId", requires("member:invite"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
   const project = await findProject(db, tenantId, c.req.param("slug")!);
   if (!project) return c.json({ error: "Project not found" }, 404);
 
   const [m] = await db
-    .select({ userId: schema.memberships.userId, roles: schema.memberships.roles, isShadow: schema.memberships.isShadow })
+    .select({
+      id: schema.memberships.id,
+      userId: schema.memberships.userId,
+      roles: schema.memberships.roles,
+      restricted: schema.memberships.projectRestricted,
+      isShadow: schema.memberships.isShadow,
+    })
     .from(schema.memberships)
     .where(and(eq(schema.memberships.id, c.req.param("membershipId")!), eq(schema.memberships.tenantId, tenantId)))
     .limit(1);
@@ -439,6 +515,14 @@ projects.delete("/:slug/members/:membershipId", requires("member:invite"), async
 
   if (highestRoleRank(m.roles) > highestRoleRank(getRoles(c))) {
     return c.json({ error: "Cannot modify a member with a higher role than your own" }, 403);
+  }
+
+  if (!m.restricted) {
+    if (!shouldRestrictByDefault(m.roles)) {
+      return c.json({ error: ADMIN_ALL_ACCESS_ERROR }, 400);
+    }
+    await materializeAccess(db, tenantId, m, principal.userId, { skipProjectId: project.id });
+    return c.body(null, 204);
   }
 
   await withRLS(db, tenantId, (tx) =>
