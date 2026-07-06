@@ -3,10 +3,13 @@ import { streamSSE } from "hono/streaming";
 import { and, eq, desc, asc, gte, lt, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, generatePreviewToken, getProjectId } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getRlsScope, generatePreviewToken, getProjectId } from "../auth/middleware";
+import { requireFeature } from "../billing/middleware";
+import { emitWebhookEvent } from "../webhooks/emit";
 import { formatSemverLabel } from "../schemas/semver";
 import { locateWordsByRegion } from "../extract/region";
 import { toProvenanceTextMap, type BBox, type FlatTextMapSegment } from "../extract/provenance";
+import { parseOverrideProvenance, buildAnchoredSpan, type AnchoredProvenance } from "./review";
 
 export const jobs = new Hono<Env>();
 
@@ -1351,6 +1354,195 @@ jobs.post("/:slug/documents/:docId/resolve-region", async (c) => {
   c.header("Cache-Control", "no-store");
   return c.json(match);
 });
+
+/** One validated entry of a corrections request. */
+export interface CorrectionInput {
+  field: string;
+  value: unknown;
+  provenance: AnchoredProvenance | null;
+}
+
+/** Ceiling on corrections per call — a UI batches one save, not a backfill. */
+const MAX_CORRECTIONS = 50;
+
+/**
+ * Validate a manual-corrections request body. Exported for tests.
+ *
+ * Shape: `{ corrections: [{ field, value, provenance? }], note? }` — at least
+ * one entry, unique field names, `value` present on every entry (null is a
+ * legal correction, a missing key is a mistake), provenance per entry
+ * validated with the same rules as a review override.
+ */
+export function parseCorrectionsBody(
+  body: unknown,
+): { corrections: CorrectionInput[]; note: string | null } | { error: string } {
+  if (!body || typeof body !== "object") return { error: "corrections array is required" };
+  const { corrections, note } = body as Record<string, unknown>;
+  if (!Array.isArray(corrections) || corrections.length === 0) {
+    return { error: "corrections must be a non-empty array" };
+  }
+  if (corrections.length > MAX_CORRECTIONS) {
+    return { error: `at most ${MAX_CORRECTIONS} corrections per request` };
+  }
+  if (note !== undefined && note !== null && typeof note !== "string") {
+    return { error: "note must be a string" };
+  }
+  const seen = new Set<string>();
+  const out: CorrectionInput[] = [];
+  for (const entry of corrections) {
+    if (!entry || typeof entry !== "object") return { error: "each correction must be an object" };
+    const e = entry as Record<string, unknown>;
+    if (typeof e.field !== "string" || e.field.trim() === "" || e.field.length > 128) {
+      return { error: "each correction needs a field name (≤ 128 chars)" };
+    }
+    if (!Object.hasOwn(e, "value")) {
+      return { error: `correction for "${e.field}" is missing a value (use null to clear)` };
+    }
+    if (seen.has(e.field)) return { error: `duplicate correction for field "${e.field}"` };
+    seen.add(e.field);
+    const provenance = parseOverrideProvenance(e.provenance);
+    if (provenance === "invalid") {
+      return {
+        error: `correction for "${e.field}": provenance must be { page: integer ≥ 1, bbox: {x,y,w,h}, words?, chunk? }`,
+      };
+    }
+    out.push({ field: e.field, value: e.value, provenance });
+  }
+  return { corrections: out, note: typeof note === "string" && note.trim() ? note.trim() : null };
+}
+
+/**
+ * POST /api/jobs/:slug/documents/:docId/corrections — manually correct
+ * extracted values on a document, outside the review queue.
+ *
+ * The review queue only sees what the confidence/validation heuristics flag;
+ * this is the path for fixing the confidently-wrong rest. A correction is
+ * modeled as an already-resolved review item (`reason: "manual"`, status
+ * completed, resolution approved) — one per corrected field — so the audit
+ * trail, promote-to-corpus path, and correction analytics all reuse the
+ * review machinery. No new tables.
+ *
+ * Effects, in order:
+ *   1. one `reason: "manual"` review item per field (proposedValue = the
+ *      value being replaced, finalValue = the correction, resolvedBy = caller)
+ *   2. one merge into `documents.extractionJson` (all fields at once)
+ *   3. anchored provenance spans (`resolution: "anchored"`) for entries that
+ *      carry geometry — same highlight-to-correct semantics as the review UI
+ *   4. one `document.corrected` webhook event with previous/new values per
+ *      field plus the full corrected extraction, so systems that already
+ *      consumed `document.delivered` don't silently diverge.
+ *
+ * Session or API-key auth with `review:act`. The HMAC preview token is NOT
+ * accepted here — it stays read-only; external hosts call this from their
+ * backend with an API key.
+ */
+jobs.post(
+  "/:slug/documents/:docId/corrections",
+  requires("review:act"),
+  requireFeature("hitl_review"),
+  async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const principal = getPrincipal(c);
+    const slug = c.req.param("slug")!;
+    const docId = c.req.param("docId")!;
+
+    const parsed = parseCorrectionsBody(await c.req.json().catch(() => null));
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+    const [doc] = await withRLS(db, getRlsScope(c), (tx) =>
+      tx
+        .select({
+          id: schema.documents.id,
+          schemaId: schema.documents.schemaId,
+          extractionJson: schema.documents.extractionJson,
+          provenanceJson: schema.documents.provenanceJson,
+          jobId: schema.jobs.id,
+          jobSlug: schema.jobs.slug,
+          projectId: schema.jobs.projectId,
+        })
+        .from(schema.documents)
+        .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+        .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+        .limit(1),
+    );
+    if (!doc) return c.json({ error: "Document not found" }, 404);
+    if (!doc.schemaId || doc.extractionJson == null) {
+      return c.json({ error: "Document has no extraction to correct" }, 422);
+    }
+
+    const extraction = doc.extractionJson as Record<string, unknown>;
+    // Writes happen under the job's project scope (review items are
+    // project-scoped rows; the read above already enforced the caller's
+    // access to this document).
+    const scope = { tenantId, projectId: doc.projectId };
+    const now = new Date();
+
+    const inserted = await withRLS(db, scope, (tx) =>
+      tx
+        .insert(schema.reviewItems)
+        .values(
+          parsed.corrections.map((cor) => ({
+            tenantId,
+            projectId: doc.projectId,
+            documentId: doc.id,
+            schemaId: doc.schemaId!,
+            fieldName: cor.field,
+            reason: "manual",
+            proposedValue: extraction[cor.field] ?? null,
+            status: "completed",
+            resolution: "approved",
+            finalValue: cor.value,
+            resolvedBy: principal.userId,
+            resolvedAt: now,
+            note: parsed.note,
+          })),
+        )
+        .returning({ id: schema.reviewItems.id }),
+    );
+
+    const mergedExtraction = { ...extraction };
+    const mergedProvenance = { ...((doc.provenanceJson ?? {}) as Record<string, unknown>) };
+    let anchoredCount = 0;
+    const changedFields: Record<string, { previous: unknown; value: unknown }> = {};
+    for (const cor of parsed.corrections) {
+      changedFields[cor.field] = { previous: extraction[cor.field] ?? null, value: cor.value };
+      mergedExtraction[cor.field] = cor.value;
+      if (cor.provenance) {
+        mergedProvenance[cor.field] = buildAnchoredSpan(cor.provenance);
+        anchoredCount++;
+      }
+    }
+    await withRLS(db, scope, (tx) =>
+      tx
+        .update(schema.documents)
+        .set({
+          extractionJson: mergedExtraction,
+          ...(anchoredCount > 0 ? { provenanceJson: mergedProvenance } : {}),
+        })
+        .where(eq(schema.documents.id, doc.id)),
+    );
+
+    await emitWebhookEvent(scope, "document.corrected", {
+      document_id: doc.id,
+      job_id: doc.jobId,
+      job_slug: doc.jobSlug,
+      fields: changedFields,
+      extraction: mergedExtraction,
+      corrected_by: principal.userId,
+      corrected_at: now.toISOString(),
+    });
+
+    return c.json(
+      {
+        ok: true,
+        reviewItemIds: inserted.map((r) => r.id),
+        extraction: mergedExtraction,
+      },
+      201,
+    );
+  },
+);
 
 /**
  * GET /api/jobs/:slug/documents/:docId/markdown — the parsed markdown.

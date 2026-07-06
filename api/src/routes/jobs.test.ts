@@ -5,7 +5,73 @@ import {
   highlightValue,
   resolvePreviewKey,
   parseResolveRegionBody,
+  parseCorrectionsBody,
 } from "./jobs";
+
+describe("parseCorrectionsBody (manual corrections request validation)", () => {
+  const bbox = { x: 0.1, y: 0.2, w: 0.3, h: 0.05 };
+
+  it("accepts a minimal single correction", () => {
+    const r = parseCorrectionsBody({ corrections: [{ field: "vendor", value: "Acme" }] });
+    expect(r).toEqual({
+      corrections: [{ field: "vendor", value: "Acme", provenance: null }],
+      note: null,
+    });
+  });
+
+  it("accepts null values (clearing a field) and anchored provenance", () => {
+    const r = parseCorrectionsBody({
+      corrections: [
+        { field: "vendor", value: null },
+        { field: "total", value: 6000, provenance: { page: 1, bbox } },
+      ],
+      note: "  fixed after customer call  ",
+    });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.corrections[0]!.value).toBeNull();
+    expect(r.corrections[1]!.provenance).toEqual({ page: 1, bbox });
+    expect(r.note).toBe("fixed after customer call");
+  });
+
+  it("rejects a correction with the value key missing entirely", () => {
+    const r = parseCorrectionsBody({ corrections: [{ field: "vendor" }] });
+    expect(r).toHaveProperty("error");
+    expect((r as { error: string }).error).toContain("vendor");
+  });
+
+  it("rejects duplicates, empty arrays, bad field names, oversized batches", () => {
+    expect(
+      parseCorrectionsBody({
+        corrections: [
+          { field: "a", value: 1 },
+          { field: "a", value: 2 },
+        ],
+      }),
+    ).toHaveProperty("error");
+    expect(parseCorrectionsBody({ corrections: [] })).toHaveProperty("error");
+    expect(parseCorrectionsBody({})).toHaveProperty("error");
+    expect(parseCorrectionsBody(null)).toHaveProperty("error");
+    expect(
+      parseCorrectionsBody({ corrections: [{ field: "", value: 1 }] }),
+    ).toHaveProperty("error");
+    expect(
+      parseCorrectionsBody({ corrections: [{ field: "x".repeat(129), value: 1 }] }),
+    ).toHaveProperty("error");
+    expect(
+      parseCorrectionsBody({
+        corrections: Array.from({ length: 51 }, (_, i) => ({ field: `f${i}`, value: i })),
+      }),
+    ).toHaveProperty("error");
+  });
+
+  it("rejects malformed provenance instead of dropping it", () => {
+    const r = parseCorrectionsBody({
+      corrections: [{ field: "total", value: 1, provenance: { page: 0, bbox } }],
+    });
+    expect(r).toHaveProperty("error");
+    expect((r as { error: string }).error).toContain("total");
+  });
+});
 
 /**
  * Minimal storage stub for resolvePreviewKey — only `head` is exercised.
