@@ -1335,6 +1335,26 @@ match are kept as parsed. Without an `element_key`, the parser rows simply
 replace the extraction for that field. Per-row provenance is the matched table
 text, so highlighting and `skip_row_when` keep working.
 
+**Merge `mode`.** The join above is the default, `mode: seed_rows` — correct
+when the grammar reliably captures *every* bound row. Set `mode: union` when the
+grammar may capture only a **subset** (e.g. the parse degrades on some documents
+and the summary table comes through partial). Under `union`, parser rows still
+win on conflict by `element_key`, but keyed LLM rows the grammar *didn't* capture
+are **kept** (appended after the parser rows) instead of dropped — so a partial
+grammar enriches rather than deletes the model's correct rows. LLM rows with no
+`element_key` value can't be positioned or de-duplicated and are dropped in both
+modes. Prefer `union` when shipping a new grammar you don't yet fully trust
+across the whole document family.
+
+```yaml
+forms:
+  - id: premium_summary
+    field: coverages
+    anchor: "SUMMARY OF PREMIUMS CHARGED"
+    mode: union            # keep LLM rows the grammar missed; parser wins on conflict
+    row: { pattern: "..." }
+```
+
 **Matching model.** The region between `anchor` and `end` is normalized before
 matching — table pipes become spaces, whitespace collapses — so one grammar
 matches plain lines, pipe-table rows, and parser-flattened run-on lines. The

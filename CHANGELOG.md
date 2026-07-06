@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.62.0 — 2026-07-06
+
+**`forms:` grammars can `union` instead of replace.** A form-table grammar with
+`mode: union` now keeps the LLM rows it didn't capture (matched by
+`element_key`) rather than dropping them — parser rows still win on conflict.
+This makes a partial grammar safe to ship: if the parse degrades and the table
+comes through incomplete, the grammar enriches the model's rows instead of
+deleting the ones it missed. The default (`mode: seed_rows`) is unchanged. See
+the [`forms:` guide](schema-guide.md#deterministic-form-tables-forms).
+
 ## 0.61.2 — 2026-07-06
 
 **Prompt-echo guard now catches reformatted numbers.** The hint-leak guard

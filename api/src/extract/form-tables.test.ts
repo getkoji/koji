@@ -140,6 +140,45 @@ describe("seedRowsMerge", () => {
     expect(m.rows).toEqual(parserRows);
     expect(m.enriched).toBe(0);
   });
+
+  describe("union mode (oss-390)", () => {
+    it("keeps keyed LLM rows the grammar missed, parser still winning on conflict", () => {
+      const llm = [
+        { code: "property", limits: [{ limit: 517068 }], premium: 9999 }, // wrong premium
+        { code: "wrongful_acts", premium: 1200 }, // grammar missed this bound row
+        { code: "edp", premium: 340 }, // grammar missed this too
+      ];
+      const llmSrc = ["src-prop-llm", "src-wa", "src-edp"];
+      const m = seedRowsMerge(parserRows, parserSrc, llm, llmSrc, "code", "union");
+
+      // 2 parser rows + 2 kept LLM-only rows.
+      expect(m.rows).toHaveLength(4);
+      expect(m.rows[0]!.premium).toBe(3539); // parser wins where it captured
+      expect(m.rows[0]!.limits).toEqual([{ limit: 517068 }]); // enriched from LLM
+      expect(m.rows.map((r) => r.code)).toEqual(["property", "terrorism", "wrongful_acts", "edp"]);
+      expect(m.enriched).toBe(1);
+      expect(m.keptLlmRows).toBe(2);
+      expect(m.droppedLlmRows).toBe(0);
+      // Provenance stays aligned: kept rows carry their LLM source line.
+      expect(m.sourceLines).toEqual(["src-prop", "src-terror", "src-wa", "src-edp"]);
+    });
+
+    it("drops LLM rows with no element key even under union", () => {
+      const llm = [{ premium: 500 }]; // no `code` — can't be positioned
+      const m = seedRowsMerge(parserRows, parserSrc, llm, undefined, "code", "union");
+      expect(m.rows).toHaveLength(2);
+      expect(m.keptLlmRows).toBe(0);
+      expect(m.droppedLlmRows).toBe(1);
+    });
+
+    it("seed_rows remains the default (unmatched LLM rows dropped)", () => {
+      const llm = [{ code: "flood", premium: 500 }];
+      const m = seedRowsMerge(parserRows, parserSrc, llm, undefined, "code");
+      expect(m.rows).toHaveLength(2);
+      expect(m.keptLlmRows).toBe(0);
+      expect(m.droppedLlmRows).toBe(1);
+    });
+  });
 });
 
 describe("applyFormTables", () => {

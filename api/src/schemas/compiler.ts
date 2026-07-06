@@ -229,6 +229,9 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
         if (f.set !== undefined && (typeof f.set !== "object" || Array.isArray(f.set))) {
           errors.push({ message: `${label}: 'set' must be a mapping of sub-field rules` });
         }
+        if (f.mode !== undefined && f.mode !== "seed_rows" && f.mode !== "union") {
+          errors.push({ message: `${label}: 'mode' must be 'seed_rows' or 'union'` });
+        }
       });
     }
   }
