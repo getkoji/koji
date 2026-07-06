@@ -27,6 +27,14 @@ interface Invite {
   invitedBy: string;
 }
 
+// Project-scoped roles (oss-372) — a member's capability within one project.
+const PROJECT_ROLES = [
+  { value: "project-viewer", label: "Viewer" },
+  { value: "project-member", label: "Member" },
+  { value: "project-editor", label: "Editor" },
+  { value: "project-admin", label: "Admin" },
+];
+
 const AVAILABLE_ROLES = [
   { value: "viewer", label: "Viewer" },
   { value: "runner", label: "Runner" },
@@ -355,13 +363,14 @@ function ProjectAccessDialog({
   );
   const { data: current, loading } = useApi(
     useCallback(
-      () => api.get<{ restricted: boolean; projects: Array<{ slug: string }> }>(`/api/members/${member.id}/project-access`),
+      () => api.get<{ restricted: boolean; projects: Array<{ slug: string; roles: string[] }> }>(`/api/members/${member.id}/project-access`),
       [member.id],
     ),
   );
 
   const [restricted, setRestricted] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // slug → project role. Presence in the map = access granted.
+  const [grants, setGrants] = useState<Map<string, string>>(new Map());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialized = useRef(false);
@@ -370,16 +379,20 @@ function ProjectAccessDialog({
   if (current && !initialized.current) {
     initialized.current = true;
     setRestricted(current.restricted);
-    setSelected(new Set(current.projects.map((p) => p.slug)));
+    setGrants(new Map(current.projects.map((p) => [p.slug, p.roles[0] ?? "project-member"])));
   }
 
   function toggle(slug: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
+    setGrants((prev) => {
+      const next = new Map(prev);
       if (next.has(slug)) next.delete(slug);
-      else next.add(slug);
+      else next.set(slug, "project-member");
       return next;
     });
+  }
+
+  function setRole(slug: string, role: string) {
+    setGrants((prev) => new Map(prev).set(slug, role));
   }
 
   async function handleSave() {
@@ -388,7 +401,7 @@ function ProjectAccessDialog({
     try {
       await api.put(`/api/members/${member.id}/project-access`, {
         restricted,
-        project_slugs: restricted ? [...selected] : [],
+        projects: restricted ? [...grants].map(([slug, role]) => ({ slug, roles: [role] })) : [],
       });
       onSaved();
     } catch (err: unknown) {
@@ -437,17 +450,34 @@ function ProjectAccessDialog({
             </label>
 
             {restricted && (
-              <div className="border border-border rounded-sm p-2 max-h-[220px] overflow-y-auto space-y-1 ml-6">
+              <div className="border border-border rounded-sm p-2 max-h-[240px] overflow-y-auto space-y-1 ml-6">
                 {(allProjects ?? []).length === 0 ? (
                   <div className="text-[12px] text-ink-4 px-1 py-1">No projects.</div>
                 ) : (
-                  (allProjects ?? []).map((p) => (
-                    <label key={p.slug} className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-cream-2 cursor-pointer">
-                      <input type="checkbox" checked={selected.has(p.slug)} onChange={() => toggle(p.slug)} />
-                      <span className="text-[12.5px] text-ink truncate">{p.displayName}</span>
-                      <span className="font-mono text-[10.5px] text-ink-4">{p.slug}</span>
-                    </label>
-                  ))
+                  (allProjects ?? []).map((p) => {
+                    const on = grants.has(p.slug);
+                    return (
+                      <div key={p.slug} className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-cream-2">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => toggle(p.slug)}
+                          aria-label={`Grant access to ${p.displayName}`}
+                        />
+                        <span className="text-[12.5px] text-ink truncate flex-1">{p.displayName}</span>
+                        <select
+                          value={grants.get(p.slug) ?? "project-member"}
+                          onChange={(e) => setRole(p.slug, e.target.value)}
+                          disabled={!on}
+                          className="h-[26px] rounded-sm border border-input bg-white px-1.5 text-[11.5px] outline-none focus:border-ring disabled:opacity-40"
+                        >
+                          {PROJECT_ROLES.map((r) => (
+                            <option key={r.value} value={r.value}>{r.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
@@ -467,7 +497,7 @@ function ProjectAccessDialog({
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || loading || (restricted && selected.size === 0)}
+            disabled={saving || loading || (restricted && grants.size === 0)}
             className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}

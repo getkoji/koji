@@ -17,7 +17,7 @@ import { HTTPException } from "hono/http-exception";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema } from "@koji/db";
 import type { AuthAdapter, Principal } from "./adapter";
-import { resolvePermissions, type Permission } from "./roles";
+import { resolvePermissions, resolveProjectPermissions, shouldRestrictByDefault, ORG_LEVEL_PERMISSIONS, type Permission } from "./roles";
 import type { Env } from "../env";
 
 const DEFAULT_SESSION_COOKIE = "koji_session";
@@ -262,6 +262,9 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     // boundary and skips this. `accessibleProjectIds === null` means
     // unrestricted (all projects); a Set means the member is limited to those.
     let accessibleProjectIds: Set<string> | null = null;
+    // For a restricted member, the per-project role(s) keyed by project id —
+    // used in Stage 3 to compute project-scoped capability (oss-372).
+    let projectRolesByProject: Map<string, string[]> | null = null;
     if (!apiKeyTenantId) {
       const [m] = await db
         .select({ restricted: schema.memberships.projectRestricted })
@@ -275,7 +278,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         .limit(1);
       if (m?.restricted) {
         const grants = await db
-          .select({ projectId: schema.projectAccess.projectId })
+          .select({ projectId: schema.projectAccess.projectId, roles: schema.projectAccess.roles })
           .from(schema.projectAccess)
           .where(
             and(
@@ -284,6 +287,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
             ),
           );
         accessibleProjectIds = new Set(grants.map((g) => g.projectId));
+        projectRolesByProject = new Map(grants.map((g) => [g.projectId, g.roles]));
       }
     }
     const canAccessProject = (id: string) =>
@@ -388,6 +392,8 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
             userId: principal.userId,
             tenantId: tenant.id,
             roles: kojiRoles,
+            // Default-deny for JIT-provisioned org members that aren't admins.
+            projectRestricted: shouldRestrictByDefault(kojiRoles),
           });
           membership = { roles: kojiRoles };
           console.log(`[auth] JIT provisioned membership for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
@@ -409,10 +415,16 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         membership.roles[0] !== kojiRoles[0] &&
         !membership.roles.includes("owner") && !membership.roles.includes("tenant-admin") // don't downgrade admins/owners
       ) {
-        // Sync: Clerk role changed since last JIT provision
+        // Sync: Clerk role changed since last JIT provision. Re-evaluate
+        // default-deny too — demoting an org admin to a regular member must
+        // make them need-to-know (else they'd keep tenant-wide PII visibility).
         await db
           .update(schema.memberships)
-          .set({ roles: kojiRoles, updatedAt: new Date() })
+          .set({
+            roles: kojiRoles,
+            projectRestricted: shouldRestrictByDefault(kojiRoles),
+            updatedAt: new Date(),
+          })
           .where(and(
             eq(schema.memberships.userId, principal.userId),
             eq(schema.memberships.tenantId, tenant.id),
@@ -434,7 +446,29 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return c.json({ error: "You do not have access to this project" }, 403);
     }
 
-    const grants = resolvePermissions(membership.roles);
+    // --- Grants ---
+    // Unrestricted member (owner/admin/grandfathered): full workspace-role
+    // permissions everywhere. Restricted member (oss-372): org-level powers
+    // still come from the workspace role, but capability on the resolved
+    // project's resources comes from the PROJECT role — so a member's project
+    // role, not their workspace role, is the ceiling within a project. Org and
+    // project permission sets are disjoint, so the union is unambiguous:
+    // org-level routes read the org powers, project-scoped routes read the
+    // project-role powers.
+    let grants: Set<Permission>;
+    if (accessibleProjectIds === null) {
+      grants = resolvePermissions(membership.roles);
+    } else {
+      grants = new Set<Permission>();
+      for (const p of resolvePermissions(membership.roles)) {
+        if (ORG_LEVEL_PERMISSIONS.has(p)) grants.add(p);
+      }
+      const resolvedProject = c.get("projectId") as string | undefined;
+      const projectRoles = resolvedProject ? projectRolesByProject?.get(resolvedProject) : undefined;
+      if (projectRoles) {
+        for (const p of resolveProjectPermissions(projectRoles)) grants.add(p);
+      }
+    }
     c.set("grants", grants);
     c.set("roles", membership.roles);
 
