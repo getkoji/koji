@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.58.0 — 2026-07-06
+
+**Documents page + `GET /api/documents`.** Documents are now findable without
+knowing which job ingested them: a new Documents page in the dashboard
+(sidebar, between Jobs and Review) lists every document in the project with
+filename search, status/pipeline/date filters, facet counts, and infinite
+scroll — the entry point for "find this document and fix it" correction
+workflows. Backed by the new `GET /api/documents` endpoint (keyset pagination,
+project-scoped, `hasPendingReview` flag on rows with open review items).
+
 ## 0.57.0 — 2026-07-06
 
 **Manual corrections + `document.corrected` webhook.** Extraction errors the

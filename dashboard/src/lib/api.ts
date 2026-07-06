@@ -507,6 +507,52 @@ export const classifiers = {
   },
 };
 
+/** One row of GET /api/documents — the tenant/project-wide document list. */
+export interface DocumentListRow {
+  id: string;
+  filename: string;
+  status: string;
+  mimeType: string | null;
+  pageCount: number | null;
+  confidence: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  jobSlug: string;
+  pipelineSlug: string | null;
+  pipelineName: string | null;
+  schemaName: string | null;
+  /** The document has open review items (the "needs attention" facet). */
+  hasPendingReview: boolean;
+}
+
+export const documents = {
+  list: (params?: {
+    status?: string;
+    pipeline?: string;
+    /** ISO timestamp — only documents created after it. */
+    since?: string;
+    /** Filename substring, case-insensitive. */
+    search?: string;
+    /** Cursor for keyset pagination — ISO timestamp of last item's createdAt. */
+    cursor?: string;
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.pipeline) qs.set("pipeline", params.pipeline);
+    if (params?.since) qs.set("since", params.since);
+    if (params?.search) qs.set("search", params.search);
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    const q = qs.toString();
+    return api.get<{
+      data: DocumentListRow[];
+      nextCursor: string | null;
+      counts: { total: number; byStatus: Record<string, number> };
+    }>(`/api/documents${q ? `?${q}` : ""}`);
+  },
+};
+
 export const jobs = {
   list: (params?: {
     status?: string;

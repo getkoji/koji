@@ -45,6 +45,7 @@ import { health } from "./routes/health";
 import { schemas } from "./routes/schemas";
 import { agentRouter } from "./routes/agent";
 import { jobs } from "./routes/jobs";
+import { documents } from "./routes/documents";
 import { extract as extractRoutes } from "./routes/extract";
 import { me } from "./routes/me";
 import { setup } from "./routes/setup";
@@ -232,6 +233,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/schemas", agentRouter);
   app.route("/api/classifiers", classifiers);
   app.route("/api/jobs", jobs);
+  app.route("/api/documents", documents);
   app.route("/api", extractRoutes);
   app.route("/api/me", me);
   app.route("/api/setup", setup);
