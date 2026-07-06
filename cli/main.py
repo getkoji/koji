@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.54.1"
+KOJI_VERSION = "0.54.2"
 
 
 def _version_callback(value: bool) -> None:
@@ -873,6 +873,27 @@ def _derive_profile_name(url: str) -> str:
     return parts[0]
 
 
+def _pipeline_yaml_body(parsed: dict, raw: str) -> str | None:
+    """Build the YAML body `koji push` sends for a `kind: pipeline` file.
+
+    Only DAG definitions (files with a `steps:` list) carry YAML — the simple
+    shorthand (`schema: <name>` with no steps) stays a schema-linked simple
+    pipeline. The raw file text is sent verbatim (never re-serialized: PyYAML
+    is YAML 1.1 and corrupts bare keys like `on:` into booleans on round-trip;
+    the server compiles YAML 1.2 where they're plain strings). The compiler
+    requires a top-level `pipeline:` name and ignores the push-file envelope
+    keys (`kind`, `slug`, `name`), so the name is prepended when missing.
+    """
+    import json as json_mod
+
+    if not isinstance(parsed.get("steps"), list):
+        return None
+    if "pipeline" in parsed:
+        return raw
+    name = str(parsed.get("name") or parsed.get("slug") or "pipeline")
+    return f"pipeline: {json_mod.dumps(name)}\n{raw}"
+
+
 @app.command()
 def push(
     directory: str = typer.Option(".", "--dir", "-d", help="Directory containing YAML files (schemas/, pipelines/)"),
@@ -1030,6 +1051,7 @@ def push(
             display_name = parsed.get("name", slug)
             schema_ref = parsed.get("schema")  # schema name/slug reference
             schema_id = schema_id_map.get(schema_ref) if schema_ref else None
+            pipeline_yaml = _pipeline_yaml_body(parsed, yaml_content)
 
             resp = client.get(f"{base_url}/api/pipelines/{slug}", headers=headers)
 
@@ -1040,8 +1062,8 @@ def push(
                     patch_body["schema_id"] = schema_id
                 if model_provider_id:
                     patch_body["model_provider_id"] = model_provider_id
-                if "yaml" in parsed.get("kind", ""):
-                    patch_body["yaml"] = yaml_content
+                if pipeline_yaml is not None:
+                    patch_body["yaml"] = pipeline_yaml
 
                 resp = client.patch(
                     f"{base_url}/api/pipelines/{slug}",
@@ -1060,6 +1082,8 @@ def push(
                     create_body["schema_id"] = schema_id
                 if model_provider_id:
                     create_body["model_provider_id"] = model_provider_id
+                if pipeline_yaml is not None:
+                    create_body["yaml"] = pipeline_yaml
 
                 resp = client.post(
                     f"{base_url}/api/pipelines",

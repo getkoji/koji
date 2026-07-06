@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.54.2 — 2026-07-06
+
+**`koji push` now actually pushes DAG pipelines.** Pipeline files with a
+`steps:` list previously had their YAML silently dropped on both create and
+update — the pipeline landed as type `simple` with an empty definition, and
+running it later failed with "no deployed schema version". Pushed DAG files
+now carry their full YAML (sent verbatim, with the compiler's required
+`pipeline:` name added when missing), so classify routing and multi-step
+definitions survive the push. The simple `schema: <name>` shorthand is
+unchanged. Also fixed: running or ingesting into a DAG pipeline that has no
+nominal schema no longer 500s — per-step schemas resolve from the pipeline
+YAML at run time.
+
 ## 0.54.1 — 2026-07-06
 
 **DAG pipelines now execute the routing they validated with.** The pipeline

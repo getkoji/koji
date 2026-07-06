@@ -764,8 +764,10 @@ export interface CreateExtractionJobArgs {
    *  pipeline — jobs always inherit their pipeline's project. */
   projectId?: string;
   pipelineId: string;
-  schemaId: string;
-  schemaVersionId: string;
+  /** Null for DAG pipelines with no nominal schema — the runner resolves
+   *  per-step schemas from the pipeline YAML instead. */
+  schemaId: string | null;
+  schemaVersionId: string | null;
   triggerType: string;
   storageKey: string;
   filename: string;
@@ -839,8 +841,9 @@ export async function createExtractionJob(
         fileSize: args.fileSize,
         mimeType: args.mimeType,
         contentHash: args.contentHash,
-        schemaId: args.schemaId,
-        schemaVersionId: args.schemaVersionId,
+        // Coerce "" → null: uuid columns reject empty strings.
+        schemaId: args.schemaId || null,
+        schemaVersionId: args.schemaVersionId || null,
         groupKey: args.groupKey ?? null,
         status: "extracting",
         startedAt: new Date(),
@@ -870,8 +873,8 @@ export async function addDocumentToJob(
         fileSize: args.fileSize,
         mimeType: args.mimeType,
         contentHash: args.contentHash,
-        schemaId: args.schemaId,
-        schemaVersionId: args.schemaVersionId,
+        schemaId: args.schemaId || null,
+        schemaVersionId: args.schemaVersionId || null,
         status: "extracting",
         startedAt: new Date(),
       })
