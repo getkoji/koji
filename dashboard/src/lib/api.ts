@@ -49,6 +49,9 @@ export function getSignOutHandler(): (() => Promise<void>) | null {
 export class ApiError extends Error {
   status: number;
   detail?: string;
+  /** The full parsed error body, for callers that need structured fields
+   *  (e.g. the move endpoint's `blockers` array on a 409). */
+  body: Record<string, unknown>;
 
   constructor(status: number, body: { error?: string | { message?: string; code?: string }; title?: string; detail?: string }) {
     const errField = body.error;
@@ -58,6 +61,7 @@ export class ApiError extends Error {
     super(msg);
     this.status = status;
     this.detail = body.detail;
+    this.body = body as Record<string, unknown>;
   }
 }
 
@@ -74,6 +78,16 @@ function getCurrentTenantSlug(): string | undefined {
 /** localStorage key holding the selected project slug for a tenant. */
 export function projectStorageKey(tenantSlug: string): string {
   return `koji:project:${tenantSlug}`;
+}
+
+/**
+ * The project slug the dashboard is currently scoped to (URL segment, else the
+ * persisted selection). Every project-scoped page resolves its data under this
+ * project, so it's also the project any resource on that page belongs to.
+ * Returns undefined before a project is known.
+ */
+export function selectedProjectSlug(tenantSlug: string | undefined): string | undefined {
+  return getCurrentProjectSlug(tenantSlug);
 }
 
 /**

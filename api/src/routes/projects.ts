@@ -1,10 +1,81 @@
 import { Hono } from "hono";
-import { eq, isNull, sql } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal, getProjectId } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, getGrants } from "../auth/middleware";
+import type { Permission } from "../auth/roles";
+import { moveResource, MOVE_PERMISSION, type MovableType } from "../projects/move";
 
 export const projects = new Hono<Env>();
+
+const MOVABLE_TYPES = new Set<MovableType>([
+  "schema", "pipeline", "source", "classifier",
+  "model_endpoint", "parse_endpoint", "webhook_target", "api_key",
+]);
+
+/**
+ * POST /api/projects/:slug/move — move a resource into this project.
+ *
+ * Body: { type: MovableType, id: string, dry_run?: boolean }. Gated by the
+ * moved resource's own write permission (moving is a write to that resource).
+ * Returns 409 with `{ blockers }` when the move would strand a cross-project
+ * reference, or `{ conflict }` on a slug clash — the dashboard surfaces both.
+ */
+projects.post("/:slug/move", async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const destSlug = c.req.param("slug")!;
+  const body = await c.req.json<{ type: string; id: string; dry_run?: boolean }>();
+
+  if (!body.type || !MOVABLE_TYPES.has(body.type as MovableType)) {
+    return c.json({ error: `Unknown or unmovable resource type: ${body.type}` }, 400);
+  }
+  if (!body.id) return c.json({ error: "id is required" }, 400);
+  const type = body.type as MovableType;
+
+  // Moving a resource is a write to it — require that type's write permission.
+  const grants = getGrants(c);
+  if (!grants.has(MOVE_PERMISSION[type] as Permission)) {
+    return c.json({ code: "forbidden", message: `Missing permission: ${MOVE_PERMISSION[type]}` }, 403);
+  }
+
+  // Resolve the destination project (tenant-scoped; the move itself reads
+  // tenant-wide so it can see the resource in its current project).
+  const [dest] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(and(eq(schema.projects.slug, destSlug), isNull(schema.projects.deletedAt)))
+      .limit(1),
+  );
+  if (!dest) return c.json({ error: "Destination project not found" }, 404);
+
+  const result = await moveResource(db, tenantId, type, body.id, dest.id, {
+    dryRun: body.dry_run === true,
+  });
+
+  switch (result.status) {
+    case "moved":
+      return c.json({ ok: true, dryRun: body.dry_run === true });
+    case "noop":
+      return c.json({ ok: true, alreadyInProject: true });
+    case "not_found":
+      return c.json({ error: "Resource not found" }, 404);
+    case "slug_conflict":
+      return c.json(
+        { error: `The destination project already has a ${type} named "${result.conflictWith}"`, conflict: result.conflictWith },
+        409,
+      );
+    case "blocked":
+      return c.json(
+        {
+          error: "Move would leave a resource referencing another project. Move these first, or into the same project.",
+          blockers: result.blockers,
+        },
+        409,
+      );
+  }
+});
 
 projects.get("/", requires("tenant:read"), async (c) => {
   const db = c.get("db");

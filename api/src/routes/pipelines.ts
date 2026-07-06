@@ -443,9 +443,11 @@ pipelinesRouter.post(
         pipelineType,
         yamlSource,
         dagJson,
-        schemaId: body.schema_id ?? null,
-        modelProviderId: body.model_provider_id ?? null,
-        parseProviderId: body.parse_provider_id ?? null,
+        // Coerce "" → null: these are uuid columns, and an empty string
+        // (e.g. an unselected form field) is not a valid uuid.
+        schemaId: body.schema_id || null,
+        modelProviderId: body.model_provider_id || null,
+        parseProviderId: body.parse_provider_id || null,
         reviewThreshold: body.review_threshold?.toString() ?? "0.9",
         configJson: body.config ?? {},
         createdBy: principal.userId,

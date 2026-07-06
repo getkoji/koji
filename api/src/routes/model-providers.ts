@@ -13,7 +13,7 @@ import { encrypt, decrypt, keyHint } from "../crypto/envelope";
  * the SQL `md5('cred:' || id::text)::uuid` so writes that originate from this
  * route stay consistent with rows the migration created.
  */
-function deriveCredentialId(endpointId: string): string {
+export function deriveCredentialId(endpointId: string): string {
   const h = crypto.createHash("md5").update(`cred:${endpointId}`).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
