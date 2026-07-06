@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { DocumentViewer } from "@/components/shared/DocumentViewer";
+import { Crosshair, X } from "lucide-react";
+import { DocumentViewer, pickDocumentRenderer } from "@/components/shared/DocumentViewer";
+import type { RegionSelection } from "@/components/shared/PdfViewer";
+import { useAuth } from "@/lib/auth-context";
+import { parseOverride } from "@/lib/parse-override";
 import type { TraceStage, TraceField } from "@/lib/types";
 import { Timeline } from "@/components/surfaces/trace/Timeline";
 import { StageDetail } from "@/components/surfaces/trace/StageDetail";
@@ -137,6 +141,106 @@ export default function TraceViewPage() {
 
   // ── Side-by-side state ──
   const [activeField, setActiveField] = useState<string | null>(null);
+
+  // ── Correct-field state (manual corrections, oss-381) ──
+  // One field at a time: pencil on a scalar row opens the correction bar;
+  // "point on document" arms the PDF selection layer and resolves the drag
+  // to the text underneath (same machinery as the review queue).
+  const { hasPermission } = useAuth();
+  const [correcting, setCorrecting] = useState<{
+    field: string;
+    original: unknown;
+    value: string;
+    pointing: boolean;
+    anchored: {
+      page: number;
+      bbox: { x: number; y: number; w: number; h: number };
+      words: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+      text: string;
+    } | null;
+    saving: boolean;
+    error: string | null;
+  } | null>(null);
+
+  // Corrections are for settled documents; mid-flight extractions would race
+  // the pipeline's own writes.
+  const canCorrect =
+    hasPermission("review:act") &&
+    data != null &&
+    ["delivered", "review", "failed"].includes(data.status);
+  const canPoint =
+    canCorrect &&
+    pickDocumentRenderer(data!.mimeType, data!.documentPreviewUrl, data!.filename) === "pdf";
+
+  const startCorrection = useCallback((field: string, currentValue: unknown) => {
+    setCorrecting({
+      field,
+      original: currentValue,
+      value:
+        currentValue == null
+          ? ""
+          : typeof currentValue === "string"
+            ? currentValue
+            : typeof currentValue === "number" || typeof currentValue === "boolean"
+              ? String(currentValue)
+              : JSON.stringify(currentValue),
+      pointing: false,
+      anchored: null,
+      saving: false,
+      error: null,
+    });
+  }, []);
+
+  const handleRegionSelected = useCallback(
+    async (region: RegionSelection) => {
+      const r = await jobsApi.resolveRegion(jobSlug, documentId, region).catch(() => null);
+      setCorrecting((c) => {
+        if (!c) return c;
+        if (r?.text != null) {
+          return {
+            ...c,
+            value: r.text,
+            anchored: { page: region.page, bbox: r.bbox ?? region.bbox, words: r.words, text: r.text },
+            pointing: false,
+            error: null,
+          };
+        }
+        return { ...c, error: "No text under that selection — drag over the value, or type it." };
+      });
+    },
+    [jobSlug, documentId],
+  );
+
+  const submitCorrection = useCallback(async () => {
+    if (!correcting || correcting.saving) return;
+    setCorrecting((c) => (c ? { ...c, saving: true, error: null } : c));
+    try {
+      await jobsApi.correctDocument(jobSlug, documentId, {
+        corrections: [
+          {
+            field: correcting.field,
+            value: parseOverride(correcting.value, correcting.original),
+            ...(correcting.anchored
+              ? {
+                  provenance: {
+                    page: correcting.anchored.page,
+                    bbox: correcting.anchored.bbox,
+                    words: correcting.anchored.words,
+                    chunk: correcting.anchored.text,
+                  },
+                }
+              : {}),
+          },
+        ],
+      });
+      await refetch();
+      setCorrecting(null);
+    } catch (err) {
+      setCorrecting((c) =>
+        c ? { ...c, saving: false, error: err instanceof Error ? err.message : "Correction failed" } : c,
+      );
+    }
+  }, [correcting, jobSlug, documentId, refetch]);
 
   // Parsed-text view — fetched lazily the first time the user toggles to it
   // (the parsed markdown isn't part of the document-detail payload).
@@ -507,6 +611,22 @@ export default function TraceViewPage() {
               markdownLoading={markdownLoading}
               provenance={data.provenanceJson}
               onRequestParsed={requestParsed}
+              selection={
+                canPoint && correcting
+                  ? {
+                      active: correcting.pointing,
+                      onRegionSelected: handleRegionSelected,
+                      snapped: correcting.anchored
+                        ? {
+                            field: correcting.field,
+                            page: correcting.anchored.page,
+                            bbox: correcting.anchored.bbox,
+                            words: correcting.anchored.words,
+                          }
+                        : null,
+                    }
+                  : undefined
+              }
             />
           </div>
         }
@@ -545,6 +665,83 @@ export default function TraceViewPage() {
             </div>
           )}
 
+          {/* Correction bar — one field at a time, opened by the pencil on a
+              scalar row. "Point on document" arms the PDF selection layer;
+              the drag resolves to the text underneath and prefills the value. */}
+          {correcting && (
+            <div
+              data-testid="correction-bar"
+              className="border border-[#B6861A]/40 bg-[#B6861A]/[0.06] rounded-sm px-3 py-2 mb-2 shrink-0 flex flex-col gap-1.5"
+            >
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[9.5px] tracking-[0.1em] uppercase text-[#B6861A] shrink-0">
+                  Correct
+                </span>
+                <code className="font-mono text-[11px] text-ink font-medium shrink-0">
+                  {correcting.field}
+                </code>
+                <input
+                  type="text"
+                  autoFocus
+                  value={correcting.value}
+                  onChange={(e) =>
+                    setCorrecting((c) => (c ? { ...c, value: e.target.value } : c))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitCorrection();
+                    if (e.key === "Escape") setCorrecting(null);
+                  }}
+                  className="flex-1 min-w-0 font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1 outline-none focus:border-ink transition-colors"
+                />
+                {canPoint && (
+                  <button
+                    type="button"
+                    data-testid="point-on-document"
+                    onClick={() =>
+                      setCorrecting((c) =>
+                        c ? { ...c, pointing: !c.pointing, error: null } : c,
+                      )
+                    }
+                    title="Drag on the document where the correct value is"
+                    className={`shrink-0 inline-flex items-center gap-1 font-mono text-[10px] rounded-sm border px-1.5 py-1 transition-colors ${
+                      correcting.pointing
+                        ? "border-vermillion-2 bg-vermillion-3/40 text-vermillion-2"
+                        : "border-border-strong text-ink-3 hover:border-ink hover:text-ink"
+                    }`}
+                  >
+                    <Crosshair className="w-3 h-3" />
+                    {correcting.pointing ? "drag on the document" : "point"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={submitCorrection}
+                  disabled={correcting.saving}
+                  className="shrink-0 px-2.5 py-1 rounded-sm text-[11.5px] font-medium bg-green text-cream hover:bg-ink transition-colors disabled:opacity-40"
+                >
+                  {correcting.saving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCorrecting(null)}
+                  title="Cancel"
+                  className="shrink-0 p-1 rounded-sm text-ink-4 hover:text-ink transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {correcting.anchored && (
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] text-green">
+                  <Crosshair className="w-3 h-3" />
+                  anchored to p.{correcting.anchored.page} — saved as the field&apos;s source highlight
+                </span>
+              )}
+              {correcting.error && (
+                <span className="font-mono text-[10px] text-vermillion-2">{correcting.error}</span>
+              )}
+            </div>
+          )}
+
           {/* Extraction results — click a field to highlight in PDF */}
           <div className={`flex-1 min-h-0 border border-border rounded-sm flex flex-col ${isProcessing && !liveExtraction ? "opacity-60" : ""}`}>
             <TraceResults
@@ -553,6 +750,7 @@ export default function TraceViewPage() {
               provenanceJson={displayExtraction!.provenanceJson}
               activeField={activeField}
               onFieldClick={setActiveField}
+              onCorrectField={canCorrect ? startCorrection : undefined}
             />
           </div>
 

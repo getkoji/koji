@@ -619,6 +619,30 @@ export const jobs = {
     }>(`/api/jobs/${jobSlug}/documents/${docId}/resolve-region`, body),
   failDocument: (jobSlug: string, docId: string, reason?: string) =>
     api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/fail`, { reason }),
+  /** Manually correct extracted values outside the review queue. Each entry
+   *  becomes an audited `reason: "manual"` review item; a `document.corrected`
+   *  webhook fires with the previous/new values. */
+  correctDocument: (
+    jobSlug: string,
+    docId: string,
+    body: {
+      corrections: Array<{
+        field: string;
+        value: unknown;
+        provenance?: {
+          page: number;
+          bbox: { x: number; y: number; w: number; h: number };
+          words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+          chunk?: string;
+        };
+      }>;
+      note?: string;
+    },
+  ) =>
+    api.post<{ ok: true; reviewItemIds: string[]; extraction: Record<string, unknown> }>(
+      `/api/jobs/${jobSlug}/documents/${docId}/corrections`,
+      body,
+    ),
 };
 
 export interface DocumentDelivery {

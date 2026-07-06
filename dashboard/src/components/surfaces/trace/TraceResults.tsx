@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Pencil } from "lucide-react";
 import { keepRawView } from "@/lib/keep-raw";
 import {
   sourceConfidence,
@@ -27,6 +27,13 @@ interface TraceResultsProps {
   provenanceJson: Record<string, ProvenanceItem | null> | null;
   activeField: string | null;
   onFieldClick: (field: string | null) => void;
+  /**
+   * When provided, top-level scalar fields grow a hover pencil that starts a
+   * manual correction (document detail's correct-field flow). Nested paths
+   * aren't correctable in v1 — the corrections endpoint addresses top-level
+   * extraction keys.
+   */
+  onCorrectField?: (field: string, currentValue: unknown) => void;
 }
 
 export function TraceResults({
@@ -35,6 +42,7 @@ export function TraceResults({
   provenanceJson,
   activeField,
   onFieldClick,
+  onCorrectField,
 }: TraceResultsProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -132,7 +140,7 @@ export function TraceResults({
               key={name}
               type="button"
               onClick={() => onFieldClick(isActive ? null : name)}
-              className={`w-full text-left grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
+              className={`group w-full text-left grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
                 isActive
                   ? "border-l-[3px] border-l-vermillion-2 pl-[calc(1rem-3px)] bg-cream-2"
                   : "border-l-[3px] border-l-transparent"
@@ -142,6 +150,27 @@ export function TraceResults({
               <span className="font-mono text-[11px] text-ink font-medium truncate min-w-0 flex items-center gap-1.5">
                 {name}
                 {provenanceAvailable && <SourceIndicator prov={prov} />}
+                {onCorrectField && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    data-testid={`correct-${name}`}
+                    title="Correct this value"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCorrectField(name, value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.stopPropagation();
+                        onCorrectField(name, value);
+                      }
+                    }}
+                    className="shrink-0 p-0.5 rounded-sm text-ink-4 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-ink hover:bg-cream-3 transition-all"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </span>
+                )}
               </span>
               <span className="flex flex-col items-end min-w-0 max-w-[200px]">
                 <span className="font-mono text-[11px] text-ink-2 truncate min-w-0 text-right">

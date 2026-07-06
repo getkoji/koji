@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.59.0 — 2026-07-06
+
+**Correct fields from the document page.** The document detail page now has
+highlight-to-correct: hover a field in the extraction results, hit the pencil,
+and either type the fix or "point on document" — drag over where the correct
+value lives and the selection snaps to the text underneath. Corrections save
+through the manual-corrections endpoint, so they're audited (`reason:
+"manual"` review items), carry an anchored source highlight, and fire the
+`document.corrected` webhook. Available on settled documents (delivered /
+review / failed) for users with review permissions.
+
 ## 0.58.0 — 2026-07-06
 
 **Documents page + `GET /api/documents`.** Documents are now findable without
