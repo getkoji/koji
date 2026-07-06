@@ -140,7 +140,7 @@ export function TraceResults({
               key={name}
               type="button"
               onClick={() => onFieldClick(isActive ? null : name)}
-              className={`group w-full text-left grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
+              className={`w-full text-left grid items-baseline gap-2.5 px-4 py-2 border-b border-dotted border-border text-[11.5px] cursor-pointer transition-colors hover:bg-cream-2 ${
                 isActive
                   ? "border-l-[3px] border-l-vermillion-2 pl-[calc(1rem-3px)] bg-cream-2"
                   : "border-l-[3px] border-l-transparent"
@@ -166,7 +166,7 @@ export function TraceResults({
                         onCorrectField(name, value);
                       }
                     }}
-                    className="shrink-0 p-0.5 rounded-sm text-ink-4 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-ink hover:bg-cream-3 transition-all"
+                    className="shrink-0 p-0.5 rounded-sm text-ink-4 hover:text-ink hover:bg-cream-3 transition-colors"
                   >
                     <Pencil className="w-3 h-3" />
                   </span>

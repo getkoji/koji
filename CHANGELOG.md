@@ -2,6 +2,12 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.60.1 — 2026-07-06
+
+**Correct-field pencils are always visible.** The correction affordance on the
+document detail page no longer waits for a hover to appear — every correctable
+field shows its pencil up front.
+
 ## 0.60.0 — 2026-07-06
 
 **Manage a project's members from the project.** Project settings gain a
