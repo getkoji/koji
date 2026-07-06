@@ -609,6 +609,7 @@ not nested under a `payload` key — e.g. `{ type: "koji:goToPage", page: 3 }`,
 | `koji:setToken` | `{ token: string }` | Swap in a fresh `documentToken` without reloading the iframe — see [Token refresh](#token-refresh-for-long-sessions). |
 | `koji:setTheme` | `{ theme: { activeColor?: string; inactiveColor?: string } }` | Recolor the highlight boxes (any CSS color; pass `rgba()`/`hsla()` for translucency). |
 | `koji:setViewMode` | `{ mode?: "paginated" \| "scroll"; overflow?: "auto" \| "scroll" \| "hidden" }` | Switch the layout at runtime — see [Layout](#layout-scroll-vs-paginated). Both fields optional; unknown values are ignored. |
+| `koji:setSelectionMode` | `{ field: string \| null }` | Arm region selection on behalf of a field (`null` disarms). Requires `?tools=select` — ignored (with a console warning) otherwise. See [Region selection](#region-selection-toolsselect). |
 
 #### How fields resolve (important)
 
@@ -639,6 +640,7 @@ the viewer's **current highlights array**:
 | `koji:fieldClicked` | `{ field: string; page: number }` | The user clicked a highlight box in the PDF. |
 | `koji:pageChanged` | `{ page: number }` | The most-visible page changed (1-indexed). Fires as the user scrolls in `mode=scroll` and on page navigation in `mode=paginated`. |
 | `koji:visibleField` | `{ field: string \| null; page: number }` | The highlighted field whose box is most prominently in view changed. `field` uses the same key space as `koji:setActiveField` (e.g. `total_premium`, `coverages.0`); `null` when no highlighted field is in view. |
+| `koji:regionSelected` | `{ field: string \| null; page: number; bbox; text: string \| null; words }` | The user selected a region (`?tools=select`), already resolved to the text underneath. See [Region selection](#region-selection-toolsselect). |
 
 `koji:pageChanged` and `koji:visibleField` let a parent keep its own UI (e.g. a
 field list) in sync with the viewer's scroll — the cross-origin iframe boundary
@@ -739,6 +741,81 @@ iframe.contentWindow!.postMessage(
 `koji:goToPage` works in both layouts — it flips the page in paginated mode and
 scrolls the page into view in scroll mode. Unknown values fall back to the
 defaults.
+
+### Region selection (`?tools=select`)
+
+Let reviewers **point at where the correct value lives** instead of retyping
+it. With the tool enabled, the user drags a rectangle on the document, the
+viewer resolves the region to the text underneath (server-side, snapped to
+exact word boxes), and you receive the derived value — ready to feed into your
+correction flow. Your app never touches PDF geometry.
+
+Optional tools are **off by default** and enabled per-embed with the `tools`
+query param (comma-separated list; `select` is the only tool today):
+
+```html
+<iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&tools=select"></iframe>
+```
+
+Two ways to enter selection mode:
+
+- **Host-driven** — post `{ type: "koji:setSelectionMode", field: "total_amount" }`
+  when your user clicks "point at it" next to a field in your UI. The `field`
+  is an opaque key echoed back on the result so you can route it; `null`
+  disarms and clears the on-page echo.
+- **Self-serve** — with the tool enabled, the viewer shows a crosshair toggle
+  in its toolbar. Selections made this way emit with `field: null`.
+
+While armed the cursor is a crosshair and the user drags a marquee; the
+selection **snaps to the words underneath** (a word counts when at least half
+of it is covered), the snapped words flash on the page, and the viewer emits:
+
+```typescript
+{
+  type: "koji:regionSelected",
+  field: "total_amount",          // echoes setSelectionMode's field (null for the toolbar toggle)
+  page: 1,
+  bbox: { x: 0.62, y: 0.81, w: 0.18, h: 0.03 },  // union of the matched words, normalized 0–1
+  text: "$6,000.00",              // the words in reading order (lines joined with \n)
+  words: [ { text: "$6,000.00", page: 1, x: 0.62, y: 0.81, w: 0.18, h: 0.03 } ],
+}
+```
+
+`text: null` (with empty `words`) means nothing was found under the region —
+no positional text data for the document, or the user selected whitespace.
+**Treat that as "fall back to manual input", not as an error.** Since the text
+comes from the document's OCR/text layer, always show it to the user for
+confirmation before committing a correction.
+
+Resolution happens in **Document mode** via
+[`POST .../resolve-region`](api-reference.md#post-apijobsslugdocumentsdociresolve-region)
+using the embed's own token — no extra auth or API calls on your side. In
+**URL mode** there is no document to resolve against: the message carries the
+raw drag rectangle with `text: null`, and resolving is up to you.
+
+```typescript
+// Host side: arm selection for a field, receive the corrected value
+function pointAtField(fieldKey: string) {
+  iframe.contentWindow!.postMessage(
+    { type: "koji:setSelectionMode", field: fieldKey },
+    VIEWER_ORIGIN,
+  );
+}
+
+window.addEventListener("message", (e) => {
+  if (e.origin !== VIEWER_ORIGIN) return;
+  const msg = e.data;
+  if (msg?.type === "koji:regionSelected") {
+    // disarm now that we have a pick
+    iframe.contentWindow!.postMessage({ type: "koji:setSelectionMode", field: null }, VIEWER_ORIGIN);
+    if (msg.text != null) {
+      showConfirmChip(msg.field, msg.text, msg);   // let the user confirm/edit, then save
+    } else {
+      focusManualInput(msg.field);                 // nothing under the selection
+    }
+  }
+});
+```
 
 ### Field picker
 

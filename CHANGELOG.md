@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.55.0 — 2026-07-06
+
+**Embed viewer: region selection tool (`?tools=select`).** Embedded hosts can
+now let reviewers point at where a value lives instead of retyping it. Off by
+default; enable with `?tools=select` on the embed URL. Arm it from your app
+(`koji:setSelectionMode`) or via the built-in crosshair toolbar toggle; the
+user drags a rectangle, the selection snaps to the words underneath, and the
+viewer emits `koji:regionSelected` with the resolved text, word boxes, and
+snapped bbox. In Document mode resolution uses the embed's existing HMAC token
+(`resolve-region`) — no extra auth or PDF handling in the host app. See the
+integration guide's "Region selection" section.
+
 ## 0.54.3 — 2026-07-06
 
 **Fix: encrypted PDFs no longer break large-document parsing.** PDFs with the
