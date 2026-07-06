@@ -27,6 +27,9 @@ function createTestApp(opts: {
   memberships?: Map<string, { roles: string[] }>; // key: `${userId}:${tenantId}`
   tenants?: Map<string, string>; // slug → id
   projects?: Map<string, string>; // slug → id (for x-koji-project header tests)
+  /** Per-project access (oss-370): when set, the member is restricted to the
+   *  listed project IDs. Omit for an unrestricted member (default). */
+  restrictedToProjectIds?: string[];
   /**
    * Sets `c.masterKey` before the auth middleware runs. Required for
    * the doc-endpoint matcher branch (HMAC preview-token validation
@@ -45,53 +48,71 @@ function createTestApp(opts: {
     });
   }
 
-  // Track state so the mock can figure out which table is being queried
+  // Track state so the mock can figure out which table is being queried.
   app.use("*", async (c, next) => {
     let queryIndex = 0;
 
-    // The middleware issues exactly 3 queries for tenant-scoped routes:
-    // 1. SELECT from tenants WHERE slug = x-koji-tenant
-    // 2. SELECT from projects (default-project resolution)
-    // 3. SELECT from memberships WHERE userId = principal.userId AND tenantId = resolved
-    //
-    // We return the right mock data based on call order.
+    // For a tenant-scoped session route the middleware issues (in order):
+    //   0. SELECT tenants           WHERE slug = x-koji-tenant
+    //   1. SELECT memberships        (project_restricted, for access checks)
+    //   2. SELECT projects           (header project OR default-project resolve)
+    //   3. SELECT memberships        (roles/grants, Stage 3)
+    // Restricted members (not exercised by these unit tests) add a
+    // project_access query between 1 and 2. The value is returned regardless of
+    // which builder method the caller awaits on (.limit() or a bare await).
+    // When the member is restricted, the middleware inserts a project_access
+    // query between the restriction read and project resolution — shifting the
+    // later indices by one.
+    const restricted = opts.restrictedToProjectIds !== undefined;
+    const projIdx = restricted ? 3 : 2;
+    const grantsIdx = restricted ? 4 : 3;
+
+    const valueFor = (idx: number): unknown[] => {
+      if (idx === 0) {
+        const slug = c.req.header("x-koji-tenant");
+        const tenantId = opts.tenants?.get(slug ?? "");
+        return tenantId ? [{ id: tenantId }] : [];
+      }
+      if (idx === 1) {
+        // Access-check membership read: is this member project-restricted?
+        return [{ restricted }];
+      }
+      if (restricted && idx === 2) {
+        // project_access grant rows for a restricted member.
+        return (opts.restrictedToProjectIds ?? []).map((projectId) => ({ projectId }));
+      }
+      if (idx === projIdx) {
+        const projSlug = c.req.header("x-koji-project");
+        if (projSlug) {
+          const projId = opts.projects?.get(projSlug);
+          return projId ? [{ id: projId }] : [];
+        }
+        // Default-project resolution returns the ordered candidate list; the
+        // middleware picks the first one the member can access.
+        return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+      }
+      if (idx === grantsIdx) {
+        const principal = c.get("principal") as Principal | undefined;
+        const tenantId = c.get("tenantId") as string | undefined;
+        if (principal && tenantId) {
+          const m = opts.memberships?.get(`${principal.userId}:${tenantId}`);
+          return m ? [m] : [];
+        }
+        return [];
+      }
+      return [];
+    };
+
     const fakeChain = () => {
       const idx = queryIndex++;
-      const chain = {
+      const resolve = () => valueFor(idx);
+      const chain: any = {
         from: () => chain,
         innerJoin: () => chain,
         orderBy: () => chain,
         where: () => chain,
-        limit: () => {
-          if (idx === 0) {
-            // Tenant lookup
-            const slug = c.req.header("x-koji-tenant");
-            const tenantId = opts.tenants?.get(slug ?? "");
-            return tenantId ? [{ id: tenantId }] : [];
-          }
-          if (idx === 1) {
-            // Project lookup: header slug against the configured projects map,
-            // else the default-project fallback (every tenant has one).
-            const projSlug = c.req.header("x-koji-project");
-            if (projSlug) {
-              const projId = opts.projects?.get(projSlug);
-              return projId ? [{ id: projId }] : [];
-            }
-            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
-          }
-          if (idx === 2) {
-            // Membership lookup
-            const principal = c.get("principal") as Principal | undefined;
-            const tenantId = c.get("tenantId") as string | undefined;
-            if (principal && tenantId) {
-              const key = `${principal.userId}:${tenantId}`;
-              const m = opts.memberships?.get(key);
-              return m ? [m] : [];
-            }
-            return [];
-          }
-          return [];
-        },
+        limit: () => resolve(),
+        then: (onF: (v: unknown) => unknown) => Promise.resolve(resolve()).then(onF),
       };
       return chain;
     };
@@ -218,6 +239,69 @@ describe("authMiddleware", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body.projectId).toBe("00000000-0000-4000-8000-00000000bbbb");
+  });
+
+  it("restricted member: allows a granted project via header", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({
+      users, tenants, memberships, projects,
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000bbbb"],
+    });
+    app.get("/api/schemas", (c) => c.json({ projectId: c.get("projectId") }));
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme", "x-koji-project": "side" },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as any).projectId).toBe("00000000-0000-4000-8000-00000000bbbb");
+  });
+
+  it("restricted member: 403 for a project they aren't granted", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({
+      users, tenants, memberships, projects,
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000cccc"],
+    });
+    app.get("/api/schemas", (c) => c.json({ ok: true }));
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme", "x-koji-project": "side" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("restricted member: default project resolves to a granted one (no header)", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const app = createTestApp({
+      users, tenants, memberships,
+      // The default-candidate the harness returns is ...aaaa; granting it means
+      // the restricted member lands there.
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000aaaa"],
+    });
+    app.get("/api/schemas", (c) => c.json({ projectId: c.get("projectId") }));
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme" },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as any).projectId).toBe("00000000-0000-4000-8000-00000000aaaa");
+  });
+
+  it("restricted member with NO accessible project gets a non-matching sentinel (never tenant-wide)", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const app = createTestApp({
+      users, tenants, memberships,
+      // granted a project that is NOT the default candidate (...aaaa) → no
+      // accessible candidate resolves.
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000cccc"],
+    });
+    app.get("/api/schemas", (c) => c.json({ projectId: c.get("projectId") }));
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme" },
+    });
+    expect(res.status).toBe(200);
+    // Nil-uuid sentinel — matches no real project, so RLS returns zero rows;
+    // crucially NOT undefined (which would mean tenant-wide access).
+    expect((await res.json() as any).projectId).toBe("00000000-0000-0000-0000-000000000000");
   });
 
   it("allows /api/me without x-koji-tenant", async () => {

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal, getProjectId, getGrants } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, getGrants, getAccessibleProjectIds } from "../auth/middleware";
 import type { Permission } from "../auth/roles";
 import { moveResource, MOVE_PERMISSION, type MovableType } from "../projects/move";
 
@@ -81,7 +81,7 @@ projects.get("/", requires("tenant:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
 
-  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+  const rows = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
         id: schema.projects.id,
@@ -93,7 +93,11 @@ projects.get("/", requires("tenant:read"), async (c) => {
       .from(schema.projects)
       .where(sql`deleted_at IS NULL`)
   );
-  return c.json({ data: rows });
+  // Restricted members only see the projects they can access — this is what
+  // scopes the dashboard's project switcher.
+  const accessible = getAccessibleProjectIds(c);
+  const data = accessible === null ? rows : rows.filter((r) => accessible.has(r.id));
+  return c.json({ data });
 });
 
 projects.get("/:slug", requires("tenant:read"), async (c) => {

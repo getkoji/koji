@@ -27,26 +27,32 @@ function createTestApp(opts: {
     let qi = 0;
     const chain = () => {
       const idx = qi++;
-      const obj = {
+      const resolve = () => {
+        if (idx === 0) {
+          const slug = c.req.header("x-koji-tenant");
+          return opts.tenants.has(slug ?? "") ? [{ id: opts.tenants.get(slug!)! }] : [];
+        }
+        if (idx === 1) {
+          // Access-check membership read — default to unrestricted
+          return [{ restricted: false }];
+        }
+        if (idx === 2) {
+          // Default-project lookup — every tenant has one
+          return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+        }
+        if (idx === 3) {
+          const p = c.get("principal") as Principal | undefined;
+          const t = c.get("tenantId") as string | undefined;
+          if (p && t) { const m = opts.memberships.get(`${p.userId}:${t}`); return m ? [m] : []; }
+          return [];
+        }
+        return [];
+      };
+      const obj: any = {
         from: () => obj, where: () => obj,
         innerJoin: () => obj, orderBy: () => obj,
-        limit: () => {
-          if (idx === 0) {
-            const slug = c.req.header("x-koji-tenant");
-            return opts.tenants.has(slug ?? "") ? [{ id: opts.tenants.get(slug!)! }] : [];
-          }
-          if (idx === 1) {
-            // Default-project lookup — every tenant has one
-            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
-          }
-          if (idx === 2) {
-            const p = c.get("principal") as Principal | undefined;
-            const t = c.get("tenantId") as string | undefined;
-            if (p && t) { const m = opts.memberships.get(`${p.userId}:${t}`); return m ? [m] : []; }
-            return [];
-          }
-          return [];
-        },
+        limit: () => resolve(),
+        then: (onF: (v: unknown) => unknown) => Promise.resolve(resolve()).then(onF),
       };
       return obj;
     };

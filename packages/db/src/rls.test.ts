@@ -560,9 +560,13 @@ describe("structural RLS guarantees", () => {
       expect(p.permissive).toBe("RESTRICTIVE");
     }
 
+    // `projects` is the boundary object itself; `project_access` references a
+    // project_id but is a tenant-scoped access-grant table (managed by admins),
+    // NOT a project-isolated resource — neither carries a project policy.
+    const notProjectScoped = new Set(["projects", "project_access"]);
     const missingPolicy = tablesWithProjectId
       .map((r) => r.table_name)
-      .filter((t) => t !== "projects" && !covered.has(t));
+      .filter((t) => !notProjectScoped.has(t) && !covered.has(t));
     expect(missingPolicy).toEqual([]);
 
     // Lock-step with the exported lists: strict tables + the null-aware ones

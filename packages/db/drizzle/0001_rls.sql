@@ -253,6 +253,15 @@ CREATE POLICY webhook_deliveries_tenant_isolation ON webhook_deliveries FOR ALL
 -- platform/packages/billing/drizzle/0001_billing_rls.sql and are applied by
 -- the commercial hosting layer's migration runner.
 
+
+-- project_access (oss-370): per-member project grants for restricted members.
+ALTER TABLE project_access ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_access FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS project_access_tenant_isolation ON project_access;
+CREATE POLICY project_access_tenant_isolation ON project_access FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 -- ────────────────────────────────────────────────────────────────────────
 -- Project isolation (intra-tenant boundary).
 --

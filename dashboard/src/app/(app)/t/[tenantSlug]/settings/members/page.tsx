@@ -65,6 +65,7 @@ function isExpired(dateStr: string): boolean {
 export default function MembersPage() {
   const { hasPermission, user } = useAuth();
   const [showInviteDialog, setShowInviteDialog] = useState(false);
+  const [accessMember, setAccessMember] = useState<Member | null>(null);
 
   const { data: members, loading: membersLoading, error: membersError, refetch: refetchMembers } = useApi(
     useCallback(() => api.get<{ data: Member[] }>("/api/members").then((r) => r.data), []),
@@ -144,6 +145,14 @@ export default function MembersPage() {
               <div className="flex items-center gap-4">
                 <Badge>{roleLabel(m.roles)}</Badge>
                 <Meta>{timeAgo(m.lastLoginAt)}</Meta>
+                {hasPermission("member:invite") && (
+                  <button
+                    onClick={() => setAccessMember(m)}
+                    className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+                  >
+                    project access
+                  </button>
+                )}
                 {hasPermission("member:remove") && m.userId !== user?.id && (
                   <button
                     onClick={() => requestRemoveMember(m)}
@@ -202,6 +211,14 @@ export default function MembersPage() {
         <InviteDialog
           onClose={() => setShowInviteDialog(false)}
           onSuccess={() => { refetchInvites(); setShowInviteDialog(false); }}
+        />
+      )}
+
+      {accessMember && (
+        <ProjectAccessDialog
+          member={accessMember}
+          onClose={() => setAccessMember(null)}
+          onSaved={() => setAccessMember(null)}
         />
       )}
 
@@ -312,6 +329,150 @@ function InviteDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Per-member project access. A member is either unrestricted (all projects) or
+ * limited to a chosen set. Their tenant role applies wherever they can reach.
+ */
+function ProjectAccessDialog({
+  member,
+  onClose,
+  onSaved,
+}: {
+  member: Member;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { data: allProjects } = useApi(
+    useCallback(
+      () => api.get<{ data: Array<{ slug: string; displayName: string }> }>("/api/projects").then((r) => r.data),
+      [],
+    ),
+  );
+  const { data: current, loading } = useApi(
+    useCallback(
+      () => api.get<{ restricted: boolean; projects: Array<{ slug: string }> }>(`/api/members/${member.id}/project-access`),
+      [member.id],
+    ),
+  );
+
+  const [restricted, setRestricted] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const initialized = useRef(false);
+
+  // Seed local state once the current setting loads.
+  if (current && !initialized.current) {
+    initialized.current = true;
+    setRestricted(current.restricted);
+    setSelected(new Set(current.projects.map((p) => p.slug)));
+  }
+
+  function toggle(slug: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.put(`/api/members/${member.id}/project-access`, {
+        restricted,
+        project_slugs: restricted ? [...selected] : [],
+      });
+      onSaved();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[440px] p-6">
+        <h2 className="text-[15px] font-medium text-ink mb-1">Project access</h2>
+        <p className="text-[12.5px] text-ink-3 mb-4">
+          Control which projects <span className="font-medium text-ink">{member.name ?? member.email}</span> can access.
+          Their role ({roleLabel(member.roles)}) applies in every project they can reach.
+        </p>
+
+        {loading ? (
+          <div className="font-mono text-[11px] text-ink-4 py-4">Loading…</div>
+        ) : (
+          <div className="space-y-3 mb-4">
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="radio"
+                checked={!restricted}
+                onChange={() => setRestricted(false)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-[13px] text-ink font-medium block">All projects</span>
+                <span className="text-[12px] text-ink-3">Access to every project, including ones created later.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="radio"
+                checked={restricted}
+                onChange={() => setRestricted(true)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-[13px] text-ink font-medium block">Only specific projects</span>
+                <span className="text-[12px] text-ink-3">Access limited to the projects you choose.</span>
+              </span>
+            </label>
+
+            {restricted && (
+              <div className="border border-border rounded-sm p-2 max-h-[220px] overflow-y-auto space-y-1 ml-6">
+                {(allProjects ?? []).length === 0 ? (
+                  <div className="text-[12px] text-ink-4 px-1 py-1">No projects.</div>
+                ) : (
+                  (allProjects ?? []).map((p) => (
+                    <label key={p.slug} className="flex items-center gap-2 px-1 py-1 rounded-sm hover:bg-cream-2 cursor-pointer">
+                      <input type="checkbox" checked={selected.has(p.slug)} onChange={() => toggle(p.slug)} />
+                      <span className="text-[12.5px] text-ink truncate">{p.displayName}</span>
+                      <span className="font-mono text-[10.5px] text-ink-4">{p.slug}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">{error}</div>
+        )}
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || loading || (restricted && selected.size === 0)}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );

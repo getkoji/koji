@@ -189,32 +189,38 @@ function createTestApp(opts: {
     let queryIndex = 0;
     const fakeChain = () => {
       const idx = queryIndex++;
-      const chain = {
+      const resolve = () => {
+        if (idx === 0) {
+          const slug = c.req.header("x-koji-tenant");
+          const tenantId = opts.tenants?.get(slug ?? "");
+          return tenantId ? [{ id: tenantId }] : [];
+        }
+        if (idx === 1) {
+          // Access-check membership read — default to unrestricted
+          return [{ restricted: false }];
+        }
+        if (idx === 2) {
+          // Default-project lookup — every tenant has one
+          return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+        }
+        if (idx === 3) {
+          const principal = c.get("principal") as Principal | undefined;
+          const tenantId = c.get("tenantId") as string | undefined;
+          if (principal && tenantId) {
+            const m = opts.memberships?.get(`${principal.userId}:${tenantId}`);
+            return m ? [m] : [];
+          }
+          return [];
+        }
+        return [];
+      };
+      const chain: any = {
         from: () => chain,
         innerJoin: () => chain,
         orderBy: () => chain,
         where: () => chain,
-        limit: () => {
-          if (idx === 0) {
-            const slug = c.req.header("x-koji-tenant");
-            const tenantId = opts.tenants?.get(slug ?? "");
-            return tenantId ? [{ id: tenantId }] : [];
-          }
-          if (idx === 1) {
-            // Default-project lookup — every tenant has one
-            return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
-          }
-          if (idx === 2) {
-            const principal = c.get("principal") as Principal | undefined;
-            const tenantId = c.get("tenantId") as string | undefined;
-            if (principal && tenantId) {
-              const m = opts.memberships?.get(`${principal.userId}:${tenantId}`);
-              return m ? [m] : [];
-            }
-            return [];
-          }
-          return [];
-        },
+        limit: () => resolve(),
+        then: (onF: (v: unknown) => unknown) => Promise.resolve(resolve()).then(onF),
       };
       return chain;
     };

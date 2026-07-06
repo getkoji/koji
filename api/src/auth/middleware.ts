@@ -22,6 +22,15 @@ import type { Env } from "../env";
 
 const DEFAULT_SESSION_COOKIE = "koji_session";
 
+/**
+ * A syntactically-valid project id that can never match a real project (the
+ * nil UUID). Used as the resolved project for a restricted member who has NO
+ * accessible project, so project-scoped tables return zero rows instead of
+ * falling through to tenant-wide access. Real project ids are gen_random_uuid
+ * (v4), never all-zero.
+ */
+const NO_PROJECT_SENTINEL = "00000000-0000-0000-0000-000000000000";
+
 export interface AuthMiddlewareOptions {
   /** Cookie name the middleware should pull a bearer token from. Defaults to
    *  `koji_session` (the local adapter). Hosted/Clerk sets `__session` on the
@@ -246,6 +255,42 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     const projectSlug = c.req.header("x-koji-project");
     const apiKeyProjectId = c.get("apiKeyProjectId") as string | undefined;
     let projectNotFound = false;
+    let projectForbidden = false;
+
+    // Per-member project access (oss-370). Only session/org users are
+    // restrictable — an API key is already project-bound, so it's its own
+    // boundary and skips this. `accessibleProjectIds === null` means
+    // unrestricted (all projects); a Set means the member is limited to those.
+    let accessibleProjectIds: Set<string> | null = null;
+    if (!apiKeyTenantId) {
+      const [m] = await db
+        .select({ restricted: schema.memberships.projectRestricted })
+        .from(schema.memberships)
+        .where(
+          and(
+            eq(schema.memberships.userId, principal.userId),
+            eq(schema.memberships.tenantId, tenant.id),
+          ),
+        )
+        .limit(1);
+      if (m?.restricted) {
+        const grants = await db
+          .select({ projectId: schema.projectAccess.projectId })
+          .from(schema.projectAccess)
+          .where(
+            and(
+              eq(schema.projectAccess.tenantId, tenant.id),
+              eq(schema.projectAccess.userId, principal.userId),
+            ),
+          );
+        accessibleProjectIds = new Set(grants.map((g) => g.projectId));
+      }
+    }
+    const canAccessProject = (id: string) =>
+      accessibleProjectIds === null || accessibleProjectIds.has(id);
+    // Expose to routes (e.g. GET /api/projects filters the switcher to the
+    // projects this member can actually reach). null = unrestricted.
+    c.set("accessibleProjectIds", accessibleProjectIds);
 
     if (projectSlug) {
       const [project] = await db
@@ -263,6 +308,11 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         // A key naming a project other than its own gets the same answer as
         // a missing project — the key cannot see outside its binding.
         projectNotFound = true;
+      } else if (!canAccessProject(project.id)) {
+        // The project exists and the user is a tenant member, but is
+        // restricted from it — a plain 403 (no oracle concern, they're a
+        // member), answered after the membership check.
+        projectForbidden = true;
       } else {
         c.set("projectId", project.id);
       }
@@ -285,7 +335,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       }
       c.set("projectId", project.id);
     } else {
-      const [project] = await db
+      const candidates = await db
         .select({ id: schema.projects.id })
         .from(schema.projects)
         .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
@@ -294,11 +344,21 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
           sql`(${schema.projects.slug} = ${schema.tenants.slug}) DESC`,
           schema.projects.createdAt,
           schema.projects.id,
-        )
-        .limit(1);
-      // A tenant with zero projects (mid-setup) proceeds tenant-wide; the
-      // setup flow creates the default project before any resource exists.
-      if (project) c.set("projectId", project.id);
+        );
+      // A restricted member's default is the first project they can access.
+      const project = candidates.find((p) => canAccessProject(p.id));
+      if (project) {
+        c.set("projectId", project.id);
+      } else if (accessibleProjectIds !== null) {
+        // A restricted member with NO accessible project must NOT fall through
+        // to tenant-wide scope (which would expose every project's data via
+        // the RESTRICTIVE policy's "no project set" arm). Pin an impossible
+        // project id so project-scoped tables return zero rows, while
+        // tenant-level routes (no project policy) still work.
+        c.set("projectId", NO_PROJECT_SENTINEL);
+      }
+      // else: unrestricted member + tenant with zero projects (mid-setup) →
+      // leave unset; tenant-wide is correct until the default project exists.
     }
 
     // --- Stage 3: Load grants ---
@@ -370,6 +430,9 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     if (projectNotFound) {
       return c.json({ error: "Project not found" }, 404);
     }
+    if (projectForbidden) {
+      return c.json({ error: "You do not have access to this project" }, 403);
+    }
 
     const grants = resolvePermissions(membership.roles);
     c.set("grants", grants);
@@ -426,6 +489,12 @@ export function getTenantId(c: Context<Env>): string {
  *  (no header, no key binding, tenant has no projects yet). */
 export function getProjectId(c: Context<Env>): string | null {
   return (c.get("projectId") as string | undefined) ?? null;
+}
+
+/** The set of project IDs the current member may access, or null when
+ *  unrestricted (all projects). */
+export function getAccessibleProjectIds(c: Context<Env>): Set<string> | null {
+  return (c.get("accessibleProjectIds") as Set<string> | null | undefined) ?? null;
 }
 
 /**
