@@ -195,10 +195,6 @@ export function AppSidebar({
       localStorage.setItem(projectStorageKey, slug);
     }
     setStoredProjectSlug(slug);
-    // Schemas are project-scoped, but the sidebar lives in the tenant layout
-    // and doesn't remount on this navigation — nudge its schema list to
-    // refetch for the newly-selected project so the picker isn't stale.
-    emit("schemas:updated");
     router.push(`${base}/projects/${slug}`);
   }
 
@@ -209,6 +205,14 @@ export function AppSidebar({
   const schemaSubPage =
     pathname.match(/\/schemas\/[^/]+\/([^/]+)/)?.[1] ?? "build";
 
+  // Schemas are project-scoped, but the sidebar lives in the tenant layout and
+  // doesn't remount on project switches — so the fetch is keyed on the resolved
+  // projectSlug. Don't refetch eagerly from selectProject instead: a fetch
+  // fired before router.push commits still sees the OLD /projects/<slug> URL,
+  // and the API client resolves the x-koji-project header URL-first — which
+  // kept the list exactly one project behind. projectSlug only flips after the
+  // URL (or, off project routes, localStorage) already agrees with it, so a
+  // fetch triggered by this dep always carries the right project header.
   const { data: schemasList, loading: schemasLoading, refetch: refetchSchemas } =
     useApi(
       useCallback(
@@ -218,7 +222,10 @@ export function AppSidebar({
               "/api/schemas",
             )
             .then((r) => r.data),
-        [],
+        // The request is project-scoped via the x-koji-project header the API
+        // client derives from the URL/localStorage — not via an argument, so
+        // the dep looks unused to the linter but is load-bearing.
+        [projectSlug], // eslint-disable-line react-hooks/exhaustive-deps
       ),
     );
 
@@ -451,6 +458,7 @@ export function AppSidebar({
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
+                      aria-label="Switch schema"
                       className="font-mono text-[10px] font-medium tracking-[0.12em] uppercase text-ink-4 px-2 py-1.5 rounded-sm flex items-center gap-1.5 hover:bg-cream-2 hover:text-ink-2 transition-colors w-full text-left group/schema"
                     >
                       <span>Schema</span>

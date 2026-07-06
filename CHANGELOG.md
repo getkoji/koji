@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.56.1 — 2026-07-06
+
+**Fix: sidebar schema list no longer lags one project behind.** Switching
+projects in the sidebar picker refetched the schema list before the navigation
+committed, so the request was still scoped to the previous project and the
+list only caught up after a manual page refresh. The schema list now refetches
+after the project switch takes effect and always shows the selected project's
+schemas.
+
 ## 0.56.0 — 2026-07-06
 
 **Highlight-to-correct in the review queue.** When an extraction is wrong,
