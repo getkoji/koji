@@ -292,4 +292,57 @@ describe("stripHintLeaks", () => {
       expect(extracted.coverages).toEqual([{ coverage_code: "fidelity_crime", underwriter: null }]);
     });
   });
+
+  describe("numeric-scalar hint leaks (oss-391)", () => {
+    // A worked example amount in the hint, formatted with commas + cents.
+    const PREMIUM_HINT =
+      'The total premium — a standalone currency amount like "9,486.00". ' +
+      "Do not confuse it with coverage LIMITS (round amounts like 1,000,000).";
+    const premiumFields = { premium: { type: "number", extraction_hint: PREMIUM_HINT } };
+
+    it("nulls a number echoed from the hint (reformatted) with no source in the section", () => {
+      const extracted: Record<string, unknown> = { premium: 9486 };
+      const chunks = [chunk("PREMIUM SUMMARY\nProvisional Premium $\nDIRECT BILL")];
+
+      const affected = stripHintLeaks(extracted, premiumFields, chunks);
+
+      expect(affected).toEqual(["premium"]);
+      expect(extracted.premium).toBeNull();
+    });
+
+    it("keeps the number when the amount is actually present in the document", () => {
+      const extracted: Record<string, unknown> = { premium: 9486 };
+      const chunks = [chunk("PREMIUM SUMMARY\nAnnual Premium 9,486.00\nDIRECT BILL")];
+
+      const affected = stripHintLeaks(extracted, premiumFields, chunks);
+
+      expect(affected).toEqual([]);
+      expect(extracted.premium).toBe(9486);
+    });
+
+    it("nulls a numeric-looking string echoed from the hint", () => {
+      const stringFields = { premium: { type: "string", extraction_hint: PREMIUM_HINT } };
+      const extracted: Record<string, unknown> = { premium: "9,486.00" };
+      const chunks = [chunk("PREMIUM SUMMARY\nno amounts here")];
+
+      const affected = stripHintLeaks(extracted, stringFields, chunks);
+
+      expect(affected).toEqual(["premium"]);
+      expect(extracted.premium).toBeNull();
+    });
+
+    it("leaves a small round number alone even if it matches a hint literal (below the digit gate)", () => {
+      // "460" is only 3 digits — too common to attribute to the hint.
+      const partFields = {
+        part_premium: { type: "number", extraction_hint: "e.g. a GL part premium of 460" },
+      };
+      const extracted: Record<string, unknown> = { part_premium: 460 };
+      const chunks = [chunk("no matching amount in this section")];
+
+      const affected = stripHintLeaks(extracted, partFields, chunks);
+
+      expect(affected).toEqual([]);
+      expect(extracted.part_premium).toBe(460);
+    });
+  });
 });

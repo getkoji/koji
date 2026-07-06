@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.61.2 — 2026-07-06
+
+**Prompt-echo guard now catches reformatted numbers.** The hint-leak guard
+previously only nulled string values copied verbatim from a field's own
+extraction hint. A numeric worked example (e.g. a `"9,486.00"` premium) echoed
+back by the model as `9486` slipped through, because the reformatted number
+isn't a substring of the hint. Numeric scalars — and numeric-looking strings —
+are now matched against hint literals *by value*, and nulled when they have no
+source in the document. Only distinctive amounts (four or more digits) are
+guarded, so small round examples aren't over-nulled, and any amount genuinely
+present in the document is kept (its provenance protects it).
+
 ## 0.61.1 — 2026-07-06
 
 **Clear error when a project has no model provider.** Running extraction or
