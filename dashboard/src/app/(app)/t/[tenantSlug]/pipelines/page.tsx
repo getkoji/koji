@@ -215,7 +215,7 @@ function PipelineCard({ pipeline, tenantSlug }: { pipeline: PipelineRow; tenantS
             <span className="text-ink">
               {pipeline.schemaName}
               {pipeline.deployedVersion !== null ? (
-                <span className="text-ink-4 ml-1">v{pipeline.deployedVersion}</span>
+                <span className="text-ink-4 ml-1">{pipeline.deployedVersionLabel ?? `v${pipeline.deployedVersion}`}</span>
               ) : (
                 <span className="text-vermillion-2 ml-1">· not deployed</span>
               )}

@@ -34,6 +34,8 @@ interface ValidateResult {
   costUsd: number;
   passed: boolean;
   schemaVersion: number;
+  /** Semver label of the version the run scored (e.g. `v1.2.0-rc.3`). */
+  version?: string | null;
   ranAt: string;
   regressions: FieldResult[];
   fields: FieldResult[];
@@ -248,7 +250,7 @@ export default function ValidatePage() {
             </div>
             {result ? (
               <div className="flex items-center gap-3 mt-1.5 font-mono text-[10px] text-ink-4">
-                <span>v{result.schemaVersion}</span>
+                <span>{result.version ?? `v${result.schemaVersion}`}</span>
                 <span>·</span>
                 <span>{result.docsTotal} docs</span>
                 <span>·</span>

@@ -93,7 +93,7 @@ export default function ClassifiersPage() {
               </div>
               <div className="flex items-center gap-3 shrink-0 pl-3">
                 <span className="text-[11.5px] text-ink-4 font-mono">
-                  {c.latestVersion ? `v${c.latestVersion}` : "draft"}
+                  {c.latestVersion ? (c.latestVersionLabel ?? `v${c.latestVersion}`) : "draft"}
                 </span>
                 <ChevronRight className="h-4 w-4 text-ink-4 group-hover:text-ink-3" />
               </div>

@@ -336,7 +336,7 @@ function SchemaRowItem({
         <span className="font-mono text-[10.5px] text-ink-4 truncate">{schema.slug}</span>
       </div>
       <span className="font-mono text-[11px] text-ink-3">
-        {schema.latestVersion != null ? `v${schema.latestVersion}` : "—"}
+        {schema.latestVersionLabel ?? (schema.latestVersion != null ? `v${schema.latestVersion}` : "—")}
       </span>
       <span className="font-mono text-[11px] text-ink-3">
         {schema.corpusCount ?? 0} {schema.corpusCount === 1 ? "entry" : "entries"}

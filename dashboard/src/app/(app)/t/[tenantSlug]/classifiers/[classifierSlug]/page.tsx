@@ -158,7 +158,7 @@ export default function ClassifierDetailPage() {
           <p className="text-[12.5px] text-ink-3 mt-0.5">
             {detail.description || <span className="text-ink-4">No description</span>}
             <span className="text-ink-4 ml-2 font-mono">
-              {detail.latestVersion ? `live v${detail.latestVersion.versionNumber}` : "no released version"}
+              {detail.latestVersion ? `live ${detail.latestVersion.version ?? `v${detail.latestVersion.versionNumber}`}` : "no released version"}
             </span>
           </p>
         </div>

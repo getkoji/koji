@@ -25,6 +25,8 @@ interface SchemaDetail {
   draftYaml: string | null;
   latestVersion: {
     versionNumber: number;
+    /** Semver label (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+    version?: string;
     yamlSource: string;
     commitMessage: string | null;
     createdAt: string;
@@ -34,6 +36,11 @@ interface SchemaDetail {
 interface SchemaVersion {
   id: string;
   versionNumber: number;
+  /** Semver label (e.g. `v1.2.0` or `v1.2.0-rc.3`). */
+  version?: string;
+  released?: boolean;
+  /** True when this is the schema's live release. */
+  active?: boolean;
   commitMessage: string | null;
   committedByName: string;
   createdAt: string;
@@ -339,6 +346,7 @@ export default function BuildPage() {
   const hasChanges = yaml !== committedYaml && initialized;
   const changedLines = hasChanges ? countChangedLines(committedYaml, yaml) : 0;
   const currentVersion = schemaDetail?.latestVersion?.versionNumber ?? 0;
+  const currentVersionLabel = schemaDetail?.latestVersion?.version ?? (currentVersion > 0 ? `v${currentVersion}` : null);
   const { fields, error: parseError } = useMemo(() => parseFields(yaml), [yaml]);
 
   // Actions
@@ -632,9 +640,9 @@ export default function BuildPage() {
               >
                 {schemaDetail.displayName}
               </h1>
-              {currentVersion > 0 && (
+              {currentVersionLabel && (
                 <span className="font-mono text-[11px] text-ink-4 border border-border rounded-sm px-1.5 py-0.5">
-                  v{currentVersion}
+                  {currentVersionLabel}
                 </span>
               )}
               {hasChanges && (
@@ -698,7 +706,10 @@ export default function BuildPage() {
                         className="w-full text-left px-3 py-2.5 hover:bg-cream-2 transition-colors flex items-center justify-between group border-b border-dotted border-border last:border-none">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono text-[11px] text-ink font-medium">v{v.versionNumber}</span>
+                            <span className="font-mono text-[11px] text-ink font-medium">{v.version ?? `v${v.versionNumber}`}</span>
+                            {v.active && (
+                              <span className="font-mono text-[8px] font-medium text-green bg-green/10 px-1 py-0.5 rounded-sm uppercase tracking-[0.08em]">live</span>
+                            )}
                             <span className="text-[10px] text-ink-4">{v.committedByName}</span>
                             <span className="text-[10px] text-ink-4">{timeAgo(v.createdAt)}</span>
                           </div>

@@ -2,7 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
-## 0.51.0 — 2026-07-05
+## 0.51.1 — 2026-07-06
+
+**Semver version labels everywhere in the dashboard.** Surfaces that still
+showed the legacy incremental `v{N}` label — pipelines (list, detail, version
+picker), jobs, document detail, review, schema build/validate/performance,
+classifiers, and project settings — now show the version's semver label
+(`v1.2.0`, `v1.2.0-rc.3`), matching the Validate tab and `koji schema
+versions`. The pipeline version picker and Build's version history also badge
+release candidates (`rc`) and the live release. API responses that carried
+only a bare version number now also carry the label (additive:
+`latestVersionLabel`, `schemaVersionLabel`, `deployedVersionLabel`, or a
+`version` field on version objects); numeric fields are unchanged. Newly
+created schemas and classifiers commit their initial version as `v0.0.1`
+(previously the components defaulted to `0.0.0`).
 
 **Per-project access control.** Projects are now a permission boundary, not
 just data scoping. By default every workspace member can access every project

@@ -437,7 +437,7 @@ function ReviewHeader({
               <span>
                 {item.schemaName}
                 {item.schemaVersion !== null && (
-                  <span className="text-ink-4 ml-1">v{item.schemaVersion}</span>
+                  <span className="text-ink-4 ml-1">{item.schemaVersionLabel ?? `v${item.schemaVersion}`}</span>
                 )}
               </span>
               <span className="text-cream-4 text-[8px]">●</span>

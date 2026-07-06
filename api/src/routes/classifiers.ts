@@ -66,16 +66,26 @@ classifiers.get("/", requires("schema:read"), async (c) => {
   const enriched = [];
   for (const row of rows) {
     let latestVersion: number | null = null;
+    let latestVersionLabel: string | null = null;
     const [cv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
-        .select({ versionNumber: schema.classifierVersions.versionNumber })
+        .select({
+          versionNumber: schema.classifierVersions.versionNumber,
+          major: schema.classifierVersions.major,
+          minor: schema.classifierVersions.minor,
+          patch: schema.classifierVersions.patch,
+          prerelease: schema.classifierVersions.prerelease,
+        })
         .from(schema.classifierVersions)
         .where(eq(schema.classifierVersions.classifierId, row.id))
         .orderBy(desc(schema.classifierVersions.versionNumber))
         .limit(1),
     );
-    if (cv) latestVersion = cv.versionNumber;
-    enriched.push({ ...row, latestVersion });
+    if (cv) {
+      latestVersion = cv.versionNumber;
+      latestVersionLabel = formatSemver(cv);
+    }
+    enriched.push({ ...row, latestVersion, latestVersionLabel });
   }
 
   return c.json({ data: enriched });
@@ -93,6 +103,7 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
 
   let latestVersion: {
     versionNumber: number;
+    version: string;
     yamlSource: string;
     commitMessage: string | null;
     createdAt: Date;
@@ -101,6 +112,10 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
     tx
       .select({
         versionNumber: schema.classifierVersions.versionNumber,
+        major: schema.classifierVersions.major,
+        minor: schema.classifierVersions.minor,
+        patch: schema.classifierVersions.patch,
+        prerelease: schema.classifierVersions.prerelease,
         yamlSource: schema.classifierVersions.yamlSource,
         commitMessage: schema.classifierVersions.commitMessage,
         createdAt: schema.classifierVersions.createdAt,
@@ -110,7 +125,10 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
       .orderBy(desc(schema.classifierVersions.versionNumber))
       .limit(1),
   );
-  if (cv) latestVersion = cv;
+  if (cv) {
+    const { major: _ma, minor: _mi, patch: _pa, prerelease: _pr, ...rest } = cv;
+    latestVersion = { ...rest, version: formatSemver(cv) };
+  }
 
   return c.json({ ...cls, latestVersion });
 });
@@ -160,6 +178,11 @@ classifiers.post("/", requires("schema:write"), async (c) => {
         tenantId,
         classifierId: newClassifier!.id,
         versionNumber: 1,
+        // First release is v0.0.1 — same convention as the lifecycle helpers
+        // when there is no active release to bump from.
+        major: 0,
+        minor: 0,
+        patch: 1,
         yamlSource,
         yamlHash,
         parsedJson: result.parsed,
@@ -176,7 +199,7 @@ classifiers.post("/", requires("schema:write"), async (c) => {
       .where(eq(schema.classifiers.id, newClassifier!.id)),
   );
 
-  return c.json({ ...newClassifier, latestVersion: 1 }, 201);
+  return c.json({ ...newClassifier, latestVersion: 1, latestVersionLabel: formatSemver(v1!) }, 201);
 });
 
 classifiers.patch("/:slug", requires("schema:write"), async (c) => {

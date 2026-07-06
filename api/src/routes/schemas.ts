@@ -62,14 +62,24 @@ schemas.get("/", requires("schema:read"), async (c) => {
   const enriched = [];
   for (const row of rows) {
     let latestVersion: number | null = null;
+    let latestVersionLabel: string | null = null;
     const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-      tx.select({ versionNumber: schema.schemaVersions.versionNumber })
+      tx.select({
+        versionNumber: schema.schemaVersions.versionNumber,
+        major: schema.schemaVersions.major,
+        minor: schema.schemaVersions.minor,
+        patch: schema.schemaVersions.patch,
+        prerelease: schema.schemaVersions.prerelease,
+      })
         .from(schema.schemaVersions)
         .where(eq(schema.schemaVersions.schemaId, row.id))
         .orderBy(desc(schema.schemaVersions.versionNumber))
         .limit(1)
     );
-    if (sv) latestVersion = sv.versionNumber;
+    if (sv) {
+      latestVersion = sv.versionNumber;
+      latestVersionLabel = formatSemver(sv);
+    }
 
     const [cc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({ count: sql<number>`count(*)::int` })
@@ -78,7 +88,7 @@ schemas.get("/", requires("schema:read"), async (c) => {
     );
     const corpusCount = cc?.count ?? 0;
 
-    enriched.push({ ...row, latestVersion, corpusCount });
+    enriched.push({ ...row, latestVersion, latestVersionLabel, corpusCount });
   }
 
   return c.json({ data: enriched });
@@ -94,10 +104,14 @@ schemas.get("/:slug", requires("schema:read"), async (c) => {
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  let latestVersion: { versionNumber: number; yamlSource: string; commitMessage: string | null; createdAt: Date } | null = null;
+  let latestVersion: { versionNumber: number; version: string; yamlSource: string; commitMessage: string | null; createdAt: Date } | null = null;
   const [sv] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       versionNumber: schema.schemaVersions.versionNumber,
+      major: schema.schemaVersions.major,
+      minor: schema.schemaVersions.minor,
+      patch: schema.schemaVersions.patch,
+      prerelease: schema.schemaVersions.prerelease,
       yamlSource: schema.schemaVersions.yamlSource,
       commitMessage: schema.schemaVersions.commitMessage,
       createdAt: schema.schemaVersions.createdAt,
@@ -106,7 +120,10 @@ schemas.get("/:slug", requires("schema:read"), async (c) => {
       .orderBy(desc(schema.schemaVersions.versionNumber))
       .limit(1)
   );
-  if (sv) latestVersion = sv;
+  if (sv) {
+    const { major: _ma, minor: _mi, patch: _pa, prerelease: _pr, ...rest } = sv;
+    latestVersion = { ...rest, version: formatSemver(sv) };
+  }
 
   return c.json({ ...s, latestVersion });
 });
@@ -202,6 +219,11 @@ schemas.post(
       tenantId,
       schemaId: newSchema!.id,
       versionNumber: 1,
+      // First release is v0.0.1 — same convention as the lifecycle helpers
+      // (versioning.ts) when there is no active release to bump from.
+      major: 0,
+      minor: 0,
+      patch: 1,
       yamlSource,
       yamlHash,
       parsedJson: result.parsed,
@@ -216,7 +238,7 @@ schemas.post(
       .where(eq(schema.schemas.id, newSchema!.id))
   );
 
-  return c.json({ ...newSchema, latestVersion: 1 }, 201);
+  return c.json({ ...newSchema, latestVersion: 1, latestVersionLabel: formatSemver(v1!) }, 201);
 });
 
 schemas.patch("/:slug", requires("schema:write"), async (c) => {
@@ -1238,7 +1260,14 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   if (!schemaRow) return c.json({ error: "Schema not found" }, 404);
 
   const [latestVersion] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ versionNumber: schema.schemaVersions.versionNumber, yamlSource: schema.schemaVersions.yamlSource })
+    tx.select({
+      versionNumber: schema.schemaVersions.versionNumber,
+      major: schema.schemaVersions.major,
+      minor: schema.schemaVersions.minor,
+      patch: schema.schemaVersions.patch,
+      prerelease: schema.schemaVersions.prerelease,
+      yamlSource: schema.schemaVersions.yamlSource,
+    })
       .from(schema.schemaVersions).where(eq(schema.schemaVersions.schemaId, schemaRow.id))
       .orderBy(desc(schema.schemaVersions.versionNumber)).limit(1)
   );
@@ -1290,5 +1319,10 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
 
   if (results.length === 0) return c.json(null);
 
-  return c.json(computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime, [], getSchemaFields));
+  // Same shape as a finalized run's resultJson — `version` is the semver label
+  // the Validate tab shows instead of the raw versionNumber.
+  return c.json({
+    ...computeValidateResult(results, prevExtractedMap, latestVersion?.versionNumber ?? 0, startTime, [], getSchemaFields),
+    version: latestVersion ? formatSemver(latestVersion) : null,
+  });
 });

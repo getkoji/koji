@@ -1160,11 +1160,11 @@ Committing or creating a classifier validates the YAML with the classifier engin
 
 ### `GET /api/classifiers`
 
-List the tenant's classifiers. Each row carries `id`, `slug`, `displayName`, `description`, `currentVersionId`, `createdAt`, and `latestVersion` (the highest committed version number, or `null`). Auth: `schema:read`.
+List the tenant's classifiers. Each row carries `id`, `slug`, `displayName`, `description`, `currentVersionId`, `createdAt`, `latestVersion` (the highest committed version number, or `null`), and `latestVersionLabel` (its semver label, e.g. `"v1.2.0"` or `"v1.2.0-rc.3"`, or `null`). Auth: `schema:read`.
 
 ### `GET /api/classifiers/{slug}`
 
-The classifier plus its `latestVersion` (`{ versionNumber, yamlSource, commitMessage, createdAt }` or `null`). `404` for an unknown slug. Auth: `schema:read`.
+The classifier plus its `latestVersion` (`{ versionNumber, version, yamlSource, commitMessage, createdAt }` or `null`; `version` is the semver label). `404` for an unknown slug. Auth: `schema:read`.
 
 ### `POST /api/classifiers`
 
@@ -1179,7 +1179,7 @@ Create a classifier. Auth: `schema:write`.
 | `description` | string? | Optional. |
 | `initial_yaml` | string? | Classifier YAML for v1. Defaults to a minimal one-class template. |
 
-Creates the classifier and commits **v1** (released), then returns the classifier with `latestVersion: 1`. `400` when `slug`/`display_name` are missing or the YAML is not a valid classifier config.
+Creates the classifier and commits **v1** (released, semver `v0.0.1`), then returns the classifier with `latestVersion: 1` and `latestVersionLabel: "v0.0.1"`. `400` when `slug`/`display_name` are missing or the YAML is not a valid classifier config.
 
 ### `PATCH /api/classifiers/{slug}`
 
