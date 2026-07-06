@@ -43,6 +43,12 @@ export interface PdfNormalizeConfig {
  * hosted platform hardcodes `backend: "modal"` in code (it never sets
  * `KOJI_PARSE_BACKEND`) — without the inference this helper would default to
  * "docker" there and dial a sidecar that doesn't exist.
+ *
+ * Proxy-auth credentials: `MODAL_PROXY_KEY`/`MODAL_PROXY_SECRET` first, then
+ * `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` — the same order the platform's
+ * `entry.ts` wires into ModalParseProvider. In production both pairs are set
+ * but only the PROXY pair is a Modal proxy-auth token; the TOKEN pair is the
+ * account API token, which Modal's proxy rejects with a 401 (oss-379).
  */
 export function pdfNormalizeConfigFromEnv(): PdfNormalizeConfig {
   const explicit = process.env.KOJI_PARSE_BACKEND as "docker" | "modal" | undefined;
@@ -51,8 +57,8 @@ export function pdfNormalizeConfigFromEnv(): PdfNormalizeConfig {
     backend: explicit ?? (modalUrl ? "modal" : "docker"),
     dockerUrl: process.env.KOJI_PARSE_URL ?? "http://koji-parse:9410",
     modalUrl,
-    modalTokenId: process.env.MODAL_TOKEN_ID,
-    modalTokenSecret: process.env.MODAL_TOKEN_SECRET,
+    modalTokenId: process.env.MODAL_PROXY_KEY ?? process.env.MODAL_TOKEN_ID,
+    modalTokenSecret: process.env.MODAL_PROXY_SECRET ?? process.env.MODAL_TOKEN_SECRET,
   };
 }
 

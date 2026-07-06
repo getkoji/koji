@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.55.1 — 2026-07-06
+
+**Fix: hosted PDF normalization used the wrong Modal credentials.** The
+`/normalize-pdf` fallback shipped in 0.54.3 authenticated to the Modal parse
+service with the account API token instead of the proxy-auth token, so on the
+hosted platform every normalization attempt failed with a 401 and encrypted
+large PDFs still couldn't be parsed. The client now uses the same credential
+order as the rest of the platform (`MODAL_PROXY_KEY`/`MODAL_PROXY_SECRET`
+first). Self-hosted (docker) deployments were unaffected.
+
 ## 0.55.0 — 2026-07-06
 
 **Embed viewer: region selection tool (`?tools=select`).** Embedded hosts can

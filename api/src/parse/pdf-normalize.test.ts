@@ -90,7 +90,15 @@ describe("normalizePdfViaService", () => {
 });
 
 describe("pdfNormalizeConfigFromEnv — backend inference", () => {
-  const ENV_KEYS = ["KOJI_PARSE_BACKEND", "KOJI_PARSE_URL", "KOJI_PARSE_MODAL_URL"] as const;
+  const ENV_KEYS = [
+    "KOJI_PARSE_BACKEND",
+    "KOJI_PARSE_URL",
+    "KOJI_PARSE_MODAL_URL",
+    "MODAL_PROXY_KEY",
+    "MODAL_PROXY_SECRET",
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+  ] as const;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -122,5 +130,26 @@ describe("pdfNormalizeConfigFromEnv — backend inference", () => {
     process.env.KOJI_PARSE_MODAL_URL = "https://org--koji-parse-parse-http.modal.run";
     process.env.KOJI_PARSE_BACKEND = "docker";
     expect(pdfNormalizeConfigFromEnv().backend).toBe("docker");
+  });
+
+  it("prefers MODAL_PROXY_KEY/SECRET over MODAL_TOKEN_ID/SECRET for proxy auth", () => {
+    // Production sets both pairs, but only the PROXY pair is a Modal
+    // proxy-auth token — the TOKEN pair is the account API token, which the
+    // Modal proxy rejects with 401 (oss-379). Mirror platform entry.ts.
+    process.env.MODAL_TOKEN_ID = "ak-account-token";
+    process.env.MODAL_TOKEN_SECRET = "as-account-secret";
+    process.env.MODAL_PROXY_KEY = "wk-proxy-key";
+    process.env.MODAL_PROXY_SECRET = "ws-proxy-secret";
+    const cfg = pdfNormalizeConfigFromEnv();
+    expect(cfg.modalTokenId).toBe("wk-proxy-key");
+    expect(cfg.modalTokenSecret).toBe("ws-proxy-secret");
+  });
+
+  it("falls back to MODAL_TOKEN_ID/SECRET when no proxy pair is set", () => {
+    process.env.MODAL_TOKEN_ID = "ak-account-token";
+    process.env.MODAL_TOKEN_SECRET = "as-account-secret";
+    const cfg = pdfNormalizeConfigFromEnv();
+    expect(cfg.modalTokenId).toBe("ak-account-token");
+    expect(cfg.modalTokenSecret).toBe("as-account-secret");
   });
 });
