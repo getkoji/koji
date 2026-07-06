@@ -110,7 +110,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     //     session-cookie auth path below. (Previously this returned
     //     403 too, which 403'd every cookie-authenticated dashboard
     //     hit on /stream — the bug we're fixing here.)
-    const docEndpointMatch = path.match(/^(\/api\/jobs\/[^/]+\/documents\/[^/]+)\/(preview|embed-data|stream)$/);
+    const docEndpointMatch = path.match(/^(\/api\/jobs\/[^/]+\/documents\/[^/]+)\/(preview|embed-data|stream|resolve-region)$/);
     if (docEndpointMatch) {
       const basePath = docEndpointMatch[1]!;
       const masterKey = c.get("masterKey") as string | null;
