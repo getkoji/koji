@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.53.0 — 2026-07-06
+
+**Region → text resolution.** New endpoint
+`POST /api/jobs/{slug}/documents/{docId}/resolve-region`: give it a page
+number and a normalized rectangle, get back the document text underneath —
+snapped to exact word boxes, in reading order. Accepts the same HMAC preview
+token as `/preview`/`/embed-data`, so embedded viewers can call it without a
+session. This is the foundation for highlight-to-correct: reviewers will point
+at where the correct value lives instead of retyping it (selection UI ships
+next).
+
 ## 0.52.1 — 2026-07-06
 
 **Semver version labels everywhere in the dashboard.** Surfaces that still

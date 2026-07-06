@@ -4,6 +4,7 @@ import {
   parseRangeHeader,
   highlightValue,
   resolvePreviewKey,
+  parseResolveRegionBody,
 } from "./jobs";
 
 /**
@@ -23,6 +24,48 @@ function stubStorage(present: Set<string>) {
     } as unknown as Parameters<typeof resolvePreviewKey>[0],
   };
 }
+
+describe("parseResolveRegionBody (resolve-region request validation)", () => {
+  const bbox = { x: 0.1, y: 0.2, w: 0.3, h: 0.05 };
+
+  it("accepts a well-formed body", () => {
+    expect(parseResolveRegionBody({ page: 1, bbox })).toEqual({ page: 1, rect: bbox });
+  });
+
+  it("rejects a missing/invalid page", () => {
+    expect(parseResolveRegionBody({ bbox })).toBeNull();
+    expect(parseResolveRegionBody({ page: 0, bbox })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1.5, bbox })).toBeNull();
+    expect(parseResolveRegionBody({ page: "1", bbox })).toBeNull();
+  });
+
+  it("rejects a missing or malformed bbox", () => {
+    expect(parseResolveRegionBody({ page: 1 })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { x: 0.1, y: 0.2, w: 0.3 } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { ...bbox, x: "0.1" } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { ...bbox, w: Infinity } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { ...bbox, h: NaN } })).toBeNull();
+  });
+
+  it("rejects zero/negative extents and rectangles fully off the page", () => {
+    expect(parseResolveRegionBody({ page: 1, bbox: { ...bbox, w: 0 } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { ...bbox, h: -0.1 } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { x: 1.2, y: 0, w: 0.1, h: 0.1 } })).toBeNull();
+    expect(parseResolveRegionBody({ page: 1, bbox: { x: -0.5, y: 0, w: 0.2, h: 0.1 } })).toBeNull();
+  });
+
+  it("accepts a rectangle partially off the page edge (sloppy edge drags)", () => {
+    expect(
+      parseResolveRegionBody({ page: 2, bbox: { x: -0.02, y: 0.9, w: 0.5, h: 0.2 } }),
+    ).not.toBeNull();
+  });
+
+  it("rejects non-object bodies", () => {
+    expect(parseResolveRegionBody(null)).toBeNull();
+    expect(parseResolveRegionBody("{}")).toBeNull();
+    expect(parseResolveRegionBody(undefined)).toBeNull();
+  });
+});
 
 describe("highlightValue (embed-data field → display value)", () => {
   it("uses the scalar extracted value (string/number/boolean)", () => {

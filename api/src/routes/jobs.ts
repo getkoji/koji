@@ -5,6 +5,8 @@ import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, generatePreviewToken, getProjectId } from "../auth/middleware";
 import { formatSemverLabel } from "../schemas/semver";
+import { locateWordsByRegion } from "../extract/region";
+import { toProvenanceTextMap, type BBox, type FlatTextMapSegment } from "../extract/provenance";
 
 export const jobs = new Hono<Env>();
 
@@ -1222,6 +1224,132 @@ jobs.get("/:slug/documents/:docId/embed-data", async (c) => {
     filename: doc.filename,
     pageCount: doc.pageCount,
   });
+});
+
+/**
+ * Validate the resolve-region request body. Exported for tests.
+ *
+ * Requires an integer page ≥ 1 and a bbox of finite numbers in normalized
+ * page space with positive width/height. A rectangle entirely outside the
+ * page square can't select anything and is rejected as malformed rather
+ * than resolving to an empty match.
+ */
+export function parseResolveRegionBody(
+  body: unknown,
+): { page: number; rect: BBox } | null {
+  if (!body || typeof body !== "object") return null;
+  const page = (body as { page?: unknown }).page;
+  const bbox = (body as { bbox?: unknown }).bbox;
+  if (typeof page !== "number" || !Number.isInteger(page) || page < 1) return null;
+  if (!bbox || typeof bbox !== "object") return null;
+  const { x, y, w, h } = bbox as Record<string, unknown>;
+  if (
+    typeof x !== "number" || typeof y !== "number" ||
+    typeof w !== "number" || typeof h !== "number"
+  ) return null;
+  if (![x, y, w, h].every(Number.isFinite)) return null;
+  if (w <= 0 || h <= 0) return null;
+  if (x >= 1 || y >= 1 || x + w <= 0 || y + h <= 0) return null;
+  return { page, rect: { x, y, w, h } };
+}
+
+/**
+ * POST /api/jobs/:slug/documents/:docId/resolve-region — resolve a page
+ * region to the text underneath it (highlight-to-correct, oss-373).
+ *
+ * Body: { page: number, bbox: {x,y,w,h} } — normalized [0,1], top-left
+ * origin, page indexed from 1 (the repo-wide bbox contract).
+ *
+ * Returns { text, words, bbox } snapped to the matched text_map words, or
+ * { text: null, words: [], bbox: null } when the selection resolves to
+ * nothing (no parse cache, no text_map geometry, or a region over
+ * whitespace/graphics). Callers treat text:null as "fall back to typed
+ * input" — a correction is never blocked on geometry.
+ *
+ * Auth mirrors /preview and /embed-data: dual-aware. The middleware accepts
+ * either a valid HMAC preview token (embed viewer, external host) or a normal
+ * session; token-authed requests carry no tenant on the context, so the read
+ * is raw (token-gated) with an explicit tenant check when a session IS
+ * present. Stateless — reads the cached parse text_map, no LLM, no writes.
+ */
+jobs.post("/:slug/documents/:docId/resolve-region", async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const slug = c.req.param("slug")!;
+  const docId = c.req.param("docId")!;
+
+  const parsed = parseResolveRegionBody(await c.req.json().catch(() => null));
+  if (!parsed) {
+    return c.json(
+      { error: "page (integer ≥ 1) and bbox {x,y,w,h} (normalized, w/h > 0) are required" },
+      400,
+    );
+  }
+
+  const [doc] = await db
+    .select({
+      tenantId: schema.documents.tenantId,
+      contentHash: schema.documents.contentHash,
+    })
+    .from(schema.documents)
+    .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
+    .where(and(eq(schema.documents.id, docId), eq(schema.jobs.slug, slug)))
+    .limit(1);
+
+  if (!doc) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+  // Session-authenticated callers must own the document; token-authenticated
+  // callers proved access via the HMAC (which signs this exact doc path).
+  const sessionTenant = c.get("tenantId") as string | undefined;
+  if (sessionTenant && doc.tenantId !== sessionTenant) {
+    return c.json({ error: "Document not found" }, 404);
+  }
+
+  const empty = { text: null, words: [], bbox: null };
+  if (!doc.contentHash) return c.json(empty);
+
+  // Same lookup as the /markdown endpoint: parse_cache by (tenant,
+  // content_hash), most recent row (a file can have one row per parse
+  // provider fingerprint since oss-298).
+  const [cached] = await db
+    .select({ storageKey: schema.parseCache.storageKey })
+    .from(schema.parseCache)
+    .where(
+      and(
+        eq(schema.parseCache.tenantId, doc.tenantId),
+        eq(schema.parseCache.fileHash, doc.contentHash),
+      ),
+    )
+    .orderBy(desc(schema.parseCache.createdAt))
+    .limit(1);
+  if (!cached) return c.json(empty);
+
+  const blob = await storage.getBuffer(cached.storageKey);
+  if (!blob) return c.json(empty);
+
+  let textMapFlat: FlatTextMapSegment[];
+  try {
+    const payload = JSON.parse(blob.data.toString()) as { text_map?: unknown };
+    textMapFlat = Array.isArray(payload.text_map)
+      ? (payload.text_map as FlatTextMapSegment[])
+      : [];
+  } catch {
+    return c.json(empty);
+  }
+  if (textMapFlat.length === 0) return c.json(empty);
+
+  const match = locateWordsByRegion(
+    toProvenanceTextMap(textMapFlat),
+    parsed.page,
+    parsed.rect,
+  );
+  if (!match) return c.json(empty);
+
+  // The text_map is immutable per (tenant, file_hash), but the match depends
+  // on the request body — don't let intermediaries cache POST responses.
+  c.header("Cache-Control", "no-store");
+  return c.json(match);
 });
 
 /**

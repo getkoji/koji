@@ -777,6 +777,58 @@ also use it to drive your own renderer.
 | `403` | Missing, invalid, or expired preview token (and no session). |
 | `404` | Document not found. |
 
+### `POST /api/jobs/{slug}/documents/{docId}/resolve-region`
+
+Resolve a region of a page to the text underneath it. Point at where a value
+lives on the document — a rectangle in the same normalized coordinate space
+the highlights use — and get back the words in that region, snapped to their
+exact boxes. This is the primitive behind highlight-to-correct: derive a
+corrected value from a selection instead of retyping it. Same token auth as
+`/preview`; stateless (nothing is written, no model is called).
+
+**Request**
+
+```json
+{ "page": 1, "bbox": { "x": 0.60, "y": 0.80, "w": 0.22, "h": 0.05 } }
+```
+
+`page` is 1-indexed. `bbox` is normalized to the page (0–1, origin top-left):
+divide a pixel-space selection by the rendered page's width/height. A word
+counts as selected when at least half of it lies inside the rectangle, so a
+sloppy drag snaps to clean word boundaries.
+
+**Response** `200 OK`
+
+```json
+{
+  "text": "$6,000.00",
+  "words": [ { "text": "$6,000.00", "page": 1, "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 } ],
+  "bbox": { "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 }
+}
+```
+
+`words` are in reading order (top→bottom, left→right); multi-line selections
+join lines with `\n` in `text`. `bbox` is the union of the matched words — the
+"snapped" selection, ready to echo back as a highlight.
+
+When the region resolves to nothing — no words there, or the document has no
+positional text data (e.g. it was never parsed with a geometry-capable
+provider) — the response is `200` with:
+
+```json
+{ "text": null, "words": [], "bbox": null }
+```
+
+Treat `text: null` as "fall back to manual input"; it is not an error.
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Malformed body — `page` must be an integer ≥ 1, `bbox` must have finite `x`/`y`/`w`/`h` with positive extents intersecting the page. |
+| `403` | Missing, invalid, or expired preview token (and no session). |
+| `404` | Document not found. |
+
 ---
 
 ## Review
