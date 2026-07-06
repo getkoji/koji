@@ -558,6 +558,19 @@ export const jobs = {
       .then((r) => r.data),
   rerunDocument: (jobSlug: string, docId: string) =>
     api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/rerun`, {}),
+  /** Resolve a normalized page region to the document text underneath it
+   *  (highlight-to-correct). `text: null` = nothing there — fall back to
+   *  typed input. */
+  resolveRegion: (
+    jobSlug: string,
+    docId: string,
+    body: { page: number; bbox: { x: number; y: number; w: number; h: number } },
+  ) =>
+    api.post<{
+      text: string | null;
+      words: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+      bbox: { x: number; y: number; w: number; h: number } | null;
+    }>(`/api/jobs/${jobSlug}/documents/${docId}/resolve-region`, body),
   failDocument: (jobSlug: string, docId: string, reason?: string) =>
     api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/fail`, { reason }),
 };
@@ -638,8 +651,22 @@ export const review = {
     api.get<{ data: string[] }>(`/api/review/__queue/ids?status=${status}`).then((r) => r.data),
   accept: (id: string, body?: { note?: string; fieldOverrides?: Record<string, unknown> }) =>
     api.post<ReviewRow>(`/api/review/${id}/accept`, body ?? {}),
-  override: (id: string, body: { value: unknown; note?: string; fieldOverrides?: Record<string, unknown> }) =>
-    api.post<ReviewRow>(`/api/review/${id}/override`, body),
+  override: (
+    id: string,
+    body: {
+      value: unknown;
+      note?: string;
+      fieldOverrides?: Record<string, unknown>;
+      /** Anchored provenance (highlight-to-correct): where on the document
+       *  the reviewer pointed for the corrected value. */
+      provenance?: {
+        page: number;
+        bbox: { x: number; y: number; w: number; h: number };
+        words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+        chunk?: string;
+      };
+    },
+  ) => api.post<ReviewRow>(`/api/review/${id}/override`, body),
   reject: (id: string, body: { reason: string }) =>
     api.post<ReviewRow>(`/api/review/${id}/reject`, body),
   skip: (id: string) => api.post<void>(`/api/review/${id}/skip`),

@@ -877,6 +877,28 @@ A single review item with full document context — the flagged field, the docum
 
 **Auth:** Bearer token. Requires `review:read` permission.
 
+### `POST /api/review/{id}/override`
+
+Approve the item with a corrected value. The correction is merged into the
+document's `extractionJson` so downstream consumers see the corrected record.
+
+**Auth:** Bearer token. Requires `review:act` permission.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `value` | any | yes | The corrected value for the flagged field. |
+| `note` | string | no | Reviewer note stored on the item. |
+| `fieldOverrides` | object | no | `{ field: value }` corrections for *other* fields edited in the same pass. |
+| `provenance` | object | no | **Anchored provenance** (highlight-to-correct): where on the document the corrected value lives — `{ page, bbox: {x,y,w,h}, words?, chunk? }`, normalized page coordinates. Typically the output of [`resolve-region`](#post-apijobsslugdocumentsdocidresolve-region) (`chunk` = its `text`). Written to the document's provenance as a `resolution: "anchored"` span, so the corrected field keeps a source highlight everywhere provenance renders (trace page, embed viewer). Malformed shapes are rejected with `400`. |
+
+A correction with `provenance` is strictly richer than a typed one: the value
+carries geometry, which flows into the corpus on
+[`promote`](#post-apireviewidpromote) and renders as an exact highlight.
+
+**Response** `200 OK` — the resolved review item row.
+
 ### `POST /api/review/{id}/promote`
 
 Promote a reviewed document into the schema's corpus as ground truth.

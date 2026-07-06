@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Check, X, ChevronLeft, ChevronRight, ChevronDown, Pencil } from "lucide-react";
+import { ArrowLeft, Check, X, ChevronLeft, ChevronRight, ChevronDown, Crosshair, Pencil } from "lucide-react";
 // `FileText` was previously used by the local `DocumentPreview` component;
 // the preview now lives in `<DocumentViewer />` (which owns its own icons).
 import { Breadcrumbs, PageHeader, StickyHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { DocumentViewer } from "@/components/shared/DocumentViewer";
-import { review as reviewApi, schemas as schemasApi, type ReviewDetail } from "@/lib/api";
+import { DocumentViewer, pickDocumentRenderer } from "@/components/shared/DocumentViewer";
+import type { RegionSelection } from "@/components/shared/PdfViewer";
+import { review as reviewApi, schemas as schemasApi, jobs as jobsApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
@@ -33,6 +34,19 @@ export default function ReviewDetailPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Per-field overrides for non-flagged fields. Key = field name, value = edited string.
   const [fieldOverrides, setFieldOverrides] = useState<Record<string, string>>({});
+  // Highlight-to-correct: `pointing` arms the document selection layer;
+  // `anchored` holds the resolved region the override value came from and is
+  // sent as `provenance` on the override. Editing the value afterwards keeps
+  // the anchor — the chunk records what was actually under the highlight.
+  const [pointing, setPointing] = useState(false);
+  const [anchored, setAnchored] = useState<{
+    page: number;
+    bbox: { x: number; y: number; w: number; h: number };
+    words: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>;
+    text: string;
+  } | null>(null);
+  const [pointError, setPointError] = useState<string | null>(null);
+  const [resolvingRegion, setResolvingRegion] = useState(false);
   // Items the user chose to skip in this session — hidden from the next-item cursor
   // so "skip" actually advances instead of looping. State (not ref) so useMemo
   // recomputes the queue position when we skip.
@@ -154,13 +168,23 @@ export default function ReviewDetailPage() {
         value: parsed,
         note: note.trim() || undefined,
         ...(overrides ? { fieldOverrides: overrides } : {}),
+        ...(anchored
+          ? {
+              provenance: {
+                page: anchored.page,
+                bbox: anchored.bbox,
+                words: anchored.words,
+                chunk: anchored.text,
+              },
+            }
+          : {}),
       });
       goToNext();
     } catch (err) {
       setSubmitting(null);
       setErrorMsg(err instanceof Error ? err.message : "Override failed");
     }
-  }, [item, userOverride, note, submitting, goToNext, buildFieldOverrides]);
+  }, [item, userOverride, note, submitting, goToNext, buildFieldOverrides, anchored]);
 
   const submitReject = useCallback(async () => {
     if (!item || submitting || !rejectReason.trim()) return;
@@ -205,11 +229,51 @@ export default function ReviewDetailPage() {
     }
   }, [item, promoting]);
 
-  // Reset promote feedback when navigating to a different item.
+  // Reset promote feedback + highlight-to-correct state when navigating to a
+  // different item.
   useEffect(() => {
     setPromoteResult(null);
     setPromoteError(null);
+    setPointing(false);
+    setAnchored(null);
+    setPointError(null);
   }, [reviewItemId]);
+
+  // Highlight-to-correct only applies to a pending item whose document
+  // renders in the PDF viewer (the selection layer is PDF-only).
+  const canPoint =
+    item != null &&
+    item.status === "pending" &&
+    item.jobSlug != null &&
+    item.documentId != null &&
+    pickDocumentRenderer(item.documentMimeType, item.documentPreviewUrl, item.documentFilename) === "pdf";
+
+  // The reviewer released a drag on the document: resolve it to the text
+  // underneath, prefill the override with the result, and keep the anchor
+  // for the override payload. Nothing under the selection → stay armed with
+  // a hint so they can re-drag (or type instead).
+  const handleRegionSelected = useCallback(
+    async (region: RegionSelection) => {
+      if (!item?.jobSlug || !item.documentId) return;
+      setResolvingRegion(true);
+      setPointError(null);
+      try {
+        const r = await jobsApi.resolveRegion(item.jobSlug, item.documentId, region);
+        if (r.text != null) {
+          setAnchored({ page: region.page, bbox: r.bbox ?? region.bbox, words: r.words, text: r.text });
+          setUserOverride(r.text);
+          setPointing(false);
+        } else {
+          setPointError("No text under that selection — drag over the value, or type it instead.");
+        }
+      } catch (err) {
+        setPointError(err instanceof Error ? err.message : "Could not resolve the selection");
+      } finally {
+        setResolvingRegion(false);
+      }
+    },
+    [item?.jobSlug, item?.documentId],
+  );
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -239,11 +303,17 @@ export default function ReviewDetailPage() {
       } else if (k === "k") {
         e.preventDefault();
         goToPrev();
+      } else if (k === "p" && canPoint) {
+        e.preventDefault();
+        setPointError(null);
+        setPointing((v) => !v);
+      } else if (e.key === "Escape" && pointing) {
+        setPointing(false);
       }
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [item, rejectOpen, submitAccept, submitOverride, submitSkip, goToPrev]);
+  }, [item, rejectOpen, submitAccept, submitOverride, submitSkip, goToPrev, canPoint, pointing]);
 
   if (itemError) {
     return (
@@ -301,6 +371,22 @@ export default function ReviewDetailPage() {
           url={item.documentPreviewUrl}
           mimeType={item.documentMimeType}
           filename={item.documentFilename}
+          selection={
+            canPoint
+              ? {
+                  active: pointing,
+                  onRegionSelected: handleRegionSelected,
+                  snapped: anchored
+                    ? {
+                        field: item.fieldName,
+                        page: anchored.page,
+                        bbox: anchored.bbox,
+                        words: anchored.words,
+                      }
+                    : null,
+                }
+              : undefined
+          }
         />
         <div className="flex flex-col min-h-0 gap-4 overflow-y-auto">
           <FieldPanel
@@ -336,6 +422,16 @@ export default function ReviewDetailPage() {
               onRejectOpen={() => setRejectOpen(true)}
               error={errorMsg}
               fieldOverrideCount={Object.keys(fieldOverrides).length}
+              canPoint={canPoint}
+              pointing={pointing}
+              resolvingRegion={resolvingRegion}
+              pointError={pointError}
+              anchored={anchored}
+              onTogglePointing={() => {
+                setPointError(null);
+                setPointing((p) => !p);
+              }}
+              onClearAnchor={() => setAnchored(null)}
             />
           ) : (
             <ResolvedPanel
@@ -683,6 +779,13 @@ function DecisionPanel({
   onRejectOpen,
   error,
   fieldOverrideCount,
+  canPoint,
+  pointing,
+  resolvingRegion,
+  pointError,
+  anchored,
+  onTogglePointing,
+  onClearAnchor,
 }: {
   item: ReviewDetail;
   overrideValue: string;
@@ -698,6 +801,13 @@ function DecisionPanel({
   onRejectOpen: () => void;
   error: string | null;
   fieldOverrideCount: number;
+  canPoint: boolean;
+  pointing: boolean;
+  resolvingRegion: boolean;
+  pointError: string | null;
+  anchored: { page: number } | null;
+  onTogglePointing: () => void;
+  onClearAnchor: () => void;
 }) {
   const hasEdits = overrideChanged || fieldOverrideCount > 0;
   return (
@@ -716,8 +826,24 @@ function DecisionPanel({
             <ValueDisplay value={item.proposedValue} />
           </div>
           <div className="flex flex-col gap-1">
-            <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4">
+            <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 flex items-center justify-between gap-2">
               Your override
+              {canPoint && (
+                <button
+                  type="button"
+                  data-testid="point-on-document"
+                  onClick={onTogglePointing}
+                  className={`inline-flex items-center gap-1 normal-case tracking-normal font-mono text-[10px] rounded-sm border px-1.5 py-0.5 transition-colors ${
+                    pointing
+                      ? "border-vermillion-2 bg-vermillion-3/40 text-vermillion-2"
+                      : "border-border-strong text-ink-3 hover:border-ink hover:text-ink"
+                  }`}
+                  title="Drag on the document where the correct value is; the selection snaps to the text underneath"
+                >
+                  <Crosshair className="w-3 h-3" />
+                  {resolvingRegion ? "resolving…" : pointing ? "drag on the document" : "point on document"}
+                </button>
+              )}
             </span>
             {fieldOptions && fieldOptions.length > 0 ? (
               <select
@@ -739,6 +865,26 @@ function DecisionPanel({
                 onChange={(e) => onOverrideChange(e.target.value)}
                 className="font-mono text-[12px] text-ink bg-cream border border-border-strong rounded-sm px-2 py-1.5 outline-none focus:border-ink transition-colors"
               />
+            )}
+            {anchored && (
+              <span
+                data-testid="anchor-chip"
+                className="inline-flex items-center gap-1.5 self-start font-mono text-[10px] text-green mt-0.5"
+              >
+                <Crosshair className="w-3 h-3" />
+                anchored to p.{anchored.page} — saved as the field&apos;s source highlight
+                <button
+                  type="button"
+                  onClick={onClearAnchor}
+                  className="text-ink-4 hover:text-ink transition-colors"
+                  title="Drop the anchor (keep the value, save without a source highlight)"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            )}
+            {pointError && (
+              <span className="font-mono text-[10px] text-vermillion-2 mt-0.5">{pointError}</span>
             )}
           </div>
         </div>

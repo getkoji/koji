@@ -8,8 +8,89 @@ import { requires, getTenantId, getPrincipal, generatePreviewToken, getProjectId
 import { requireFeature } from "../billing/middleware";
 import { resolveMimeType } from "../ingestion/mime";
 import { formatSemverLabel } from "../schemas/semver";
+import type { BBox, ProvenanceSpan, WordBox } from "../extract/provenance";
 
 export const review = new Hono<Env>();
+
+/**
+ * Human-anchored provenance attached to an override (highlight-to-correct):
+ * the reviewer pointed at where the correct value lives, so the correction
+ * carries geometry. `chunk` is the text that was under the selection —
+ * verbatim from the document, even when the submitted value was normalized
+ * by the reviewer afterwards (same value-vs-chunk semantics as extraction).
+ */
+export interface AnchoredProvenance {
+  page: number;
+  bbox: BBox;
+  words?: WordBox[];
+  chunk?: string;
+}
+
+/**
+ * Validate the optional `provenance` on an override body. Absent → null (no
+ * geometry, the pre-existing typed-override path). Malformed → "invalid" so
+ * the route can 400 instead of silently dropping what the reviewer anchored.
+ * Exported for tests.
+ */
+export function parseOverrideProvenance(
+  raw: unknown,
+): AnchoredProvenance | null | "invalid" {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object") return "invalid";
+  const { page, bbox, words, chunk } = raw as Record<string, unknown>;
+  if (typeof page !== "number" || !Number.isInteger(page) || page < 1) return "invalid";
+  if (!bbox || typeof bbox !== "object") return "invalid";
+  const { x, y, w, h } = bbox as Record<string, unknown>;
+  if (
+    typeof x !== "number" || typeof y !== "number" ||
+    typeof w !== "number" || typeof h !== "number" ||
+    ![x, y, w, h].every(Number.isFinite)
+  ) return "invalid";
+  const out: AnchoredProvenance = { page, bbox: { x, y, w, h } };
+  if (words !== undefined) {
+    if (!Array.isArray(words)) return "invalid";
+    const clean: WordBox[] = [];
+    for (const word of words) {
+      if (!word || typeof word !== "object") return "invalid";
+      const v = word as Record<string, unknown>;
+      if (
+        typeof v.text !== "string" ||
+        typeof v.page !== "number" ||
+        typeof v.x !== "number" || typeof v.y !== "number" ||
+        typeof v.w !== "number" || typeof v.h !== "number"
+      ) return "invalid";
+      clean.push({ text: v.text, page: v.page, x: v.x, y: v.y, w: v.w, h: v.h });
+    }
+    out.words = clean;
+  }
+  if (chunk !== undefined) {
+    if (typeof chunk !== "string") return "invalid";
+    out.chunk = chunk;
+  }
+  return out;
+}
+
+/**
+ * Shape an anchored provenance into the ProvenanceSpan stored on
+ * `documents.provenanceJson`. `resolution: "anchored"` is the reserved rung
+ * for exactly this: a human anchored the location, so consumers (embed-data,
+ * trace, build) render it as an exact highlight. Anchored spans have no
+ * markdown offset — the location came from geometry, not a text match —
+ * hence the `offset: -1, length: 0` sentinel (markdown-offset consumers
+ * treat it as "no span in the parsed text"; bbox consumers don't read it).
+ * Exported for tests.
+ */
+export function buildAnchoredSpan(prov: AnchoredProvenance): ProvenanceSpan {
+  return {
+    offset: -1,
+    length: 0,
+    ...(prov.chunk !== undefined ? { chunk: prov.chunk } : {}),
+    page: prov.page,
+    bbox: prov.bbox,
+    ...(prov.words && prov.words.length > 0 ? { words: prov.words } : {}),
+    resolution: "anchored",
+  };
+}
 
 /**
  * Review item ids are `uuid` columns; comparing a non-UUID string throws at the
@@ -227,6 +308,7 @@ async function resolveItem(
   id: string,
   patch: Record<string, unknown>,
   fieldOverrides?: Record<string, unknown>,
+  anchoredSpan?: ProvenanceSpan,
 ) {
   const db = c.get("db");
   const tenantId = getTenantId(c);
@@ -268,21 +350,39 @@ async function resolveItem(
     if (overridesPayload) {
       Object.assign(allEdits, overridesPayload);
     }
-    if (Object.keys(allEdits).length > 0) {
-      // Read the current extraction, merge edits, write back
+    if (Object.keys(allEdits).length > 0 || anchoredSpan) {
+      // Read the current extraction (+ provenance when the correction is
+      // anchored), merge edits, write back.
       const [doc] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
         tx
-          .select({ extractionJson: schema.documents.extractionJson })
+          .select({
+            extractionJson: schema.documents.extractionJson,
+            provenanceJson: schema.documents.provenanceJson,
+          })
           .from(schema.documents)
           .where(eq(schema.documents.id, documentId))
           .limit(1),
       );
       if (doc?.extractionJson) {
         const merged = { ...(doc.extractionJson as Record<string, unknown>), ...allEdits };
+        // A highlighted correction carries geometry — store it as the
+        // field's provenance (resolution: "anchored") so the corrected
+        // value has a source highlight everywhere provenance is rendered
+        // (embed-data, trace, build). Typed corrections leave the old span
+        // untouched (pre-existing behavior).
+        const provenancePatch =
+          anchoredSpan && fieldName
+            ? {
+                provenanceJson: {
+                  ...((doc.provenanceJson ?? {}) as Record<string, unknown>),
+                  [fieldName]: anchoredSpan,
+                },
+              }
+            : {};
         await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
           tx
             .update(schema.documents)
-            .set({ extractionJson: merged })
+            .set({ extractionJson: merged, ...provenancePatch })
             .where(eq(schema.documents.id, documentId)),
         );
       }
@@ -313,18 +413,33 @@ review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review")
   }, body.fieldOverrides);
 });
 
-/** POST /api/review/:id/override — approve with edits. */
+/** POST /api/review/:id/override — approve with edits. Optionally carries
+ *  `provenance` (highlight-to-correct): the region the reviewer anchored the
+ *  corrected value to, written to the document's provenance as an
+ *  `anchored` span. */
 review.post("/:id/override", requires("review:act"), requireFeature("hitl_review"), async (c) => {
   const id = c.req.param("id")!;
-  const body = await c.req.json<{ value: unknown; note?: string; fieldOverrides?: Record<string, unknown> }>();
+  const body = await c.req.json<{
+    value: unknown;
+    note?: string;
+    fieldOverrides?: Record<string, unknown>;
+    provenance?: unknown;
+  }>();
   if (body.value === undefined) {
     return c.json({ error: "value is required" }, 400);
+  }
+  const provenance = parseOverrideProvenance(body.provenance);
+  if (provenance === "invalid") {
+    return c.json(
+      { error: "provenance must be { page: integer ≥ 1, bbox: {x,y,w,h}, words?, chunk? }" },
+      400,
+    );
   }
   return resolveItem(c, id, {
     resolution: "approved",
     finalValue: body.value,
     note: body.note ?? null,
-  }, body.fieldOverrides);
+  }, body.fieldOverrides, provenance ? buildAnchoredSpan(provenance) : undefined);
 });
 
 /** POST /api/review/:id/reject — mark the item failed. */
