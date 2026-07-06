@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.61.1 — 2026-07-06
+
+**Clear error when a project has no model provider.** Running extraction or
+validation in a project that hasn't configured a model endpoint now fails with
+an actionable message — "No model provider is configured for this project. Add
+one under Settings → Model Catalog" — instead of an opaque upstream `401`. The
+env-var fallback (`OPENAI_API_KEY`) is unchanged for local development and seed
+data.
+
 ## 0.61.0 — 2026-07-06
 
 **Add/remove works for every member on the project Members tab.** Members with
