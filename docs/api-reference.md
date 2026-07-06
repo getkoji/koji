@@ -829,6 +829,79 @@ Treat `text: null` as "fall back to manual input"; it is not an error.
 | `403` | Missing, invalid, or expired preview token (and no session). |
 | `404` | Document not found. |
 
+### `POST /api/jobs/{slug}/documents/{docId}/corrections`
+
+Manually correct extracted values on a document — the fix path for errors the
+review queue never flagged. Each correction is recorded as an already-resolved
+review item (`reason: "manual"`), so corrections carry a full audit trail
+(who/when/what replaced what), count in review analytics, and can be promoted
+to corpus ground truth like any reviewed record.
+
+**Auth:** Bearer token (session or API key). Requires `review:act` permission.
+The HMAC preview token is **not** accepted — it stays read-only. External
+integrations should call this from their backend with an API key (e.g. after
+receiving `koji:regionSelected` from the embedded viewer).
+
+**Request body**
+
+```json
+{
+  "corrections": [
+    { "field": "total_amount", "value": 6000,
+      "provenance": { "page": 1, "bbox": { "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 },
+                      "words": [ { "text": "$6,000.00", "page": 1, "x": 0.62, "y": 0.81, "w": 0.18, "h": 0.03 } ],
+                      "chunk": "$6,000.00" } },
+    { "field": "vendor", "value": "Northwind Traders Inc" }
+  ],
+  "note": "fixed after customer call"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `corrections` | array | yes | 1–50 entries, unique `field` names. `value` must be present on each (send `null` to clear a field). |
+| `corrections[].provenance` | object | no | Anchored provenance — same shape as the [review override](#post-apireviewidoverride)'s, typically from [`resolve-region`](#post-apijobsslugdocumentsdociresolve-region). Written to the document's provenance as a `resolution: "anchored"` span. |
+| `note` | string | no | Stored on each created review item. |
+
+**Effects:** one `reason: "manual"` review item per field (created resolved:
+`proposedValue` = the replaced value, `finalValue` = the correction,
+`resolvedBy` = the caller); one merge into the document's `extractionJson`;
+anchored provenance spans for entries that carry geometry; and one
+**`document.corrected`** webhook event (below).
+
+**Response** `201 Created` — `{ ok, reviewItemIds, extraction }` (the full
+corrected extraction).
+
+**Errors**
+
+| Status | Description |
+|--------|-------------|
+| `400` | Malformed body (empty array, duplicate fields, missing `value`, bad provenance). |
+| `404` | Document not found (or not visible to the caller). |
+| `422` | Document has no extraction to correct (no schema, or extraction not produced yet). |
+
+#### Webhook event: `document.corrected`
+
+Subscribable per webhook target (Settings → Webhooks → "Document corrected";
+on by default for new targets). Fired once per corrections call. **Consume it
+if you consume `document.delivered`** — otherwise corrections made after
+delivery silently diverge from the copy in your system.
+
+```json
+{
+  "document_id": "…",
+  "job_id": "…",
+  "job_slug": "acme-invoices-20260706",
+  "fields": {
+    "total_amount": { "previous": 600, "value": 6000 },
+    "vendor": { "previous": "Northwind", "value": "Northwind Traders Inc" }
+  },
+  "extraction": { "…": "the full corrected record" },
+  "corrected_by": "<user id>",
+  "corrected_at": "2026-07-06T13:00:00.000Z"
+}
+```
+
 ---
 
 ## Review

@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.57.0 — 2026-07-06
+
+**Manual corrections + `document.corrected` webhook.** Extraction errors the
+review queue never flagged can now be fixed directly:
+`POST /api/jobs/{slug}/documents/{docId}/corrections` corrects one or more
+fields on a document, with optional anchored provenance (the same
+highlight-to-correct geometry the review queue uses). Every correction is
+recorded as an already-resolved review item (`reason: "manual"`) — full audit
+trail, correction analytics, and promote-to-corpus all work unchanged. Each
+call fires a new **`document.corrected`** webhook carrying the previous/new
+value per field plus the full corrected extraction, so systems that consumed
+`document.delivered` stay in sync (subscribable in Settings → Webhooks; on by
+default for new targets). The embed preview token remains read-only — external
+apps call the endpoint from their backend with an API key.
+
 ## 0.56.1 — 2026-07-06
 
 **Fix: sidebar schema list no longer lags one project behind.** Switching

@@ -817,6 +817,32 @@ window.addEventListener("message", (e) => {
 });
 ```
 
+**Saving the correction.** Once your user confirms, write it back from your
+**backend** with your API key (the embed's preview token is read-only by
+design — the iframe can never write):
+
+```typescript
+// Your backend, after the user confirms the value:
+await fetch(`${KOJI_API}/api/jobs/${jobSlug}/documents/${docId}/corrections`, {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${KOJI_API_KEY}`, "Content-Type": "application/json" },
+  body: JSON.stringify({
+    corrections: [{
+      field: msg.field,
+      value: confirmedValue,
+      // pass the selection through so the correction keeps its location
+      provenance: { page: msg.page, bbox: msg.bbox, words: msg.words, chunk: msg.text },
+    }],
+  }),
+});
+```
+
+This records an audited correction (`reason: "manual"` review item), updates
+the extraction, stores the anchored source highlight, and fires a
+[`document.corrected` webhook](api-reference.md#webhook-event-documentcorrected)
+so every consumer of the document stays in sync. See the
+[corrections endpoint reference](api-reference.md#post-apijobsslugdocumentsdocidcorrections).
+
 ### Field picker
 
 In **Document mode**, the viewer shows a built-in dropdown in the toolbar listing

@@ -36,6 +36,7 @@ const EVENT_GROUPS = [
       { value: "document.delivered", label: "Document delivered" },
       { value: "document.failed", label: "Document failed" },
       { value: "document.review_requested", label: "Review requested" },
+      { value: "document.corrected", label: "Document corrected" },
     ],
   },
   {
@@ -54,11 +55,14 @@ const EVENT_GROUPS = [
   },
 ];
 
+// document.corrected is a default: a consumer of document.delivered that
+// misses corrections silently diverges from Koji's corrected record.
 const DEFAULT_EVENTS = new Set([
   "job.succeeded",
   "job.failed",
   "document.delivered",
   "document.failed",
+  "document.corrected",
 ]);
 
 function timeAgo(dateStr: string | null): string {

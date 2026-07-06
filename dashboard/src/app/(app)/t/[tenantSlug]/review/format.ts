@@ -28,6 +28,9 @@ const REASON_LABELS: Record<string, string> = {
   conflicting_values: "conflicting values",
   ambiguous_format: "ambiguous format",
   manual_flag: "manual flag",
+  // Corrections made outside the queue (document corrections endpoint) —
+  // created already-resolved, so they appear only in the completed list.
+  manual: "manual correction",
 };
 
 export function reasonLabel(reason: string): string {
