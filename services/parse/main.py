@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import io
 import json
 import re
 import tempfile
@@ -17,6 +18,7 @@ import traceback
 from pathlib import Path
 
 import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -24,7 +26,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.54.2")
+app = FastAPI(title="Koji Parse Service", version="0.54.3")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -309,7 +311,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.54.0"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.54.3"}
 
 
 @app.post("/parse")
@@ -406,6 +408,51 @@ async def page_images(file: UploadFile = File(...), max_pages: int = Form(20)):
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+@app.post("/normalize-pdf")
+async def normalize_pdf(file: UploadFile = File(...)):
+    """Re-save a PDF through pypdfium2 into a structure pdf-lib can read.
+
+    The API's local PDF tooling (pdf-lib) cannot read a real-world document
+    class: owner-password-encrypted PDFs (empty user password — the "no-print
+    restriction" pattern) whose page tree lives in compressed object streams.
+    pdf-lib skips decryption under `ignoreEncryption`, so those object streams
+    never inflate and both page counting and page slicing throw. PDFium
+    decrypts the empty-user-password case transparently, so a re-save here
+    yields a plain, unencrypted PDF the API's pdf-lib paths (Doc AI slicing,
+    chunked parse) handle end to end. See api/src/parse/pdf-normalize.ts.
+
+    Response mirrors the Modal service's slice_pdf shape:
+    ``{pdf_base64, pages, byte_size}``; unreadable input → 422.
+    """
+    content = await file.read()
+    try:
+        doc = pdfium.PdfDocument(content)
+        n_pages = len(doc)
+        buf = io.BytesIO()
+        # FPDF_REMOVE_SECURITY is load-bearing: a plain save keeps the source's
+        # encryption live (page tree readable, but content streams still
+        # ciphertext). pdf-lib then slices "successfully" while copying
+        # encrypted streams verbatim into an unencrypted file — pages come out
+        # BLANK. Removing security writes fully decrypted content.
+        doc.save(buf, flags=pdfium_c.FPDF_REMOVE_SECURITY)
+        out = buf.getvalue()
+        doc.close()
+    except Exception as e:
+        print(f"[koji-parse] normalize-pdf failed for {file.filename}: {e}")
+        return JSONResponse(
+            {"error": f"normalize failed: {e}", "filename": file.filename},
+            status_code=422,
+        )
+    print(f"[koji-parse] normalize-pdf {file.filename}: {len(content)} → {len(out)} bytes, {n_pages} pages")
+    return JSONResponse(
+        {
+            "pdf_base64": base64.b64encode(out).decode("ascii"),
+            "pages": n_pages,
+            "byte_size": len(out),
+        }
+    )
 
 
 @app.post("/parse/stream")

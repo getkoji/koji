@@ -15,13 +15,13 @@
  * worker.
  */
 
-import { PDFDocument } from "pdf-lib";
 import type {
   ParseProvider,
   ParseResponse,
   TextMapSegment,
 } from "./provider";
-import { slicePdfPages, mapWithConcurrency } from "./pdf-slice";
+import { slicePdfPages, mapWithConcurrency, probePdf } from "./pdf-slice";
+import { normalizePdfViaService } from "./pdf-normalize";
 
 /**
  * Sentinel for pdf-lib slice failures. Wrapping these distinguishes
@@ -104,34 +104,58 @@ export class ChunkedParseProvider implements ParseProvider {
       return this.inner.parse(input);
     }
 
-    // Get page count cheaply via pdf-lib. `ignoreEncryption: true` is
-    // important: many customer PDFs ship with an owner-password / no-print
-    // restriction encryption dictionary but no actual content encryption
-    // (insurance carriers and law firms do this routinely). pdf-lib
-    // refuses to load them by default; with the flag set, the page tree
-    // is still readable and the bytes flow through to the parse service
-    // exactly as uploaded. If the load fails anyway (truly corrupt or
-    // genuinely password-protected so the page tree itself is opaque),
-    // fall back to the inner provider with the whole document — the
-    // parse service has its own recovery heuristics that work where
-    // pdf-lib can't.
-    let pageCount: number;
-    try {
-      const pdfDoc = await PDFDocument.load(input.fileBuffer, {
-        ignoreEncryption: true,
-      });
-      pageCount = pdfDoc.getPageCount();
-    } catch (err) {
+    // Get the page count cheaply. `probePdf` tries pdf-lib first
+    // (`ignoreEncryption: true` handles the common owner-password / no-print
+    // restriction where the page tree is still plaintext) and falls back to
+    // pdfjs for the count when pdf-lib can't read the file at all — the
+    // notable real-world case being owner-password encryption combined with
+    // a page tree in compressed object streams (oss-377). When neither can
+    // read it, parse the whole document with the inner provider — the parse
+    // service has its own recovery heuristics that work where pdf-lib can't.
+    const probe = await probePdf(input.fileBuffer, input.mimeType);
+    if (probe.pageCount === null) {
       console.warn(
-        `[chunked-parse] ${input.filename}: pdf-lib could not load document (${err instanceof Error ? err.message : String(err)}). ` +
+        `[chunked-parse] ${input.filename}: could not determine page count (pdf-lib and pdfjs both failed to read the document). ` +
           `Parsing as a single unit — chunking and per-chunk provenance unavailable for this document.`,
       );
       return this.inner.parse(input);
     }
+    let pageCount = probe.pageCount;
 
     // Under threshold → delegate directly
     if (pageCount <= this.threshold) {
       return this.inner.parse(input);
+    }
+
+    // Over threshold but not locally sliceable → normalize once through the
+    // parse service (a PDFium/MuPDF re-save that pdf-lib can read, see
+    // pdf-normalize.ts) and chunk the normalized bytes. If normalization
+    // fails, keep the old behavior: one whole-document parse by the inner
+    // provider.
+    if (!probe.pdfLibLoadable) {
+      try {
+        const normalized = await normalizePdfViaService(input.fileBuffer, input.filename);
+        const renormalized = await probePdf(normalized, input.mimeType);
+        if (renormalized.pageCount === null || !renormalized.pdfLibLoadable) {
+          throw new Error("normalized PDF is still not readable by pdf-lib");
+        }
+        console.log(
+          `[chunked-parse] ${input.filename}: pdf-lib cannot read this PDF; ` +
+            `normalized via parse service (${pageCount} → ${renormalized.pageCount}pg) for chunking.`,
+        );
+        input = { ...input, fileBuffer: normalized };
+        pageCount = renormalized.pageCount;
+        if (pageCount <= this.threshold) {
+          return this.inner.parse(input);
+        }
+      } catch (err) {
+        console.warn(
+          `[chunked-parse] ${input.filename}: pdf-lib cannot read this ${pageCount}pg PDF and normalization failed ` +
+            `(${err instanceof Error ? err.message : String(err)}). ` +
+            `Parsing as a single unit — chunking and per-chunk provenance unavailable for this document.`,
+        );
+        return this.inner.parse(input);
+      }
     }
 
     console.log(
