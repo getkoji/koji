@@ -2,6 +2,14 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.54.0 — 2026-07-06
+
+**Document viewer region selection (groundwork).** The dashboard's PDF viewer
+can now arm a selection mode: crosshair cursor, drag a rectangle on the page,
+and the host snaps the selection to the words underneath (via
+`resolve-region`). Not yet exposed anywhere in the UI — the embed viewer tool
+and the review queue's highlight-to-correct flow build on this next.
+
 ## 0.53.0 — 2026-07-06
 
 **Region → text resolution.** New endpoint
