@@ -23,6 +23,10 @@ interface ProjectMember {
   email: string;
   access: "granted" | "all";
   roles: string[];
+  // access:"all" only — admins are all-access by design (not editable here);
+  // defaultRole is the project role their workspace role maps to.
+  workspaceAdmin?: boolean;
+  defaultRole?: string;
 }
 interface Candidate {
   membershipId: string;
@@ -110,8 +114,7 @@ export default function ProjectMembersPage() {
         />
         <p className="text-[12.5px] text-ink-3 mb-3 max-w-[70ch]">
           Who can access <span className="font-medium text-ink">{data?.project.displayName}</span> and their role here.
-          Workspace admins can access every project and are managed on the workspace
-          <span className="font-mono text-[11px]"> Settings → Members</span> page.
+          Workspace owners and admins always have access to every project.
         </p>
 
         {rowError && (
@@ -131,13 +134,15 @@ export default function ProjectMembersPage() {
                   <span className="font-mono text-[11px] text-ink-3">{m.email}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  {m.access === "all" ? (
-                    <Badge>All projects · {m.roles[0] ?? "member"}</Badge>
+                  {m.access === "all" && m.workspaceAdmin ? (
+                    <Badge>All projects · {m.roles[0] ?? "admin"}</Badge>
                   ) : canManage ? (
                     <>
+                      {m.access === "all" && <Meta>all projects</Meta>}
                       <select
-                        value={m.roles[0] ?? "project-member"}
+                        value={(m.access === "all" ? m.defaultRole : m.roles[0]) ?? "project-member"}
                         onChange={(e) => changeRole(m, e.target.value)}
+                        aria-label={`Project role for ${m.email}`}
                         className="h-[26px] rounded-sm border border-input bg-white px-1.5 text-[11.5px] outline-none focus:border-ring"
                       >
                         {PROJECT_ROLES.map((r) => (
@@ -151,6 +156,8 @@ export default function ProjectMembersPage() {
                         remove
                       </button>
                     </>
+                  ) : m.access === "all" ? (
+                    <Badge>All projects · {m.roles[0] ?? "member"}</Badge>
                   ) : (
                     <Badge>{roleLabel(m.roles[0] ?? "project-member")}</Badge>
                   )}
@@ -173,7 +180,11 @@ export default function ProjectMembersPage() {
       {confirmRemove && (
         <ConfirmDialog
           title="Remove from project"
-          description={`Remove ${confirmRemove.name ?? confirmRemove.email} from this project? They'll lose access to it.`}
+          description={
+            confirmRemove.access === "all"
+              ? `${confirmRemove.name ?? confirmRemove.email} currently has access to all projects. Removing them here switches them to project-specific access — they'll keep their access to every other project and lose this one.`
+              : `Remove ${confirmRemove.name ?? confirmRemove.email} from this project? They'll lose access to it.`
+          }
           confirmLabel={busy ? "Removing…" : "Remove"}
           onConfirm={() => removeMember(confirmRemove)}
           onCancel={() => setConfirmRemove(null)}
@@ -228,6 +239,7 @@ function AddMemberDialog({
             <select
               value={membershipId}
               onChange={(e) => setMembershipId(e.target.value)}
+              aria-label="Member"
               className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring"
             >
               {candidates.map((c) => (
@@ -243,6 +255,7 @@ function AddMemberDialog({
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
+              aria-label="Role in this project"
               className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring"
             >
               {PROJECT_ROLES.map((r) => (

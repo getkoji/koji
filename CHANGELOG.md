@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.61.0 — 2026-07-06
+
+**Add/remove works for every member on the project Members tab.** Members with
+all-projects access (everyone except workspace owners/admins) can now be
+managed from a project's roster directly: changing their role or removing them
+converts their implicit all-projects access into explicit per-project grants —
+the edit applies here and they keep an equivalent role in every other project.
+Previously the tab could only manage members who were already
+project-restricted, and deployments whose workspace membership lives in an
+identity provider had no way to restrict anyone. Owners and workspace admins
+remain all-access by design (`400` if you try).
+
 ## 0.60.1 — 2026-07-06
 
 **Correct-field pencils are always visible.** The correction affordance on the

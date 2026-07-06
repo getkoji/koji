@@ -60,12 +60,19 @@ one project. Existing members are grandfathered (keep current access).
 member across projects). To manage a single project's roster instead:
 `GET /api/projects/{slug}/members` returns everyone with access —
 `access:"granted"` members (with their project `roles`) and `access:"all"`
-members (owners/admins who see every project) — plus `candidates` (restricted
-members not yet on the project). `PUT /api/projects/{slug}/members/{membershipId}`
-with `{ roles: [...] }` grants or updates a member's role in that project (the
-member must be restricted — a `400` says to restrict an all-access member on the
-Members page first). `DELETE /api/projects/{slug}/members/{membershipId}` revokes
-access. All require `member:invite` and enforce the same role ceiling.
+members (unrestricted; `workspaceAdmin` marks owners/tenant-admins, and
+`defaultRole` is the project role their workspace role maps to) — plus
+`candidates` (restricted members not yet on the project).
+`PUT /api/projects/{slug}/members/{membershipId}` with `{ roles: [...] }`
+grants or updates a member's role in that project.
+`DELETE /api/projects/{slug}/members/{membershipId}` revokes access. When
+either targets an unrestricted non-admin member, their implicit all-projects
+access is first **materialized**: they become project-restricted with an
+explicit grant in every other live project at their `defaultRole`, and the
+requested change applies to this one (the response carries
+`materialized: true`). Owners and tenant-admins are all-access by design —
+`400`; change their workspace role instead. All require `member:invite` and
+enforce the same role ceiling.
 
 ### `POST /api/projects/{slug}/move`
 

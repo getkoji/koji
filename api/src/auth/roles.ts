@@ -231,6 +231,34 @@ export function shouldRestrictByDefault(roles: string[]): boolean {
   return !roles.includes("owner") && !roles.includes("tenant-admin");
 }
 
+/**
+ * The smallest project role whose project-scoped permissions cover a workspace
+ * role's. Used when a project-roster edit targets an unrestricted member and
+ * their implicit all-projects access is materialized into explicit grants
+ * (oss-388): granting this role in each project preserves what the member can
+ * already do there. runner/schema-editor/schema-deployer land on the next tier
+ * up because the 4 project roles are coarser than the 7 workspace roles.
+ */
+export function projectRoleCovering(workspaceRoles: string[]): ProjectRole {
+  const cover: Record<Role, ProjectRole> = {
+    viewer: "project-viewer",
+    runner: "project-member",
+    reviewer: "project-member",
+    "schema-editor": "project-editor",
+    "schema-deployer": "project-editor",
+    "tenant-admin": "project-admin",
+    owner: "project-admin",
+  };
+  let best: ProjectRole = "project-viewer";
+  for (const role of workspaceRoles) {
+    const mapped = cover[role as Role];
+    if (mapped && PROJECT_ROLE_RANK.indexOf(mapped) > PROJECT_ROLE_RANK.indexOf(best)) {
+      best = mapped;
+    }
+  }
+  return best;
+}
+
 export function highestProjectRoleRank(roles: string[]): number {
   let max = -1;
   for (const role of roles) {
