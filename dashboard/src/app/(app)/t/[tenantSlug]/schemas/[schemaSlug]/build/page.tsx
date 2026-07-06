@@ -10,6 +10,7 @@ import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { keepRawView } from "@/lib/keep-raw";
+import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
@@ -246,17 +247,35 @@ export default function BuildPage() {
     useCallback(() => api.get<{ data: CorpusEntry[] }>(`/api/schemas/${schemaSlug}/corpus`).then((r) => r.data), [schemaSlug]),
   );
 
-  // Model catalog
-  const { data: catalogModels } = useApi(
-    useCallback(() => api.get<{ data: Array<{ id: string; provider: string; model: string; displayName: string }> }>("/api/model-providers").then((r) => r.data.map(e => ({ ...e, modelId: e.model }))), []),
+  // Read the credential→models split, filter to chat-capable models,
+  // then dedupe by model id — the build extract endpoint routes on model
+  // *name*, so two credentials serving the same model collapse to one
+  // picker option (the server picks the healthier credential at call
+  // time via resolveTenantProvider).
+  const { data: credentials } = useApi(
+    useCallback(
+      () => api.get<{ data: CredentialResponse[] }>("/api/credentials").then((r) => r.data),
+      [],
+    ),
   );
+  const catalogModels = useMemo(() => {
+    const opts = toPickerOptions(credentials, "chat");
+    const seen = new Set<string>();
+    const out: Array<{ id: string; provider: string; modelId: string; label: string }> = [];
+    for (const o of opts) {
+      if (seen.has(o.model)) continue;
+      seen.add(o.model);
+      out.push({ id: o.id, provider: o.provider, modelId: o.model, label: o.label });
+    }
+    return out;
+  }, [credentials]);
 
   // Persist model selection + auto-select first available model
   useEffect(() => {
     if (selectedModel) localStorage.setItem("koji:build:model", selectedModel);
   }, [selectedModel]);
   useEffect(() => {
-    if (!selectedModel && catalogModels && catalogModels.length > 0) {
+    if (!selectedModel && catalogModels.length > 0) {
       setSelectedModel(catalogModels[0]!.modelId);
     }
   }, [selectedModel, catalogModels]);
@@ -1137,8 +1156,8 @@ export default function BuildPage() {
                   className="h-[26px] rounded-sm border border-input bg-white px-2 text-[11px] font-mono outline-none focus:border-ring min-w-[80px] max-w-[160px] truncate"
                   title="Model for extraction"
                 >
-                  {(catalogModels ?? []).map((m) => (
-                    <option key={m.id} value={m.modelId}>{m.displayName} ({m.provider})</option>
+                  {catalogModels.map((m) => (
+                    <option key={m.id} value={m.modelId}>{m.label}</option>
                   ))}
                 </select>
                 <button onClick={() => handleRun(true)} disabled={!selectedDoc || extracting || (catalogModels ?? []).length === 0}

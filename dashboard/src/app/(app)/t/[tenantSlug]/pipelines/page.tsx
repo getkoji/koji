@@ -10,18 +10,13 @@ import { TableSkeleton } from "@/components/shared/TableSkeleton";
 import { api, pipelines as pipelinesApi, type PipelineRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { statusTone, statusLabel, formatRelativeTime } from "./format";
 
 interface SchemaOption {
   id: string;
   slug: string;
   displayName: string;
-}
-
-interface ProviderOption {
-  id: string;
-  displayName: string;
-  model: string;
 }
 
 interface ParseProviderOption {
@@ -371,12 +366,17 @@ function CreatePipelineDialog({
   const { data: schemasList, loading: schemasLoading } = useApi(
     useCallback(() => api.get<{ data: SchemaOption[] }>("/api/schemas").then((r) => r.data), []),
   );
-  const { data: providersList, loading: providersLoading } = useApi(
+  // Read from /api/credentials so the picker sees every model attached to
+  // every credential, not just the first-model-per-endpoint that the old
+  // /api/model-providers surface would return. Filter to chat capability —
+  // this dropdown drives the extraction path, which requires a chat model.
+  const { data: credentials, loading: providersLoading } = useApi(
     useCallback(
-      () => api.get<{ data: ProviderOption[] }>("/api/model-providers").then((r) => r.data),
+      () => api.get<{ data: CredentialResponse[] }>("/api/credentials").then((r) => r.data),
       [],
     ),
   );
+  const providersList = useMemo(() => toPickerOptions(credentials, "chat"), [credentials]);
   const { data: parseProvidersList } = useApi(
     useCallback(
       () =>
@@ -393,7 +393,7 @@ function CreatePipelineDialog({
   const showErrors = attempted;
 
   const noSchemas = !schemasLoading && (schemasList ?? []).length === 0;
-  const noProviders = !providersLoading && (providersList ?? []).length === 0;
+  const noProviders = !providersLoading && providersList.length === 0;
   const blocked = noSchemas || noProviders;
 
   function handleNameChange(v: string) {
@@ -530,9 +530,9 @@ function CreatePipelineDialog({
                   ? "No endpoints configured"
                   : "Select an endpoint…"}
               </option>
-              {(providersList ?? []).map((p) => (
+              {providersList.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.displayName} ({p.model})
+                  {p.label}
                 </option>
               ))}
             </select>
