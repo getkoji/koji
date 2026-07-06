@@ -442,6 +442,39 @@ schema: claim          # references schema by name
 `kind: schema` or `kind: pipeline` are skipped. Pipelines auto-link
 to the first active model endpoint.
 
+A pipeline file can also declare a full DAG with a `steps:` list
+(classify routing, multiple extract steps, webhooks, …). Files with
+`steps:` push their YAML to the server and land as DAG pipelines —
+the routing you wrote is what runs:
+
+```yaml
+kind: pipeline
+name: Claims Router
+slug: claims-router
+steps:
+  - id: classify
+    type: classify
+    config:
+      labels:
+        - id: auto
+        - id: property
+    on:
+      auto: extract_auto
+      property: extract_property
+      _default: extract_auto
+  - id: extract_auto
+    type: extract
+    config:
+      schema: auto_claim
+  - id: extract_property
+    type: extract
+    config:
+      schema: property_claim
+```
+
+DAG pipelines don't need a top-level `schema:` reference — each extract
+step names its own schema by slug and resolves it at run time.
+
 ### Authentication
 
 **Koji Cloud**: Run `koji login` to create a profile, or set env vars:
