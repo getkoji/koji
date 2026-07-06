@@ -1,15 +1,16 @@
 /**
- * Client-side heuristic for inferring a model's capabilities from its id.
+ * Client-side capability heuristic — FALLBACK ONLY as of platform-129.
  *
- * Stopgap until `/api/model-registry` (platform-side) returns explicit
- * `capabilities: ("chat"|"vision"|"ocr")[]` per model — see platform-129.
- * When the registry surfaces capabilities directly, drop this file and
- * read them off the RegistryModel.
+ * The platform `/api/model-registry` now returns explicit `capabilities`
+ * per model, and the settings page prefers that value via `capsFor(m)`.
+ * This heuristic is only reached for models the registry doesn't know
+ * about: FALLBACK_SUGGESTIONS entries, freeform "custom model id" input,
+ * and any pre-platform-129 cached response that omits the field.
  *
  * The bar is "good enough so the user doesn't have to pick a capability
  * for the common case"; misses fall through to chat-only and the user
- * can still add vision/ocr rows manually via the inline dropdown on the
- * credential card.
+ * can still add vision/ocr rows manually via the custom-mode capability
+ * checkboxes.
  */
 
 export type ModelCapability = "chat" | "vision" | "ocr";

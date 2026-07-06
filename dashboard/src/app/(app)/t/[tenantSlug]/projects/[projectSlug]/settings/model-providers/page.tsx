@@ -70,6 +70,20 @@ interface RegistryModel {
   modelId: string;
   displayName: string;
   isRecommended: boolean;
+  /**
+   * Per-model capability tags. Present on responses served by
+   * platform-129 and later; falls back to the client-side
+   * inferModelCapabilities heuristic when absent (older cached
+   * registry payloads, self-populated FALLBACK_SUGGESTIONS).
+   */
+  capabilities?: ModelCapability[];
+}
+
+/** Prefer registry-declared capabilities, fall back to the local heuristic. */
+function capsFor(m: { modelId: string; capabilities?: ModelCapability[] }): ModelCapability[] {
+  return m.capabilities && m.capabilities.length > 0
+    ? m.capabilities
+    : inferModelCapabilities(m.modelId);
 }
 
 // ── Model picker ──────────────────────────────────────────────────────────
@@ -81,6 +95,7 @@ interface ModelOption {
   modelId: string;
   displayName: string;
   isRecommended: boolean;
+  capabilities?: ModelCapability[];
 }
 
 function ModelCombobox({
@@ -130,7 +145,7 @@ function ModelCombobox({
             >
               <span className="truncate">{m.modelId}</span>
               <span className="ml-auto flex items-center gap-1">
-                {inferModelCapabilities(m.modelId).map((c) => (
+                {capsFor(m).map((c) => (
                   <span
                     key={c}
                     className="text-[9px] uppercase tracking-wider text-ink-3 bg-cream-2 px-1 py-0.5 rounded"
@@ -576,16 +591,21 @@ function AddCredentialDialog({
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
     try {
+      // Prefer capabilities the registry declared for this model
+      // (platform-129). Fall back to the client-side heuristic for
+      // fallback-suggestion models or when the registry response is
+      // missing / doesn't include the field.
+      const selectedRegistryModel = availableModels.find((m) => m.modelId === model);
+      const capabilities = selectedRegistryModel
+        ? capsFor(selectedRegistryModel)
+        : inferModelCapabilities(model);
+
       const payload: Record<string, unknown> = {
         name,
         slug,
         provider: providerType,
         model,
-        // Derive capabilities from the chosen model so vision-capable
-        // models (gpt-4o, claude-sonnet-4, etc.) get both chat and vision
-        // tenant_models rows up-front. Ollama/custom models that don't
-        // match the heuristic just get chat.
-        capabilities: inferModelCapabilities(model),
+        capabilities,
       };
       if (providerType === "bedrock") {
         payload.aws_region = awsRegion || undefined;
@@ -887,9 +907,15 @@ function AddModelDialog({
   const availableModels = providerRegistryModels.length > 0 ? providerRegistryModels : fallback;
 
   // Capabilities surfaced to the user (and submitted). In catalog mode
-  // they're derived from the chosen model id; in custom mode the user
-  // toggles them via checkboxes.
-  const derivedCaps = model ? inferModelCapabilities(model) : [];
+  // we prefer the registry-declared value for the chosen row and fall
+  // back to the client-side heuristic; in custom mode the user toggles
+  // them via checkboxes.
+  const selectedRegistryModel = model ? availableModels.find((m) => m.modelId === model) : null;
+  const derivedCaps: ModelCapability[] = selectedRegistryModel
+    ? capsFor(selectedRegistryModel)
+    : model
+      ? inferModelCapabilities(model)
+      : [];
   const submitCaps = customMode ? customCapabilities : derivedCaps;
 
   function toggleCustomCap(cap: ModelCapability) {
