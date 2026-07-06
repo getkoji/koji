@@ -136,6 +136,11 @@ export const projectAccess = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    // The member's role(s) IN this project — a distinct, project-scoped
+    // vocabulary (project-viewer/member/editor/admin), NOT the workspace
+    // roles. A grant row therefore carries both access (its existence) and
+    // capability (these roles). See docs/per-project-roles.md.
+    roles: text("roles").array().notNull().default(sql`'{project-member}'::text[]`),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),

@@ -3,7 +3,7 @@ import { eq, and, inArray, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getRoles } from "../auth/middleware";
-import { highestRoleRank, isValidRole, ROLE_RANK } from "../auth/roles";
+import { highestRoleRank, isValidRole, isValidProjectRole, ROLE_RANK } from "../auth/roles";
 
 export const members = new Hono<Env>();
 
@@ -185,7 +185,11 @@ members.get("/:id/project-access", requires("member:read"), async (c) => {
 
   const rows = await withRLS(db, tenantId, (tx) =>
     tx
-      .select({ slug: schema.projects.slug, displayName: schema.projects.displayName })
+      .select({
+        slug: schema.projects.slug,
+        displayName: schema.projects.displayName,
+        roles: schema.projectAccess.roles,
+      })
       .from(schema.projectAccess)
       .innerJoin(schema.projects, eq(schema.projects.id, schema.projectAccess.projectId))
       .where(and(eq(schema.projectAccess.userId, m.userId), isNull(schema.projects.deletedAt))),
@@ -193,15 +197,16 @@ members.get("/:id/project-access", requires("member:read"), async (c) => {
 
   return c.json({
     restricted: m.projectRestricted,
-    projects: rows.map((r) => ({ slug: r.slug, displayName: r.displayName })),
+    projects: rows.map((r) => ({ slug: r.slug, displayName: r.displayName, roles: r.roles })),
   });
 });
 
 /**
- * PUT /api/members/:id/project-access — set a member's project access.
- * Body: { restricted: boolean, project_slugs?: string[] }. When `restricted`,
- * the member may access exactly `project_slugs`; otherwise they see all
- * projects and any grants are cleared.
+ * PUT /api/members/:id/project-access — set a member's project access + role.
+ * Body: { restricted: boolean, projects?: [{ slug, roles: ProjectRole[] }] }.
+ * When `restricted`, the member may access exactly the listed projects, with
+ * the given role in each; otherwise they see all projects (grants cleared) and
+ * capability comes from their workspace role.
  */
 members.put("/:id/project-access", requires("member:invite"), async (c) => {
   const db = c.get("db");
@@ -216,12 +221,29 @@ members.put("/:id/project-access", requires("member:invite"), async (c) => {
     return c.json({ error: "Cannot modify a member with a higher role than your own" }, 403);
   }
 
-  const body = await c.req.json<{ restricted: boolean; project_slugs?: string[] }>();
+  const body = await c.req.json<{
+    restricted: boolean;
+    projects?: Array<{ slug: string; roles?: string[] }>;
+  }>();
   const restricted = body.restricted === true;
-  const slugs = restricted ? [...new Set(body.project_slugs ?? [])] : [];
+  // Dedupe by slug; default a grant with no role to project-member.
+  const wanted = new Map<string, string[]>();
+  if (restricted) {
+    for (const g of body.projects ?? []) {
+      if (!g?.slug) continue;
+      const roles = (g.roles && g.roles.length > 0 ? g.roles : ["project-member"]);
+      for (const r of roles) {
+        if (!isValidProjectRole(r)) {
+          return c.json({ error: `Invalid project role: ${r}` }, 400);
+        }
+      }
+      wanted.set(g.slug, roles);
+    }
+  }
+  const slugs = [...wanted.keys()];
 
   // Resolve slugs → live project ids up front so we can 400 cleanly.
-  let projectIds: string[] = [];
+  const slugToId = new Map<string, string>();
   if (slugs.length > 0) {
     const rows = await withRLS(db, tenantId, (tx) =>
       tx
@@ -229,23 +251,23 @@ members.put("/:id/project-access", requires("member:invite"), async (c) => {
         .from(schema.projects)
         .where(and(inArray(schema.projects.slug, slugs), isNull(schema.projects.deletedAt))),
     );
-    const found = new Set(rows.map((r) => r.slug));
-    const missing = slugs.filter((s) => !found.has(s));
+    for (const r of rows) slugToId.set(r.slug, r.id);
+    const missing = slugs.filter((s) => !slugToId.has(s));
     if (missing.length > 0) {
       return c.json({ error: `Unknown project(s): ${missing.join(", ")}` }, 400);
     }
-    projectIds = rows.map((r) => r.id);
   }
 
   await withRLS(db, tenantId, async (tx) => {
     // Replace the grant set, then flip the flag — one transaction.
     await tx.delete(schema.projectAccess).where(eq(schema.projectAccess.userId, m.userId));
-    if (projectIds.length > 0) {
+    if (slugs.length > 0) {
       await tx.insert(schema.projectAccess).values(
-        projectIds.map((pid) => ({
+        slugs.map((slug) => ({
           tenantId,
           userId: m.userId,
-          projectId: pid,
+          projectId: slugToId.get(slug)!,
+          roles: wanted.get(slug)!,
           createdBy: principal.userId,
         })),
       );
@@ -256,5 +278,5 @@ members.put("/:id/project-access", requires("member:invite"), async (c) => {
       .where(eq(schema.memberships.id, m.id));
   });
 
-  return c.json({ ok: true, restricted, projects: slugs });
+  return c.json({ ok: true, restricted, projects: [...wanted.entries()].map(([slug, roles]) => ({ slug, roles })) });
 });

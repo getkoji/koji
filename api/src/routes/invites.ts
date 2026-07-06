@@ -5,7 +5,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { schema } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getRoles } from "../auth/middleware";
-import { highestRoleRank, isValidRole } from "../auth/roles";
+import { highestRoleRank, isValidRole, shouldRestrictByDefault } from "../auth/roles";
 import { teamInviteEmail } from "../email-templates";
 
 const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -247,11 +247,14 @@ invites.post("/accept", async (c) => {
     return c.json({ ok: true, message: "You are already a member of this workspace" });
   }
 
-  // Create membership
+  // Create membership. Default-deny (oss-372): a non-admin joins restricted —
+  // they see no project until explicitly granted access. Owners/admins stay
+  // unrestricted (they administer the workspace).
   await db.insert(schema.memberships).values({
     userId: user.id,
     tenantId: invite.tenantId,
     roles: invite.roles,
+    projectRestricted: shouldRestrictByDefault(invite.roles),
     invitedBy: invite.invitedBy,
     invitedAt: now,
     acceptedAt: now,

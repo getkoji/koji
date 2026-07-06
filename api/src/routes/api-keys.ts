@@ -114,6 +114,10 @@ apiKeys.post("/", requires("api_key:write"), async (c) => {
 apiKeys.delete("/:id", requires("api_key:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
+  // Scope revocation to the resolved project, exactly like the list (GET) —
+  // now that api_key:write is reachable per-project (project-admin), a member
+  // must not be able to revoke a key bound to a project they can't access.
+  const projectId = getProjectId(c);
   const keyId = c.req.param("id")!;
 
   const [key] = await db
@@ -123,6 +127,7 @@ apiKeys.delete("/:id", requires("api_key:write"), async (c) => {
       and(
         eq(schema.apiKeys.id, keyId),
         eq(schema.apiKeys.tenantId, tenantId),
+        ...(projectId ? [eq(schema.apiKeys.projectId, projectId)] : []),
       ),
     )
     .limit(1);
