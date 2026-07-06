@@ -29,6 +29,26 @@ import { computeProvenanceStrength } from "./reconcile";
  */
 const MIN_LEAK_LENGTH = 10;
 
+/**
+ * Numeric-scalar leak threshold: how many digits a value must carry before a
+ * hint echo is treated as a leak. String leaks require MIN_LEAK_LENGTH chars
+ * of distinctiveness; a bare number has no such length, so we gate on digit
+ * count instead. Four digits (e.g. a "9,486.00" worked example) is enough to
+ * be distinctive; smaller round examples (a "$460" part premium, a "2" in
+ * prose) are too common to attribute to the hint.
+ */
+const MIN_LEAK_DIGITS = 4;
+
+/** Matches a currency/number literal in hint text: grouped thousands
+ * (1,000,000 / 9,486.00) or a plain run of digits, each with optional decimals. */
+const HINT_NUMBER_RE = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g;
+
+/** Canonical numeric value of a formatted literal ("9,486.00" → 9486), or null. */
+function canonicalNumber(raw: string): number | null {
+  const n = parseFloat(raw.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Collapse whitespace runs and lowercase, so a value matches a hint example
  * even when the hint wraps it across lines. */
 function normalize(text: string): string {
@@ -75,14 +95,40 @@ export function matchesHintText(value: string, normalizedHint: string): boolean 
   return normalizedHint.includes(v);
 }
 
-/** A string leaf is a confirmed leak when it matches the hint AND has zero
- * provenance in the section chunks. */
+/**
+ * True when a numeric value equals a numeric literal in the hint text,
+ * compared by value so "9486" matches a "9,486.00" worked example. Gated on
+ * MIN_LEAK_DIGITS so only distinctive amounts qualify. Accepts a number or a
+ * numeric-looking string (some schemas type amounts as strings).
+ */
+function matchesHintNumber(value: number | string, normalizedHint: string): boolean {
+  if (!normalizedHint) return false;
+  const digits = String(value).replace(/[^0-9]/g, "");
+  if (digits.length < MIN_LEAK_DIGITS) return false;
+  const target = canonicalNumber(String(value));
+  if (target === null) return false;
+  for (const m of normalizedHint.matchAll(HINT_NUMBER_RE)) {
+    if (canonicalNumber(m[0]) === target) return true;
+  }
+  return false;
+}
+
+/** A leaf is a confirmed leak when it matches the hint AND has zero provenance
+ * in the section chunks. Strings match verbatim (normalized substring); numbers
+ * — and numeric-looking strings — match a hint literal by numeric value, so a
+ * reformatted echo ("9,486.00" → 9486) is caught (oss-391). */
 function isLeakedLeaf(
   value: unknown,
   normalizedHint: string,
   chunks: Chunk[],
   sourceText?: string,
 ): boolean {
+  const isNumericString = typeof value === "string" && /^[\d,]+(?:\.\d+)?$/.test(value.trim());
+  if (typeof value === "number" || isNumericString) {
+    if (!matchesHintNumber(value as number | string, normalizedHint)) return false;
+    const fieldType = typeof value === "number" ? "number" : "string";
+    return computeProvenanceStrength(value, chunks, fieldType, sourceText) === 0;
+  }
   if (typeof value !== "string") return false;
   if (!matchesHintText(value, normalizedHint)) return false;
   return computeProvenanceStrength(value, chunks, "string", sourceText) === 0;
@@ -144,7 +190,7 @@ export function stripHintLeaks(
     const hint = collectHintText(fieldSpec);
     if (!hint) continue;
 
-    if (typeof value === "string") {
+    if (typeof value === "string" || typeof value === "number") {
       if (isLeakedLeaf(value, hint, sectionChunks, scalarSourceTexts?.[fieldName])) {
         extracted[fieldName] = null;
         affected.push(fieldName);
