@@ -118,6 +118,35 @@ export const projects = pgTable(
   }),
 );
 
+/**
+ * Per-member project grants. Only meaningful for members whose membership has
+ * `projectRestricted = true`: such a member can access exactly the projects
+ * listed here. Unrestricted members ignore this table (they see everything).
+ * Tenant-scoped (RLS); the row is removed when the user, project, or tenant
+ * goes away.
+ */
+export const projectAccess = pgTable(
+  "project_access",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    userProjectIdx: uniqueIndex("project_access_user_project_idx").on(t.userId, t.projectId),
+    tenantUserIdx: index("project_access_tenant_user_idx").on(t.tenantId, t.userId),
+  }),
+);
+
 export const memberships = pgTable(
   "memberships",
   {
@@ -128,6 +157,11 @@ export const memberships = pgTable(
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
     roles: text("roles").array().notNull(),
     isShadow: boolean("is_shadow").default(false).notNull(),
+    // Project access model: false (default) = this member can access every
+    // project in the tenant. true = access is limited to the projects listed
+    // in `project_access` for this user. A member's tenant `roles` apply in
+    // every project they can access.
+    projectRestricted: boolean("project_restricted").notNull().default(false),
     invitedBy: uuid("invited_by").references(() => users.id),
     invitedAt: timestamp("invited_at", { withTimezone: true, mode: "date" }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true, mode: "date" }),

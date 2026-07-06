@@ -27,6 +27,9 @@ export type Env = {
      *  project, or the tenant's default project. Undefined only for tenants
      *  with zero projects (mid-setup). */
     projectId: string | undefined;
+    /** The projects the current session member may access, or `null` when the
+     *  member is unrestricted (all projects). Set by the auth middleware. */
+    accessibleProjectIds: Set<string> | null;
     grants: Set<Permission>;
     roles: string[];
     storage: StorageProvider;

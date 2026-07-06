@@ -218,6 +218,13 @@
       "when": 1783292828761,
       "tag": "0030_flimsy_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1783297549974,
+      "tag": "0031_motionless_mikhail_rasputin",
+      "breakpoints": true
     }
   ]
 }

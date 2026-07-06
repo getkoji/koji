@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.51.0 — 2026-07-05
+
+**Per-project access control.** Projects are now a permission boundary, not
+just data scoping. By default every workspace member can access every project
+(unchanged). An admin can now restrict a member to specific projects from
+Settings → Members → "project access": that member then only sees and can act
+in their granted projects, and requests to any other project are refused
+(`403`). A member's workspace role still applies wherever they have access.
+API: `GET`/`PUT /api/members/{id}/project-access`.
+
 ## 0.50.0 — 2026-07-05
 
 **Move a resource between projects.** Schemas, pipelines, sources, classifiers,

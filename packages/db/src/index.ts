@@ -38,6 +38,7 @@ export function createDb(databaseUrl: string, options?: { max?: number }): Db {
 export const RLS_POLICIES: readonly string[] = [
   "tenants",
   "projects",
+  "project_access",
   "api_keys",
   "audit_log",
   "invites",
