@@ -233,6 +233,18 @@ export async function resolveTenantProvider(
     }
   } catch {}
 
+  // No configured model endpoint resolved for this scope. The only thing left
+  // is the env-var fallback (local dev / seed data). If no env credential is
+  // present either, the provider would be built with an empty key and fail at
+  // call time with an opaque upstream 401 — surface an actionable error here
+  // instead (a fresh project has no model endpoints until one is configured).
+  if (!endpointPayload && !process.env.OPENAI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+    throw new Error(
+      "No model provider is configured for this project. Add one under " +
+        "Settings → Model Catalog (or set OPENAI_API_KEY for local development).",
+    );
+  }
+
   const model = endpointPayload?.model || process.env.KOJI_EXTRACT_MODEL || "gpt-4o-mini";
   const rawProvider = createProvider(model, endpointPayload);
   // Wrap in health-tracking when we have a tenant-configured endpoint to
