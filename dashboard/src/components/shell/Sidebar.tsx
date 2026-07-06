@@ -35,6 +35,7 @@ import {
   LayoutDashboard,
   Workflow,
   Play,
+  FileText,
   MessageSquare,
   ArrowDownToLine,
   Tags,
@@ -330,6 +331,11 @@ export function AppSidebar({
                 href={`${base}/jobs`}
                 icon={<Play className={ICON} />}
                 label="Jobs"
+              />
+              <NavItemLink
+                href={`${base}/documents`}
+                icon={<FileText className={ICON} />}
+                label="Documents"
               />
               <NavItemLink
                 href={`${base}/review`}

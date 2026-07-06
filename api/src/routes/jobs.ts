@@ -62,7 +62,7 @@ export function nextJobStatusAfterDocFinalize(
   return hadSuccess ? "complete" : "failed";
 }
 
-function resolveSince(raw: string | undefined): { cutoff: Date | null } | { error: string } {
+export function resolveSince(raw: string | undefined): { cutoff: Date | null } | { error: string } {
   if (!raw || raw === "all") return { cutoff: null };
 
   const now = Date.now();

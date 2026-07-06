@@ -647,6 +647,51 @@ x-koji-tenant: your-tenant-slug
 
 They are the data source behind the [embeddable PDF viewer](integration.md#embedding-the-pdf-viewer). If you only want to render the viewer, you usually don't call `/preview` or `/embed-data` yourself — fetch the document detail for the `documentToken` and hand it to the iframe. Call them directly when you need the signed PDF URL (or the highlights) outside the viewer.
 
+### `GET /api/documents`
+
+The tenant/project-wide document list — find a document without knowing which
+job ingested it. Powers the dashboard's Documents page.
+
+**Auth:** Bearer token. Requires `job:read` permission. Project-scoped: with an
+`x-koji-project` header (or a project-bound API key) only that project's
+documents are returned.
+
+**Query parameters** (all optional)
+
+| Param | Description |
+|-------|-------------|
+| `search` | Filename substring, case-insensitive. |
+| `status` | Exact document status (`delivered`, `review`, `failed`, …). |
+| `pipeline` | Pipeline slug. |
+| `since` | Shorthand (`today` \| `7d` \| `30d` \| `all`) or ISO timestamp. |
+| `cursor` | `nextCursor` from the previous page (keyset pagination). |
+| `limit` | Page size — default 50, max 200. |
+
+**Response** `200 OK`
+
+```json
+{
+  "data": [
+    {
+      "id": "…", "filename": "invoice-0042.pdf", "status": "delivered",
+      "mimeType": "application/pdf", "pageCount": 2, "confidence": "0.9600",
+      "createdAt": "…", "completedAt": "…",
+      "jobSlug": "acme-invoices-20260706",
+      "pipelineSlug": "invoices", "pipelineName": "Invoices",
+      "schemaName": "Invoice", "hasPendingReview": false
+    }
+  ],
+  "nextCursor": null,
+  "counts": { "total": 86, "byStatus": { "delivered": 72, "review": 4, "failed": 7, "extracting": 3 } }
+}
+```
+
+`hasPendingReview` marks documents with open review items. `counts` reflects
+the full filtered set (not just the page), for facet bars. Document detail,
+preview, corrections, etc. remain addressed via
+`/api/jobs/{jobSlug}/documents/{docId}` — use the row's `jobSlug` to build
+those paths.
+
 ### `GET /api/jobs/{slug}/documents/{docId}`
 
 The full document record — extraction, provenance, validation, and the trace
