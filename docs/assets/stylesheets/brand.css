@@ -10,7 +10,19 @@
 
 /* ---------- Design tokens ------------------------------------------------- */
 
-:root {
+/*
+ * These overrides must ALSO be declared at `[data-md-color-scheme]` scope, not
+ * `:root` alone. Material for MkDocs applies the scheme attribute to <body> and
+ * re-declares the whole `--md-code-*` / `--md-*-fg-color` family inside
+ * `[data-md-color-scheme=default]`. Custom properties inherit from the nearest
+ * declaring ancestor, so a <body>-scoped Material default shadows any :root
+ * (<html>) override for every code span — which is why an earlier :root-only
+ * `--md-code-hl-comment-color` fix rendered near-black comments on the dark code
+ * background (invisible). Declaring here too lands our values on <body>; brand.css
+ * loads after main.css, so we win by source order.
+ */
+:root,
+[data-md-color-scheme="default"] {
   /* Warm cream palette */
   --koji-cream: #F4EEE2;
   --koji-cream-2: #ECE3D0;
