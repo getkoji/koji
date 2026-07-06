@@ -9,6 +9,7 @@ const TITLES: Record<string, string> = {
   "model-providers": "Model Endpoints",
   "parse-providers": "Parse Endpoints",
   webhooks: "Webhooks",
+  members: "Members",
 };
 
 export default function ProjectSettingsLayout({ children }: { children: React.ReactNode }) {

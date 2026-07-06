@@ -405,6 +405,11 @@ export function AppSidebar({
                         icon={<Webhook className={SUBICON} />}
                         label="Webhooks"
                       />
+                      <SubNavItemLink
+                        href={`${projectSettingsBase}/members`}
+                        icon={<Users className={SUBICON} />}
+                        label="Members"
+                      />
                     </SidebarMenuSub>
                   </CollapsibleContent>
                 </SidebarMenuItem>

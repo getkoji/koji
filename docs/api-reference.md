@@ -56,6 +56,17 @@ the member can't access return `403`. `GET /api/members/{id}/project-access`
 returns the current setting + roles. API keys are unaffected — a key is bound to
 one project. Existing members are grandfathered (keep current access).
 
+**Managing a project's roster.** The endpoints above are member-centric (one
+member across projects). To manage a single project's roster instead:
+`GET /api/projects/{slug}/members` returns everyone with access —
+`access:"granted"` members (with their project `roles`) and `access:"all"`
+members (owners/admins who see every project) — plus `candidates` (restricted
+members not yet on the project). `PUT /api/projects/{slug}/members/{membershipId}`
+with `{ roles: [...] }` grants or updates a member's role in that project (the
+member must be restricted — a `400` says to restrict an all-access member on the
+Members page first). `DELETE /api/projects/{slug}/members/{membershipId}` revokes
+access. All require `member:invite` and enforce the same role ceiling.
+
 ### `POST /api/projects/{slug}/move`
 
 Move a resource into the project named by `{slug}`. Requires the moved

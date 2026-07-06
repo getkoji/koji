@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.60.0 — 2026-07-06
+
+**Manage a project's members from the project.** Project settings gain a
+**Members** tab that shows who can access the project and their role, and lets
+an admin add a member (with a role), change a role, or remove access — without
+hunting through the workspace member list. Workspace admins (all-project access)
+are shown for reference and managed from Settings → Members as before. Backed by
+`GET`/`PUT`/`DELETE /api/projects/{slug}/members`.
+
 ## 0.59.0 — 2026-07-06
 
 **Correct fields from the document page.** The document detail page now has
