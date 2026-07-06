@@ -44,13 +44,17 @@ Resource slugs are unique **per project**, not per tenant: two projects can
 each have a pipeline named `invoices`. Deleting a workspace's last remaining
 project is rejected (`400`).
 
-**Per-member access.** By default every workspace member can access every
-project. An admin can restrict a member to specific projects
-(`PUT /api/members/{id}/project-access` with `{ restricted, project_slugs }`);
-that member then only sees their granted projects and requests to any other
-project return `403`. A member's workspace role applies in every project they
-can access. `GET /api/members/{id}/project-access` returns the current setting.
-API keys are unaffected — a key is already bound to one project.
+**Per-member access + roles.** New members are default-deny (need-to-know):
+they see no project until an admin grants access; owners/tenant-admins see all.
+An admin grants access **with a per-project role** via
+`PUT /api/members/{id}/project-access`, body
+`{ restricted, projects: [{ slug, roles: [project-viewer|project-member|project-editor|project-admin] }] }`.
+Within a granted project the member's capability comes from that project role
+(not their workspace role); org-level powers (member/tenant/billing) always come
+from the workspace role and are never granted per-project. Requests to a project
+the member can't access return `403`. `GET /api/members/{id}/project-access`
+returns the current setting + roles. API keys are unaffected — a key is bound to
+one project. Existing members are grandfathered (keep current access).
 
 ### `POST /api/projects/{slug}/move`
 

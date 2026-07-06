@@ -30,6 +30,8 @@ function createTestApp(opts: {
   /** Per-project access (oss-370): when set, the member is restricted to the
    *  listed project IDs. Omit for an unrestricted member (default). */
   restrictedToProjectIds?: string[];
+  /** Per-project roles for a restricted member's grants (oss-372). */
+  restrictedGrants?: Array<{ projectId: string; roles: string[] }>;
   /**
    * Sets `c.masterKey` before the auth middleware runs. Required for
    * the doc-endpoint matcher branch (HMAC preview-token validation
@@ -78,8 +80,14 @@ function createTestApp(opts: {
         return [{ restricted }];
       }
       if (restricted && idx === 2) {
-        // project_access grant rows for a restricted member.
-        return (opts.restrictedToProjectIds ?? []).map((projectId) => ({ projectId }));
+        // project_access grant rows for a restricted member. Each grant carries
+        // the member's project role(s); default to project-member unless the
+        // test pins a role via restrictedGrants.
+        const byId = new Map((opts.restrictedGrants ?? []).map((g) => [g.projectId, g.roles]));
+        return (opts.restrictedToProjectIds ?? []).map((projectId) => ({
+          projectId,
+          roles: byId.get(projectId) ?? ["project-member"],
+        }));
       }
       if (idx === projIdx) {
         const projSlug = c.req.header("x-koji-project");
@@ -302,6 +310,52 @@ describe("authMiddleware", () => {
     // Nil-uuid sentinel — matches no real project, so RLS returns zero rows;
     // crucially NOT undefined (which would mean tenant-wide access).
     expect((await res.json() as any).projectId).toBe("00000000-0000-0000-0000-000000000000");
+  });
+
+  it("restricted member's capability comes from the PROJECT role, not the workspace role", async () => {
+    // Workspace role schema-editor (can write schemas tenant-wide), but only
+    // project-viewer IN this project → read yes, write no.
+    const memberships = new Map([["u1:t1", { roles: ["schema-editor"] }]]);
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({
+      users, tenants, memberships, projects,
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000bbbb"],
+      restrictedGrants: [{ projectId: "00000000-0000-4000-8000-00000000bbbb", roles: ["project-viewer"] }],
+    });
+    app.get("/api/schemas", (c) => {
+      const grants = c.get("grants") as Set<string>;
+      return c.json({ read: grants.has("schema:read"), write: grants.has("schema:write") });
+    });
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme", "x-koji-project": "side" },
+    });
+    const body = await res.json() as any;
+    expect(body.read).toBe(true);
+    expect(body.write).toBe(false); // project-viewer, despite schema-editor workspace role
+  });
+
+  it("restricted member with project-editor role can write in that project", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]); // low workspace role
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({
+      users, tenants, memberships, projects,
+      restrictedToProjectIds: ["00000000-0000-4000-8000-00000000bbbb"],
+      restrictedGrants: [{ projectId: "00000000-0000-4000-8000-00000000bbbb", roles: ["project-editor"] }],
+    });
+    app.get("/api/schemas", (c) => {
+      const grants = c.get("grants") as Set<string>;
+      return c.json({
+        write: grants.has("schema:write"),
+        // org powers never come from a project role
+        invite: grants.has("member:invite"),
+      });
+    });
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme", "x-koji-project": "side" },
+    });
+    const body = await res.json() as any;
+    expect(body.write).toBe(true); // project-editor grants project write even though workspace role is viewer
+    expect(body.invite).toBe(false); // org-level, never per-project
   });
 
   it("allows /api/me without x-koji-tenant", async () => {

@@ -51,10 +51,13 @@ tenants.get("/", async (c) => {
 
       if (!existing) {
         try {
+          const { shouldRestrictByDefault } = await import("../auth/roles");
           await db.insert(schema.memberships).values({
             userId: principal.userId,
             tenantId: orgTenant.id,
             roles: kojiRoles,
+            // Default-deny (oss-372): non-admin org members join restricted.
+            projectRestricted: shouldRestrictByDefault(kojiRoles),
           });
           console.log(`[tenants] JIT provisioned membership for user ${principal.userId} in tenant ${orgTenant.id}`);
         } catch (err: any) {

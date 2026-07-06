@@ -225,6 +225,13 @@
       "when": 1783297549974,
       "tag": "0031_motionless_mikhail_rasputin",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1783337009704,
+      "tag": "0032_daily_rick_jones",
+      "breakpoints": true
     }
   ]
 }

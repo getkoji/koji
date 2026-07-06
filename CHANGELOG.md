@@ -2,7 +2,7 @@
 
 Notable, user-visible changes. Newest first.
 
-## 0.51.1 — 2026-07-06
+## 0.52.1 — 2026-07-06
 
 **Semver version labels everywhere in the dashboard.** Surfaces that still
 showed the legacy incremental `v{N}` label — pipelines (list, detail, version
@@ -16,6 +16,23 @@ only a bare version number now also carry the label (additive:
 `version` field on version objects); numeric fields are unchanged. Newly
 created schemas and classifiers commit their initial version as `v0.0.1`
 (previously the components defaulted to `0.0.0`).
+
+## 0.52.0 — 2026-07-06
+
+**Default-deny project access + per-project roles.** For PII/need-to-know:
+newly-invited members no longer see every project by default — they start with
+no project access until an admin grants it (owners/tenant-admins still see all).
+And a member's capability is now set **per project**: an admin grants a member
+`project-viewer` / `project-member` / `project-editor` / `project-admin` in each
+project, so someone can edit one client's project and only view another's.
+Org-level powers (inviting members, billing, deleting the workspace) always come
+from the workspace role and are never granted per-project.
+
+Non-breaking: existing members keep access to their existing projects
+(grandfathered); only members/projects created after this ships get default-deny.
+API: `GET`/`PUT /api/members/{id}/project-access` now carry per-project roles.
+
+## 0.51.0 — 2026-07-05
 
 **Per-project access control.** Projects are now a permission boundary, not
 just data scoping. By default every workspace member can access every project
