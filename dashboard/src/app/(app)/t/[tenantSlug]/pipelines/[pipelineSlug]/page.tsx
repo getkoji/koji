@@ -16,12 +16,15 @@ import {
   AlertTriangle,
   Send,
   PenLine,
+  ArrowLeftRight,
 } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { MoveToProjectDialog } from "@/components/shared/MoveToProjectDialog";
 import {
   pipelines as pipelinesApi,
   sources as sourcesApi,
+  selectedProjectSlug,
   DEFAULT_RETRY_POLICY,
   type PipelineDetail,
   type PipelineRecentJob,
@@ -41,6 +44,7 @@ export default function PipelineDetailPage() {
 
   const [deployOpen, setDeployOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -255,6 +259,7 @@ export default function PipelineDetailPage() {
           <DangerZone
             pipeline={pipeline}
             onDelete={() => setDeleteOpen(true)}
+            onMove={() => setMoveOpen(true)}
           />
         )}
       </div>
@@ -273,6 +278,20 @@ export default function PipelineDetailPage() {
           submitting={submitting}
           onClose={() => setDeleteOpen(false)}
           onConfirm={handleDelete}
+        />
+      )}
+      {moveOpen && (
+        <MoveToProjectDialog
+          resourceType="pipeline"
+          resourceId={pipeline.id}
+          resourceName={pipeline.displayName}
+          currentProjectSlug={selectedProjectSlug(tenantSlug) ?? tenantSlug}
+          onClose={() => setMoveOpen(false)}
+          onMoved={() => {
+            setMoveOpen(false);
+            // The pipeline left the current project — return to the list.
+            router.push(`/t/${tenantSlug}/pipelines`);
+          }}
         />
       )}
       {runOpen && !undeployed && (
@@ -1077,9 +1096,11 @@ function RecentJobsSection({
 function DangerZone({
   pipeline,
   onDelete,
+  onMove,
 }: {
   pipeline: PipelineDetail;
   onDelete: () => void;
+  onMove: () => void;
 }) {
   const sourceCount = pipeline.connectedSources.length;
   return (
@@ -1088,6 +1109,21 @@ function DangerZone({
         <span className="font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase text-vermillion-2">
           Danger zone
         </span>
+      </div>
+      <div className="p-4 flex items-start justify-between gap-6 border-b border-vermillion-2/20">
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] text-ink font-medium">Move to another project</span>
+          <p className="text-[12.5px] text-ink-3 max-w-[60ch]">
+            Reassign this pipeline to a different project. Its jobs and review items move with it.
+          </p>
+        </div>
+        <button
+          onClick={onMove}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium border border-border bg-cream text-ink hover:bg-cream-2 transition-colors shrink-0"
+        >
+          <ArrowLeftRight className="w-3.5 h-3.5" />
+          Move
+        </button>
       </div>
       <div className="p-4 flex items-start justify-between gap-6">
         <div className="flex flex-col gap-1">

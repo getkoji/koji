@@ -44,6 +44,31 @@ Resource slugs are unique **per project**, not per tenant: two projects can
 each have a pipeline named `invoices`. Deleting a workspace's last remaining
 project is rejected (`400`).
 
+### `POST /api/projects/{slug}/move`
+
+Move a resource into the project named by `{slug}`. Requires the moved
+resource's own write permission (e.g. `pipeline:write` to move a pipeline).
+
+**Body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | `schema` \| `pipeline` \| `source` \| `classifier` \| `model_endpoint` \| `parse_endpoint` \| `webhook_target` \| `api_key`. |
+| `id` | string | The resource's UUID. |
+| `dry_run` | boolean | Optional. Validate only — report blockers without moving. |
+
+History follows the resource: moving a pipeline moves its jobs and their
+review items too. Because resources resolve **within** a project, a move that
+would leave a resource referencing another project (a pipeline whose schema
+stays behind) is rejected:
+
+- `409` with `{ blockers: [{ type, slug, reason }] }` — move those into the
+  destination first (or move into the same project).
+- `409` with `{ conflict }` — the destination already has a resource of that
+  type with the same slug.
+
+Returns `200 { ok: true }` on success (`dryRun: true` echoed on a dry run).
+
 ---
 
 ## Health

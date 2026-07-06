@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.50.0 — 2026-07-05
+
+**Move a resource between projects.** Schemas, pipelines, sources, classifiers,
+model/parse endpoints, webhooks, and API keys can now be reassigned to another
+project via `POST /api/projects/{slug}/move` (and a "Move" action on the
+pipeline page). A pipeline's jobs and review items move with it. Because
+resources resolve within their project, a move that would strand a
+cross-project reference (a pipeline whose schema stays behind) is rejected
+with the list of what to move first — preview it with `dry_run: true`.
+
 ## 0.49.0 — 2026-07-05
 
 **Project isolation, second wave.** The in-app notification bell and the
