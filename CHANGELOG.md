@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.54.1 — 2026-07-06
+
+**DAG pipelines now execute the routing they validated with.** The pipeline
+runner previously re-parsed the raw YAML with its own edge extraction, which
+didn't understand the documented `on:` / `then:` routing sugar — a classify
+router with `on:` labels found zero edges and silently fell back to running
+every step linearly (each routed extract ran, and the last one won regardless
+of the classify label). The runner now executes the same compiled DAG that
+`POST /api/pipelines/validate` reports, so conditional routing, default edges,
+and `settings.max_steps` behave exactly as validated. Pipelines that can't
+produce a runnable plan (e.g. a classify step with no routes in
+pre-compiler-format YAML) now fail the document with a clear error instead of
+running a wrong interpretation.
+
 ## 0.54.0 — 2026-07-06
 
 **Document viewer region selection (groundwork).** The dashboard's PDF viewer

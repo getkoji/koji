@@ -9,6 +9,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { parse as parseYaml } from "yaml";
+import { compilePipeline, evaluateCondition, type ParsedCondition } from "@koji/pipeline";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { QueuedJob } from "../queue/provider";
@@ -24,7 +25,7 @@ import type { ParseChunk } from "../parse/chunk";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
-import { readParseProviderPin } from "./process";
+import { readParseProviderPin, markDocFailed } from "./process";
 import { resolveParse, parseDocument } from "./seam";
 import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
 import { enqueueWebhookDeliveries } from "../webhooks/emit";
@@ -198,7 +199,94 @@ const STEP_COSTS: Record<string, number> = {
   tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
 };
 
-export interface TestEdge { from: string; to: string; when?: string; default?: boolean }
+export interface TestEdge {
+  from: string;
+  to: string;
+  /** Raw condition string (legacy YAML: `routes:[{when}]`) — evaluated with `evalCondition`. */
+  when?: string;
+  /** Compiler-parsed condition AST — evaluated with `@koji/pipeline` `evaluateCondition`. Wins over `when`. */
+  condition?: ParsedCondition | null;
+  default?: boolean;
+}
+
+export interface DagStep { id: string; type: string; config: Record<string, unknown> }
+
+export interface DagPlan {
+  steps: DagStep[];
+  edges: TestEdge[];
+  entryStepId: string | null;
+  maxSteps: number;
+  /** "compiled" = walked from compilePipeline output; "legacy" = hand-parsed yamlSource. */
+  source: "compiled" | "legacy";
+}
+
+/**
+ * Build the executable plan for a pipeline's yamlSource.
+ *
+ * The /validate endpoint compiles YAML via `@koji/pipeline` (which expands the
+ * documented `on:`/`then:` sugar into conditional edges); the runner previously
+ * re-parsed the raw YAML with its own edge extraction, found zero edges for
+ * `on:` pipelines, and fell back to chaining ALL steps linearly — silently
+ * turning a classify router into a run-everything fan-out (oss-358). Now the
+ * runner executes the compiled DAG. YAML the compiler rejects keeps the legacy
+ * hand-parse (routes:/next:, plus on:/then: translation) so pre-compiler
+ * pipelines still run, but the linear fallback is refused when a classify step
+ * is present — that shape is a router, and running it linearly is never right.
+ *
+ * Throws when the pipeline is not runnable; the caller fails the document.
+ */
+export function buildDagPlan(yamlSource: string): DagPlan {
+  const compiled = compilePipeline(yamlSource);
+  if (compiled.ok) {
+    const p = compiled.pipeline;
+    return {
+      steps: p.steps.map((s) => ({ id: s.id, type: s.type, config: s.config ?? {} })),
+      edges: p.edges.map((e) => ({ from: e.from, to: e.to, condition: e.condition, default: e.isDefault })),
+      entryStepId: p.entryStepId,
+      maxSteps: p.settings?.max_steps ?? 20,
+      source: "compiled",
+    };
+  }
+  const compileErrors = compiled.errors.map((e) => `${e.code}: ${e.message}`).join("; ");
+
+  const parsed = parseYaml(yamlSource);
+  const rawSteps: any[] = parsed?.steps || [];
+  const steps: DagStep[] = rawSteps.map((s) => ({ id: s.id, type: s.type, config: s.config || {} }));
+  const edges: TestEdge[] = [];
+  for (const e of parsed?.edges || []) {
+    if (e?.from && e?.to) edges.push({ from: e.from, to: e.to, when: e.when, default: e.default });
+  }
+  for (const s of rawSteps) {
+    if (Array.isArray(s.routes)) {
+      for (const r of s.routes) {
+        if (r.goto) edges.push({ from: s.id, to: r.goto, when: r.when, default: r.default });
+      }
+    }
+    if (s.next) edges.push({ from: s.id, to: s.next });
+    if (s.then) edges.push({ from: s.id, to: s.then });
+    if (s.on && typeof s.on === "object") {
+      for (const [label, target] of Object.entries(s.on as Record<string, string>)) {
+        if (label === "_default") edges.push({ from: s.id, to: target, default: true });
+        else edges.push({ from: s.id, to: target, when: `output.label == '${label}'` });
+      }
+    }
+  }
+  if (edges.length === 0 && steps.length > 1) {
+    if (steps.some((s) => s.type === "classify")) {
+      throw new Error(
+        `Pipeline YAML did not compile (${compileErrors}) and declares a classify step with no ` +
+          `explicit edges — refusing to run every step linearly. Fix the YAML so it compiles ` +
+          `(POST /api/pipelines/validate shows the errors) or declare explicit routes/edges.`,
+      );
+    }
+    for (let i = 0; i < steps.length - 1; i++) {
+      edges.push({ from: steps[i]!.id, to: steps[i + 1]!.id });
+    }
+  }
+  const withIncoming = new Set(edges.map((e) => e.to));
+  const entryStepId = steps.find((s) => !withIncoming.has(s.id))?.id ?? steps[0]?.id ?? null;
+  return { steps, edges, entryStepId, maxSteps: 20, source: "legacy" };
+}
 
 export function evalCondition(condition: string, context: Record<string, unknown>): boolean {
   const m = condition.match(/^([\w.]+)\s*(==|!=|>=?|<=?|in)\s*(.+)$/);
@@ -230,13 +318,19 @@ function resolveNextStep(edges: TestEdge[], output: Record<string, unknown>): st
   return all[0] ?? null;
 }
 
+function edgeMatches(e: TestEdge, output: Record<string, unknown>): boolean {
+  if (e.condition) return evaluateCondition(e.condition, { output });
+  if (e.when) return evalCondition(e.when, { output });
+  return true; // unconditional
+}
+
 export function resolveNextSteps(edges: TestEdge[], output: Record<string, unknown>): string[] {
   const matched: string[] = [];
   for (const e of edges) {
     if (e.default) continue;
-    if (!e.when) { matched.push(e.to); continue; } // unconditional
-    const result = evalCondition(e.when, { output });
-    console.log(`[dag-runner] edge ${e.from} → ${e.to} when="${e.when}" result=${result}`);
+    if (!e.when && !e.condition) { matched.push(e.to); continue; } // unconditional
+    const result = edgeMatches(e, output);
+    console.log(`[dag-runner] edge ${e.from} → ${e.to} ${e.when ? `when="${e.when}"` : "(compiled condition)"} result=${result}`);
     if (result) matched.push(e.to);
   }
   console.log(`[dag-runner] resolveNextSteps: ${edges.length} edges, ${matched.length} matched: [${matched.join(", ")}]`);
@@ -300,26 +394,20 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   );
   if (!pipeline?.yamlSource) throw new TerminalError(`Pipeline ${pipelineId} has no YAML`);
 
-  // Parse YAML into steps + edges
-  const parsed = parseYaml(pipeline.yamlSource);
-  type PStep = { id: string; type: string; config: Record<string, unknown> };
-  const pSteps: PStep[] = (parsed.steps || []).map((s: any) => ({
-    id: s.id, type: s.type, config: s.config || {},
-  }));
-  const pEdges: TestEdge[] = [];
-  for (const s of parsed.steps || []) {
-    if (Array.isArray(s.routes)) {
-      for (const r of s.routes) {
-        if (r.goto) pEdges.push({ from: s.id, to: r.goto, when: r.when, default: r.default });
-      }
-    }
-    if (s.next) pEdges.push({ from: s.id, to: s.next });
+  // Build the executable plan — compiled DAG when the YAML compiles, legacy
+  // hand-parse otherwise. A pipeline that can't produce a runnable plan fails
+  // the document instead of running a wrong interpretation.
+  let plan: DagPlan;
+  try {
+    plan = buildDagPlan(pipeline.yamlSource);
+  } catch (err) {
+    const reason = `Pipeline is not runnable: ${(err as Error).message}`;
+    await markDocFailed(db, tenantId, documentId, doc.jobId, reason);
+    throw new TerminalError(reason);
   }
-  if (pEdges.length === 0 && pSteps.length > 1) {
-    for (let i = 0; i < pSteps.length - 1; i++) {
-      pEdges.push({ from: pSteps[i]!.id, to: pSteps[i + 1]!.id });
-    }
-  }
+  console.log(`[dag-runner] plan source=${plan.source}: ${plan.steps.length} steps, ${plan.edges.length} edges, entry=${plan.entryStepId}`);
+  const pSteps = plan.steps;
+  const pEdges = plan.edges;
 
   // Parse the document + chunk
   let docText: string | undefined;
@@ -385,11 +473,8 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   // Resolve model endpoint
   const endpoint = await resolveExtractEndpoint(db, { tenantId, projectId: pipeline.projectId }, pipeline.modelProviderId);
 
-  // Walk the DAG — start from startStepId (split child resume) or the first step with no incoming edges
-  const withIncoming = new Set(pEdges.map(e => e.to));
-  let currentId: string | null = startStepId
-    ? startStepId
-    : pSteps.find(s => !withIncoming.has(s.id))?.id || pSteps[0]?.id || null;
+  // Walk the DAG — start from startStepId (split child resume) or the plan's entry step
+  let currentId: string | null = startStepId ? startStepId : plan.entryStepId;
   const stepOutputs: Record<string, Record<string, unknown>> = { ...(inheritedOutputs ?? {}) };
   let stepOrder = 0;
   let totalCost = 0;
@@ -401,7 +486,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   let finalSchemaDef: Record<string, unknown> | undefined;
   let finalSchemaId: string | null = null;
 
-  while (currentId && stepOrder < 20) {
+  while (currentId && stepOrder < plan.maxSteps) {
     const step = pSteps.find(s => s.id === currentId);
     if (!step) break;
     stepOrder++;
@@ -748,7 +833,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
         case "split": {
           // Pre-resolve next steps so executeSplit can tell children where to resume
           const splitOutEdges = pEdges.filter(e => e.from === step.id);
-          const splitNextIds = splitOutEdges.filter(e => !e.when && !e.default).map(e => e.to);
+          const splitNextIds = splitOutEdges.filter(e => !e.when && !e.condition && !e.default).map(e => e.to);
           // If all edges are conditional, include them all — children will evaluate conditions
           const resumeIds = splitNextIds.length > 0 ? splitNextIds : splitOutEdges.map(e => e.to);
           output = await executeSplit(step, doc, documentId, pipelineId, tenantId, stepOutputs, db, storage, endpoint, resumeIds);
@@ -802,7 +887,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       // Parallel fan-out: run each branch independently
       for (const branchStartId of nextSteps) {
         let branchId: string | null = branchStartId;
-        while (branchId && stepOrder < 20) {
+        while (branchId && stepOrder < plan.maxSteps) {
           const branchStep = pSteps.find(s => s.id === branchId);
           if (!branchStep) break;
           stepOrder++;

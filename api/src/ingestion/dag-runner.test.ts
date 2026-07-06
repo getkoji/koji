@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evalCondition, resolveNextSteps, type TestEdge } from "./dag-runner";
+import { buildDagPlan, evalCondition, resolveNextSteps, type TestEdge } from "./dag-runner";
 
 describe("evalCondition", () => {
   it("returns true for empty/unparseable conditions", () => {
@@ -84,6 +84,171 @@ describe("resolveNextSteps", () => {
       { from: "a", to: "c", default: true },
     ];
     expect(resolveNextSteps(edges, { x: 1 })).toEqual(["b"]);
+  });
+});
+
+describe("buildDagPlan — compiled DAG execution (oss-358)", () => {
+  // The POC failure shape: classify + routed extract steps using the documented
+  // `on:` sugar. The old runner found zero edges here and ran every step
+  // linearly (3x extraction cost, last extract wins regardless of label).
+  const ROUTED_YAML = `
+pipeline: family-router
+steps:
+  - id: classify
+    type: classify
+    config:
+      labels:
+        - id: carrier_a
+        - id: carrier_b
+    on:
+      carrier_a: extract_a
+      carrier_b: extract_b
+      _default: extract_generic
+  - id: extract_a
+    type: extract
+    config: { schema: schema_a }
+  - id: extract_b
+    type: extract
+    config: { schema: schema_b }
+  - id: extract_generic
+    type: extract
+    config: { schema: schema_generic }
+`;
+
+  it("compiles on: sugar into conditional edges (no linear fallback)", () => {
+    const plan = buildDagPlan(ROUTED_YAML);
+    expect(plan.source).toBe("compiled");
+    expect(plan.entryStepId).toBe("classify");
+    expect(plan.edges).toHaveLength(3);
+    // No unconditional classify→extract chain
+    expect(plan.edges.every((e) => e.from === "classify")).toBe(true);
+    expect(plan.edges.filter((e) => e.default)).toHaveLength(1);
+  });
+
+  it("routes to exactly ONE extract step per classify label", () => {
+    const plan = buildDagPlan(ROUTED_YAML);
+    expect(resolveNextSteps(plan.edges, { label: "carrier_a" })).toEqual(["extract_a"]);
+    expect(resolveNextSteps(plan.edges, { label: "carrier_b" })).toEqual(["extract_b"]);
+    // Unknown label falls to the default edge
+    expect(resolveNextSteps(plan.edges, { label: "something_else" })).toEqual(["extract_generic"]);
+  });
+
+  it("compiles then: sugar into an unconditional edge", () => {
+    const plan = buildDagPlan(`
+pipeline: chained
+steps:
+  - id: extract
+    type: extract
+    config: { schema: s }
+    then: notify
+  - id: notify
+    type: webhook
+    config: { url: "https://example.test/hook" }
+`);
+    expect(plan.source).toBe("compiled");
+    expect(plan.edges).toEqual([
+      expect.objectContaining({ from: "extract", to: "notify" }),
+    ]);
+    expect(resolveNextSteps(plan.edges, {})).toEqual(["notify"]);
+  });
+
+  it("respects settings.max_steps from the compiled pipeline", () => {
+    const plan = buildDagPlan(`
+pipeline: capped
+settings: { max_steps: 5 }
+steps:
+  - id: extract
+    type: extract
+    config: { schema: s }
+`);
+    expect(plan.maxSteps).toBe(5);
+  });
+
+  it("falls back to legacy parsing for YAML the compiler rejects (routes:/next:)", () => {
+    // Pre-compiler yamlSource: no top-level `pipeline` name
+    const plan = buildDagPlan(`
+steps:
+  - id: classify
+    type: classify
+    config: {}
+    routes:
+      - { when: "output.label == 'invoice'", goto: extract_invoice }
+      - { goto: extract_other, default: true }
+  - id: extract_invoice
+    type: extract
+    config: { schema: invoice }
+  - id: extract_other
+    type: extract
+    config: { schema: other }
+`);
+    expect(plan.source).toBe("legacy");
+    expect(resolveNextSteps(plan.edges, { label: "invoice" })).toEqual(["extract_invoice"]);
+    expect(resolveNextSteps(plan.edges, { label: "receipt" })).toEqual(["extract_other"]);
+  });
+
+  it("legacy path translates on: sugar too", () => {
+    const plan = buildDagPlan(`
+steps:
+  - id: classify
+    type: classify
+    config: {}
+    on:
+      invoice: extract_invoice
+      _default: extract_other
+  - id: extract_invoice
+    type: extract
+    config: { schema: invoice }
+  - id: extract_other
+    type: extract
+    config: { schema: other }
+`);
+    expect(plan.source).toBe("legacy");
+    expect(resolveNextSteps(plan.edges, { label: "invoice" })).toEqual(["extract_invoice"]);
+    expect(resolveNextSteps(plan.edges, { label: "x" })).toEqual(["extract_other"]);
+  });
+
+  it("REFUSES the linear fallback when a classify step has no edges", () => {
+    // A classify router with no routes at all must not silently become a
+    // run-every-step fan-out.
+    expect(() =>
+      buildDagPlan(`
+steps:
+  - id: classify
+    type: classify
+    config: {}
+  - id: extract_a
+    type: extract
+    config: { schema: a }
+  - id: extract_b
+    type: extract
+    config: { schema: b }
+`),
+    ).toThrow(/refusing to run every step linearly/);
+  });
+
+  it("keeps the linear fallback for edge-less legacy pipelines WITHOUT classify", () => {
+    const plan = buildDagPlan(`
+steps:
+  - id: extract
+    type: extract
+    config: { schema: s }
+  - id: notify
+    type: webhook
+    config: { url: "https://example.test/hook" }
+`);
+    expect(plan.source).toBe("legacy");
+    expect(plan.entryStepId).toBe("extract");
+    expect(resolveNextSteps(plan.edges.filter((e) => e.from === "extract"), {})).toEqual(["notify"]);
+  });
+
+  it("single-schema shorthand compiles to a one-step plan", () => {
+    const plan = buildDagPlan(`
+pipeline: simple
+schema: invoice
+`);
+    expect(plan.source).toBe("compiled");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]).toMatchObject({ id: "extract", type: "extract" });
   });
 });
 
