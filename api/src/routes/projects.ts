@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
-import { requires, getTenantId, getPrincipal, getProjectId, getGrants, getAccessibleProjectIds } from "../auth/middleware";
+import { requires, getTenantId, getPrincipal, getProjectId, getGrants, getRoles, getAccessibleProjectIds } from "../auth/middleware";
 import type { Permission } from "../auth/roles";
+import { highestRoleRank, isValidProjectRole } from "../auth/roles";
 import { moveResource, MOVE_PERMISSION, type MovableType } from "../projects/move";
 
 export const projects = new Hono<Env>();
@@ -284,6 +285,166 @@ projects.delete("/:slug", requires("tenant:admin"), async (c) => {
       .update(schema.projects)
       .set({ deletedAt: new Date() })
       .where(eq(schema.projects.slug, slug))
+  );
+  return c.body(null, 204);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Project-centric member management (oss-383). The Members page manages one
+// member across all projects; this manages one project's roster. Both write
+// the same `project_access` rows. Gated by member:invite (workspace admins).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Resolve a project by slug within the tenant, or null. */
+async function findProject(db: any, tenantId: string, slug: string) {
+  const [p] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.projects.id, slug: schema.projects.slug, displayName: schema.projects.displayName })
+      .from(schema.projects)
+      .where(and(eq(schema.projects.slug, slug), isNull(schema.projects.deletedAt)))
+      .limit(1),
+  );
+  return p ?? null;
+}
+
+/**
+ * GET /api/projects/:slug/members — who can access this project.
+ *   - `members`: everyone with access. `access:"granted"` = a restricted member
+ *     explicitly granted here (with their project `roles`); `access:"all"` = an
+ *     unrestricted member (owner/admin) who sees every project (workspace role,
+ *     managed from the Members page).
+ *   - `candidates`: restricted members NOT yet on this project (the add picker).
+ *
+ * Admin-gated (member:invite) — this is a management surface, and it would
+ * otherwise let any member with member:read enumerate the roster of a project
+ * they can't access.
+ */
+projects.get("/:slug/members", requires("member:invite"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const project = await findProject(db, tenantId, c.req.param("slug")!);
+  if (!project) return c.json({ error: "Project not found" }, 404);
+
+  // All tenant members (memberships is global — filtered by tenantId).
+  const allMembers = await db
+    .select({
+      membershipId: schema.memberships.id,
+      userId: schema.memberships.userId,
+      roles: schema.memberships.roles,
+      restricted: schema.memberships.projectRestricted,
+      isShadow: schema.memberships.isShadow,
+      name: schema.users.name,
+      email: schema.users.email,
+    })
+    .from(schema.memberships)
+    .innerJoin(schema.users, eq(schema.users.id, schema.memberships.userId))
+    .where(and(eq(schema.memberships.tenantId, tenantId), eq(schema.memberships.isShadow, false)));
+
+  // This project's explicit grants (restricted members) → their project roles.
+  const grantRows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ userId: schema.projectAccess.userId, roles: schema.projectAccess.roles })
+      .from(schema.projectAccess)
+      .where(eq(schema.projectAccess.projectId, project.id)),
+  );
+  const grantByUser = new Map(grantRows.map((g) => [g.userId, g.roles]));
+
+  const members: any[] = [];
+  const candidates: any[] = [];
+  for (const m of allMembers) {
+    const base = { membershipId: m.membershipId, userId: m.userId, name: m.name, email: m.email };
+    if (!m.restricted) {
+      members.push({ ...base, access: "all", roles: m.roles });
+    } else if (grantByUser.has(m.userId)) {
+      members.push({ ...base, access: "granted", roles: grantByUser.get(m.userId) });
+    } else {
+      candidates.push(base);
+    }
+  }
+
+  return c.json({ project: { slug: project.slug, displayName: project.displayName }, members, candidates });
+});
+
+/**
+ * PUT /api/projects/:slug/members/:membershipId — grant/update a restricted
+ * member's role in THIS project. Body: { roles: ProjectRole[] }. The member
+ * must be project-restricted (an all-access member is managed from the Members
+ * page — restrict them there first).
+ */
+projects.put("/:slug/members/:membershipId", requires("member:invite"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const principal = getPrincipal(c);
+  const project = await findProject(db, tenantId, c.req.param("slug")!);
+  if (!project) return c.json({ error: "Project not found" }, 404);
+
+  const [m] = await db
+    .select({
+      id: schema.memberships.id,
+      userId: schema.memberships.userId,
+      roles: schema.memberships.roles,
+      restricted: schema.memberships.projectRestricted,
+      isShadow: schema.memberships.isShadow,
+    })
+    .from(schema.memberships)
+    .where(and(eq(schema.memberships.id, c.req.param("membershipId")!), eq(schema.memberships.tenantId, tenantId)))
+    .limit(1);
+  if (!m || m.isShadow) return c.json({ error: "Member not found" }, 404);
+
+  if (highestRoleRank(m.roles) > highestRoleRank(getRoles(c))) {
+    return c.json({ error: "Cannot modify a member with a higher role than your own" }, 403);
+  }
+  if (!m.restricted) {
+    return c.json({ error: "This member already has access to all projects. Restrict them on the Members page first." }, 400);
+  }
+
+  const body = await c.req.json<{ roles?: string[] }>();
+  const roles = body.roles && body.roles.length > 0 ? body.roles : ["project-member"];
+  for (const r of roles) {
+    if (!isValidProjectRole(r)) return c.json({ error: `Invalid project role: ${r}` }, 400);
+  }
+
+  await withRLS(db, tenantId, async (tx) => {
+    await tx
+      .delete(schema.projectAccess)
+      .where(and(eq(schema.projectAccess.userId, m.userId), eq(schema.projectAccess.projectId, project.id)));
+    await tx.insert(schema.projectAccess).values({
+      tenantId,
+      userId: m.userId,
+      projectId: project.id,
+      roles,
+      createdBy: principal.userId,
+    });
+  });
+
+  return c.json({ ok: true, roles });
+});
+
+/**
+ * DELETE /api/projects/:slug/members/:membershipId — revoke a member's access
+ * to THIS project (removes the grant row). No-op for all-access members.
+ */
+projects.delete("/:slug/members/:membershipId", requires("member:invite"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const project = await findProject(db, tenantId, c.req.param("slug")!);
+  if (!project) return c.json({ error: "Project not found" }, 404);
+
+  const [m] = await db
+    .select({ userId: schema.memberships.userId, roles: schema.memberships.roles, isShadow: schema.memberships.isShadow })
+    .from(schema.memberships)
+    .where(and(eq(schema.memberships.id, c.req.param("membershipId")!), eq(schema.memberships.tenantId, tenantId)))
+    .limit(1);
+  if (!m || m.isShadow) return c.json({ error: "Member not found" }, 404);
+
+  if (highestRoleRank(m.roles) > highestRoleRank(getRoles(c))) {
+    return c.json({ error: "Cannot modify a member with a higher role than your own" }, 403);
+  }
+
+  await withRLS(db, tenantId, (tx) =>
+    tx
+      .delete(schema.projectAccess)
+      .where(and(eq(schema.projectAccess.userId, m.userId), eq(schema.projectAccess.projectId, project.id))),
   );
   return c.body(null, 204);
 });
