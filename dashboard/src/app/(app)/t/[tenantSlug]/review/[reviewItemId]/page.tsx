@@ -15,6 +15,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
 import { deriveFieldOptions } from "./fieldOptions";
+import { parseOverride } from "@/lib/parse-override";
 
 type DecisionKind = "accept" | "override" | "reject" | "skip";
 
@@ -1241,23 +1242,4 @@ function stringifyValue(v: unknown): string {
   }
 }
 
-/**
- * Try to restore the override value to the same JSON shape the proposal had —
- * if the proposal was a number, parse the input as a number; if it was an
- * object/array, parse as JSON; otherwise keep as string.
- */
-function parseOverride(raw: string, proposal: unknown): unknown {
-  const trimmed = raw.trim();
-  if (typeof proposal === "number") {
-    const n = Number(trimmed);
-    return Number.isFinite(n) ? n : trimmed;
-  }
-  if (proposal !== null && typeof proposal === "object") {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed;
-}
+
