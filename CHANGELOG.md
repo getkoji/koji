@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.56.0 — 2026-07-06
+
+**Highlight-to-correct in the review queue.** When an extraction is wrong,
+point at the document instead of retyping: hit "point on document" (or `P`)
+next to the override input, drag over where the correct value lives, and the
+selection snaps to the text underneath and prefills the override — confirm or
+edit, then approve. The correction is saved **with its location**: the field's
+provenance gets a human-anchored source highlight (`resolution: "anchored"`),
+so the corrected value shows an exact highlight on the trace page, in the
+embed viewer, and in corpus ground truth promoted from the review. API:
+`POST /api/review/{id}/override` accepts an optional `provenance` object.
+
 ## 0.55.1 — 2026-07-06
 
 **Fix: hosted PDF normalization used the wrong Modal credentials.** The

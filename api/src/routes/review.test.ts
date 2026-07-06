@@ -11,8 +11,75 @@
  * Permission gating mirrors the route's `requires("corpus:write")` guard.
  */
 import { describe, it, expect } from "vitest";
-import { resolvePromotion, isUuid, parseUrgentBelow } from "./review";
+import {
+  resolvePromotion,
+  isUuid,
+  parseUrgentBelow,
+  parseOverrideProvenance,
+  buildAnchoredSpan,
+} from "./review";
 import { resolvePermissions } from "../auth/roles";
+
+describe("parseOverrideProvenance — override provenance validation", () => {
+  const bbox = { x: 0.62, y: 0.81, w: 0.18, h: 0.03 };
+  const word = { text: "$6,000.00", page: 1, x: 0.62, y: 0.81, w: 0.18, h: 0.03 };
+
+  it("returns null when absent (typed override, no geometry)", () => {
+    expect(parseOverrideProvenance(undefined)).toBeNull();
+    expect(parseOverrideProvenance(null)).toBeNull();
+  });
+
+  it("accepts a full anchored payload", () => {
+    const p = parseOverrideProvenance({ page: 1, bbox, words: [word], chunk: "$6,000.00" });
+    expect(p).toEqual({ page: 1, bbox, words: [word], chunk: "$6,000.00" });
+  });
+
+  it("accepts bbox-only (words and chunk optional)", () => {
+    expect(parseOverrideProvenance({ page: 2, bbox })).toEqual({ page: 2, bbox });
+  });
+
+  it("rejects malformed payloads as 'invalid', not silently null", () => {
+    expect(parseOverrideProvenance("x")).toBe("invalid");
+    expect(parseOverrideProvenance({ bbox })).toBe("invalid");
+    expect(parseOverrideProvenance({ page: 0, bbox })).toBe("invalid");
+    expect(parseOverrideProvenance({ page: 1, bbox: { x: 0.1, y: 0.2, w: 0.3 } })).toBe("invalid");
+    expect(parseOverrideProvenance({ page: 1, bbox: { ...bbox, x: NaN } })).toBe("invalid");
+    expect(parseOverrideProvenance({ page: 1, bbox, words: [{ text: "a" }] })).toBe("invalid");
+    expect(parseOverrideProvenance({ page: 1, bbox, chunk: 42 })).toBe("invalid");
+  });
+
+  it("strips unknown keys from words (no payload smuggling into provenanceJson)", () => {
+    const p = parseOverrideProvenance({
+      page: 1,
+      bbox,
+      words: [{ ...word, injected: "<script>" }],
+    });
+    expect(p).toEqual({ page: 1, bbox, words: [word] });
+  });
+});
+
+describe("buildAnchoredSpan — stored provenance shape", () => {
+  it("carries the anchored rung and the no-markdown-offset sentinel", () => {
+    const span = buildAnchoredSpan({
+      page: 1,
+      bbox: { x: 0.62, y: 0.81, w: 0.18, h: 0.03 },
+      words: [{ text: "$6,000.00", page: 1, x: 0.62, y: 0.81, w: 0.18, h: 0.03 }],
+      chunk: "$6,000.00",
+    });
+    expect(span.resolution).toBe("anchored");
+    expect(span.offset).toBe(-1);
+    expect(span.length).toBe(0);
+    expect(span.chunk).toBe("$6,000.00");
+    expect(span.page).toBe(1);
+    expect(span.words).toHaveLength(1);
+  });
+
+  it("omits empty words and absent chunk", () => {
+    const span = buildAnchoredSpan({ page: 3, bbox: { x: 0, y: 0, w: 1, h: 1 }, words: [] });
+    expect(span).not.toHaveProperty("words");
+    expect(span).not.toHaveProperty("chunk");
+  });
+});
 
 describe("isUuid — malformed ids are rejected (→ 404, not a Postgres 500)", () => {
   it("accepts a well-formed uuid", () => {
