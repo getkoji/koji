@@ -55,6 +55,15 @@ export interface FormTableSpec {
   field: string;
   /** Cap on region size when `end` never matches (chars). */
   max_region?: number;
+  /**
+   * How parser rows and LLM rows combine (default `seed_rows`):
+   *   - `seed_rows` — parser rows ARE the row set; unmatched LLM rows dropped.
+   *   - `union`     — parser rows still win on conflict by element key, but LLM
+   *     rows the grammar didn't capture are KEPT. Makes a partial grammar safe
+   *     to ship: if the parse degrades and the grammar sees only a subset of
+   *     rows, it enriches rather than deletes the LLM's correct rows.
+   */
+  mode?: "seed_rows" | "union";
   row: FormRowSpec;
   set: Record<string, SetRule>;
 }
@@ -194,14 +203,24 @@ export interface SeedMergeResult {
   sourceLines: string[];
   enriched: number;
   droppedLlmRows: number;
+  /** Keyed LLM rows the grammar didn't capture, kept under `union` mode. */
+  keptLlmRows: number;
 }
 
 /**
- * `seed_rows` merge: the parser rows ARE the row set. An LLM row that shares
- * the element key enriches its parser row with the sub-fields the grammar
- * didn't set (non-null LLM values fill parser nulls/absences; parser-captured
- * values always win). LLM rows with no matching parser row are dropped;
- * parser rows with no LLM match stay as parsed.
+ * Merge parser rows with LLM rows by element key. Parser-captured values always
+ * win where the grammar set them; LLM values fill the sub-fields the grammar
+ * didn't. Two modes decide what happens to LLM rows with no matching parser row:
+ *
+ *   - `seed_rows` (default) — the parser rows ARE the row set; unmatched LLM
+ *     rows are dropped. Correct when the grammar reliably captures every bound
+ *     row.
+ *   - `union` — unmatched keyed LLM rows are appended (after the parser rows),
+ *     so a partial grammar enriches rather than deletes the LLM's correct rows.
+ *     Parser rows still win on conflict. LLM rows with no element key can't be
+ *     positioned or de-duplicated and are dropped in both modes.
+ *
+ * Parser rows with no LLM match stay as parsed.
  */
 export function seedRowsMerge(
   parserRows: Array<Record<string, unknown>>,
@@ -209,6 +228,7 @@ export function seedRowsMerge(
   llmRows: unknown[],
   llmSources: string[] | undefined,
   elementKey: string,
+  mode: "seed_rows" | "union" = "seed_rows",
 ): SeedMergeResult {
   const llmByKey = new Map<string, { row: Record<string, unknown>; src: string | undefined }>();
   llmRows.forEach((r, i) => {
@@ -239,8 +259,21 @@ export function seedRowsMerge(
     sourceLines.push(parserSources[i] ?? "");
   });
 
+  // Union: keep the keyed LLM rows the grammar didn't capture, appended after
+  // the parser rows in LLM order. Parser rows already won every shared key.
+  let keptLlmRows = 0;
+  if (mode === "union") {
+    for (const [k, { row, src }] of llmByKey) {
+      if (usedKeys.has(k)) continue;
+      usedKeys.add(k);
+      rows.push({ ...row });
+      sourceLines.push(src ?? "");
+      keptLlmRows += 1;
+    }
+  }
+
   const droppedLlmRows = llmRows.length - usedKeys.size;
-  return { rows, sourceLines, enriched, droppedLlmRows };
+  return { rows, sourceLines, enriched, droppedLlmRows, keptLlmRows };
 }
 
 /**
@@ -275,12 +308,17 @@ export function applyFormTables(
     const llmAligned = llmSources && llmSources.length === llmRows.length ? llmSources : undefined;
 
     if (elementKey) {
-      const merged = seedRowsMerge(parsed.rows, parsed.sourceLines, llmRows, llmAligned, elementKey);
+      const mode = spec.mode === "union" ? "union" : "seed_rows";
+      const merged = seedRowsMerge(parsed.rows, parsed.sourceLines, llmRows, llmAligned, elementKey, mode);
       extracted[spec.field] = merged.rows;
       if (sourceTexts) sourceTexts[spec.field] = merged.sourceLines;
+      const disposition =
+        mode === "union"
+          ? `${merged.keptLlmRows} kept from extraction, ${merged.droppedLlmRows} unkeyed extraction row(s) dropped`
+          : `${merged.droppedLlmRows} extraction row(s) dropped`;
       report.push(
-        `${spec.field}: ${merged.rows.length} row(s) seeded from form table '${parsed.specId}' ` +
-          `(${merged.enriched} enriched by extraction, ${merged.droppedLlmRows} extraction row(s) dropped)`,
+        `${spec.field}: ${merged.rows.length} row(s) ${mode === "union" ? "unioned" : "seeded"} from form table ` +
+          `'${parsed.specId}' (${merged.enriched} enriched by extraction, ${disposition})`,
       );
     } else {
       // Without an element key there is no join — the parser rows replace the

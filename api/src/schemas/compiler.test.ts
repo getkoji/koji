@@ -536,4 +536,15 @@ forms:
     const r3 = compileSchema(base + `forms:\n  - field: parts\n    anchor: A\n    row: { pattern: "([" }\n`);
     expect(r3.ok).toBe(false);
   });
+
+  it("accepts mode: union (oss-390) and rejects an unknown mode", () => {
+    const ok = compileSchema(
+      base + `forms:\n  - field: parts\n    anchor: A\n    mode: union\n    row: { pattern: "(?<label>\\\\w+)" }\n`,
+    );
+    expect(ok.ok).toBe(true);
+    const bad = compileSchema(
+      base + `forms:\n  - field: parts\n    anchor: A\n    mode: replace\n    row: { pattern: "(?<label>\\\\w+)" }\n`,
+    );
+    expect(bad.ok).toBe(false);
+  });
 });
