@@ -90,7 +90,7 @@ const TRANSLATABLE_INLINE_FLAGS = new Set(["i", "m", "s"]);
  * express (e.g. `x`), it is left in place so the existing compile guard fails
  * safe rather than us producing a subtly different regex.
  */
-function translateLeadingInlineFlags(pattern: string, flags: string): { pattern: string; flags: string } {
+export function translateLeadingInlineFlags(pattern: string, flags: string): { pattern: string; flags: string } {
   // Match `(?<letters>)` at the very start — NOT `(?letters:` (scoped) and NOT
   // `(?<name>` (named group): the char after the flag letters must be `)`.
   const m = /^\(\?([a-z]+)\)/.exec(pattern);

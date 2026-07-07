@@ -6,7 +6,13 @@
  * pipe-table with per-row cells, blank-amount rows, and "INCL" premiums.
  */
 import { describe, it, expect } from "vitest";
-import { runFormTableSpec, seedRowsMerge, applyFormTables, type FormTableSpec } from "./form-tables";
+import {
+  runFormTableSpec,
+  seedRowsMerge,
+  applyFormTables,
+  translateLeadingInlineFlags,
+  type FormTableSpec,
+} from "./form-tables";
 import { collapseKeyedRows } from "./pipeline";
 
 const SPEC: FormTableSpec = {
@@ -325,19 +331,30 @@ SCHEDULE OF FORMS`;
     expect(r!.rows.map((x) => x.label)).toEqual(["PROPERTY DECLARATIONS", "LIABILITY DECLARATIONS"]);
   });
 
-  it("leaves a scoped (?i:...) group untouched (still works in V8)", () => {
-    const spec: FormTableSpec = {
-      ...DECL_SPEC,
-      anchor: "(?i:property|liability) DECLARATIONS",
-      detect: "(?i:property|liability) DECLARATIONS",
-      row: { pattern: "(?<label>(?i:property|liability) DECLARATIONS)", require: ["label"] },
-    };
-    const md = `property DECLARATIONS
-LIABILITY DECLARATIONS
-SCHEDULE OF FORMS`;
-    const r = runFormTableSpec(md, spec, DECL_FIELD);
-    expect(r).not.toBeNull();
-    expect(r!.rows.map((x) => x.label)).toEqual(["property DECLARATIONS", "LIABILITY DECLARATIONS"]);
+  // String-level tests of the flag translator — runtime-independent, so they
+  // don't depend on whether the node version happens to support a construct
+  // (scoped `(?i:)` groups compile on node 25 but throw on node 22, which is
+  // koji's CI + prod runtime). The helper only rewrites a LEADING `(?<letters>)`
+  // group; it must NOT touch scoped `(?i:)` groups (delimiter `:` not `)`).
+  describe("translateLeadingInlineFlags (string-level, runtime-independent)", () => {
+    it("lifts a leading (?i) into the flags argument, merged with the base flags", () => {
+      expect(translateLeadingInlineFlags("(?i)ABC", "g")).toEqual({ pattern: "ABC", flags: "gi" });
+    });
+    it("lifts a combined leading (?im) group", () => {
+      const t = translateLeadingInlineFlags("(?im)ABC", "");
+      expect(t.pattern).toBe("ABC");
+      expect([...t.flags].sort()).toEqual(["i", "m"]);
+    });
+    it("dedups a flag already present in the base flags", () => {
+      expect(translateLeadingInlineFlags("(?i)ABC", "ig")).toEqual({ pattern: "ABC", flags: "ig" });
+    });
+    it("leaves a SCOPED (?i:...) group unchanged (delimiter is ':' not ')')", () => {
+      const src = "(?i:property|liability) DECLARATIONS";
+      expect(translateLeadingInlineFlags(src, "g")).toEqual({ pattern: src, flags: "g" });
+    });
+    it("leaves a leading group with an unsupported flag (e.g. x) for the safe fallback", () => {
+      expect(translateLeadingInlineFlags("(?x)ABC", "g")).toEqual({ pattern: "(?x)ABC", flags: "g" });
+    });
   });
 
   it("a genuinely malformed pattern still fails safe (null, no throw)", () => {
