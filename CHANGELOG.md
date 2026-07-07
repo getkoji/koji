@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.62.1 — 2026-07-07
+
+**`forms:` grammars now find every table region, on messier headings.** Two
+region-carve bugs could make a form-table grammar seed nothing even when its
+rows were plainly present in the parsed text. The anchor/end were matched
+against the raw markdown while rows were matched against a normalized copy, so a
+heading that came through with a pipe or a double space made the anchor silently
+miss and the grammar return nothing. And only the first anchor-delimited region
+was scanned, so a repeated structure whose sections are separated by an `end`
+token seeded only the first section — or nothing when the first anchor landed on
+boilerplate immediately followed by the `end` token. The whole document is now
+normalized once so `detect`/`anchor`/`end`/rows all see the same text, and every
+anchor region is scanned and unioned (deduped by match offset). This restores
+the deterministic row floor — in particular a `union` grammar on a
+`per_section` field now surfaces its seeded rows even when the model pass
+returns nothing.
+
 ## 0.62.0 — 2026-07-06
 
 **`forms:` grammars can `union` instead of replace.** A form-table grammar with
