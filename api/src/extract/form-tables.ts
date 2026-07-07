@@ -77,11 +77,43 @@ export interface FormTableResult {
 
 const DEFAULT_MAX_REGION = 20_000;
 
+/** Flag letters V8 accepts as `RegExp` flags that a LEADING inline group can set. */
+const TRANSLATABLE_INLINE_FLAGS = new Set(["i", "m", "s"]);
+
+/**
+ * Translate a LEADING PCRE/Python-style inline-flag group into JS `RegExp`
+ * flags. `(?i)ABC` → pattern `ABC` with `i` merged into the flags argument;
+ * `(?im)` handles the combined form. V8 throws on a leading `(?i)` ("Invalid
+ * group"), so without this a schema author's PCRE-style pattern silently fails
+ * to compile and no-ops the whole grammar. SCOPED groups (`(?i:ABC)`) are left
+ * untouched — V8 supports those. If the leading group carries a flag JS can't
+ * express (e.g. `x`), it is left in place so the existing compile guard fails
+ * safe rather than us producing a subtly different regex.
+ */
+export function translateLeadingInlineFlags(pattern: string, flags: string): { pattern: string; flags: string } {
+  // Match `(?<letters>)` at the very start — NOT `(?letters:` (scoped) and NOT
+  // `(?<name>` (named group): the char after the flag letters must be `)`.
+  const m = /^\(\?([a-z]+)\)/.exec(pattern);
+  if (!m) return { pattern, flags };
+  const letters = m[1]!;
+  if (![...letters].every((c) => TRANSLATABLE_INLINE_FLAGS.has(c))) {
+    return { pattern, flags }; // unsupported flag (e.g. x) — leave for fail-safe
+  }
+  const merged = new Set([...flags, ...letters]);
+  return { pattern: pattern.slice(m[0].length), flags: [...merged].join("") };
+}
+
 function compile(pattern: string, flags: string): RegExp | null {
   try {
-    return new RegExp(pattern, flags);
-  } catch {
-    return null; // a malformed spec pattern must not break extraction
+    const t = translateLeadingInlineFlags(pattern, flags);
+    return new RegExp(t.pattern, t.flags);
+  } catch (err) {
+    // A malformed spec pattern must not break extraction — but a silent no-op
+    // (which drops the whole grammar) is a costly failure to debug, so say so.
+    console.warn(
+      `[koji-extract] forms: pattern failed to compile, spec skipped: ${JSON.stringify(pattern)} — ${(err as Error).message}`,
+    );
+    return null;
   }
 }
 
@@ -134,57 +166,113 @@ function resolveVia(
   return best?.code ?? null;
 }
 
-/** Run one spec over the markdown. Returns null when inactive (detect miss,
- *  anchor miss, bad pattern, or zero rows). */
+/** Build one output row from a row-pattern match, or null when the match is
+ *  filtered out by `require`/`skip_when_blank`. */
+function buildRow(
+  m: RegExpMatchArray,
+  spec: FormTableSpec,
+  fieldSpec: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  const groups: Record<string, string | undefined> = m.groups ?? {};
+  if ((spec.row.require ?? []).some((g) => !(groups[g] ?? "").trim())) return null;
+  if ((spec.row.skip_when_blank ?? []).some((g) => !(groups[g] ?? "").trim())) return null;
+
+  const row: Record<string, unknown> = {};
+  for (const [key, rule] of Object.entries(spec.set ?? {})) {
+    if (typeof rule === "string") {
+      const v = substitute(rule, groups).trim();
+      row[key] = v.length > 0 ? v : null;
+    } else if ("money" in rule) {
+      row[key] = moneyValue(substitute(rule.money, groups), rule.null_tokens ?? []);
+    } else if ("resolve" in rule) {
+      row[key] = resolveVia(substitute(rule.resolve, groups), rule.via, fieldSpec);
+    }
+  }
+  return row;
+}
+
+/**
+ * Run one spec over the markdown. Returns null when inactive (detect miss,
+ * anchor miss, bad pattern, or zero rows).
+ *
+ * The whole markdown is normalized ONCE up front (pipes → spaces, horizontal
+ * whitespace collapsed) so `detect`, `anchor`, `end`, and the row grammar all
+ * match against the SAME text. Matching the anchor/end against raw markdown
+ * while matching rows against normalized text silently dropped tables whose
+ * heading carried a pipe or a double space — common in parser output — which
+ * made the grammar return nothing even when the rows were plainly present.
+ *
+ * EVERY anchor-delimited region is scanned, not just the first. A repeated
+ * structure (e.g. a running-header phrase that reappears each section, with an
+ * `end` token between sections) yields one region per section; their rows are
+ * unioned, deduped by match offset so overlapping carves never double-count.
+ * Scanning only the first region truncated the deterministic row floor to the
+ * first section — or, when the first anchor hit a boilerplate header followed
+ * immediately by an `end` token, to nothing.
+ */
 export function runFormTableSpec(
   markdown: string,
   spec: FormTableSpec,
   fieldSpec: Record<string, unknown> | undefined,
 ): FormTableResult | null {
+  const normalized = normalizeRegion(markdown);
+
   if (spec.detect) {
     const d = compile(spec.detect, "i");
-    if (!d || !d.test(markdown)) return null;
+    if (!d || !d.test(normalized)) return null;
   }
-  const anchor = compile(spec.anchor, "i");
+  const anchor = compile(spec.anchor, "ig");
   if (!anchor) return null;
-  const am = anchor.exec(markdown);
-  if (!am) return null;
-  const start = am.index;
-  let endIdx = start + (spec.max_region ?? DEFAULT_MAX_REGION);
-  if (spec.end) {
-    const endRe = compile(spec.end, "ig");
-    if (endRe) {
-      endRe.lastIndex = start + am[0].length;
-      const em = endRe.exec(markdown);
-      if (em) endIdx = Math.min(endIdx, em.index + em[0].length + 200);
-    }
-  }
-  const region = normalizeRegion(markdown.slice(start, endIdx));
-
   const rowRe = compile(spec.row.pattern, "g");
   if (!rowRe) return null;
+  const endRe = spec.end ? compile(spec.end, "ig") : null;
+  const maxRegion = spec.max_region ?? DEFAULT_MAX_REGION;
 
   const rows: Array<Record<string, unknown>> = [];
   const sourceLines: string[] = [];
-  for (const m of region.matchAll(rowRe)) {
-    const groups: Record<string, string | undefined> = m.groups ?? {};
-    if ((spec.row.require ?? []).some((g) => !(groups[g] ?? "").trim())) continue;
-    if ((spec.row.skip_when_blank ?? []).some((g) => !(groups[g] ?? "").trim())) continue;
+  const seenOffsets = new Set<number>(); // absolute offsets already emitted
 
-    const row: Record<string, unknown> = {};
-    for (const [key, rule] of Object.entries(spec.set ?? {})) {
-      if (typeof rule === "string") {
-        const v = substitute(rule, groups).trim();
-        row[key] = v.length > 0 ? v : null;
-      } else if ("money" in rule) {
-        row[key] = moneyValue(substitute(rule.money, groups), rule.null_tokens ?? []);
-      } else if ("resolve" in rule) {
-        row[key] = resolveVia(substitute(rule.resolve, groups), rule.via, fieldSpec);
+  let cursor = 0;
+  let matchedAnchor = false;
+  while (cursor <= normalized.length) {
+    anchor.lastIndex = cursor;
+    const am = anchor.exec(normalized);
+    if (!am) break;
+    matchedAnchor = true;
+    const start = am.index;
+
+    // Region runs anchor → end (first `end` after this anchor), capped by
+    // max_region. A small trailing buffer keeps a row that sits just past the
+    // end token. The next section is searched from just after the end token so
+    // no section is skipped; offset dedup makes the small overlap harmless.
+    let regionEnd = Math.min(normalized.length, start + maxRegion);
+    let nextCursor = regionEnd;
+    if (endRe) {
+      endRe.lastIndex = start + am[0].length;
+      const em = endRe.exec(normalized);
+      if (em) {
+        regionEnd = Math.min(regionEnd, em.index + em[0].length + 200);
+        nextCursor = em.index + em[0].length;
       }
     }
-    rows.push(row);
-    sourceLines.push(m[0].trim().slice(0, 500));
+
+    const region = normalized.slice(start, regionEnd);
+    for (const m of region.matchAll(rowRe)) {
+      const abs = start + (m.index ?? 0);
+      if (seenOffsets.has(abs)) continue;
+      seenOffsets.add(abs);
+      const row = buildRow(m, spec, fieldSpec);
+      if (!row) continue;
+      rows.push(row);
+      sourceLines.push(m[0].trim().slice(0, 500));
+    }
+
+    // Guarantee forward progress even for a zero-width anchor or a degenerate
+    // end that resolves before the anchor.
+    cursor = Math.max(nextCursor, start + Math.max(am[0].length, 1));
   }
+
+  if (!matchedAnchor) return null;
   if (rows.length === 0) return null;
   return { rows, sourceLines, specId: spec.id ?? spec.anchor.slice(0, 40) };
 }
