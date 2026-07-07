@@ -10,10 +10,12 @@ from typer.testing import CliRunner
 
 from cli.main import app
 from cli.remote import (
+    _api_error,
     _diff_fields,
     _elem_labels,
     _find_local_schema,
     _fmt_value,
+    _format_details,
     _load_schema_arg,
     _looks_like_path,
     _norm,
@@ -275,3 +277,85 @@ def test_render_array_element_diffs_silent_without_array_diffs():
         ]
     }
     assert _capture_render(payload) == ""
+
+
+# ── Schema-compile error rendering (oss-397) ──────────────────────────
+
+
+class _FakeResponse:
+    """Minimal stand-in for an httpx.Response for _api_error tests."""
+
+    def __init__(self, status_code: int, body: object, text: str = ""):
+        self.status_code = status_code
+        self._body = body
+        self.text = text
+        self.request = None
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
+
+
+def _capture_api_error(resp: _FakeResponse, context: str) -> str:
+    from rich.console import Console
+
+    import cli.remote as remote
+
+    rec = Console(record=True, width=200)
+    orig = remote.console
+    remote.console = rec
+    try:
+        _api_error(resp, context)
+    except typer.Exit:
+        pass
+    finally:
+        remote.console = orig
+    return rec.export_text()
+
+
+def test_format_details_list_of_compiler_errors():
+    lines = _format_details(
+        [
+            {"message": "Map keys must be unique at line 391"},
+            {"field": "max_chunks", "message": "element_key set at the wrong level"},
+        ]
+    )
+    assert lines == [
+        "Map keys must be unique at line 391",
+        "max_chunks: element_key set at the wrong level",
+    ]
+
+
+def test_format_details_string_and_none():
+    assert _format_details("plain string reason") == ["plain string reason"]
+    assert _format_details(None) == []
+
+
+def test_api_error_renders_compile_details_not_just_http_422():
+    resp = _FakeResponse(
+        422,
+        {
+            "error": "Schema validation failed",
+            "details": [
+                {"message": "Map keys must be unique at line 391"},
+                {"field": "coverages", "message": "unknown property 'max_chunk'"},
+            ],
+        },
+    )
+    out = _capture_api_error(resp, "validate insurance_policy")
+    # Header still present…
+    assert "HTTP 422" in out
+    assert "Schema validation failed" in out
+    # …but the real cause is no longer swallowed.
+    assert "Map keys must be unique at line 391" in out
+    assert "coverages: unknown property 'max_chunk'" in out
+
+
+def test_api_error_falls_back_to_error_then_text():
+    # No details[] → use `error`.
+    out = _capture_api_error(_FakeResponse(400, {"error": "yaml is required"}), "push foo")
+    assert "yaml is required" in out
+    # Non-JSON body → fall back to raw text.
+    out = _capture_api_error(_FakeResponse(500, None, text="upstream boom"), "validate foo")
+    assert "upstream boom" in out
