@@ -206,6 +206,98 @@ fields:
     }
   });
 
+  it("compiles a valid assemble_array derived_from (multi-source → array)", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  cov_a:
+    type: object
+    properties:
+      name: { type: string }
+  cov_b:
+    type: object
+    properties:
+      name: { type: string }
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        name: { type: string }
+    derived_from:
+      method: assemble_array
+      fields: [cov_a, cov_b]
+`);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects assemble_array without a 'fields' list", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  cov_a:
+    type: object
+    properties:
+      name: { type: string }
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        name: { type: string }
+    derived_from:
+      method: assemble_array
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.message.includes("requires a non-empty 'fields' list"))).toBe(true);
+    }
+  });
+
+  it("rejects assemble_array whose 'fields' reference an undefined field", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  cov_a:
+    type: object
+    properties:
+      name: { type: string }
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        name: { type: string }
+    derived_from:
+      method: assemble_array
+      fields: [cov_a, cov_missing]
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.message.includes("'cov_missing' which is not defined"))).toBe(true);
+    }
+  });
+
+  it("rejects assemble_array on a non-array target field", () => {
+    const result = compileSchema(`
+name: test
+fields:
+  cov_a:
+    type: object
+    properties:
+      name: { type: string }
+  coverages:
+    type: string
+    derived_from:
+      method: assemble_array
+      fields: [cov_a]
+`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.message.includes("requires the field to be type 'array'"))).toBe(true);
+    }
+  });
+
   it("rejects unknown normalize value", () => {
     const result = compileSchema(`
 name: test
