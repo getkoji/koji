@@ -395,6 +395,67 @@ If `gl_insurer_letter` extracts as `"A"`, the template resolves to `"insurer_a"`
 
 Resolve runs after all other normalization. It only fills fields that are null or empty -- it won't overwrite a value that was already extracted. This makes it safe to use alongside [form mappings](forms-guide.md) where some fields come from coordinates and others from LLM interpretation.
 
+### Deriving fields (`derived_from`)
+
+`derived_from` computes a field's value from other extracted fields using a named, deterministic method — no LLM call. Two shapes:
+
+**Scalar derivation** — one source field → one value. For example, pull a US state code out of an address string:
+
+```yaml
+fields:
+  address:
+    type: string
+  state:
+    type: string
+    derived_from:
+      field: address          # or "*" to scan every string field
+      method: us_state_lookup
+```
+
+**Array assembly (`assemble_array`)** — map a *set* of source fields into a single array. This lets a schema extract in a focused, reliable shape — one object field per section — yet still emit Koji's uniform array output, instead of a downstream adapter reassembling it.
+
+```yaml
+fields:
+  property_coverage:
+    type: object
+    properties:
+      limit: { type: number }
+  liability_coverage:
+    type: object
+    properties:
+      limit: { type: number }
+  umbrella_coverage:
+    type: object
+    properties:
+      limit: { type: number }
+
+  coverages:
+    type: array
+    items:
+      type: object
+      properties:
+        limit: { type: number }
+    derived_from:
+      method: assemble_array
+      fields: [property_coverage, liability_coverage, umbrella_coverage]
+```
+
+If `property_coverage` and `liability_coverage` extract and `umbrella_coverage` comes back null, `coverages` becomes a two-element array in listed order:
+
+```json
+[{ "limit": 1000000 }, { "limit": 2000000 }]
+```
+
+Semantics:
+
+- **Order is preserved** — output elements follow the order of `fields`.
+- **Null / absent / empty-string sources are skipped** — they contribute nothing (no `null` holes in the array).
+- **An array source is concatenated (flattened one level)** — if a listed field is itself an array (a focused field that produced several rows), its elements merge into the output rather than nesting as an inner array. Any other value (object or scalar) contributes as a single element.
+- **It won't clobber an already-populated array** — if the target already has elements (e.g. from direct extraction or a [form table](forms-guide.md)), assembly is skipped. It only fills an empty/null target.
+- **Provenance is preserved** — object elements pass through by reference, so per-property source text and highlight regions ride along untouched.
+
+`assemble_array` is generic: the source fields can hold objects, scalars, or a mix — `coverages` is just an illustrative name.
+
 ### Keeping the original value (`keep_raw`)
 
 When `mapping`, `enum`, or `normalize` canonicalizes a value, the original is replaced — `"Each Occurrence"` becomes `each_occurrence`, `"$1,000,000"` becomes `1000000`. If you need **both** the canonical value *and* the document's printed text, set `keep_raw: true`. Koji emits a companion `<field>_raw` holding the exact verbatim text from the document:

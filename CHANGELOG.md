@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.63.0 — 2026-07-07
+
+**`derived_from` can assemble an array from a set of fields.** A new
+`assemble_array` derivation method maps a set of focused object (or scalar)
+fields into a single array field, in listed order. Null/absent sources are
+skipped, an array source is flattened one level, and an already-populated
+target is left untouched. This lets a schema extract in a focused, reliable
+shape — one object field per section — yet still emit Koji's uniform array
+output, instead of a downstream adapter reassembling it. Provenance on object
+elements is preserved. See the
+[`derived_from` guide](schema-guide.md#deriving-fields-derived_from).
+
 ## 0.62.2 — 2026-07-07
 
 **`koji validate` (and every remote command) now shows *why* a schema failed to compile.** A 422 from the API carries a `details[]` array — the specific compiler errors (e.g. "Map keys must be unique at line 391") — but the CLI printed only the top-level "HTTP 422: Schema validation failed" and swallowed the array, so the real cause was invisible. The shared error renderer now surfaces each `details[]` message on its own line.

@@ -365,6 +365,116 @@ describe("us_state_lookup derivation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// assemble_array derivation (multi-source → one array)
+// ---------------------------------------------------------------------------
+
+describe("assemble_array derivation", () => {
+  const schema = {
+    fields: {
+      cov_a: { type: "object", properties: { name: { type: "string" } } },
+      cov_b: { type: "object", properties: { name: { type: "string" } } },
+      cov_c: { type: "object", properties: { name: { type: "string" } } },
+      all_coverages: {
+        type: "array",
+        items: { type: "object", properties: { name: { type: "string" } } },
+        derived_from: { method: "assemble_array", fields: ["cov_a", "cov_b", "cov_c"] },
+      },
+    },
+  };
+
+  it("maps a set of object fields into one ordered array", () => {
+    const extracted = {
+      cov_a: { name: "Property" },
+      cov_b: { name: "Liability" },
+      cov_c: { name: "Umbrella" },
+      all_coverages: null,
+    };
+    const [result, report] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toEqual([
+      { name: "Property" },
+      { name: "Liability" },
+      { name: "Umbrella" },
+    ]);
+    expect(report.applied.some((a) => a.transform.startsWith("assembled via assemble_array"))).toBe(true);
+  });
+
+  it("preserves source order and skips null/absent sources", () => {
+    const extracted = {
+      cov_a: { name: "Property" },
+      cov_b: null,
+      // cov_c absent entirely
+      all_coverages: null,
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toEqual([{ name: "Property" }]);
+  });
+
+  it("concatenates (flattens one level) when a source is itself an array", () => {
+    const extracted = {
+      cov_a: [{ name: "Property" }, { name: "Contents" }],
+      cov_b: { name: "Liability" },
+      cov_c: null,
+      all_coverages: null,
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toEqual([
+      { name: "Property" },
+      { name: "Contents" },
+      { name: "Liability" },
+    ]);
+  });
+
+  it("preserves provenance/__source_text carried on object elements", () => {
+    const extracted = {
+      cov_a: { name: "Property", __source_text: "PROPERTY $1,000,000" },
+      cov_b: null,
+      cov_c: null,
+      all_coverages: null,
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toEqual([
+      { name: "Property", __source_text: "PROPERTY $1,000,000" },
+    ]);
+  });
+
+  it("does NOT overwrite an already-populated array", () => {
+    const extracted = {
+      cov_a: { name: "Property" },
+      cov_b: { name: "Liability" },
+      cov_c: null,
+      all_coverages: [{ name: "Pre-existing" }],
+    };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toEqual([{ name: "Pre-existing" }]);
+  });
+
+  it("leaves the field untouched when every source is empty", () => {
+    const extracted = { cov_a: null, cov_b: null, cov_c: null, all_coverages: null };
+    const [result] = normalizeExtracted(extracted, schema);
+    expect(result.all_coverages).toBeNull();
+  });
+
+  it("works with scalar sources too (generic, not object-only)", () => {
+    const scalarSchema = {
+      fields: {
+        a: { type: "string" },
+        b: { type: "string" },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          derived_from: { method: "assemble_array", fields: ["a", "b"] },
+        },
+      },
+    };
+    const [result] = normalizeExtracted(
+      { a: "x", b: "y", tags: null },
+      scalarSchema,
+    );
+    expect(result.tags).toEqual(["x", "y"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Array normalization (item-level)
 // ---------------------------------------------------------------------------
 

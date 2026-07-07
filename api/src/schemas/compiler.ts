@@ -144,10 +144,43 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
       }
     }
 
-    // derived_from must reference existing field
-    if (def.derived_from && typeof def.derived_from === "string") {
-      if (!fieldNames.has(def.derived_from)) {
-        errors.push({ field: name, message: `Field '${name}': derived_from references '${def.derived_from}' which is not defined as a field` });
+    // derived_from — string shorthand references a field; object form declares
+    // a derivation method (scalar single-source, or array-assembly multi-source).
+    if (def.derived_from !== undefined) {
+      const df = def.derived_from;
+      if (typeof df === "string") {
+        if (!fieldNames.has(df)) {
+          errors.push({ field: name, message: `Field '${name}': derived_from references '${df}' which is not defined as a field` });
+        }
+      } else if (df && typeof df === "object" && !Array.isArray(df)) {
+        const d = df as Record<string, unknown>;
+        const methodName = (d.method ?? d.transform) as string | undefined;
+
+        // Single-source `field:` reference must exist ('*' = scan all fields).
+        if (typeof d.field === "string" && d.field !== "*" && !fieldNames.has(d.field)) {
+          errors.push({ field: name, message: `Field '${name}': derived_from.field references '${d.field}' which is not defined as a field` });
+        }
+
+        // assemble_array maps a set of source fields into this array field.
+        if (methodName === "assemble_array") {
+          const srcFields = d.fields;
+          if (!Array.isArray(srcFields) || srcFields.length === 0) {
+            errors.push({ field: name, message: `Field '${name}': derived_from method 'assemble_array' requires a non-empty 'fields' list of source field names` });
+          } else {
+            for (const src of srcFields) {
+              if (typeof src !== "string") {
+                errors.push({ field: name, message: `Field '${name}': derived_from.fields entries must be field-name strings` });
+              } else if (!fieldNames.has(src)) {
+                errors.push({ field: name, message: `Field '${name}': derived_from.fields references '${src}' which is not defined as a field` });
+              }
+            }
+          }
+          if (def.type !== undefined && def.type !== "array") {
+            errors.push({ field: name, message: `Field '${name}': derived_from method 'assemble_array' requires the field to be type 'array', got '${def.type}'` });
+          }
+        }
+      } else {
+        errors.push({ field: name, message: `Field '${name}': derived_from must be a field name (string) or a derivation mapping` });
       }
     }
 

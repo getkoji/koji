@@ -435,6 +435,39 @@ function inferLocale(
   return {};
 }
 
+// ── Array assembly (for derived_from) ─────────────────────────────────────
+
+/**
+ * Assemble a flat array from an ordered set of source field values.
+ *
+ * Each source contributes to the output in the order the fields are listed:
+ *   - `null` / `undefined` / empty-or-whitespace-string sources are skipped;
+ *   - an **array** source is concatenated (flattened one level), preserving
+ *     element order — a focused field that itself produced several items merges
+ *     cleanly into the uniform output rather than nesting as an inner array;
+ *   - any other value (object or scalar) contributes as a single element.
+ *
+ * Objects pass through by reference, so any provenance / `__source_text` they
+ * carry is preserved untouched. Domain-agnostic: works for objects, scalars, or
+ * a mix, with no assumptions about the shape of the elements.
+ */
+function assembleArray(sources: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  for (const v of sources) {
+    if (v == null) continue;
+    if (typeof v === "string" && !v.trim()) continue;
+    if (Array.isArray(v)) {
+      for (const el of v) {
+        if (el == null) continue;
+        out.push(el);
+      }
+    } else {
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 // ── Levenshtein distance ──────────────────────────────────────────────────
 
 function levenshtein(a: string, b: string): number {
@@ -481,6 +514,14 @@ const TRANSFORMS: Record<string, TransformFn> = {
 
 const DERIVATION_METHODS: Record<string, (text: string, ...args: unknown[]) => string | null> = {
   us_state_lookup: usStateLookup as (text: string, ...args: unknown[]) => string | null,
+};
+
+// Array-assembly derivations map a SET of source fields into one array field,
+// rather than a single string source into a scalar (DERIVATION_METHODS above).
+type ArrayAssemblyFn = (sources: unknown[]) => unknown[];
+
+const ARRAY_ASSEMBLY_METHODS: Record<string, ArrayAssemblyFn> = {
+  assemble_array: assembleArray,
 };
 
 // ---------------------------------------------------------------------------
@@ -690,6 +731,35 @@ export function normalizeExtracted(
     const sourceField = derived.field as string | undefined;
     const methodName = (derived.method ?? derived.transform) as string | undefined;
     if (!methodName) continue;
+
+    // ── Array-assembly derivation: map a SET of source fields → one array ──
+    const assembleFn = ARRAY_ASSEMBLY_METHODS[methodName];
+    if (assembleFn) {
+      // Don't clobber an array that already has elements.
+      const existing = result[fieldName];
+      if (Array.isArray(existing) && existing.length > 0) continue;
+
+      // `fields:` (plural) is the multi-source list; `field:` is accepted as a
+      // single-source alias so a one-field assembly still validates.
+      const rawFields = derived.fields ?? derived.field;
+      const sourceFields: string[] = Array.isArray(rawFields)
+        ? rawFields.map(String)
+        : typeof rawFields === "string" && rawFields
+          ? [rawFields]
+          : [];
+      if (sourceFields.length === 0) continue;
+
+      const assembled = assembleFn(sourceFields.map((f) => result[f]));
+      if (assembled.length > 0) {
+        result[fieldName] = assembled;
+        report.applied.push({
+          field: fieldName,
+          transform: `assembled via ${methodName} from [${sourceFields.join(", ")}]`,
+        });
+      }
+      continue;
+    }
+
     const method = DERIVATION_METHODS[methodName];
     if (!method) {
       report.warnings.push(`${fieldName}: unknown derivation method '${methodName}'`);
