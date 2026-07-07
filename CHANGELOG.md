@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.63.1 — 2026-07-07
+
+**Overview page is fully scoped to the selected project.** The dashboard
+overview was already project-scoped for most tiles, but the Accuracy number,
+the "validate regression" attention item, and the corpus / extraction /
+validate onboarding steps still read tenant-wide — they queried tables
+(`schema_runs`, `corpus_entries`, `extraction_runs`) that carry no project
+association, so row-level security couldn't narrow them. These reads now join
+the project-scoped schema, so every number on the overview reflects only the
+project you're viewing.
+
 ## 0.63.0 — 2026-07-07
 
 **`derived_from` can assemble an array from a set of fields.** A new
