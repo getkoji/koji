@@ -1,28 +1,32 @@
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
-import { withRLS } from "@koji/db";
+import { withRLS, type Db } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getProjectId } from "../auth/middleware";
 
 export const overview = new Hono<Env>();
 
 /**
- * GET /api/overview — single-query tenant overview.
+ * Run the single-query overview CTE inside withRLS and return the raw `data`
+ * jsonb object (metrics, recent activity, attention counts, onboarding).
  *
- * One SQL round-trip returns all metrics, recent activity, attention items,
- * and onboarding state. The query runs as a CTE pipeline inside withRLS so
- * tenant isolation is enforced at the row level.
+ * The query runs inside withRLS, which enforces tenant isolation and — for
+ * tables in PROJECT_RLS_TABLES (schemas, pipelines, jobs, review_items, …) —
+ * narrows rows to the selected project.
+ *
+ * Tables that carry no project_id (schema_runs, corpus_entries, extraction_runs)
+ * are NOT narrowed by RLS on their own, so every read of them here JOINs the
+ * project-scoped `schemas` table on schema_id to keep the whole page scoped to
+ * the current project. Adding such a read without that join silently leaks
+ * tenant-wide numbers into a project view.
  */
-overview.get("/", requires("schema:read"), async (c) => {
-  const db = c.get("db");
-  const tenantId = getTenantId(c);
-
-  const [result] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+export async function fetchOverviewData(db: Db, tenantId: string, projectId: string | null) {
+  const [result] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx.execute(sql`
       WITH
         metrics AS (
           SELECT
-            (SELECT (accuracy * 100)::float FROM schema_runs WHERE status = 'completed' ORDER BY created_at DESC LIMIT 1) AS accuracy,
+            (SELECT (sr.accuracy * 100)::float FROM schema_runs sr JOIN schemas s ON s.id = sr.schema_id WHERE sr.status = 'completed' AND s.deleted_at IS NULL ORDER BY sr.created_at DESC LIMIT 1) AS accuracy,
             (SELECT count(*)::int FROM documents d JOIN schemas s ON s.id = d.schema_id WHERE s.deleted_at IS NULL) AS documents_processed,
             (SELECT count(*)::int FROM review_items WHERE status = 'pending') AS review_pending,
             (SELECT count(*)::int FROM pipelines WHERE status = 'active') AS pipelines_active,
@@ -66,10 +70,11 @@ overview.get("/", requires("schema:read"), async (c) => {
         ),
 
         attention_latest_validate AS (
-          SELECT regressions_count, schema_id
-          FROM schema_runs
-          WHERE status = 'completed' AND run_type = 'validate'
-          ORDER BY created_at DESC LIMIT 1
+          SELECT sr.regressions_count, sr.schema_id
+          FROM schema_runs sr
+          JOIN schemas s ON s.id = sr.schema_id
+          WHERE sr.status = 'completed' AND sr.run_type = 'validate' AND s.deleted_at IS NULL
+          ORDER BY sr.created_at DESC LIMIT 1
         ),
 
         attention_unlinked_pipelines AS (
@@ -88,15 +93,18 @@ overview.get("/", requires("schema:read"), async (c) => {
         onboarding AS (
           SELECT
             (SELECT slug FROM schemas WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1) AS first_schema_slug,
-            (SELECT count(*)::int > 0 FROM corpus_entries WHERE deleted_at IS NULL) AS has_corpus,
-            (SELECT count(*)::int > 0 FROM extraction_runs) AS has_extraction,
-            (SELECT count(*)::int > 0 FROM corpus_entries
-              WHERE deleted_at IS NULL
-                AND ground_truth_json IS NOT NULL
-                AND jsonb_typeof(ground_truth_json) = 'object'
-                AND ground_truth_json::text != '{}') AS has_ground_truth,
-            (SELECT count(*)::int > 0 FROM schema_runs
-              WHERE status = 'completed' AND run_type = 'validate') AS has_validate,
+            (SELECT count(*)::int > 0 FROM corpus_entries ce JOIN schemas s ON s.id = ce.schema_id
+              WHERE ce.deleted_at IS NULL AND s.deleted_at IS NULL) AS has_corpus,
+            (SELECT count(*)::int > 0 FROM extraction_runs er JOIN schemas s ON s.id = er.schema_id
+              WHERE s.deleted_at IS NULL) AS has_extraction,
+            (SELECT count(*)::int > 0 FROM corpus_entries ce JOIN schemas s ON s.id = ce.schema_id
+              WHERE ce.deleted_at IS NULL
+                AND s.deleted_at IS NULL
+                AND ce.ground_truth_json IS NOT NULL
+                AND jsonb_typeof(ce.ground_truth_json) = 'object'
+                AND ce.ground_truth_json::text != '{}') AS has_ground_truth,
+            (SELECT count(*)::int > 0 FROM schema_runs sr JOIN schemas s ON s.id = sr.schema_id
+              WHERE sr.status = 'completed' AND sr.run_type = 'validate' AND s.deleted_at IS NULL) AS has_validate,
             (SELECT count(*)::int > 0 FROM pipelines) AS has_pipeline
         ),
 
@@ -122,7 +130,19 @@ overview.get("/", requires("schema:read"), async (c) => {
     `),
   );
 
-  const d = (result as any).data;
+  return (result as any).data;
+}
+
+/**
+ * GET /api/overview — single-query project overview.
+ *
+ * See fetchOverviewData for the scoping contract.
+ */
+overview.get("/", requires("schema:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+
+  const d = await fetchOverviewData(db, tenantId, getProjectId(c));
   const m = d.metrics;
 
   // ── Build activity feed ───────────────────────────────────────────────
