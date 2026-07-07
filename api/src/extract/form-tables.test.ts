@@ -292,6 +292,61 @@ SCHEDULE OF FORMS`;
     ]);
   });
 
+  it("translates a leading PCRE-style (?i) inline flag so the spec compiles", () => {
+    // Schema authors naturally write `(?i)` — universal everywhere except JS,
+    // where a LEADING `(?i)` throws and silently no-ops the whole grammar.
+    const spec: FormTableSpec = {
+      ...DECL_SPEC,
+      detect: "(?i)(property|liability) declarations",
+      anchor: "(?i)(property|liability) declarations",
+      row: { pattern: "(?i)(?<label>(?:property|liability) declarations)", require: ["label"] },
+    };
+    const md = `PROPERTY DECLARATIONS
+row body
+LIABILITY DECLARATIONS
+SCHEDULE OF FORMS`;
+    const r = runFormTableSpec(md, spec, DECL_FIELD);
+    expect(r).not.toBeNull();
+    expect(r!.rows.map((x) => x.label)).toEqual(["PROPERTY DECLARATIONS", "LIABILITY DECLARATIONS"]);
+  });
+
+  it("translates a combined leading inline flag group (?im)", () => {
+    const spec: FormTableSpec = {
+      ...DECL_SPEC,
+      anchor: "(?im)(property|liability) declarations",
+      detect: "(?im)(property|liability) declarations",
+      row: { pattern: "(?im)^(?<label>(?:property|liability) declarations)$", require: ["label"] },
+    };
+    const md = `PROPERTY DECLARATIONS
+LIABILITY DECLARATIONS
+SCHEDULE OF FORMS`;
+    const r = runFormTableSpec(md, spec, DECL_FIELD);
+    expect(r).not.toBeNull();
+    expect(r!.rows.map((x) => x.label)).toEqual(["PROPERTY DECLARATIONS", "LIABILITY DECLARATIONS"]);
+  });
+
+  it("leaves a scoped (?i:...) group untouched (still works in V8)", () => {
+    const spec: FormTableSpec = {
+      ...DECL_SPEC,
+      anchor: "(?i:property|liability) DECLARATIONS",
+      detect: "(?i:property|liability) DECLARATIONS",
+      row: { pattern: "(?<label>(?i:property|liability) DECLARATIONS)", require: ["label"] },
+    };
+    const md = `property DECLARATIONS
+LIABILITY DECLARATIONS
+SCHEDULE OF FORMS`;
+    const r = runFormTableSpec(md, spec, DECL_FIELD);
+    expect(r).not.toBeNull();
+    expect(r!.rows.map((x) => x.label)).toEqual(["property DECLARATIONS", "LIABILITY DECLARATIONS"]);
+  });
+
+  it("a genuinely malformed pattern still fails safe (null, no throw)", () => {
+    const spec: FormTableSpec = { ...DECL_SPEC, anchor: "PROPERTY DECLARATIONS", row: { pattern: "(?<label>[" } };
+    const md = `PROPERTY DECLARATIONS\nSCHEDULE OF FORMS`;
+    expect(() => runFormTableSpec(md, spec, DECL_FIELD)).not.toThrow();
+    expect(runFormTableSpec(md, spec, DECL_FIELD)).toBeNull();
+  });
+
   it("union floor survives when the per_section LLM pass returns nothing (oss-395)", () => {
     // The end-to-end failure: per_section coverages field, union grammar, LLM
     // returned []. The deterministic floor must still surface. Before the fix

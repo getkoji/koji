@@ -77,11 +77,43 @@ export interface FormTableResult {
 
 const DEFAULT_MAX_REGION = 20_000;
 
+/** Flag letters V8 accepts as `RegExp` flags that a LEADING inline group can set. */
+const TRANSLATABLE_INLINE_FLAGS = new Set(["i", "m", "s"]);
+
+/**
+ * Translate a LEADING PCRE/Python-style inline-flag group into JS `RegExp`
+ * flags. `(?i)ABC` → pattern `ABC` with `i` merged into the flags argument;
+ * `(?im)` handles the combined form. V8 throws on a leading `(?i)` ("Invalid
+ * group"), so without this a schema author's PCRE-style pattern silently fails
+ * to compile and no-ops the whole grammar. SCOPED groups (`(?i:ABC)`) are left
+ * untouched — V8 supports those. If the leading group carries a flag JS can't
+ * express (e.g. `x`), it is left in place so the existing compile guard fails
+ * safe rather than us producing a subtly different regex.
+ */
+function translateLeadingInlineFlags(pattern: string, flags: string): { pattern: string; flags: string } {
+  // Match `(?<letters>)` at the very start — NOT `(?letters:` (scoped) and NOT
+  // `(?<name>` (named group): the char after the flag letters must be `)`.
+  const m = /^\(\?([a-z]+)\)/.exec(pattern);
+  if (!m) return { pattern, flags };
+  const letters = m[1]!;
+  if (![...letters].every((c) => TRANSLATABLE_INLINE_FLAGS.has(c))) {
+    return { pattern, flags }; // unsupported flag (e.g. x) — leave for fail-safe
+  }
+  const merged = new Set([...flags, ...letters]);
+  return { pattern: pattern.slice(m[0].length), flags: [...merged].join("") };
+}
+
 function compile(pattern: string, flags: string): RegExp | null {
   try {
-    return new RegExp(pattern, flags);
-  } catch {
-    return null; // a malformed spec pattern must not break extraction
+    const t = translateLeadingInlineFlags(pattern, flags);
+    return new RegExp(t.pattern, t.flags);
+  } catch (err) {
+    // A malformed spec pattern must not break extraction — but a silent no-op
+    // (which drops the whole grammar) is a costly failure to debug, so say so.
+    console.warn(
+      `[koji-extract] forms: pattern failed to compile, spec skipped: ${JSON.stringify(pattern)} — ${(err as Error).message}`,
+    );
+    return null;
   }
 }
 
