@@ -104,12 +104,44 @@ def _auth_error(resp: httpx.Response, base_url: str) -> bool:
     return True
 
 
+def _format_details(details: object) -> list[str]:
+    """Render a server `details` payload into readable one-per-line messages.
+
+    Schema-compile failures (422) return `details` as a list of
+    `{field?, message, line?}` objects — the real cause (e.g. "Map keys must be
+    unique at line 391"). Older/other endpoints may send a plain string. Flatten
+    either shape into printable lines; drop nothing on the floor.
+    """
+    lines: list[str] = []
+    if isinstance(details, list):
+        for item in details:
+            if isinstance(item, dict):
+                msg = item.get("message") or json_mod.dumps(item)
+                field = item.get("field")
+                line_no = item.get("line")
+                prefix = f"{field}: " if field else ""
+                suffix = f" (line {line_no})" if line_no and "line" not in str(msg).lower() else ""
+                lines.append(f"{prefix}{msg}{suffix}")
+            else:
+                lines.append(str(item))
+    elif isinstance(details, str):
+        lines.append(details)
+    elif details is not None:
+        lines.append(json_mod.dumps(details))
+    return lines
+
+
 def _api_error(resp: httpx.Response, context: str) -> None:
     """Print an API error and exit. Call when a response is not a success."""
     detail = None
+    detail_lines: list[str] = []
     try:
         body = resp.json()
-        msg = body.get("error") or body.get("details") or json_mod.dumps(body)
+        detail_lines = _format_details(body.get("details"))
+        # Prefer the top-level `error`; fall back to the first compile detail,
+        # then the raw body. Never collapse a details[] array into "HTTP 422:
+        # Schema validation failed" and hide the real cause (oss-397).
+        msg = body.get("error") or (detail_lines[0] if detail_lines else None) or json_mod.dumps(body)
         # The server attaches `detail` with the underlying cause (e.g. the raw
         # upstream parse error). Surface it — dropping it is what made the
         # bare-MIME Doc AI failure invisible from the CLI.
@@ -117,6 +149,11 @@ def _api_error(resp: httpx.Response, context: str) -> None:
     except Exception:
         msg = resp.text[:300]
     console.print(f"[red]✗[/red] {context} — HTTP {resp.status_code}: {msg}")
+    # Only enumerate the compile details when they add detail beyond `msg`
+    # itself (i.e. there's a real `error` header, or more than one message).
+    if detail_lines and (detail_lines[0] != msg or len(detail_lines) > 1):
+        for line in detail_lines:
+            console.print(f"  [red]•[/red] {line}")
     if detail:
         console.print(f"  [dim]detail:[/dim] {detail}")
     # Every request is project-scoped since 0.48: a stored profile project (or

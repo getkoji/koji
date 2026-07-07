@@ -2,6 +2,10 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.62.2 — 2026-07-07
+
+**`koji validate` (and every remote command) now shows *why* a schema failed to compile.** A 422 from the API carries a `details[]` array — the specific compiler errors (e.g. "Map keys must be unique at line 391") — but the CLI printed only the top-level "HTTP 422: Schema validation failed" and swallowed the array, so the real cause was invisible. The shared error renderer now surfaces each `details[]` message on its own line.
+
 ## 0.62.1 — 2026-07-07
 
 **`forms:` grammars now find every table region, on messier headings.** Two
