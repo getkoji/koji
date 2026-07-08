@@ -16,7 +16,7 @@ import { createNotification } from "../notifications/emit";
 import { createExtractionJob, addDocumentToJob, normalizeMimeTypeWithWarning, readParseProviderPin } from "../ingestion/process";
 import { resolveParse } from "../ingestion/seam";
 import { toProvenanceTextMap } from "../extract";
-import { resolveClassifierConfig, classifyWithConfig } from "../classify";
+import { resolveClassifierConfig, classifyWithConfig, ClassifyProviderError } from "../classify";
 
 /**
  * Helper for ingestion endpoints — runs mime normalization, logs a
@@ -1283,13 +1283,29 @@ async function executeTestStep(
             costUsd: 0,
           };
         }
-        const outcome = await classifyWithConfig(
-          ctx.db as never,
-          scope,
-          { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer },
-          resolved.config,
-          docInfo.parseProvider,
-        );
+        let outcome;
+        try {
+          outcome = await classifyWithConfig(
+            ctx.db as never,
+            scope,
+            { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer },
+            resolved.config,
+            docInfo.parseProvider,
+          );
+        } catch (err) {
+          // Fail the step rather than throwing: an uncaught error here would
+          // tear down the SSE stream mid-run. A failed step stops the walk, so
+          // the dry-run reports the outage instead of taking the default route.
+          if (err instanceof ClassifyProviderError) {
+            return {
+              ok: false,
+              output: { label: "unknown", confidence: 0, method: "no_provider", reasoning: err.message, classifier: classifierSlug },
+              costUsd: 0,
+              error: err.message,
+            };
+          }
+          throw err;
+        }
         return {
           ok: true,
           output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug, classifier_version: resolved.version },

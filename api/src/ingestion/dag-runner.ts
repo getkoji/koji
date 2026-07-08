@@ -484,6 +484,10 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   // Full engine result + schema of the LAST extract step — the outcome module
   // needs confidence_scores/provenance/fit and the schema for review routing.
   let finalResult: OutcomeExtraction | null = null;
+  // A step that throws aborts the walk. Without this, the run fell out of the
+  // loop with no extraction and the tail marked the document `delivered` — a
+  // failed classify looked like a clean pass.
+  let failedStep: { id: string; error: string } | null = null;
   let finalSchemaDef: Record<string, unknown> | undefined;
   let finalSchemaId: string | null = null;
 
@@ -919,7 +923,10 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
     );
 
     stepOutputs[step.id] = output;
-    if (status === "failed") break;
+    if (status === "failed") {
+      failedStep = { id: step.id, error: error ?? "unknown error" };
+      break;
+    }
 
     // After a split with fan-out, stop processing the parent — children continue independently
     if (step.type === "split" && output.fan_out) {
@@ -1039,7 +1046,10 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
           );
 
           stepOutputs[branchStep.id] = branchOutput;
-          if (branchStatus === "failed") break;
+          if (branchStatus === "failed") {
+            failedStep ??= { id: branchStep.id, error: branchError ?? "unknown error" };
+            break;
+          }
 
           const branchOutEdges = pEdges.filter(e => e.from === branchStep.id);
           branchId = resolveNextStep(branchOutEdges, branchOutput);
@@ -1062,6 +1072,19 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
   const lastOutput = stepOutputs[Object.keys(stepOutputs).pop() ?? ""];
   const wasSplit = lastOutput?.fan_out === true;
   const runDurationMs = Date.now() - (doc as any).startedAt?.getTime?.() || 0;
+
+  // A step threw. The document has no trustworthy outcome — fail it loudly
+  // rather than letting the tail below stamp it `delivered`.
+  if (failedStep) {
+    await markDocFailed(
+      db,
+      tenantId,
+      documentId,
+      doc.jobId,
+      `Step "${failedStep.id}" failed: ${failedStep.error}`,
+    );
+    return;
+  }
 
   if (!wasSplit && finalResult) {
     const [jobRow] = await withRLS(db, tenantId, (tx) =>

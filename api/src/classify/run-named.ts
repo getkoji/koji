@@ -100,10 +100,31 @@ export async function resolveClassifierConfig(
 }
 
 /**
+ * A classifier whose config admits the LLM tier could not reach a model
+ * provider, and the cheaper tiers did not decide the label. Thrown rather than
+ * returned as `unknown` because the two are not the same thing: `unknown` means
+ * "the classifier looked and could not tell", which routes a DAG down its
+ * `default` edge. A provider outage means the classifier never got to look —
+ * routing on that is a lie, and it silently extracts the document against the
+ * wrong schema. Callers surface this as a failed step, not a default route.
+ */
+export class ClassifyProviderError extends Error {
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Classifier requires a model provider but none could be resolved: ${detail}`);
+    this.name = "ClassifyProviderError";
+    this.cause = cause;
+  }
+}
+
+/**
  * Classify a document with an already-resolved config, wiring the same deps the
  * standalone /api/classify route uses: a tenant model provider (only when the
  * config's cost ceiling admits the LLM/vision tiers) and page-image rendering
  * via the tenant's parse provider (for the vision tier).
+ *
+ * @throws {ClassifyProviderError} when the provider could not be resolved *and*
+ * that is what left the document unclassified. See the class doc.
  */
 export async function classifyWithConfig(
   db: Db,
@@ -113,14 +134,15 @@ export async function classifyWithConfig(
   parseProvider?: ParseProvider,
 ): Promise<ClassifyOutcome> {
   let provider;
+  let providerError: unknown;
   if (config.maxTier >= Tier.LLM) {
     try {
       ({ provider } = await resolveTenantProvider(db, scope));
     } catch (err) {
-      console.warn(
-        "[classify] could not resolve a model provider; LLM/vision tiers unavailable:",
-        err instanceof Error ? err.message : err,
-      );
+      // Held, not thrown: a keyword hit short-circuits before the LLM tier, so
+      // a tenant with no model endpoint still classifies deterministically. We
+      // only care that the provider is missing if we fall through to `unknown`.
+      providerError = err;
     }
   }
 
@@ -137,5 +159,17 @@ export async function classifyWithConfig(
       }
     : undefined;
 
-  return runCascade(input, config, { provider, renderPageImages });
+  const outcome = await runCascade(input, config, { provider, renderPageImages });
+
+  if (providerError && outcome.method === "unknown") {
+    // Would a provider have changed the answer? The LLM tier is gated on the
+    // document having a text layer (`tierUsed` reaches KEYWORD only when it
+    // does); the vision tier is not, but needs rendered page images. If neither
+    // tier could have run anyway, the `unknown` is honest — return it.
+    const llmTierWasReachable = outcome.tierUsed >= Tier.KEYWORD;
+    const visionTierWasReachable = config.maxTier >= Tier.VISION && renderPageImages !== undefined;
+    if (llmTierWasReachable || visionTierWasReachable) throw new ClassifyProviderError(providerError);
+  }
+
+  return outcome;
 }
