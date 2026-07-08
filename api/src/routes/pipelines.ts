@@ -1263,11 +1263,16 @@ async function executeTestStep(
       const classifierSlug = step.config.classifier as string | undefined;
       if (classifierSlug && ctx?.db && ctx.tenantId) {
         const scope = { tenantId: ctx.tenantId, projectId: ctx.projectId ?? null };
-        const config = await resolveClassifierConfig(ctx.db as never, scope, classifierSlug);
-        if (!config) {
+        const pin = (step.config.classifier_version as string | undefined) || undefined;
+        const resolved = await resolveClassifierConfig(ctx.db as never, scope, classifierSlug, pin);
+        if ("error" in resolved) {
+          const reasoning =
+            resolved.error === "no_version"
+              ? `Classifier '${classifierSlug}' has no version matching '${resolved.requested}'`
+              : `Classifier '${classifierSlug}' has no released version in this project`;
           return {
             ok: true,
-            output: { label: "unknown", confidence: 0, method: "no_classifier", reasoning: `Classifier '${classifierSlug}' has no released version in this project`, classifier: classifierSlug },
+            output: { label: "unknown", confidence: 0, method: resolved.error, reasoning, classifier: classifierSlug },
             costUsd: 0,
           };
         }
@@ -1282,12 +1287,12 @@ async function executeTestStep(
           ctx.db as never,
           scope,
           { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer },
-          config,
+          resolved.config,
           docInfo.parseProvider,
         );
         return {
           ok: true,
-          output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug },
+          output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug, classifier_version: resolved.version },
           costUsd: cost,
         };
       }

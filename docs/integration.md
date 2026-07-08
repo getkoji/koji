@@ -495,10 +495,21 @@ tested, independently-versioned classifier instead of carrying its own copy:
 
 A referenced classifier runs through the exact same engine as
 `koji classify run` / `POST /api/classify`, so the pipeline routes a document
-the same way the standalone classifier labels it. It resolves to the
-classifier's current released version at run time. Push the classifiers before
-(or alongside) the pipelines that reference them — `koji push` handles the
-ordering for you.
+the same way the standalone classifier labels it. By default it resolves to the
+classifier's current released version at run time; pin a specific version with
+`classifier_version` to hold it steady through a staged rollout:
+
+```yaml
+  - id: classify
+    type: classify
+    config:
+      classifier: claim_type
+      classifier_version: v0.0.3   # optional — omit to follow the live release
+```
+
+A pin that doesn't resolve fails loud (the step returns `unknown`) instead of
+silently running a different version. Push the classifiers before (or alongside)
+the pipelines that reference them — `koji push` handles the ordering for you.
 
 ### Authentication
 
