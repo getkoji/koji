@@ -190,6 +190,18 @@ export class SmartParseProvider implements ParseProvider {
  *   receipts, mostly-image PDFs with sparse text).
  * - `shortRatio > 0.6 && medianLen < 3`: most tokens are fragments. Real
  *   prose sits around medianLen 4-6 with shortRatio < 0.4.
+ * - `longRatio > 0.1`: the *inverse* failure — space-mangled output. Some PDFs
+ *   (Type-3 / custom-encoded fonts) carry a text layer whose inter-word spacing
+ *   lives in glyph positioning, not space characters. pdfjs reconstructs
+ *   spacing from run geometry and drops it entirely on these fonts, emitting
+ *   whole phrases as one token ("STATEFARMFIREANDCASUALTYCOMPANY"). The
+ *   signature is an abnormal fraction of very long tokens; real prose has almost
+ *   none — the longest common English words are ~20 chars and rare (measured
+ *   ~21% on the failing doc vs ~0% on clean text). Falling back to the heavy
+ *   provider re-extracts via poppler, which resolves spacing at the glyph level.
+ *   A rare false positive (a doc genuinely dense in long tokens) is harmless:
+ *   the heavy provider still extracts it correctly, just off the fast path. See
+ *   oss-400.
  */
 export function detectCorruption(markdown: string): string | null {
   const stripped = markdown.replace(/[#*`|>\-_]/g, " ");
@@ -202,6 +214,11 @@ export function detectCorruption(markdown: string): string | null {
 
   if (shortRatio > 0.6 && median < 3) {
     return `${(shortRatio * 100).toFixed(0)}% tokens are 1-2 chars (median len ${median})`;
+  }
+
+  const longRatio = tokens.filter((t) => t.length >= 20).length / tokens.length;
+  if (longRatio > 0.1) {
+    return `${(longRatio * 100).toFixed(0)}% tokens are >=20 chars (space-mangled text layer)`;
   }
   return null;
 }

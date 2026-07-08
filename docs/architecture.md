@@ -78,7 +78,7 @@ The API automatically routes documents to the fastest parser that can handle the
 | Images (JPEG, PNG, TIFF, etc.) | **Docling** | Slow | Detected by MIME type or extension |
 | Other formats (DOCX, HTML, etc.) | **Docling** | Slow | Everything that isn't a PDF or image |
 
-This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt (heavy 1-2 character fragmentation, as seen historically on some carrier PDFs), the request falls back to Docling automatically with zero caller-side changes. When the text layer can't be determined at all (corrupt or encrypted header, unexpected parse error), the document is treated conservatively as scanned and routed to the heavy provider — which reads both scanned and digital PDFs — so it never silently ships empty markdown.
+This is transparent — callers don't choose a parser. If pdfjs throws or returns output that looks corrupt, the request falls back to Docling automatically with zero caller-side changes. The corruption check catches two opposite failure shapes: heavy 1-2 character fragmentation (seen historically on some carrier PDFs), and **space-mangled** output where whole phrases collapse into one token (`STATEFARMFIREANDCASUALTYCOMPANY`) — the signature of Type-3 / custom-encoded fonts whose inter-word spacing lives in glyph positioning, which pdfjs and Docling's default backend both drop. When the text layer can't be determined at all (corrupt or encrypted header, unexpected parse error), the document is treated conservatively as scanned and routed to the heavy provider — which reads both scanned and digital PDFs — so it never silently ships empty markdown.
 
 > **Serverless note.** pdfjs-dist's Node build needs two things that don't survive a serverless bundle untouched, both handled by the single wrapper at `api/src/parse/pdfjs-loader.ts`:
 >
@@ -117,6 +117,16 @@ Table- vs text-heaviness is a **geometric** signal (the fraction of lines that r
   encryption with object-stream page trees. The API calls it once before
   slicing such documents (Doc AI slice-and-merge, chunked parse); see
   `api/src/parse/pdf-normalize.ts`.
+- Recovers **space-mangled** digital text layers: when Docling's own output
+  shows the long-token signature (Type-3 / custom-encoded fonts whose spacing
+  its default and pypdfium backends both drop), the service re-extracts with
+  poppler's `pdftotext -bbox-layout` — which resolves spacing at the glyph
+  level — and returns poppler's markdown + word bounding boxes instead. The
+  recovery is only accepted when it actually unmangles the text; otherwise
+  Docling's output is kept. `poppler-utils` already ships in the base image, so
+  this adds no dependency. (This mirrors the API-side corruption check, so a
+  digital PDF that pdfjs mangles is re-extracted cleanly even after it falls
+  back to the heavy provider.)
 
 This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.
 

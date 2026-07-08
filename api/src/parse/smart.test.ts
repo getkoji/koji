@@ -352,4 +352,30 @@ describe("detectCorruption", () => {
     const table = Array.from({ length: 80 }, (_, i) => `${1000 + i} ${2000 + i} ${3000 + i}`).join(" ");
     expect(detectCorruption(table)).toBeNull();
   });
+
+  it("flags space-mangled output (Type-3 long-token signature)", () => {
+    // Whole phrases collapsed into single tokens, as pdfjs emits on Type-3 /
+    // custom-encoded fonts. ~21% of tokens are >=20 chars (matches the failing
+    // Catawba doc) — well over the 10% threshold.
+    const mashed = [
+      "STATEFARMFIREANDCASUALTYCOMPANY",
+      "ASTOCKCOMPANYWITHHOMEOFFICESINBLOOMINGTONILLINOIS",
+      "AUTOMATICRENEWALIFTHEPOLICYPERIODISSHOWNAS12MONTHS",
+      "THISPOLICYWILLBERENEWEDAUTOMATICALLYSUBJECTTOTHEPREMIUMS",
+      "FORMSINEFFECTFOREACHSUCCEEDINGPOLICYPERIOD",
+      "COMPLIANCEWITHTHEPOLICYPROVISIONSORASREQUIREDBYLAW",
+    ];
+    const shorts = Array.from({ length: 46 }, (_, i) => `w${i}`);
+    const md = [...mashed, ...mashed, ...shorts].join(" ");
+    expect(detectCorruption(md)).toMatch(/space-mangled/);
+  });
+
+  it("does not flag prose with occasional long tokens (URLs)", () => {
+    // A handful of long URLs among normal prose stays under the 10% threshold,
+    // so a legitimately long-token-dense doc is not mistaken for mangled.
+    const prose = Array.from({ length: 90 }, (_, i) =>
+      i % 15 === 0 ? "https://example.com/very/long/path/segment" : "word",
+    ).join(" ");
+    expect(detectCorruption(prose)).toBeNull();
+  });
 });
