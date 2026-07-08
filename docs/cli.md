@@ -435,6 +435,35 @@ koji pipeline result cool-otter-1a2b                 # print current status + ex
 koji pipeline result cool-otter-1a2b --wait --json   # block until done, emit JSON
 ```
 
+#### `koji pipeline test` — dry-run and see the routing decision
+
+Dry-run a document through a pipeline **without persisting anything** (no job is created) and see exactly how it routes. This wraps `POST /api/pipelines/<slug>/test` — the same dry-run the dashboard's **Test** button uses. It parses the document (via the tenant's parse provider, matching production), then walks the pipeline's steps and prints, for each one: a classify step's chosen **label / confidence / method**, **which route matched** at every branch (`✓`/`✗`), the **path** taken end-to-end, and the final **extraction**.
+
+```bash
+koji pipeline test family-router ./doc.pdf -p prod    # show the route + extraction
+koji pipeline test family-router ./doc.pdf --json     # raw result (steps[], path, edgeEvaluations)
+```
+
+This is the tool for **validating a router** — a pipeline with `classify` steps that branch to different schemas. `koji pipeline run` gives you the real, persisted run; `koji pipeline test` shows you *why* a document went where it did (which classifier fired, which branch, which schema ran) so you can debug routing before sending real traffic through. Gated by the `pipeline:write` permission.
+
+Example output for a two-tier router (line → carrier → schema):
+
+```
+doc-router test  acme.pdf
+path: classify_kind → classify_fin → extract_invoice
+
+▸ classify_kind (classify)
+    label: financial  conf 100%  method: keyword
+    ✓ output.label == 'financial' → classify_fin
+    ✗ output.label == 'other' → extract_other
+▸ classify_fin (classify)
+    label: invoice  conf 100%  method: keyword
+    ✓ output.label == 'invoice' → extract_invoice
+    ✗ output.label == 'receipt' → extract_receipt
+▸ extract_invoice (extract)
+    schema: invoice  2/2 fields  conf 100%
+```
+
 ---
 
 ## Misc

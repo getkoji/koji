@@ -31,6 +31,7 @@ import httpx
 import typer
 import yaml as yaml_mod
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
@@ -1614,7 +1615,7 @@ def _fetch_pipeline(client: httpx.Client, base_url: str, headers: dict, slug: st
 
 
 pipeline_app = typer.Typer(
-    help="Manage pipelines — list, run docs through them, and pin/unpin the schema version they run.",
+    help="Manage pipelines — list, run/test docs through them, and pin/unpin the schema version they run.",
     no_args_is_help=True,
 )
 
@@ -1982,6 +1983,139 @@ def pipeline_result(
         emit_json(docs)
     else:
         _render_pipeline_docs(docs, provenance)
+
+
+# ── pipeline test: dry-run a doc and show the routing decision ────────
+#
+# Wraps POST /api/pipelines/<slug>/test — the same dry-run the dashboard's Test
+# button uses. Unlike `pipeline run` (which creates a real job), test persists
+# nothing: it parses via the tenant's provider, walks the DAG, and returns each
+# step's output + which route matched at each branch. This is the tool for
+# validating a router — you see the classify labels that fired, which branch was
+# taken, which schema ran, and the extraction, without touching the job history.
+
+
+def _render_pipeline_test(pipeline: str, filename: str, result: dict) -> None:
+    """Render a /test dry-run: the path taken, each step's decision, extraction."""
+    steps = result.get("steps") or []
+    path = result.get("path") or []
+
+    console.print(f"\n[bold]{pipeline}[/bold] [dim]test[/dim]  {filename}")
+    if path:
+        console.print(f"[dim]path:[/dim] {' → '.join(path)}")
+    meta_bits = []
+    if result.get("totalDurationMs") is not None:
+        meta_bits.append(f"{result['totalDurationMs'] / 1000:.1f}s")
+    if result.get("totalCostUsd") is not None:
+        meta_bits.append(f"${result['totalCostUsd']:.4f}")
+    if meta_bits:
+        console.print(f"[dim]{'  '.join(meta_bits)}[/dim]")
+
+    final_extract: dict | None = None
+    for s in steps:
+        stype = s.get("stepType")
+        ok = s.get("status") == "completed"
+        mark = "[green]▸[/green]" if ok else "[red]✗[/red]"
+        dur = s.get("durationMs")
+        dur_disp = f"  [dim]{dur}ms[/dim]" if dur else ""
+        out = s.get("output") or {}
+        console.print(f"\n{mark} [bold]{s.get('stepId')}[/bold] [dim]({stype})[/dim]{dur_disp}")
+        if s.get("error"):
+            console.print(f"    [red]{escape(str(s['error']))}[/red]")
+
+        if stype == "classify":
+            conf = out.get("confidence")
+            conf_disp = f"  conf {float(conf) * 100:.0f}%" if conf is not None else ""
+            console.print(
+                f"    label: [cyan]{escape(str(out.get('label', '?')))}[/cyan]{conf_disp}  "
+                f"[dim]method: {escape(str(out.get('method', '')))}[/dim]"
+            )
+            if out.get("reasoning"):
+                console.print(f"    [dim]{escape(_fmt_value(out['reasoning'], 90))}[/dim]")
+        elif stype == "extract":
+            if out.get("note"):
+                console.print(f"    [yellow]{escape(str(out['note']))}[/yellow]")
+            elif out.get("fields") is not None:
+                conf = out.get("confidence")
+                conf_disp = f"  conf {float(conf) * 100:.0f}%" if conf else ""
+                console.print(
+                    f"    schema: [cyan]{escape(str(out.get('schema', '?')))}[/cyan]  "
+                    f"{out.get('fieldCount', 0)}/{out.get('totalFields', 0)} fields{conf_disp}"
+                )
+                final_extract = out
+
+        # Which route matched at this branch (the router decision).
+        for e in s.get("edgeEvaluations") or []:
+            cond = escape(str(e.get("condition") or "→"))
+            to = escape(str(e.get("to")))
+            if e.get("matched"):
+                console.print(f"    [green]✓[/green] {cond} → [cyan]{to}[/cyan]")
+            else:
+                console.print(f"    [dim]✗ {cond} → {to}[/dim]")
+
+    if result.get("skippedSteps"):
+        console.print(f"\n[dim]skipped: {', '.join(result['skippedSteps'])}[/dim]")
+
+    if final_extract and final_extract.get("fields"):
+        scores = final_extract.get("confidenceScores") or {}
+        console.print("\n[bold]Extraction[/bold]")
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_column("Conf", justify="right")
+        for k, v in final_extract["fields"].items():
+            fc = scores.get(k)
+            fc_disp = "" if fc is None else f"{float(fc) * 100:.0f}%"
+            fc_color = "green" if (fc or 0) >= 0.8 else ("yellow" if (fc or 0) >= 0.5 else "red")
+            table.add_row(k, _fmt_value(v), f"[{fc_color}]{fc_disp}[/{fc_color}]" if fc_disp else "")
+        console.print(table)
+    console.print()
+
+
+@pipeline_app.command("test")
+def pipeline_test(
+    pipeline: str = typer.Argument(..., help="Pipeline slug."),
+    path: str = typer.Argument(..., help="Document file to dry-run through the pipeline."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Dry-run a document through a pipeline and show the routing decision.
+
+    Submits the doc to POST /api/pipelines/<slug>/test — the same dry-run the
+    dashboard's Test button uses. It parses (via the tenant's parse provider) and
+    walks the DAG, showing each classify step's label / confidence / method, which
+    route matched at every branch, the path taken, and the final extraction.
+    Nothing is persisted — no job is created. Use this to validate a router (which
+    classifier fired, which schema ran) before sending real documents through it
+    with `koji pipeline run`.
+
+    Gated by the pipeline:write permission. Resolves against a local cluster or
+    the hosted platform, like the sibling pipeline commands.
+    """
+    file_path = Path(path)
+    if not file_path.is_file():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    base_url, headers = resolve_api(profile_name)
+    mime, _ = mimetypes.guess_type(file_path.name)
+    with httpx.Client(timeout=300) as client:
+        with file_path.open("rb") as fh:
+            files = {"file": (file_path.name, fh, mime or "application/octet-stream")}
+            resp = client.post(f"{base_url}/api/pipelines/{pipeline}/test", files=files, headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code == 404:
+        console.print(f"[red]Pipeline '{pipeline}' not found.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"test {pipeline}")
+    result = resp.json()
+
+    if as_json:
+        emit_json(result)
+        return
+    _render_pipeline_test(pipeline, file_path.name, result)
 
 
 # ── Classifiers: run / versions / promote / release ───────────────────

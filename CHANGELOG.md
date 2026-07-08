@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.65.0 — 2026-07-08
+
+**Dry-run a pipeline and see how a document routes: `koji pipeline test`.**
+New `koji pipeline test <pipeline> <doc>` submits a document to the pipeline's
+dry-run endpoint (`POST /api/pipelines/<slug>/test` — the same path the
+dashboard's Test button uses) and prints how it routes **without persisting
+anything**: each `classify` step's chosen label / confidence / method, which
+route matched at every branch, the full path taken, and the final extraction.
+It parses via the tenant's parse provider, matching production. This is the tool
+for validating a router (a pipeline whose classify steps branch to different
+schemas) — `koji pipeline run` gives you the real persisted run, `pipeline test`
+shows you *why* a document went where it did. `--json` emits the raw result
+(`steps[]`, `path`, `edgeEvaluations`). Gated by the `pipeline:write` permission.
+
 ## 0.64.0 — 2026-07-08
 
 **Run documents through a pipeline from the CLI.** New `koji pipeline run

@@ -23,6 +23,7 @@ from cli.remote import (
     _norm,
     _render_array_element_diffs,
     _render_pipeline_docs,
+    _render_pipeline_test,
     _resolve_entry,
     err_console,
     resolve_api,
@@ -51,6 +52,7 @@ runner = CliRunner()
         ["corpus", "gt", "set", "--help"],
         ["pipeline", "run", "--help"],
         ["pipeline", "result", "--help"],
+        ["pipeline", "test", "--help"],
     ],
 )
 def test_commands_registered(args):
@@ -426,3 +428,72 @@ def test_render_pipeline_docs_smoke():
     ]
     _render_pipeline_docs(docs, show_prov=False)
     _render_pipeline_docs(docs, show_prov=True)
+
+
+# ── pipeline test: dry-run router rendering ───────────────────────────
+
+
+def test_render_pipeline_test_smoke():
+    # A 2-tier router dry-run: classify → route → classify → route → extract.
+    # Renders without raising, including escaping LLM reasoning that contains
+    # rich-markup-like brackets (would crash console.print if unescaped).
+    result = {
+        "status": "completed",
+        "path": ["classify_kind", "classify_fin", "extract_invoice"],
+        "skippedSteps": ["extract_receipt"],
+        "totalDurationMs": 2712,
+        "totalCostUsd": 0.08,
+        "steps": [
+            {
+                "stepId": "classify_kind",
+                "stepType": "classify",
+                "status": "completed",
+                "durationMs": 1,
+                "output": {
+                    "label": "financial",
+                    "confidence": 1.0,
+                    "method": "keyword",
+                    "reasoning": "Matched [invoice] and [total]",
+                },
+                "edgeEvaluations": [
+                    {"to": "classify_fin", "condition": "output.label == 'financial'", "matched": True},
+                    {"to": "extract_invoice", "condition": "output.label == 'other'", "matched": False},
+                ],
+            },
+            {
+                "stepId": "extract_invoice",
+                "stepType": "extract",
+                "status": "completed",
+                "durationMs": 2704,
+                "output": {
+                    "schema": "invoice",
+                    "fieldCount": 2,
+                    "totalFields": 2,
+                    "confidence": 1.0,
+                    "fields": {"invoice_number": "INV-1", "total": 739.8},
+                    "confidenceScores": {"invoice_number": 1.0, "total": 0.4},
+                },
+                "edgeEvaluations": [],
+            },
+        ],
+    }
+    _render_pipeline_test("doc-router", "acme.pdf", result)
+
+
+def test_render_pipeline_test_handles_failed_and_notes():
+    # A step that failed / a schema-not-found note must render, not raise.
+    result = {
+        "status": "completed",
+        "path": ["extract_x"],
+        "steps": [
+            {
+                "stepId": "extract_x",
+                "stepType": "extract",
+                "status": "completed",
+                "durationMs": 3,
+                "output": {"schema": "x", "note": 'Schema "x" not found or has no committed version'},
+                "edgeEvaluations": [],
+            },
+        ],
+    }
+    _render_pipeline_test("p", "d.pdf", result)
