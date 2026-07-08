@@ -24,20 +24,6 @@ import type { PlanId } from "../billing/adapter";
 export const extract = new Hono<Env>();
 
 /**
- * Resolve a service URL. Docker sidecars serve at /parse or /extract,
- * but Modal endpoints serve at the root.
- */
-function resolveServiceUrl(baseUrl: string, path: string): string {
-  if (baseUrl.includes("modal.run")) return baseUrl;
-  return `${baseUrl}${path}`;
-}
-
-// Backwards compat alias
-function resolveParseUrl(baseUrl: string, path = "/parse"): string {
-  return resolveServiceUrl(baseUrl, path);
-}
-
-/**
  * Check document against tenant's preflight limits (max pages, max file size).
  * Returns null if OK, or an error string if the document exceeds a limit.
  */
@@ -82,16 +68,26 @@ extract.post("/parse", requires("job:run"), async (c) => {
     return c.json({ error: "Missing file" }, 400);
   }
 
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const resp = await fetch(`${resolveParseUrl(c.get("parseUrl"))}`, {
-    method: "POST",
-    body: formData,
+  // Parse through the tenant's BYO parse provider, not the global default parse
+  // service — same fix as /process (oss-405). `koji process` (no --schema) and
+  // any direct caller hit this on the tenant's configured provider now.
+  const { provider: parseProvider } = await resolveParse(c.get("db"), getRlsScope(c), {
+    parseProviderId: null,
+    defaultProvider: c.get("parseProvider"),
+    parseConfig: c.get("parseConfig"),
   });
 
-  const result = await resp.json();
-  return c.json(result, resp.status as 200);
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+  const mimeType = file.type || "application/octet-stream";
+  const parseStart = Date.now();
+  try {
+    const result = await parseProvider.parse({ filename: file.name, mimeType, fileBuffer });
+    return c.json({ filename: file.name, elapsed_seconds: (Date.now() - parseStart) / 1000, ...result });
+  } catch (err) {
+    const e = err as { message?: string; status?: number; detail?: string };
+    console.error("[parse] Parse failed:", e?.message ?? err, "| detail:", e?.detail ?? "n/a");
+    return c.json({ error: "Parse failed", detail: e?.detail ?? e?.message ?? String(err) }, 502);
+  }
 });
 
 extract.post("/process", requires("job:run"), async (c) => {
@@ -103,20 +99,34 @@ extract.post("/process", requires("job:run"), async (c) => {
     return c.json({ error: "Missing file" }, 400);
   }
 
-  const parseForm = new FormData();
-  parseForm.append("file", file);
-
-  const parseResp = await fetch(`${resolveParseUrl(c.get("parseUrl"))}`, {
-    method: "POST",
-    body: parseForm,
+  // Parse through the tenant's BYO parse provider — matching production — not
+  // the global default parse service. The old path POSTed straight to
+  // `c.get("parseUrl")`, which bypasses the tenant's configured Doc AI/Textract
+  // and 502'd for every document on hosted (where the global backend isn't the
+  // tenant's), while `koji corpus add` / build / pipeline test parsed the same
+  // PDFs fine because they resolve the tenant provider (oss-405).
+  const { provider: parseProvider } = await resolveParse(c.get("db"), getRlsScope(c), {
+    parseProviderId: null,
+    defaultProvider: c.get("parseProvider"),
+    parseConfig: c.get("parseConfig"),
   });
 
-  if (!parseResp.ok) {
-    const err = await parseResp.json().catch(() => ({}));
-    return c.json({ error: "Parse failed", detail: err }, 502);
+  const fileBuffer = Buffer.from(await file.arrayBuffer());
+  const mimeType = file.type || "application/octet-stream";
+  let parseResult: { markdown: string; pages: number | null; text_map?: unknown; chunks?: unknown };
+  const parseStart = Date.now();
+  try {
+    parseResult = await parseProvider.parse({ filename: file.name, mimeType, fileBuffer });
+  } catch (err) {
+    const e = err as { message?: string; status?: number; detail?: string };
+    console.error(
+      "[process] Parse failed:",
+      e?.message ?? err,
+      "| status:", e?.status ?? "n/a",
+      "| detail:", e?.detail ?? "n/a",
+    );
+    return c.json({ error: "Parse failed", detail: e?.detail ?? e?.message ?? String(err) }, 502);
   }
-
-  const parseResult = (await parseResp.json()) as Record<string, unknown>;
 
   // Enforce preflight limits
   const preflightError = await checkPreflightLimits(
@@ -130,7 +140,7 @@ extract.post("/process", requires("job:run"), async (c) => {
   }
 
   if (!schemaField) {
-    return c.json(parseResult);
+    return c.json({ filename: file.name, ...parseResult });
   }
 
   let schemaObj: unknown;
@@ -168,9 +178,9 @@ extract.post("/process", requires("job:run"), async (c) => {
   );
 
   return c.json({
-    filename: parseResult.filename,
+    filename: file.name,
     pages: parseResult.pages,
-    parse_seconds: parseResult.elapsed_seconds,
+    parse_seconds: (Date.now() - parseStart) / 1000,
     model: extractResult.model,
     schema: extractResult.schema,
     elapsed_ms: extractResult.elapsed_ms,

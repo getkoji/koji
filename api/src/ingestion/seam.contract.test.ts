@@ -27,6 +27,7 @@ const ALLOWED = new Set<string>([
   "ingestion/process.ts", // getOrParse — the shared, provider-fingerprinted parse cache primitive itself
   "routes/pipelines.ts", // in-memory test-pipeline flow + ephemeral child-doc slices (no stored doc/contentHash)
   "routes/forms.ts", // one-shot form-fingerprint generation (no stored doc)
+  "routes/extract.ts", // one-shot /process + /parse uploads (no stored doc/contentHash to cache against)
 ]);
 
 // Matches `parseProvider.parse(` and `<x>.parseProvider.parse(` — the naming
