@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.69.0 — 2026-07-08
+
+**A pipeline DAG classify step can reference a registered classifier by slug.**
+Give a `classify` step `classifier: <slug>` (instead of inline
+`labels`/`method`/`question`) and it runs that registered classifier through the
+**same cascade** as `koji classify run` and `POST /api/classify` — so a
+pipeline routes a document exactly the way the standalone classifier classifies
+it, with no second ad-hoc implementation to drift. The classifier is
+single-sourced and independently versioned (`koji classify promote/release`);
+the pipeline just references it. Inline `labels` still work as before. Applies
+to real ingestion runs, `koji pipeline test`, and `koji pipeline run` alike;
+`koji push` now uploads classifiers before pipelines. The referenced
+classifier resolves to its current released version (pinning a classifier
+version per-pipeline is not yet supported).
+
 ## 0.68.0 — 2026-07-08
 
 **`koji pipeline bench` — run a corpus against a pipeline (DAG).** Where `koji

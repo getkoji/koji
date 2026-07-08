@@ -2,16 +2,13 @@ import { Hono } from "hono";
 import type { Env } from "../env";
 import { requires, getTenantId, getRlsScope } from "../auth/middleware";
 import { mimeTypeFor } from "../ingestion/mime";
-import { resolveTenantProvider } from "../extract/resolve-endpoint";
-import type { ModelProvider } from "../extract/providers";
 import {
-  runCascade,
+  classifyWithConfig,
   loadClassifierConfig,
   ClassifierConfigError,
-  Tier,
   UNKNOWN_LABEL,
 } from "../classify";
-import type { CascadeDeps, RenderPageImages, ClassifyOutcome, ClassifierConfig } from "../classify";
+import type { ClassifyOutcome, ClassifierConfig } from "../classify";
 
 /**
  * Document classifier route — POST /api/classify.
@@ -111,38 +108,16 @@ classify.post("/", requires("job:run"), async (c) => {
     throw err;
   }
 
-  // Resolve a model provider only when the cost ceiling admits the LLM/vision
-  // tiers — the free tiers (0–2) need no provider and no DB round-trip.
-  let provider: ModelProvider | undefined;
-  if (config.maxTier >= Tier.LLM) {
-    try {
-      ({ provider } = await resolveTenantProvider(db, getRlsScope(c)));
-    } catch (err) {
-      console.warn(
-        "[classify] could not resolve a model provider; LLM/vision tiers unavailable:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-
-  // Vision tier renders pages via the parse provider's page-images endpoint. It
-  // returns the first N pages in order; we pick the requested page numbers that
-  // fall within that range (capped so a tail page can't render a whole book).
-  const renderPageImages: RenderPageImages | undefined = parseProvider?.pageImages
-    ? async (buf, pageNumbers) => {
-        const maxNeeded = Math.min(Math.max(...pageNumbers, 1), 8);
-        const { images } = await parseProvider.pageImages!({
-          fileBuffer: buf,
-          filename,
-          mimeType,
-          maxPages: maxNeeded,
-        });
-        return pageNumbers.filter((n) => n >= 1 && n <= images.length).map((n) => images[n - 1]!);
-      }
-    : undefined;
-
-  const deps: CascadeDeps = { provider, renderPageImages };
-  const outcome = await runCascade({ filename, mimeType, fileBuffer }, config, deps);
+  // Classify through the shared cascade helper — the exact same path the
+  // ingestion DAG's `classifier: <slug>` step uses (oss-410), so a standalone
+  // classify and a pipeline route agree on the same document + config.
+  const outcome = await classifyWithConfig(
+    db,
+    getRlsScope(c),
+    { filename, mimeType, fileBuffer },
+    config,
+    parseProvider ?? undefined,
+  );
 
   const { status, body } = applyOnUnknown(outcome, config.onUnknown);
   return c.json(body, status);

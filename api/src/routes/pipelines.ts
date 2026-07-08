@@ -16,6 +16,7 @@ import { createNotification } from "../notifications/emit";
 import { createExtractionJob, addDocumentToJob, normalizeMimeTypeWithWarning, readParseProviderPin } from "../ingestion/process";
 import { resolveParse } from "../ingestion/seam";
 import { toProvenanceTextMap } from "../extract";
+import { resolveClassifierConfig, classifyWithConfig } from "../classify";
 
 /**
  * Helper for ingestion endpoints — runs mime normalization, logs a
@@ -1251,11 +1252,46 @@ async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
   docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; textMap?: any; parseChunks?: any; fileBuffer?: Buffer; parseProvider?: any; storage?: any },
   priorOutputs: Record<string, unknown>,
-  ctx?: { db: unknown; tenantId: string; pipelineId: string },
+  ctx?: { db: unknown; tenantId: string; projectId?: string | null; pipelineId: string },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
   const cost = STEP_COSTS[step.type] ?? 0;
   switch (step.type) {
     case "classify": {
+      // A `classifier: <slug>` reference classifies through the same cascade
+      // the real ingestion run uses — so the dry-run's routing matches
+      // production (oss-410). Inline `labels` remain the fallback.
+      const classifierSlug = step.config.classifier as string | undefined;
+      if (classifierSlug && ctx?.db && ctx.tenantId) {
+        const scope = { tenantId: ctx.tenantId, projectId: ctx.projectId ?? null };
+        const config = await resolveClassifierConfig(ctx.db as never, scope, classifierSlug);
+        if (!config) {
+          return {
+            ok: true,
+            output: { label: "unknown", confidence: 0, method: "no_classifier", reasoning: `Classifier '${classifierSlug}' has no released version in this project`, classifier: classifierSlug },
+            costUsd: 0,
+          };
+        }
+        if (!docInfo.fileBuffer) {
+          return {
+            ok: true,
+            output: { label: "unknown", confidence: 0, method: "no_file", reasoning: "No document bytes available to classify", classifier: classifierSlug },
+            costUsd: 0,
+          };
+        }
+        const outcome = await classifyWithConfig(
+          ctx.db as never,
+          scope,
+          { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer },
+          config,
+          docInfo.parseProvider,
+        );
+        return {
+          ok: true,
+          output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug },
+          costUsd: cost,
+        };
+      }
+
       const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
       const method = (step.config.method as string) || "keyword_then_llm";
       const question = (step.config.question as string) || "What type of document is this?";
@@ -1682,7 +1718,7 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   // that shares memory, which can be detached after the first fetch call consumes it.
   const fileBufferCopy: Buffer = Buffer.from(new Uint8Array(fileBytes));
   const docInfo = { filename, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, textMap: docTextMap, parseChunks: docParseChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
-  const testCtx = { db, tenantId, pipelineId: pipelineId! };
+  const testCtx = { db, tenantId, projectId: getProjectId(c), pipelineId: pipelineId! };
 
   // Parse pipeline steps + edges
   type PStep = { id: string; type: string; config: Record<string, unknown> };

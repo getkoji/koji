@@ -479,6 +479,27 @@ steps:
 DAG pipelines don't need a top-level `schema:` reference — each extract
 step names its own schema by slug and resolves it at run time.
 
+A `classify` step can either define its classes inline (as above) or
+**reference a registered classifier by slug**, so the pipeline reuses a
+tested, independently-versioned classifier instead of carrying its own copy:
+
+```yaml
+  - id: classify
+    type: classify
+    config:
+      classifier: claim_type      # a registered classifier (koji push kind: classifier)
+    on:
+      auto: extract_auto
+      property: extract_property
+```
+
+A referenced classifier runs through the exact same engine as
+`koji classify run` / `POST /api/classify`, so the pipeline routes a document
+the same way the standalone classifier labels it. It resolves to the
+classifier's current released version at run time. Push the classifiers before
+(or alongside) the pipelines that reference them — `koji push` handles the
+ordering for you.
+
 ### Authentication
 
 **Koji Cloud**: Run `koji login` to create a profile, or set env vars:
