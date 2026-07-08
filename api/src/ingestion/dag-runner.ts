@@ -17,6 +17,7 @@ import type { StorageProvider } from "../storage/provider";
 import type { ParseProvider } from "../parse/provider";
 import type { ParseConfig } from "../parse/factory";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
+import { resolveClassifierConfig, classifyWithConfig } from "../classify";
 import { resolvePipelineSchemaVersion } from "./pipeline-schema-version";
 import { createProvider } from "../extract/providers";
 import { extractFields } from "../extract/pipeline";
@@ -500,6 +501,53 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
     try {
       switch (step.type) {
         case "classify": {
+          // A `classifier: <slug>` reference runs the registered classifier
+          // through the SAME cascade as `koji classify run` / POST /api/classify
+          // — no divergence between how a doc is classified standalone and how
+          // the pipeline routes it. Inline `labels` remain the fallback.
+          const classifierSlug = step.config.classifier as string | undefined;
+          if (classifierSlug) {
+            const scope = { tenantId, projectId: pipeline.projectId };
+            const config = await resolveClassifierConfig(db, scope, classifierSlug);
+            if (!config) {
+              output = {
+                label: "unknown",
+                confidence: 0,
+                method: "no_classifier",
+                reasoning: `Classifier '${classifierSlug}' has no released version in this project`,
+                classifier: classifierSlug,
+              };
+              break;
+            }
+            const file = _storage ? await _storage.getBuffer(doc.storageKey) : null;
+            if (!file) {
+              output = {
+                label: "unknown",
+                confidence: 0,
+                method: "no_file",
+                reasoning: "Document bytes unavailable for classification",
+                classifier: classifierSlug,
+              };
+              break;
+            }
+            const outcome = await classifyWithConfig(
+              db,
+              scope,
+              { filename: doc.filename, mimeType: doc.mimeType, fileBuffer: file.data },
+              config,
+              _parseProvider ?? undefined,
+            );
+            output = {
+              label: outcome.label,
+              confidence: outcome.confidence,
+              method: outcome.method,
+              tier: outcome.tierUsed,
+              evidence_page: outcome.evidencePage,
+              classifier: classifierSlug,
+            };
+            break;
+          }
+
           const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
           const method = (step.config.method as string) || "keyword_then_llm";
           const question = (step.config.question as string) || "What type of document is this?";

@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.68.0"
+KOJI_VERSION = "0.69.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -1039,6 +1039,53 @@ def push(
             else:
                 console.print(f"  [red]✗[/red] [schema] {slug} — HTTP {resp.status_code}")
 
+        # ── Push classifiers ──
+        # Before pipelines: a pipeline's `classifier: <slug>` step reference
+        # resolves at run time, but pushing classifiers first means a fresh
+        # `koji push` of a whole project leaves the referenced classifier in
+        # place the first time the pipeline runs.
+        for yaml_path, parsed, yaml_content in classifiers:
+            slug = parsed.get("slug", parsed.get("name", yaml_path.stem))
+            display_name = parsed.get("display_name", parsed.get("name", slug))
+            description = parsed.get("description")
+
+            resp = client.get(f"{base_url}/api/classifiers/{slug}", headers=headers)
+
+            if resp.status_code == 200:
+                existing_yaml = resp.json().get("latestVersion", {}).get("yamlSource", "") or ""
+                if existing_yaml.strip() == yaml_content.strip():
+                    ver = resp.json().get("latestVersion", {}).get("version", "?")
+                    console.print(f"  [dim]—[/dim] [classifier] {slug} — unchanged ({ver})")
+                    continue
+                resp = client.post(
+                    f"{base_url}/api/classifiers/{slug}/versions",
+                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201):
+                    console.print(
+                        f"  [green]✓[/green] [classifier] {slug} — updated to {resp.json().get('version', '?')}"
+                    )
+                else:
+                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
+                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+            elif resp.status_code == 404:
+                create_body: dict = {"slug": slug, "display_name": display_name, "initial_yaml": yaml_content}
+                if description:
+                    create_body["description"] = description
+                resp = client.post(
+                    f"{base_url}/api/classifiers",
+                    json=create_body,
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201):
+                    console.print(f"  [green]✓[/green] [classifier] {slug} — created")
+                else:
+                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
+                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+            else:
+                console.print(f"  [red]✗[/red] [classifier] {slug} — HTTP {resp.status_code}")
+
         # ── Resolve schema name → ID lookup (needed for pipeline.schema) ──
         schema_id_map: dict[str, str] = {}
         if pipelines:
@@ -1108,49 +1155,6 @@ def push(
                     console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
             else:
                 console.print(f"  [red]✗[/red] [pipeline] {slug} — HTTP {resp.status_code}")
-
-        # ── Push classifiers ──
-        for yaml_path, parsed, yaml_content in classifiers:
-            slug = parsed.get("slug", parsed.get("name", yaml_path.stem))
-            display_name = parsed.get("display_name", parsed.get("name", slug))
-            description = parsed.get("description")
-
-            resp = client.get(f"{base_url}/api/classifiers/{slug}", headers=headers)
-
-            if resp.status_code == 200:
-                existing_yaml = resp.json().get("latestVersion", {}).get("yamlSource", "") or ""
-                if existing_yaml.strip() == yaml_content.strip():
-                    ver = resp.json().get("latestVersion", {}).get("version", "?")
-                    console.print(f"  [dim]—[/dim] [classifier] {slug} — unchanged ({ver})")
-                    continue
-                resp = client.post(
-                    f"{base_url}/api/classifiers/{slug}/versions",
-                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
-                    headers={**headers, "Content-Type": "application/json"},
-                )
-                if resp.status_code in (200, 201):
-                    console.print(
-                        f"  [green]✓[/green] [classifier] {slug} — updated to {resp.json().get('version', '?')}"
-                    )
-                else:
-                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
-            elif resp.status_code == 404:
-                create_body: dict = {"slug": slug, "display_name": display_name, "initial_yaml": yaml_content}
-                if description:
-                    create_body["description"] = description
-                resp = client.post(
-                    f"{base_url}/api/classifiers",
-                    json=create_body,
-                    headers={**headers, "Content-Type": "application/json"},
-                )
-                if resp.status_code in (200, 201):
-                    console.print(f"  [green]✓[/green] [classifier] {slug} — created")
-                else:
-                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
-            else:
-                console.print(f"  [red]✗[/red] [classifier] {slug} — HTTP {resp.status_code}")
 
     # Surface files that were seen but skipped for an unrecognized `kind` — a
     # silent "0 pushed" otherwise reads as "nothing to do" when the real cause
