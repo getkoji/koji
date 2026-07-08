@@ -12,9 +12,11 @@ import functools
 import io
 import json
 import re
+import subprocess
 import tempfile
 import time
 import traceback
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -26,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.63.1")
+app = FastAPI(title="Koji Parse Service", version="0.63.2")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -86,6 +88,110 @@ def _has_glyph_garble(text: str) -> bool:
     character content was mangled — trigger a pypdfium re-parse.
     """
     return bool(_GLYPH_ESCAPE_RE.search(text or ""))
+
+
+_MD_STRIP_RE = re.compile(r"[#*`|>_\-]")
+
+
+def _looks_space_mangled(markdown: str) -> bool:
+    """True if `markdown` has the long-token signature of space-stripped output.
+
+    Some PDFs (notably Type-3 / custom-encoded fonts) carry a text layer whose
+    inter-word spacing lives in glyph positioning, not space characters. Text
+    extractors that reconstruct spacing from run geometry (pdfjs, DoclingParseV2)
+    emit whole phrases with no spaces — "STATEFARMFIREANDCASUALTYCOMPANY". The
+    signature is an abnormal fraction of very long tokens; real prose has almost
+    none, since the longest common English words are ~20 chars and rare
+    (measured ~21% on the failing doc vs ~0% on clean text). Mirrors the
+    `longRatio` arm of the API-side `detectCorruption` heuristic. See oss-400.
+    """
+    tokens = [t for t in _MD_STRIP_RE.sub(" ", markdown or "").split() if any(c.isalnum() for c in t)]
+    if len(tokens) < 50:
+        return False
+    long_ratio = sum(1 for t in tokens if len(t) >= 20) / len(tokens)
+    return long_ratio > 0.1
+
+
+def _poppler_extract(file_path: str) -> dict | None:
+    """Re-extract text + word bboxes with poppler's ``pdftotext -bbox-layout``.
+
+    Poppler resolves inter-word spacing at the glyph level (from glyph advance
+    widths), so it recovers spaces on Type-3 / custom-encoded fonts that pdfjs
+    and DoclingParseV2 mash together. `poppler-utils` ships in the parse base
+    image, so this runs in-container (never in the serverless API).
+
+    Returns ``{"markdown", "pages", "text_map"}`` in the same shape as
+    :func:`_convert_sync`, or ``None`` if pdftotext is unavailable, fails, or
+    yields no text. Markdown and text_map are built from the same word stream in
+    reading order, so :func:`_annotate_md_offsets` aligns them exactly.
+    """
+    try:
+        proc = subprocess.run(
+            ["pdftotext", "-bbox-layout", file_path, "-"],
+            capture_output=True,
+            timeout=120,
+            check=True,
+        )
+    except FileNotFoundError:
+        print("[koji-parse] poppler recovery unavailable: pdftotext not on PATH")
+        return None
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"[koji-parse] poppler recovery failed: {e}")
+        return None
+
+    try:
+        # pdftotext emits XHTML with a default namespace; drop it so ElementTree
+        # tags are unqualified ("page"/"word", not "{ns}page").
+        xml_text = re.sub(r'\sxmlns="[^"]*"', "", proc.stdout.decode("utf-8", "replace"), count=1)
+        root = ET.fromstring(xml_text)
+    except (ET.ParseError, ValueError) as e:
+        print(f"[koji-parse] poppler XHTML parse failed: {e}")
+        return None
+
+    page_blocks: list[str] = []
+    text_map: list[dict] = []
+    pages = 0
+    for page_el in root.iter("page"):
+        pages += 1
+        pw = float(page_el.get("width") or 0)
+        ph = float(page_el.get("height") or 0)
+        page_lines: list[str] = []
+        for line_el in page_el.iter("line"):
+            words: list[str] = []
+            for w in line_el.findall("word"):
+                text = (w.text or "").strip()
+                if not text:
+                    continue
+                words.append(text)
+                if pw > 0 and ph > 0:
+                    xmin = float(w.get("xMin") or 0)
+                    ymin = float(w.get("yMin") or 0)
+                    xmax = float(w.get("xMax") or 0)
+                    ymax = float(w.get("yMax") or 0)
+                    text_map.append(
+                        {
+                            "text": text,
+                            "page": pages,
+                            "bbox": {
+                                "x": round(xmin / pw, 6),
+                                "y": round(ymin / ph, 6),
+                                "w": round((xmax - xmin) / pw, 6),
+                                "h": round((ymax - ymin) / ph, 6),
+                            },
+                            "level": "word",
+                        }
+                    )
+            if words:
+                page_lines.append(" ".join(words))
+        if page_lines:
+            page_blocks.append("\n".join(page_lines))
+
+    markdown = "\n\n".join(page_blocks)
+    if not markdown.strip():
+        return None
+
+    _annotate_md_offsets(markdown, text_map)
+    return {"markdown": markdown, "pages": pages, "text_map": text_map}
 
 
 # ── Detection helpers ────────────────────────────────────────────────────
@@ -264,6 +370,19 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
         markdown = result.document.export_to_markdown()
         if _has_glyph_garble(markdown):
             print("[koji-parse] WARNING: glyph garble persists after pypdfium fallback")
+
+    # Space-mangled text layer (Type-3 / custom-encoded fonts): docling's text
+    # backends reconstruct inter-word spacing from run geometry and drop it
+    # entirely on these fonts, so whole phrases collapse into one token. Poppler
+    # resolves spacing at the glyph level, so re-extract with pdftotext when the
+    # long-token signature shows up. Only accept the recovery if it actually
+    # unmangles the text; otherwise keep docling's output. See oss-400.
+    if _looks_space_mangled(markdown):
+        print("[koji-parse] space-mangled text layer detected — recovering with poppler pdftotext")
+        recovered = _poppler_extract(file_path)
+        if recovered and not _looks_space_mangled(recovered["markdown"]):
+            return recovered
+        print("[koji-parse] WARNING: poppler recovery failed/unavailable; keeping docling output")
 
     text_map = _build_text_map(result.document)
     _annotate_md_offsets(markdown, text_map)

@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.63.2 — 2026-07-07
+
+**Recover text from PDFs with space-mangled text layers.** Some PDFs (notably
+those built with Type-3 / custom-encoded fonts) store inter-word spacing as
+glyph positioning rather than actual space characters. The in-process pdfjs
+reader and docling's default backend both reconstruct spacing from run geometry
+and drop it entirely on these fonts, so whole phrases collapse into one token
+(`STATEFARMFIREANDCASUALTYCOMPANY`) and extraction silently reads garbage. The
+parser now detects this long-token signature and re-extracts with poppler's
+`pdftotext`, which resolves spacing at the glyph level — restoring both the text
+and its word-level bounding boxes. The recovery runs inside the parse service
+(where `poppler-utils` already ships) and is only accepted when it actually
+unmangles the output.
+
 ## 0.63.1 — 2026-07-07
 
 **Overview page is fully scoped to the selected project.** The dashboard
