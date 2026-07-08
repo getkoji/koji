@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.65.2"
+KOJI_VERSION = "0.66.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -903,12 +903,14 @@ def push(
     """Push local YAML files to the Koji platform.
 
     Reads all .yaml files from the directory and pushes them based on their
-    `kind` field: schemas go to /api/schemas, pipelines go to /api/pipelines.
+    `kind` field: schemas go to /api/schemas, pipelines go to /api/pipelines,
+    classifiers go to /api/classifiers.
 
     Files without a `kind` field are assumed to be schemas (backward compat).
+    Files with an unrecognized `kind` are skipped with a warning.
 
-    Searches for YAML files in the directory root and in schemas/ and
-    pipelines/ subdirectories if they exist.
+    Searches for YAML files in the directory root and in schemas/, pipelines/,
+    and classifiers/ subdirectories if they exist.
     """
     import os
 
@@ -950,7 +952,7 @@ def push(
         raise SystemExit(1)
 
     yaml_files: list[Path] = []
-    for search_dir in [root, root / "schemas", root / "pipelines"]:
+    for search_dir in [root, root / "schemas", root / "pipelines", root / "classifiers"]:
         if search_dir.is_dir():
             yaml_files.extend(sorted(search_dir.glob("*.yaml")))
             yaml_files.extend(sorted(search_dir.glob("*.yml")))
@@ -964,6 +966,8 @@ def push(
     # Parse all files and group by kind
     schemas: list[tuple[Path, dict, str]] = []  # (path, parsed, raw_yaml)
     pipelines: list[tuple[Path, dict, str]] = []
+    classifiers: list[tuple[Path, dict, str]] = []
+    skipped: list[tuple[Path, str]] = []  # (path, unrecognized kind)
 
     for yaml_path in yaml_files:
         raw = yaml_path.read_text()
@@ -974,14 +978,20 @@ def push(
             continue
 
         kind = parsed.get("kind")
-        if kind not in ("schema", "pipeline"):
-            continue
         if kind == "pipeline":
             pipelines.append((yaml_path, parsed, raw))
-        else:
+        elif kind == "classifier":
+            classifiers.append((yaml_path, parsed, raw))
+        elif kind in ("schema", None):
+            # Untagged files are schemas (backward compat, per this command's contract).
             schemas.append((yaml_path, parsed, raw))
+        else:
+            skipped.append((yaml_path, str(kind)))
 
-    console.print(f"\n[bold]koji push[/bold] — {len(schemas)} schema(s), {len(pipelines)} pipeline(s) → {base_url}\n")
+    console.print(
+        f"\n[bold]koji push[/bold] — {len(schemas)} schema(s), {len(pipelines)} pipeline(s), "
+        f"{len(classifiers)} classifier(s) → {base_url}\n"
+    )
 
     with httpx.Client(timeout=30) as client:
         # ── Push schemas ──
@@ -1098,6 +1108,59 @@ def push(
                     console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
             else:
                 console.print(f"  [red]✗[/red] [pipeline] {slug} — HTTP {resp.status_code}")
+
+        # ── Push classifiers ──
+        for yaml_path, parsed, yaml_content in classifiers:
+            slug = parsed.get("slug", parsed.get("name", yaml_path.stem))
+            display_name = parsed.get("display_name", parsed.get("name", slug))
+            description = parsed.get("description")
+
+            resp = client.get(f"{base_url}/api/classifiers/{slug}", headers=headers)
+
+            if resp.status_code == 200:
+                existing_yaml = resp.json().get("latestVersion", {}).get("yamlSource", "") or ""
+                if existing_yaml.strip() == yaml_content.strip():
+                    ver = resp.json().get("latestVersion", {}).get("version", "?")
+                    console.print(f"  [dim]—[/dim] [classifier] {slug} — unchanged ({ver})")
+                    continue
+                resp = client.post(
+                    f"{base_url}/api/classifiers/{slug}/versions",
+                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201):
+                    console.print(
+                        f"  [green]✓[/green] [classifier] {slug} — updated to {resp.json().get('version', '?')}"
+                    )
+                else:
+                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
+                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+            elif resp.status_code == 404:
+                create_body: dict = {"slug": slug, "display_name": display_name, "initial_yaml": yaml_content}
+                if description:
+                    create_body["description"] = description
+                resp = client.post(
+                    f"{base_url}/api/classifiers",
+                    json=create_body,
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if resp.status_code in (200, 201):
+                    console.print(f"  [green]✓[/green] [classifier] {slug} — created")
+                else:
+                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
+                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+            else:
+                console.print(f"  [red]✗[/red] [classifier] {slug} — HTTP {resp.status_code}")
+
+    # Surface files that were seen but skipped for an unrecognized `kind` — a
+    # silent "0 pushed" otherwise reads as "nothing to do" when the real cause
+    # is a typo'd or unsupported kind.
+    if skipped:
+        console.print()
+        kinds = sorted({k for _, k in skipped})
+        console.print(f"[yellow]Skipped {len(skipped)} file(s) with unhandled kind: {', '.join(kinds)}[/yellow]")
+        for path, kind in skipped:
+            console.print(f"  [dim]—[/dim] {path.name} (kind: {kind})")
 
     console.print()
 
