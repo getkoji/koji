@@ -1328,29 +1328,17 @@ async function executeTestStep(
         return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: docInfo.text ? "No DB context" : "No parsed text available" }, costUsd: cost };
       }
       try {
-        // Look up the schema definition
-        const schemaRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
-          tx.select({
-            id: schema.schemas.id,
-            currentVersionId: schema.schemas.currentVersionId,
-          })
-          .from(schema.schemas)
-          .where(eq(schema.schemas.slug, schemaSlug))
-          .limit(1),
-        ) as Array<{ id: string; currentVersionId: string | null }>;
-        const schemaRow = schemaRows[0];
-        if (!schemaRow?.currentVersionId) {
-          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: `Schema "${schemaSlug}" not found or has no committed version` }, costUsd: cost };
-        }
-        const versionRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
-          tx.select({ parsedJson: schema.schemaVersions.parsedJson })
-            .from(schema.schemaVersions)
-            .where(eq(schema.schemaVersions.id, schemaRow.currentVersionId!))
-            .limit(1),
-        ) as Array<{ parsedJson: Record<string, unknown> | null }>;
-        const version = versionRows[0];
-        if (!version?.parsedJson) {
-          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "Schema version has no parsed definition" }, costUsd: cost };
+        // Resolve the schema version the SAME way production does — via
+        // resolvePipelineSchemaVersion, which honors the pipeline's versionMode
+        // (pinned → activeSchemaVersionId, auto → the schema's live release) and
+        // scopes the slug lookup to the pipeline's project (oss-408). Test mode
+        // previously always read the schema's currentVersionId directly, so a
+        // pinned pipeline would test against the wrong (live) version, and a
+        // same-slug schema in a sibling project could win the lookup.
+        const { resolvePipelineSchemaVersion } = await import("../ingestion/pipeline-schema-version");
+        const ver = await resolvePipelineSchemaVersion(ctx.db as any, ctx.tenantId, ctx.pipelineId, schemaSlug);
+        if (!ver?.parsedJson) {
+          return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: `Schema "${schemaSlug}" has no version this pipeline can run (check the schema is released, or the pipeline's pinned version)` }, costUsd: cost };
         }
         // Resolve model endpoint
         const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
@@ -1367,7 +1355,7 @@ async function executeTestStep(
           return { ok: true, output: { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, confidence: 0, note: "No model endpoint configured — cannot run extraction" }, costUsd: cost };
         }
         const provider = createProvider(endpoint.model, endpoint);
-        const schemaDef = version.parsedJson as Record<string, unknown>;
+        const schemaDef = ver.parsedJson as Record<string, unknown>;
         // Test mode must match production: pass the parse-layer provenance
         // (nested text_map + positional chunks) so test extraction produces the
         // same bbox highlights the real pipeline path does (oss-310).

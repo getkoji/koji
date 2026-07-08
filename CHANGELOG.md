@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.65.1 — 2026-07-08
+
+**Pipeline test mode now resolves the schema version exactly like production.**
+The pipeline dry-run (`koji pipeline test` / the dashboard Test button) resolved
+each extract step's schema version by reading the schema's current live release
+directly. That diverged from a real run for **pinned** pipelines (which run a
+specific `activeSchemaVersionId`) and skipped project scoping. Test mode now goes
+through the same `resolvePipelineSchemaVersion` path the ingestion runner uses,
+so a pinned pipeline tests against its pinned version and the schema lookup is
+confined to the pipeline's project.
+
 ## 0.65.0 — 2026-07-08
 
 **Dry-run a pipeline and see how a document routes: `koji pipeline test`.**
