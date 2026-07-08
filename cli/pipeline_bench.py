@@ -39,6 +39,43 @@ from .test_runner import FieldResult, compare_results
 
 # ── Data model ────────────────────────────────────────────────────────
 
+#: A classify step reached a verdict by actually inspecting the document.
+DECIDING_METHODS = frozenset({"metadata", "keyword", "llm", "vision"})
+
+#: A classify step never inspected the document — the classifier reference
+#: didn't resolve, the bytes were missing, or no model provider was reachable.
+#: Distinct from ``unknown``, which means it looked and could not tell. Both
+#: send a DAG down its ``default`` edge, so on the wire they look identical;
+#: only ``method`` tells them apart, and a bench that drops it reports a
+#: misconfigured pipeline as a 0% routing score with no explanation.
+FAILURE_METHODS = frozenset({"no_classifier", "no_version", "no_file", "no_provider", "no_endpoint"})
+
+
+@dataclass
+class ClassifyStepResult:
+    """What one classify step in the DAG reported for one document."""
+
+    step_id: str
+    label: str | None = None
+    method: str | None = None
+    reasoning: str | None = None
+    classifier: str | None = None
+    classifier_version: str | None = None
+
+    @property
+    def decided(self) -> bool:
+        """Did the step actually classify the document?"""
+        return self.method in DECIDING_METHODS
+
+    @property
+    def failed_to_run(self) -> bool:
+        """Did the step fail to inspect the document at all?"""
+        return self.method in FAILURE_METHODS
+
+    def describe(self) -> str:
+        """Compact ``step=label(method)`` for the per-document trail."""
+        return f"{self.step_id}={self.label or '?'}({self.method or '?'})"
+
 
 @dataclass
 class PipelineDocResult:
@@ -49,10 +86,16 @@ class PipelineDocResult:
     expected_schema: str
     routed_schema: str | None = None
     path: list[str] = field(default_factory=list)
+    classify_steps: list[ClassifyStepResult] = field(default_factory=list)
     field_results: list[FieldResult] = field(default_factory=list)
     elapsed_ms: int = 0
     cost_usd: float = 0.0
     error: str | None = None
+
+    @property
+    def classifier_failures(self) -> list[ClassifyStepResult]:
+        """Classify steps that never got to inspect the document."""
+        return [s for s in self.classify_steps if s.failed_to_run]
 
     @property
     def routing_ok(self) -> bool:
@@ -140,6 +183,23 @@ class PipelineBenchResult:
             confusion[d.expected_schema][routed] += 1
         return confusion
 
+    def classify_method_counts(self) -> dict[str, int]:
+        """How many classify steps reported each ``method``, across all docs."""
+        counts: dict[str, int] = {}
+        for d in self.doc_results:
+            for s in d.classify_steps:
+                key = s.method or "(missing)"
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def docs_with_classifier_failures(self) -> list[PipelineDocResult]:
+        """Docs where a classify step never inspected the document.
+
+        Non-empty means the routing score below is measuring a broken pipeline,
+        not a bad classifier.
+        """
+        return [d for d in self.doc_results if d.classifier_failures]
+
     def extraction_by_schema(self) -> dict[str, tuple[int, int]]:
         """Per terminal schema: (passed_fields, total_fields) over correctly-routed docs."""
         by_schema: dict[str, tuple[int, int]] = {}
@@ -165,6 +225,10 @@ class PipelineBenchResult:
                 "accuracy": self.routing_accuracy,
                 "confusion": self.routing_confusion(),
             },
+            "classify": {
+                "method_counts": self.classify_method_counts(),
+                "docs_with_classifier_failures": [d.document_name for d in self.docs_with_classifier_failures()],
+            },
             "extraction": {
                 "scored_fields": self.scored_fields,
                 "passed_fields": self.passed_fields,
@@ -182,6 +246,18 @@ class PipelineBenchResult:
                     "routed_schema": d.routed_schema,
                     "routing_ok": d.routing_ok,
                     "path": d.path,
+                    "classify": [
+                        {
+                            "step_id": s.step_id,
+                            "label": s.label,
+                            "method": s.method,
+                            "reasoning": s.reasoning,
+                            "classifier": s.classifier,
+                            "classifier_version": s.classifier_version,
+                            "failed_to_run": s.failed_to_run,
+                        }
+                        for s in d.classify_steps
+                    ],
                     "passed": d.passed,
                     "total": d.total,
                     "accuracy": d.accuracy,
@@ -223,6 +299,31 @@ def schema_slug(schema_path: Path) -> str:
     except Exception:
         pass
     return schema_path.stem
+
+
+def _classify_steps(steps: list[dict]) -> list[ClassifyStepResult]:
+    """Pull every classify step's verdict out of a /test response's ``steps``.
+
+    The API reports ``method`` precisely so a resolution failure can be told
+    apart from a genuine ``unknown``. Keep it — it is the only signal that
+    explains an otherwise inexplicable 0% routing score.
+    """
+    out: list[ClassifyStepResult] = []
+    for step in steps:
+        if step.get("stepType") != "classify":
+            continue
+        o = step.get("output") or {}
+        out.append(
+            ClassifyStepResult(
+                step_id=step.get("stepId") or "",
+                label=o.get("label"),
+                method=o.get("method"),
+                reasoning=o.get("reasoning"),
+                classifier=o.get("classifier"),
+                classifier_version=o.get("classifier_version"),
+            )
+        )
+    return out
 
 
 def _terminal_extraction(steps: list[dict]) -> tuple[str | None, dict | None, dict | None]:
@@ -310,6 +411,7 @@ def bench_document(
 
     steps = data.get("steps") or []
     result.path = list(data.get("path") or [])
+    result.classify_steps = _classify_steps(steps)
     result.cost_usd = float(data.get("totalCostUsd") or 0.0)
 
     routed_schema, fields, _ = _terminal_extraction(steps)
@@ -400,6 +502,14 @@ def format_report(result: PipelineBenchResult) -> str:
         if not d.routing_ok:
             routed = d.routed_schema or "(no extraction)"
             lines.append(f"  MISROUTE {d.document_name}: routed to {routed}, expected {d.expected_schema}")
+            # Show the classify trail: a misroute caused by a classifier that
+            # never ran is a broken pipeline, not a bad classifier, and the two
+            # are indistinguishable from the routed schema alone.
+            if d.classify_steps:
+                trail = "  ".join(s.describe() for s in d.classify_steps)
+                lines.append(f"       classify: {trail}")
+            for s in d.classifier_failures:
+                lines.append(f"       ! {s.step_id} never ran ({s.method}): {s.reasoning or 'no reason given'}")
             continue
         if d.all_passed:
             lines.append(f"  ok {d.document_name} → {d.routed_schema} ({d.total} fields, {d.elapsed_ms}ms)")
@@ -423,6 +533,29 @@ def format_report(result: PipelineBenchResult) -> str:
         if misroutes:
             parts = ", ".join(f"{v}→{k}" for k, v in sorted(misroutes.items()))
             lines.append(f"  {expected_slug}: {parts}")
+
+    # Classify summary. Lead with the failures: when a classifier never ran, the
+    # routing score above is measuring the pipeline's plumbing, not its accuracy.
+    method_counts = result.classify_method_counts()
+    if method_counts:
+        lines.append("")
+        summary = ", ".join(f"{m} {n}" for m, n in sorted(method_counts.items()))
+        lines.append(f"CLASSIFY: {sum(method_counts.values())} steps — {summary}")
+
+        broken = result.docs_with_classifier_failures()
+        if broken:
+            reasons = sorted({s.method for d in broken for s in d.classifier_failures if s.method})
+            lines.append("")
+            lines.append(
+                f"  !! {len(broken)} of {result.total_documents} documents had a classify step that "
+                f"never inspected the document ({', '.join(reasons)})."
+            )
+            lines.append(
+                "     These docs fell to their pipeline's default route. The ROUTING score above "
+                "reflects a broken pipeline, not classifier accuracy — fix this before reading it."
+            )
+            for s in broken[0].classifier_failures[:1]:
+                lines.append(f"     e.g. {broken[0].document_name}: {s.reasoning or s.method}")
 
     # Extraction summary, broken out per terminal schema
     lines.append("")

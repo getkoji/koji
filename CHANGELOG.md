@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.71.0 — 2026-07-08
+
+**`koji pipeline bench` now reports why a classify step didn't classify.** The
+`/test` response has always tagged each classify step with the `method` that
+produced its label — `keyword`/`llm`/`vision` when the step ran, or
+`no_classifier`/`no_version`/`no_file`/`no_provider` when it never inspected the
+document. The bench threw that away and scored only the terminal schema, so a
+pipeline whose classifier reference didn't resolve looked exactly like a
+pipeline whose classifier was simply bad: every document took the `default`
+edge, routing read `0.0%`, and nothing said why.
+
+The report now carries a `CLASSIFY` line with per-method counts, annotates each
+misroute with its classify trail (`classify_carrier=unknown(no_classifier)`),
+and — when any step failed to run — says outright that the routing score is
+measuring a broken pipeline rather than classifier accuracy. `--json` gains a
+`classify` block and a per-document `classify` array.
 ## 0.70.1 — 2026-07-08
 
 **A classifier that can't reach a model provider now fails loudly instead of
