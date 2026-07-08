@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.64.0")
+app = FastAPI(title="Koji Parse Service", version="0.65.0")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
