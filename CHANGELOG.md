@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.65.2 — 2026-07-08
+
+**`/api/process` and `/api/parse` now use the tenant's configured parse
+provider.** Both endpoints (used by `koji process`, and callable directly)
+POSTed straight to the global default parse backend, bypassing the tenant's
+BYO parse provider (Doc AI / Textract / …). On the hosted platform, where the
+global backend isn't the tenant's, this returned `Parse failed` for every
+document — even though `koji corpus add`, build, and pipeline test parsed the
+same PDFs fine. Both endpoints now resolve the parse provider the same way the
+rest of the pipeline does, and surface the underlying parse error detail
+instead of an empty `{}`.
+
 ## 0.65.1 — 2026-07-08
 
 **Pipeline test mode now resolves the schema version exactly like production.**
