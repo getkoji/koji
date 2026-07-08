@@ -2,6 +2,14 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.63.3 — 2026-07-08
+
+**Space-mangled text-layer recovery now covers the hosted (Modal) parse path.**
+The poppler `pdftotext` recovery added in 0.63.2 lived only in the self-hosted
+docker parse service. This ports it to the Modal parse service that the hosted
+cloud uses, so both backends recover Type-3 / custom-encoded PDFs identically.
+No behavior change for self-hosted.
+
 ## 0.63.2 — 2026-07-07
 
 **Recover text from PDFs with space-mangled text layers.** Some PDFs (notably
