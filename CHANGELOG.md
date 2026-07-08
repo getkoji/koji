@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.70.0 — 2026-07-08
+
+**Pin a referenced classifier to a specific version in a pipeline.** A DAG
+`classify` step that references a classifier by slug can now also pin its
+version: `classifier: doc_type` + `classifier_version: v0.0.3`. Without a pin
+the step runs the classifier's current released version (unchanged); with one
+it runs exactly that version, and a pin that doesn't resolve fails loud
+(the step returns `unknown` with a clear reason) rather than silently falling
+back to the live release — so a staged classifier rollout can't quietly change
+how a pinned pipeline routes. The resolved version is reported in the step
+output (and in `koji pipeline test`). Accepts a semver label (`v0.0.3` or
+`0.0.3`) or a version-id prefix.
+
 ## 0.69.0 — 2026-07-08
 
 **A pipeline DAG classify step can reference a registered classifier by slug.**

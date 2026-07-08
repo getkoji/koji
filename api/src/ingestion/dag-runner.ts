@@ -508,15 +508,14 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           const classifierSlug = step.config.classifier as string | undefined;
           if (classifierSlug) {
             const scope = { tenantId, projectId: pipeline.projectId };
-            const config = await resolveClassifierConfig(db, scope, classifierSlug);
-            if (!config) {
-              output = {
-                label: "unknown",
-                confidence: 0,
-                method: "no_classifier",
-                reasoning: `Classifier '${classifierSlug}' has no released version in this project`,
-                classifier: classifierSlug,
-              };
+            const pin = (step.config.classifier_version as string | undefined) || undefined;
+            const resolved = await resolveClassifierConfig(db, scope, classifierSlug, pin);
+            if ("error" in resolved) {
+              const reasoning =
+                resolved.error === "no_version"
+                  ? `Classifier '${classifierSlug}' has no version matching '${resolved.requested}'`
+                  : `Classifier '${classifierSlug}' has no released version in this project`;
+              output = { label: "unknown", confidence: 0, method: resolved.error, reasoning, classifier: classifierSlug };
               break;
             }
             const file = _storage ? await _storage.getBuffer(doc.storageKey) : null;
@@ -534,7 +533,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               db,
               scope,
               { filename: doc.filename, mimeType: doc.mimeType, fileBuffer: file.data },
-              config,
+              resolved.config,
               _parseProvider ?? undefined,
             );
             output = {
@@ -544,6 +543,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               tier: outcome.tierUsed,
               evidence_page: outcome.evidencePage,
               classifier: classifierSlug,
+              classifier_version: resolved.version,
             };
             break;
           }
