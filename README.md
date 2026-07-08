@@ -208,6 +208,8 @@ BYO model — local or API. No vendor lock-in.
 | `koji classify run <classifier> <doc>` | Classify one document; show label, confidence, method, tier |
 | `koji classify versions / promote / release` | List classifier versions; promote a candidate to a live release |
 | `koji pipeline ls / deploy` | List pipelines; pin one to a schema version or set it back to auto |
+| `koji pipeline run <pipeline> <doc…>` | Run documents through a pipeline (the dashboard's manual run); `--no-wait` to submit async |
+| `koji pipeline result <jobSlug>` | Fetch a submitted pipeline job's documents + extraction |
 | `koji run <schema> <doc>` | Extract one corpus document (the Build tab's Run) |
 | `koji corpus ls / diff / add / tag / gt` | Manage a schema's validation corpus |
 | `koji review stats / ls / show / promote` | Triage the review queue (true counts via `stats`) and promote reviewed docs into the corpus |

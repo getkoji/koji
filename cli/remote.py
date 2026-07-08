@@ -1614,7 +1614,7 @@ def _fetch_pipeline(client: httpx.Client, base_url: str, headers: dict, slug: st
 
 
 pipeline_app = typer.Typer(
-    help="Manage pipelines — list, and pin/unpin the schema version they run.",
+    help="Manage pipelines — list, run docs through them, and pin/unpin the schema version they run.",
     no_args_is_help=True,
 )
 
@@ -1703,6 +1703,285 @@ def pipeline_deploy(
         console.print(f"[green]✓[/green] {pipeline} pinned to [cyan]{version}[/cyan]")
     else:
         console.print(f"[green]✓[/green] {pipeline} set to [cyan]auto[/cyan] — follows the live release")
+
+
+# ── Pipelines: run docs through a pipeline (the dashboard's manual-run path) ──
+#
+# `koji pipeline run` submits each document to POST /api/pipelines/<slug>/run —
+# the same endpoint the dashboard's manual run uses. That endpoint parses,
+# extracts, and routes the doc exactly as production ingestion does (it just
+# creates a real job and enqueues the ingestion worker). We submit ONE doc per
+# /run call (its own job) rather than batching via /jobs/:id/docs, because the
+# batch endpoint always enqueues the simple-ingestion worker and would misroute
+# a DAG pipeline; a per-doc /run always hits the correct per-type handler.
+
+# Document states the server treats as terminal — where a manual run stops. The
+# ingestion pipeline leaves a finished document in one of:
+#   delivered — extracted and emitted (the success terminal; see outcome.ts)
+#   review    — extracted, but a low-confidence field was routed to a human
+#               (the extraction payload is still present)
+#   failed    — processing failed
+# ("completed" is a *job* status, not a document status; it's kept here only as a
+# defensive extra so a future/edge document status never hangs the poll.)
+_TERMINAL_DOC_STATES = {"delivered", "review", "failed", "completed"}
+
+
+def _expand_input_paths(paths: list[str]) -> list[Path]:
+    """Expand CLI path args into a flat, sorted list of files (dirs → their files)."""
+    files: list[Path] = []
+    for p in paths:
+        path = Path(p)
+        if path.is_dir():
+            files.extend(sorted(f for f in path.iterdir() if f.is_file() and not f.name.startswith(".")))
+        elif path.is_file():
+            files.append(path)
+        else:
+            console.print(f"[red]Path not found: {p}[/red]")
+            raise typer.Exit(1)
+    if not files:
+        console.print("[yellow]No documents to run.[/yellow]")
+        raise typer.Exit(1)
+    return files
+
+
+def _submit_pipeline_doc(
+    client: httpx.Client, base_url: str, headers: dict, pipeline: str, path: Path, group: str | None
+) -> dict:
+    """POST one document to the pipeline's manual-run endpoint. Returns the 202 body."""
+    mime, _ = mimetypes.guess_type(path.name)
+    data = {"group": group} if group else None
+    with path.open("rb") as fh:
+        files = {"file": (path.name, fh, mime or "application/octet-stream")}
+        resp = client.post(f"{base_url}/api/pipelines/{pipeline}/run", files=files, data=data, headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code == 404:
+        console.print(f"[red]Pipeline '{pipeline}' not found.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code not in (200, 202):
+        _api_error(resp, f"run {path.name}")
+    return resp.json()
+
+
+def _fetch_job_docs(client: httpx.Client, base_url: str, headers: dict, job_slug: str) -> list[dict]:
+    """GET the top-level documents for a job (the dashboard's job view data)."""
+    resp = client.get(f"{base_url}/api/jobs/{job_slug}/documents", headers=headers)
+    if _auth_error(resp, base_url):
+        raise typer.Exit(1)
+    if resp.status_code == 404:
+        console.print(f"[red]Job '{job_slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _api_error(resp, f"fetch job {job_slug}")
+    return [{**d, "jobSlug": job_slug} for d in resp.json().get("data", [])]
+
+
+def _poll_pipeline_jobs(
+    client: httpx.Client, base_url: str, headers: dict, submitted: list[dict], timeout_s: int
+) -> list[dict]:
+    """Poll each submitted job until its document reaches a terminal state.
+
+    `submitted` is a list of {filename, jobSlug, jobId, documentId}. Returns the
+    document rows in submission order, each tagged with its jobSlug. On timeout the
+    still-running docs come back with status "timeout" so the caller can report them.
+    """
+    deadline = time.monotonic() + max(1, timeout_s)
+    results: dict[str, dict] = {}
+    pending = {s["jobSlug"]: s for s in submitted if s.get("jobSlug")}
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} docs"),
+        console=err_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("running pipeline", total=len(submitted))
+        while pending:
+            if time.monotonic() > deadline:
+                progress.stop()
+                console.print(
+                    f"[red]✗[/red] timed out after {timeout_s}s waiting on {len(pending)} doc(s). "
+                    f"Fetch them later with [bold]koji pipeline result <jobSlug>[/bold]."
+                )
+                for s in pending.values():
+                    results[s["documentId"]] = {**s, "status": "timeout"}
+                break
+            for slug, s in list(pending.items()):
+                rows = _fetch_job_docs(client, base_url, headers, slug)
+                doc = next((d for d in rows if d.get("id") == s.get("documentId")), rows[0] if rows else None)
+                if doc and doc.get("status") in _TERMINAL_DOC_STATES:
+                    results[s["documentId"]] = doc
+                    del pending[slug]
+            progress.update(task, completed=len(submitted) - len(pending))
+            if pending:
+                time.sleep(2)
+    return [results[s["documentId"]] for s in submitted if s.get("documentId") in results]
+
+
+def _render_pipeline_docs(docs: list[dict], show_prov: bool) -> None:
+    """Render each document's status + extraction (mirrors the Build tab's Run output)."""
+    for d in docs:
+        status = d.get("status", "?")
+        status_color = {
+            "delivered": "green",
+            "completed": "green",
+            "review": "yellow",
+            "failed": "red",
+            "timeout": "red",
+        }.get(status, "dim")
+        conf = d.get("confidence")
+        conf_disp = "" if conf is None else f"conf {float(conf) * 100:.0f}%"
+        dur = d.get("durationMs")
+        dur_disp = f"{dur / 1000:.1f}s" if dur else ""
+        pages = d.get("pageCount")
+        meta = "  ".join(
+            part
+            for part in [
+                f"job {d.get('jobSlug', '')}" if d.get("jobSlug") else "",
+                f"{pages}p" if pages else "",
+                dur_disp,
+                conf_disp,
+            ]
+            if part
+        )
+        console.print(
+            f"\n[bold]{d.get('filename', '?')}[/bold]  "
+            f"[{status_color}]{status}[/{status_color}]"
+            f"{f'  [dim]{meta}[/dim]' if meta else ''}"
+        )
+        if status in ("failed", "timeout"):
+            hint = "processing failed" if status == "failed" else "still running at timeout"
+            console.print(f"  [red]{hint}[/red] — see the trace for detail.")
+            continue
+        extracted = d.get("extractionJson") or {}
+        if not extracted:
+            console.print("  [dim]no extraction output[/dim]")
+            continue
+        scores = d.get("confidenceScoresJson") or {}
+        prov = d.get("provenanceJson") or {}
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Field")
+        table.add_column("Value")
+        table.add_column("Conf", justify="right")
+        if show_prov:
+            table.add_column("Source")
+        for k in extracted:
+            fc = scores.get(k)
+            fc_disp = "" if fc is None else f"{float(fc) * 100:.0f}%"
+            fc_color = "green" if (fc or 0) >= 0.8 else ("yellow" if (fc or 0) >= 0.5 else "red")
+            row = [k, _fmt_value(extracted[k]), f"[{fc_color}]{fc_disp}[/{fc_color}]" if fc_disp else ""]
+            if show_prov:
+                p = prov.get(k) or {}
+                snippet = (p.get("chunk") or "") if isinstance(p, dict) else ""
+                row.append(_fmt_value(snippet, 40))
+            table.add_row(*row)
+        console.print(table)
+    console.print()
+
+
+@pipeline_app.command("run")
+def pipeline_run(
+    pipeline: str = typer.Argument(..., help="Pipeline slug."),
+    paths: list[str] = typer.Argument(..., help="Document file(s) or a directory to run through the pipeline."),
+    group: str = typer.Option(None, "--group", "-g", help="Tag all submitted docs with this grouping key."),
+    no_wait: bool = typer.Option(
+        False, "--no-wait", help="Submit and print job slugs immediately; don't wait for extraction."
+    ),
+    provenance: bool = typer.Option(
+        False, "--provenance", help="Show the source snippet each extracted value came from."
+    ),
+    timeout_s: int = typer.Option(600, "--timeout", help="Max seconds to wait for docs to finish (sync mode)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Run one or more documents through a pipeline — the dashboard's manual-run path.
+
+    Each document is submitted to POST /api/pipelines/<slug>/run, which parses,
+    extracts, and routes it exactly as production ingestion does, creating a real
+    job per document. By default the command waits for every document to reach a
+    terminal state (completed / failed / review) and prints the extraction. Pass
+    --no-wait to submit and return the job slugs so you (or an agent) can fetch the
+    results later with `koji pipeline result <jobSlug>`.
+
+    Works against a local cluster (KOJI_API_URL + KOJI_API_KEY) or the hosted
+    platform (--profile / koji login), like the sibling pipeline commands.
+    """
+    files = _expand_input_paths(paths)
+    base_url, headers = resolve_api(profile_name)
+    submitted: list[dict] = []
+    with httpx.Client(timeout=120) as client:
+        for path in files:
+            res = _submit_pipeline_doc(client, base_url, headers, pipeline, path, group)
+            entry = {
+                "filename": path.name,
+                "jobSlug": res.get("jobSlug"),
+                "jobId": res.get("jobId"),
+                "documentId": res.get("documentId"),
+            }
+            if res.get("warnings"):
+                entry["warnings"] = res["warnings"]
+            submitted.append(entry)
+            err_console.print(f"[green]✓[/green] submitted [cyan]{path.name}[/cyan] → job {res.get('jobSlug')}")
+            for w in res.get("warnings") or []:
+                err_console.print(f"  [yellow]![/yellow] {w}")
+
+        if no_wait:
+            if as_json:
+                emit_json(submitted)
+            else:
+                console.print(
+                    f"\n[dim]{len(submitted)} doc(s) submitted. Fetch results with "
+                    f"[bold]koji pipeline result <jobSlug>[/bold].[/dim]"
+                )
+            return
+
+        docs = _poll_pipeline_jobs(client, base_url, headers, submitted, timeout_s)
+
+    if as_json:
+        emit_json(docs)
+    else:
+        _render_pipeline_docs(docs, provenance)
+    if any(d.get("status") in ("failed", "timeout") for d in docs):
+        raise typer.Exit(1)
+
+
+@pipeline_app.command("result")
+def pipeline_result(
+    job: str = typer.Argument(..., help="Job slug returned by `koji pipeline run --no-wait`."),
+    wait: bool = typer.Option(False, "--wait", help="Block until every document in the job reaches a terminal state."),
+    provenance: bool = typer.Option(
+        False, "--provenance", help="Show the source snippet each extracted value came from."
+    ),
+    timeout_s: int = typer.Option(600, "--timeout", help="Max seconds to wait when --wait is set."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Fetch the documents + extraction for a submitted pipeline job.
+
+    Reads GET /api/jobs/<slug>/documents — the same data the dashboard's job view
+    shows. Pair with `koji pipeline run --no-wait`: submit now, fetch later. Pass
+    --wait to block until processing finishes.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=120) as client:
+        if wait:
+            deadline = time.monotonic() + max(1, timeout_s)
+            while True:
+                docs = _fetch_job_docs(client, base_url, headers, job)
+                if docs and all(d.get("status") in _TERMINAL_DOC_STATES for d in docs):
+                    break
+                if time.monotonic() > deadline:
+                    console.print(f"[yellow]timed out after {timeout_s}s — returning current state.[/yellow]")
+                    break
+                time.sleep(2)
+        else:
+            docs = _fetch_job_docs(client, base_url, headers, job)
+
+    if as_json:
+        emit_json(docs)
+    else:
+        _render_pipeline_docs(docs, provenance)
 
 
 # ── Classifiers: run / versions / promote / release ───────────────────

@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.64.0 — 2026-07-08
+
+**Run documents through a pipeline from the CLI.** New `koji pipeline run
+<pipeline> <doc…>` submits one or more documents (a file, several files, or a
+directory) to a pipeline via the same manual-run path the dashboard uses — the
+document is parsed, extracted, and routed exactly as production ingestion does,
+creating a real job. By default it waits for every document to finish and prints
+the extraction (`--provenance` to show the source snippet per field, `--json`
+for machine-readable output); pass `--no-wait` to submit and return the job
+slugs so an agent can poll later. The companion `koji pipeline result <jobSlug>`
+fetches a submitted job's documents + extraction (`--wait` to block until done).
+Works against a local cluster or the hosted platform, like the sibling `pipeline`
+commands.
+
 ## 0.63.3 — 2026-07-08
 
 **Space-mangled text-layer recovery now covers the hosted (Modal) parse path.**
