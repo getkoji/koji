@@ -2118,6 +2118,89 @@ def pipeline_test(
     _render_pipeline_test(pipeline, file_path.name, result)
 
 
+@pipeline_app.command("bench")
+def pipeline_bench(
+    pipeline: str = typer.Argument(..., help="Pipeline slug to run each corpus document through."),
+    corpus: str = typer.Option(..., "--corpus", help="Path to the corpus repo root."),
+    category: str = typer.Option(None, "--category", "-c", help="Only run this corpus category."),
+    limit: int = typer.Option(None, "--limit", "-n", help="Max documents per category (fast runs)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Run a labeled corpus against a pipeline (DAG) and score routing + extraction.
+
+    Each corpus document is sent through POST /api/pipelines/<slug>/test — the same
+    dry-run the dashboard Test button uses, which parses, classifies, routes, and
+    extracts exactly as production but persists nothing. Two things are scored:
+
+    \b
+      • Routing    — did the doc reach the schema its manifest names?
+      • Extraction — do the fields at that terminal schema match .expected.json?
+
+    Extraction is scored only for correctly-routed docs (a mis-route makes field
+    scores meaningless), and is broken out per terminal schema since outputs vary
+    by the path a doc takes through the DAG. Point this at a *mixed* corpus whose
+    documents route to different schemas to exercise routing.
+
+    Nothing is persisted — no jobs are created. Requires the pipeline:write
+    permission (same as `koji pipeline test`).
+    """
+    from .pipeline_bench import format_report, run_pipeline_bench
+
+    corpus_root = Path(corpus)
+    if not corpus_root.is_dir():
+        console.print(f"[red]Corpus path not found: {corpus}[/red]")
+        raise typer.Exit(1)
+
+    base_url, headers = resolve_api(profile_name)
+
+    # Progress renders to stderr so stdout stays pure for --json.
+    with httpx.Client() as client:
+        if as_json:
+            result = run_pipeline_bench(
+                pipeline=pipeline,
+                corpus_root=corpus_root,
+                base_url=base_url,
+                headers=headers,
+                http_client=client,
+                category_filter=category,
+                document_limit=limit,
+            )
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                console=Console(stderr=True),
+                transient=True,
+            ) as progress:
+                task_id = progress.add_task(f"bench {pipeline}", total=None)
+
+                def _cb(cat: str, i: int, total: int, name: str) -> None:
+                    progress.update(task_id, total=total, completed=i, description=f"[{cat}] {name}")
+
+                result = run_pipeline_bench(
+                    pipeline=pipeline,
+                    corpus_root=corpus_root,
+                    base_url=base_url,
+                    headers=headers,
+                    http_client=client,
+                    category_filter=category,
+                    document_limit=limit,
+                    progress_callback=_cb,
+                )
+
+    if as_json:
+        emit_json(result.to_dict())
+        return
+
+    if result.total_documents == 0:
+        console.print(f"[yellow]No benchmarkable documents found in {corpus}[/yellow]")
+        raise typer.Exit(1)
+    console.print(format_report(result))
+
+
 # ── Classifiers: run / versions / promote / release ───────────────────
 #
 # Mirrors the schema group (versions / promote / release) plus a `run` verb

@@ -467,6 +467,40 @@ path: classify_kind → classify_fin → extract_invoice
     schema: invoice  2/2 fields  conf 100%
 ```
 
+#### `koji pipeline bench` — run a whole corpus through a pipeline and score it
+
+Where `koji bench` scores a corpus against a **single schema**, `koji pipeline bench` runs every corpus document through a **pipeline (DAG)** and scores two things: did each document **route** to the right schema, and did it **extract** correctly once there. It runs each doc through `POST /api/pipelines/<slug>/test` (the same dry-run as `koji pipeline test`), so **nothing is persisted** — no jobs are created.
+
+The corpus layout is identical to `koji bench` (per category: `documents/ schemas/ expected/ manifests/`). No new labels are needed: each document's manifest already names the `schema` it belongs to, so that slug is the **expected route**, and its `.expected.json` is the extraction ground truth. Point it at a **mixed** corpus — documents that legitimately route to different schemas — to exercise routing.
+
+```bash
+koji pipeline bench doc-router --corpus ./corpus                    # score routing + extraction
+koji pipeline bench doc-router --corpus ./corpus --category invoices
+koji pipeline bench doc-router --corpus ./corpus --limit 10 -p prod
+koji pipeline bench doc-router --corpus ./corpus --json > bench.json # machine-readable
+```
+
+Extraction is scored **only for correctly-routed documents** — a mis-route makes field-level scores meaningless, so a mis-routed doc counts as a routing failure and is excluded from the extraction numbers rather than silently averaged in. Extraction accuracy is broken out **per terminal schema**, because outputs vary with the path a document takes through the DAG and a single blended number hides which branch is weak.
+
+```
+koji pipeline bench — doc-router
+corpus: ./corpus
+
+  ok inv_01.md → invoice_basic (4 fields, 812ms)
+  MISROUTE rec_03.md: routed to invoice_basic, expected receipt_basic
+  -- inv_07.md → invoice_basic: 3/4 fields (905ms)
+       total_amount: expected 100.0, got 1000.0
+
+============================================================
+ROUTING: 18/20 docs to correct schema (90.0%)
+  receipt_basic: 2→invoice_basic
+EXTRACTION (correctly-routed only): 61/72 fields (84.7%)
+  invoice_basic: 40/44 fields (90.9%)
+  receipt_basic: 21/28 fields (75.0%)
+```
+
+Gated by the `pipeline:write` permission (same as `koji pipeline test`).
+
 ---
 
 ## Misc

@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.68.0 — 2026-07-08
+
+**`koji pipeline bench` — run a corpus against a pipeline (DAG).** Where `koji
+bench` scores a corpus against a single schema, `koji pipeline bench <slug>
+--corpus <path>` runs every corpus document through a whole pipeline and scores
+two things: did each doc **route** to the correct schema, and did it **extract**
+correctly once there. It reuses `POST /api/pipelines/<slug>/test`, so nothing is
+persisted — no jobs are created. No new corpus labels are needed: each
+document's manifest already names the schema it belongs to (the expected route)
+and its `.expected.json` is the extraction ground truth. Extraction is scored
+only for correctly-routed docs — a mis-route makes field scores meaningless — and
+is broken out per terminal schema, since outputs vary with the path a doc takes
+through the DAG. Supports `--category`, `--limit`, and `--json`. Point it at a
+mixed corpus (docs that route to different schemas) to exercise routing.
+
 ## 0.67.0 — 2026-07-08
 
 **`koji classify run` caps large PDF scans to the first few pages.** A big
