@@ -407,6 +407,34 @@ koji pipeline deploy policies --auto                 # unpin → follow the live
 
 Pinning is gated by the `schema:deploy` permission. The version is addressed by its semver label (or an id prefix) and must belong to the pipeline's schema. All `pipeline` subcommands accept `--json` and `--profile`.
 
+#### `koji pipeline run` — run documents through a pipeline
+
+Submit one or more documents to a pipeline and get the extraction back. This is the same path the dashboard's manual run uses (`POST /api/pipelines/<slug>/run`): each document is parsed, extracted, and routed exactly as production ingestion does, creating a real job. Point it at a file, several files, or a directory.
+
+```bash
+koji pipeline run invoices ./inbox/acme.pdf          # run one doc, wait, print extraction
+koji pipeline run invoices ./inbox/                  # run every file in a directory
+koji pipeline run invoices a.pdf b.pdf --provenance  # also show the source snippet per field
+koji pipeline run invoices ./inbox/ --group march    # tag all docs with a grouping key
+```
+
+By default the command **waits** for every document to reach a terminal state (`completed` / `failed` / `review`) and prints the result. Pass `--no-wait` to submit and return immediately — useful for an agent that wants to fire documents off and poll later:
+
+```bash
+koji pipeline run invoices ./inbox/ --no-wait --json # submit, print job slugs, exit
+```
+
+`--timeout <seconds>` caps how long the sync path waits (default 600). The pipeline must have a deployed schema version (simple pipelines) or a saved DAG definition; otherwise the run is rejected. Requires the `job:run` permission.
+
+#### `koji pipeline result` — fetch a submitted job's results
+
+Read the documents + extraction for a job created by `koji pipeline run --no-wait` (reads `GET /api/jobs/<slug>/documents` — the same data the dashboard's job view shows). Pass `--wait` to block until every document finishes.
+
+```bash
+koji pipeline result cool-otter-1a2b                 # print current status + extraction
+koji pipeline result cool-otter-1a2b --wait --json   # block until done, emit JSON
+```
+
 ---
 
 ## Misc

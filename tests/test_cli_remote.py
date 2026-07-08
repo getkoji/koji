@@ -10,9 +10,11 @@ from typer.testing import CliRunner
 
 from cli.main import app
 from cli.remote import (
+    _TERMINAL_DOC_STATES,
     _api_error,
     _diff_fields,
     _elem_labels,
+    _expand_input_paths,
     _find_local_schema,
     _fmt_value,
     _format_details,
@@ -20,6 +22,7 @@ from cli.remote import (
     _looks_like_path,
     _norm,
     _render_array_element_diffs,
+    _render_pipeline_docs,
     _resolve_entry,
     err_console,
     resolve_api,
@@ -46,6 +49,8 @@ runner = CliRunner()
         ["corpus", "gt", "show", "--help"],
         ["corpus", "gt", "accept", "--help"],
         ["corpus", "gt", "set", "--help"],
+        ["pipeline", "run", "--help"],
+        ["pipeline", "result", "--help"],
     ],
 )
 def test_commands_registered(args):
@@ -359,3 +364,65 @@ def test_api_error_falls_back_to_error_then_text():
     # Non-JSON body → fall back to raw text.
     out = _capture_api_error(_FakeResponse(500, None, text="upstream boom"), "validate foo")
     assert "upstream boom" in out
+
+
+# ── pipeline run: terminal states + input expansion + rendering ───────
+
+
+def test_terminal_doc_states_includes_delivered():
+    # Regression guard: the ingestion pipeline leaves a *successful* document in
+    # the "delivered" state (not "completed" — that's a job status). If this set
+    # ever drops "delivered", `koji pipeline run` would poll forever on the happy
+    # path and time out. "review" and "failed" are the other terminals.
+    assert "delivered" in _TERMINAL_DOC_STATES
+    assert "review" in _TERMINAL_DOC_STATES
+    assert "failed" in _TERMINAL_DOC_STATES
+
+
+def test_expand_input_paths_file_and_dir(tmp_path: Path):
+    a = tmp_path / "a.pdf"
+    a.write_text("x")
+    sub = tmp_path / "docs"
+    sub.mkdir()
+    (sub / "b.pdf").write_text("y")
+    (sub / "c.pdf").write_text("z")
+    (sub / ".hidden").write_text("skip")  # dotfiles are skipped
+
+    # A single file → just that file.
+    assert _expand_input_paths([str(a)]) == [a]
+    # A directory → its (non-hidden) files, sorted, dotfiles excluded.
+    got = _expand_input_paths([str(sub)])
+    assert [p.name for p in got] == ["b.pdf", "c.pdf"]
+
+
+def test_expand_input_paths_missing_exits(tmp_path: Path):
+    with pytest.raises(typer.Exit):
+        _expand_input_paths([str(tmp_path / "nope.pdf")])
+
+
+def test_expand_input_paths_empty_dir_exits(tmp_path: Path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(typer.Exit):
+        _expand_input_paths([str(empty)])
+
+
+def test_render_pipeline_docs_smoke():
+    # A delivered doc with an extraction payload renders without raising, whether
+    # or not provenance is requested. (rich would raise on a bad markup string.)
+    docs = [
+        {
+            "filename": "invoice.pdf",
+            "status": "delivered",
+            "jobSlug": "job-xyz",
+            "confidence": 1.0,
+            "pageCount": 1,
+            "durationMs": 3800,
+            "extractionJson": {"total": 739.8, "vendor": "ACME"},
+            "confidenceScoresJson": {"total": 1.0, "vendor": 0.4},
+            "provenanceJson": {"total": {"chunk": "$739.80"}},
+        },
+        {"filename": "bad.pdf", "status": "failed", "jobSlug": "job-abc"},
+    ]
+    _render_pipeline_docs(docs, show_prov=False)
+    _render_pipeline_docs(docs, show_prov=True)
