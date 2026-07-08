@@ -384,6 +384,7 @@ Run and manage classifiers — the same lifecycle CLI as `koji schema`, plus a `
 koji classify run document_type ./invoice.pdf         # classify a doc: label, confidence, method, tier
 koji classify run document_type ./invoice.pdf --json  # raw result for an agent
 koji classify run ./classifiers/document_type.yaml ./invoice.pdf   # …with a local config (iterate without pushing)
+koji classify run document_type ./big-scan.pdf --max-pages 0       # send the whole doc (default: first 3 pages)
 
 koji classify versions document_type                  # released lineage + candidates
 koji classify promote document_type                   # graduate the latest candidate to a release + make it live
@@ -391,7 +392,7 @@ koji classify release document_type                   # release directly, skippi
 koji classify release ./classifiers/document_type.yaml  # …from a local file
 ```
 
-`koji classify run` drives the standalone `POST /api/classify` primitive — it fetches the classifier's released config (falling back to the server-side draft), or uses a local YAML if you pass a file path, and **nothing is persisted**. It prints the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.
+`koji classify run` drives the standalone `POST /api/classify` primitive — it fetches the classifier's released config (falling back to the server-side draft), or uses a local YAML if you pass a file path, and **nothing is persisted**. It prints the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`. For a large multi-page PDF, only the first `--max-pages` pages (default 3) are uploaded — classification reads the masthead, and this keeps big scans under the API's upload size limit; pass `--max-pages 0` to send the whole file.
 
 `koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
 

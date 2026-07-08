@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.67.0 — 2026-07-08
+
+**`koji classify run` caps large PDF scans to the first few pages.** A big
+multi-page scan (e.g. a 2.9 MB PDF) previously hit the API's request-body size
+limit (HTTP 413) on upload. Since classification keys on the masthead / first
+page, `classify run` now sends only the first `--max-pages` pages of a
+multi-page PDF (default 3), keeping the upload small. Pass `--max-pages 0` to
+send the whole document. Non-PDFs and short PDFs are unchanged.
+
 ## 0.66.0 — 2026-07-08
 
 **`koji push` now registers standalone classifiers.** A file with `kind:

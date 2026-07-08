@@ -2228,10 +2228,44 @@ classify_app = typer.Typer(
 )
 
 
+def _cap_pdf_pages(data: bytes, max_pages: int) -> tuple[bytes, int, int] | None:
+    """If `data` is a PDF with more than `max_pages` pages, return (first-N-pages
+    bytes, kept, total). Returns None when no capping is needed or possible
+    (not a readable PDF, already short enough) — the caller then sends it as-is.
+    """
+    import io
+
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        return None
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        total = len(reader.pages)
+        if total <= max_pages:
+            return None
+        writer = PdfWriter()
+        for page in reader.pages[:max_pages]:
+            writer.add_page(page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue(), max_pages, total
+    except Exception:
+        # Malformed/encrypted PDF — let the server deal with the original bytes.
+        return None
+
+
 @classify_app.command("run")
 def classify_run(
     classifier: str = typer.Argument(..., help="Classifier slug, or path to a local classifier YAML."),
     document: Path = typer.Argument(..., exists=True, dir_okay=False, help="Document to classify."),
+    max_pages: int = typer.Option(
+        3,
+        "--max-pages",
+        help="For multi-page PDFs, classify only the first N pages (0 = send all). "
+        "Classification keys on the masthead / first page, so capping keeps large "
+        "scans under the API upload limit.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
@@ -2240,19 +2274,30 @@ def classify_run(
     Uses the LOCAL classifier YAML if a file is found (so you can iterate without
     pushing); otherwise the server's released version (falling back to the draft).
     Drives the standalone POST /api/classify primitive — nothing is persisted.
+
+    Large multi-page PDF scans are capped to the first `--max-pages` pages before
+    upload (classification only needs the masthead), which avoids the API's
+    request-body size limit. Pass `--max-pages 0` to send the whole document.
     """
     base_url, headers = resolve_api(profile_name)
     slug, local_yaml, _ = _load_classifier_arg(classifier)
+    content_type = mimetypes.guess_type(document.name)[0] or "application/octet-stream"
+    upload_bytes = document.read_bytes()
+    if max_pages > 0 and content_type == "application/pdf":
+        capped = _cap_pdf_pages(upload_bytes, max_pages)
+        if capped is not None:
+            upload_bytes, kept, total = capped
+            err_console.print(
+                f"[dim]large PDF — classifying the first {kept} of {total} pages (use --max-pages 0 to send all)[/dim]"
+            )
     with httpx.Client(timeout=300) as client:
         config = local_yaml or _resolve_classifier_config(client, base_url, headers, slug)
-        content_type = mimetypes.guess_type(document.name)[0] or "application/octet-stream"
-        with open(document, "rb") as fh:
-            resp = client.post(
-                f"{base_url}/api/classify",
-                files={"file": (document.name, fh, content_type)},
-                data={"config": config},
-                headers={**headers, "Accept": "application/json"},
-            )
+        resp = client.post(
+            f"{base_url}/api/classify",
+            files={"file": (document.name, upload_bytes, content_type)},
+            data={"config": config},
+            headers={**headers, "Accept": "application/json"},
+        )
         if _auth_error(resp, base_url):
             raise typer.Exit(1)
         if resp.status_code not in (200, 422):

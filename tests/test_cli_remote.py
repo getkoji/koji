@@ -12,6 +12,7 @@ from cli.main import app
 from cli.remote import (
     _TERMINAL_DOC_STATES,
     _api_error,
+    _cap_pdf_pages,
     _diff_fields,
     _elem_labels,
     _expand_input_paths,
@@ -497,3 +498,41 @@ def test_render_pipeline_test_handles_failed_and_notes():
         ],
     }
     _render_pipeline_test("p", "d.pdf", result)
+
+
+# ── classify run: PDF page capping ────────────────────────────────────
+
+
+def _make_pdf(pages: int) -> bytes:
+    import io
+
+    from pypdf import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    w.write(buf)
+    return buf.getvalue()
+
+
+def test_cap_pdf_pages_slices_multipage():
+    import io
+
+    from pypdf import PdfReader
+
+    data = _make_pdf(6)
+    capped = _cap_pdf_pages(data, 3)
+    assert capped is not None
+    sliced, kept, total = capped
+    assert (kept, total) == (3, 6)
+    assert len(PdfReader(io.BytesIO(sliced)).pages) == 3
+
+
+def test_cap_pdf_pages_none_when_short_or_invalid():
+    # PDF already within the cap → no slicing needed.
+    assert _cap_pdf_pages(_make_pdf(2), 3) is None
+    # Exactly at the cap → no slicing.
+    assert _cap_pdf_pages(_make_pdf(3), 3) is None
+    # Non-PDF / malformed bytes → None (caller sends original).
+    assert _cap_pdf_pages(b"not a pdf at all", 3) is None
