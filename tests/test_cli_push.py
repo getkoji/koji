@@ -163,3 +163,75 @@ def test_push_simple_pipeline_sends_no_yaml(push_env: Path, monkeypatch):
 
     (_url,), kwargs = client.post.call_args
     assert "yaml" not in kwargs["json"], "simple shorthand must stay a simple pipeline"
+
+
+# ── classifier push + unknown-kind reporting ──────────────────────────
+
+CLASSIFIER = """kind: classifier
+name: doc_type
+description: "Classify docs as invoice or receipt"
+classes:
+  invoice:
+    keywords: [invoice]
+  receipt:
+    keywords: [receipt]
+"""
+
+
+def _install_classifier_client(monkeypatch, *, existing: bool) -> MagicMock:
+    """Patch httpx.Client for a push of one classifier file."""
+    client = MagicMock()
+
+    def _get(url, **_kwargs):
+        if "/api/classifiers/" in url:
+            if existing:
+                return _make_response(200, {"latestVersion": {"yamlSource": "stale", "version": "v0.0.1"}})
+            return _make_response(404, {"error": "not found"})
+        return _make_response(200, {"data": []})
+
+    client.get.side_effect = _get
+    client.post.return_value = _make_response(201, {"id": "c1", "version": "v0.0.1"})
+    ctx = MagicMock()
+    ctx.__enter__.return_value = client
+    ctx.__exit__.return_value = False
+    monkeypatch.setattr("httpx.Client", lambda *a, **k: ctx)
+    return client
+
+
+def test_push_creates_classifier(push_env: Path, monkeypatch):
+    (push_env / "doc_type.yaml").write_text(CLASSIFIER)
+    client = _install_classifier_client(monkeypatch, existing=False)
+
+    result = runner.invoke(app, ["push", "-d", str(push_env)])
+    assert result.exit_code == 0, result.output
+
+    (url,), kwargs = client.post.call_args
+    assert url == "http://test/api/classifiers"
+    body = kwargs["json"]
+    assert body["slug"] == "doc_type"
+    assert body["display_name"] == "doc_type"
+    assert body["description"] == "Classify docs as invoice or receipt"
+    assert "kind: classifier" in body["initial_yaml"]
+
+
+def test_push_versions_existing_classifier(push_env: Path, monkeypatch):
+    (push_env / "doc_type.yaml").write_text(CLASSIFIER)
+    client = _install_classifier_client(monkeypatch, existing=True)
+
+    result = runner.invoke(app, ["push", "-d", str(push_env)])
+    assert result.exit_code == 0, result.output
+
+    # Existing + changed YAML → POST a new version, not a create.
+    (url,), kwargs = client.post.call_args
+    assert url == "http://test/api/classifiers/doc_type/versions"
+    assert "yaml" in kwargs["json"]
+
+
+def test_push_reports_skipped_unknown_kind(push_env: Path, monkeypatch):
+    (push_env / "koji.yaml").write_text("kind: config\nname: koji\n")
+    _install_classifier_client(monkeypatch, existing=False)
+
+    result = runner.invoke(app, ["push", "-d", str(push_env)])
+    assert result.exit_code == 0, result.output
+    assert "Skipped 1 file(s) with unhandled kind: config" in result.output
+    assert "koji.yaml" in result.output

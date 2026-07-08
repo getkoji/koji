@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.66.0 — 2026-07-08
+
+**`koji push` now registers standalone classifiers.** A file with `kind:
+classifier` is created (or versioned, on change) via `/api/classifiers`, so a
+classifier can be a first-class named resource — referenced by pipelines by
+name and getting the same `koji classify versions / promote / release`
+lifecycle as a schema — instead of every pipeline inlining its own copy. Push
+also searches a `classifiers/` subdirectory.
+
+**`koji push` no longer silently skips unrecognized files.** A file whose
+`kind` isn't `schema` / `pipeline` / `classifier` is now reported
+("Skipped N file(s) with unhandled kind: …") instead of vanishing into a
+"0 pushed" summary. Untagged files are still treated as schemas.
+
 ## 0.65.2 — 2026-07-08
 
 **`/api/process` and `/api/parse` now use the tenant's configured parse

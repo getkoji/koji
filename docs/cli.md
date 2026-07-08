@@ -395,6 +395,8 @@ koji classify release ./classifiers/document_type.yaml  # …from a local file
 
 `koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
 
+To **register** a classifier as a named resource (so pipelines can reference it and it gets a version history), give the file `kind: classifier` and `koji push` it — the same way you push schemas and pipelines. `koji push -d .` scans a `classifiers/` subdirectory alongside `schemas/` and `pipelines/`.
+
 ### `koji pipeline`
 
 Inspect pipelines and control which schema version each one runs. Every pipeline tracks schema versions in one of two modes: **auto** (default) always runs the schema's current live release, so it picks up a promotion immediately; **pinned** holds a specific version until you bump it — useful for canary / staged rollout (pin a critical pipeline, let the rest auto-follow a promotion, verify, then bump the pinned one).

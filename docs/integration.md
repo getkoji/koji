@@ -320,8 +320,8 @@ Or create one in the dashboard: **Settings → API Keys**.
 koji push -d .
 ```
 
-This scans for YAML files in `schemas/` and `pipelines/` subdirectories.
-Each file declares its type with a `kind` field.
+This scans for YAML files in `schemas/`, `pipelines/`, and `classifiers/`
+subdirectories. Each file declares its type with a `kind` field.
 
 ### 3. Call the API
 
@@ -419,8 +419,10 @@ koji pull -o ./schemas
 ### YAML `kind` field
 
 Every YAML file **must** declare its type with a `kind` field.
-`koji push` only processes files with `kind: schema` or `kind: pipeline` —
-all other files (including `koji.yaml` which uses `kind: config`) are skipped.
+`koji push` processes files with `kind: schema`, `kind: pipeline`, or
+`kind: classifier` (untagged files are treated as schemas). Files with any
+other `kind` (including `koji.yaml`, which uses `kind: config`) are skipped
+and reported at the end.
 
 ```yaml
 # Schema — defines what to extract
@@ -438,9 +440,11 @@ slug: claims
 schema: claim          # references schema by name
 ```
 
-`koji push` reads `kind` and routes to the right API. Files without
-`kind: schema` or `kind: pipeline` are skipped. Pipelines auto-link
-to the first active model endpoint.
+`koji push` reads `kind` and routes to the right API (`kind: classifier`
+registers a standalone classifier via `/api/classifiers`, with the same
+versions/promote/release lifecycle as a schema). Files with an unrecognized
+`kind` are skipped and listed. Pipelines auto-link to the first active model
+endpoint.
 
 A pipeline file can also declare a full DAG with a `steps:` list
 (classify routing, multiple extract steps, webhooks, …). Files with
