@@ -376,6 +376,12 @@ classes:
 | `400` | Missing file/config, or an invalid classifier config. |
 | `404` | `storage_key` not found. |
 | `422` | No class matched and the config set `on_unknown: reject`. |
+| `503` | The config admits the LLM/vision tier but no model provider could be resolved, and the cheaper tiers did not decide. |
+
+A `503` is distinct from an `unknown` label: `unknown` means the classifier ran
+and could not tell, while `503` means it never got to look. Only the former
+routes a pipeline down its `default` edge. If a keyword match decides the label
+first, no model provider is needed and the request succeeds normally.
 
 ---
 

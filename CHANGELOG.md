@@ -2,6 +2,30 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.70.1 — 2026-07-08
+
+**A classifier that can't reach a model provider now fails loudly instead of
+routing to `default`.** When a classifier's config admits the LLM or vision
+tier but the tenant's model provider couldn't be resolved, the cascade used to
+swallow the error and return `unknown` — indistinguishable from "the classifier
+looked and couldn't tell." In a pipeline that meant every document quietly took
+the `default` edge and got extracted against the wrong schema, with no error
+anywhere. Now:
+
+- `POST /api/classify` returns **503** with the underlying reason.
+- A DAG `classify` step **fails** the document instead of routing it.
+- `koji pipeline test` reports the step as failed with `method: no_provider`.
+
+A cheap keyword match still short-circuits before the LLM tier, so tenants with
+no model endpoint keep classifying deterministically. And a genuine `unknown`
+(the classifier ran and couldn't decide) is unchanged — it still routes to
+`default`.
+
+**A failed DAG step no longer marks the document `delivered`.** Any step that
+threw aborted the walk, and the run then fell through to the tail bookkeeping,
+which stamped the document `delivered` with no extraction. Such documents are
+now marked `failed` with the offending step id and error.
+
 ## 0.70.0 — 2026-07-08
 
 **Pin a referenced classifier to a specific version in a pipeline.** A DAG

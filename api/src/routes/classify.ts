@@ -6,6 +6,7 @@ import {
   classifyWithConfig,
   loadClassifierConfig,
   ClassifierConfigError,
+  ClassifyProviderError,
   UNKNOWN_LABEL,
 } from "../classify";
 import type { ClassifyOutcome, ClassifierConfig } from "../classify";
@@ -111,13 +112,21 @@ classify.post("/", requires("job:run"), async (c) => {
   // Classify through the shared cascade helper — the exact same path the
   // ingestion DAG's `classifier: <slug>` step uses (oss-410), so a standalone
   // classify and a pipeline route agree on the same document + config.
-  const outcome = await classifyWithConfig(
-    db,
-    getRlsScope(c),
-    { filename, mimeType, fileBuffer },
-    config,
-    parseProvider ?? undefined,
-  );
+  let outcome: ClassifyOutcome;
+  try {
+    outcome = await classifyWithConfig(
+      db,
+      getRlsScope(c),
+      { filename, mimeType, fileBuffer },
+      config,
+      parseProvider ?? undefined,
+    );
+  } catch (err) {
+    // The classifier never got to look — report the outage instead of an
+    // `unknown` the caller would mistake for a real classification.
+    if (err instanceof ClassifyProviderError) return c.json({ error: err.message }, 503);
+    throw err;
+  }
 
   const { status, body } = applyOnUnknown(outcome, config.onUnknown);
   return c.json(body, status);

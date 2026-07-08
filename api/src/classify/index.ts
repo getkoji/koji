@@ -7,7 +7,7 @@
  */
 
 export { runCascade } from "./cascade";
-export { resolveClassifierConfig, classifyWithConfig } from "./run-named";
+export { resolveClassifierConfig, classifyWithConfig, ClassifyProviderError } from "./run-named";
 export type { CascadeDeps, DocumentInput, RenderPageImages } from "./cascade";
 export {
   normalizeConfig,
