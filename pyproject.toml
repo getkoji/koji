@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "koji"
-version = "0.66.0"
+version = "0.67.0"
 description = "Documents in. Structured data out."
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,6 +26,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "httpx>=0.27",
+    "pypdf>=4.0",
     "docker>=7.0",
     "fastapi>=0.111",
     "python-multipart>=0.0.9",
