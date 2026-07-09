@@ -3,9 +3,9 @@ import { Hono } from "hono";
 export const health = new Hono();
 
 health.get("/", (c) => {
-  return c.json({ ok: true, version: "0.72.1" });
+  return c.json({ ok: true, version: "0.73.0" });
 });
 
 health.get("/ready", (c) => {
-  return c.json({ ok: true, version: "0.72.1" });
+  return c.json({ ok: true, version: "0.73.0" });
 });

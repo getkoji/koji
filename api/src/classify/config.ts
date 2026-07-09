@@ -25,6 +25,17 @@ export interface ClassifierClass {
   keywords?: string[];
   /** Deterministic regex signals (Tier 2). Compiled case-insensitive. */
   patterns?: string[];
+  /**
+   * Disqualifying keyword signals. If ANY appears in the window text, this class
+   * is ruled out — it can't win the keyword tier and is removed from the LLM /
+   * vision candidate list. Lets a class say "if the document has X, it is
+   * definitely not me" (e.g. a standalone-umbrella class excluded when the doc
+   * carries its own property/GL coverage-part declarations). Generic: the engine
+   * matches the strings; which strings disqualify which class is user config.
+   */
+  excludeKeywords?: string[];
+  /** Disqualifying regex signals. Same rule-out semantics as {@link excludeKeywords}. */
+  excludePatterns?: string[];
   /** Per-class page-window override — the cost dial for this class. */
   window?: number;
 }
@@ -137,8 +148,16 @@ export function normalizeConfig(raw: unknown): ClassifierConfig {
     const description = typeof rec.description === "string" ? rec.description : undefined;
     const keywords = asStringArray(rec.keywords, `class "${id}" keywords`);
     const patterns = asStringArray(rec.patterns, `class "${id}" patterns`);
+    const excludeKeywords = asStringArray(
+      rec.exclude_keywords ?? rec.excludeKeywords,
+      `class "${id}" exclude_keywords`,
+    );
+    const excludePatterns = asStringArray(
+      rec.exclude_patterns ?? rec.excludePatterns,
+      `class "${id}" exclude_patterns`,
+    );
     // Compile patterns eagerly so a bad regex fails at config time, not runtime.
-    for (const p of patterns ?? []) {
+    for (const p of [...(patterns ?? []), ...(excludePatterns ?? [])]) {
       try {
         new RegExp(p, "i");
       } catch {
@@ -150,6 +169,8 @@ export function normalizeConfig(raw: unknown): ClassifierConfig {
       description,
       keywords,
       patterns,
+      excludeKeywords,
+      excludePatterns,
       window: asWindow(rec.window, `class "${id}" window`),
     };
   });

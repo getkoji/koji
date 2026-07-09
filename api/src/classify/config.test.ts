@@ -61,6 +61,24 @@ describe("normalizeConfig", () => {
     ).toThrow(/invalid pattern/);
   });
 
+  it("parses exclude_keywords / exclude_patterns (snake and camel case)", () => {
+    const cfg = normalizeConfig({
+      classes: {
+        a: { exclude_keywords: ["coverage part"], exclude_patterns: ["limit\\s+of"] },
+        b: { excludeKeywords: ["x"] },
+      },
+    });
+    expect(cfg.classes[0]!.excludeKeywords).toEqual(["coverage part"]);
+    expect(cfg.classes[0]!.excludePatterns).toEqual(["limit\\s+of"]);
+    expect(cfg.classes[1]!.excludeKeywords).toEqual(["x"]);
+  });
+
+  it("rejects an invalid exclude_pattern regex at config time", () => {
+    expect(() =>
+      normalizeConfig({ classes: { a: { exclude_patterns: ["(unclosed"] } } }),
+    ).toThrow(/invalid pattern/);
+  });
+
   it("rejects a non-integer or <1 window", () => {
     expect(() => normalizeConfig({ classes: { a: { window: 0 } } })).toThrow(/window/);
     expect(() => normalizeConfig({ classes: { a: { window: 1.5 } } })).toThrow(/window/);

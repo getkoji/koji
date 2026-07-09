@@ -16,7 +16,7 @@
  * decide. Nothing here is domain-specific.
  */
 
-import type { ClassifierConfig } from "./config";
+import type { ClassifierConfig, ClassifierClass } from "./config";
 import { classifyDocument, type DocumentType } from "../parse/classify";
 import { readPdfWindow, readTextWindow, isTextLike, type GetPageTexts } from "./pdf-text";
 import { densityRank, effectiveWindow } from "./window";
@@ -56,8 +56,40 @@ export interface CascadeDeps {
   renderPageImages?: RenderPageImages;
 }
 
-function validIdSet(config: ClassifierConfig): Set<string> {
-  return new Set(config.classes.map((c) => c.id));
+function validIdSet(classes: ClassifierClass[]): Set<string> {
+  return new Set(classes.map((c) => c.id));
+}
+
+/**
+ * Class ids ruled out by their own `excludeKeywords`/`excludePatterns` appearing
+ * in the window text. An excluded class is a hard, deterministic gate: it can't
+ * win the keyword tier and is dropped from the LLM/vision candidate list, so no
+ * tier can pick it. Requires textual evidence — with no window text (a scanned
+ * PDF headed for the vision tier) nothing is excluded, since there's nothing to
+ * disqualify on. Generic: the engine matches the strings; which strings rule out
+ * which class is entirely user config.
+ */
+function excludedClassIds(classes: ClassifierClass[], pages: PageText[]): Set<string> {
+  const out = new Set<string>();
+  if (pages.length === 0) return out;
+  const hay = pages.map((p) => p.text).join("\n").toLowerCase();
+  for (const c of classes) {
+    const kwHit = (c.excludeKeywords ?? []).some((k) => {
+      const kw = k.toLowerCase().trim();
+      return kw.length > 0 && hay.includes(kw);
+    });
+    const patHit =
+      !kwHit &&
+      (c.excludePatterns ?? []).some((p) => {
+        try {
+          return new RegExp(p, "i").test(hay);
+        } catch {
+          return false; // rejected at config-compile time; ignore defensively
+        }
+      });
+    if (kwHit || patHit) out.add(c.id);
+  }
+  return out;
 }
 
 export async function runCascade(
@@ -99,12 +131,19 @@ export async function runCascade(
 
   const hasText = rankedPages.length > 0;
 
+  // Disqualify classes whose exclude signals appear in the window text. Computed
+  // once from the window and applied to every tier below, so an excluded class
+  // can't win by keyword, LLM, or vision.
+  const excluded = excludedClassIds(config.classes, allWindowPages);
+  const eligibleClasses =
+    excluded.size > 0 ? config.classes.filter((c) => !excluded.has(c.id)) : config.classes;
+
   // Tier 2 — deterministic keyword/pattern match. Free; short-circuits when a
   // class clears the threshold AND beats the runner-up by the margin.
   let scores: ClassifyOutcome["scores"];
   if (config.maxTier >= Tier.KEYWORD && hasText) {
     deepestTier = Tier.KEYWORD;
-    scores = scoreClasses(rankedPages, config.classes, config.window);
+    scores = scoreClasses(rankedPages, eligibleClasses, config.window);
     const top = scores[0];
     const second = scores[1];
     if (
@@ -127,7 +166,7 @@ export async function runCascade(
   // Tier 3 — LLM over the windowed text.
   if (config.maxTier >= Tier.LLM && deps.provider && hasText) {
     deepestTier = Tier.LLM;
-    const prompt = buildClassifyPrompt(rankedPages, config.classes);
+    const prompt = buildClassifyPrompt(rankedPages, eligibleClasses);
     let raw: string | null = null;
     try {
       raw = await deps.provider.generate(prompt, true);
@@ -137,7 +176,7 @@ export async function runCascade(
         err instanceof Error ? err.message : err,
       );
     }
-    const parsed = parseClassifyResponse(raw, validIdSet(config));
+    const parsed = parseClassifyResponse(raw, validIdSet(eligibleClasses));
     if (parsed && parsed.label !== UNKNOWN_LABEL) {
       return {
         label: parsed.label,
@@ -161,7 +200,7 @@ export async function runCascade(
     const visionPages = allWindowPages.length
       ? allWindowPages.map((p) => p.page)
       : [1];
-    const prompt = buildVisionClassifyPrompt(config.classes);
+    const prompt = buildVisionClassifyPrompt(eligibleClasses);
     let images: string[] = [];
     try {
       images = await deps.renderPageImages(input.fileBuffer, visionPages);
@@ -182,7 +221,7 @@ export async function runCascade(
         );
         continue;
       }
-      const parsed = parseClassifyResponse(raw, validIdSet(config));
+      const parsed = parseClassifyResponse(raw, validIdSet(eligibleClasses));
       if (parsed && parsed.label !== UNKNOWN_LABEL) {
         return {
           label: parsed.label,

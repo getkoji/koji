@@ -2,6 +2,25 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.73.0 — 2026-07-09
+
+**Classifiers can declare disqualifying signals.** A class now accepts
+`exclude_keywords` and `exclude_patterns`: if any appears in the window text,
+that class is ruled out — it can't win the keyword tier and is dropped from the
+LLM and vision candidate lists, so no tier can pick it. Where `keywords` say
+"this might be class X," these say "if the document has this, it is definitely
+not X."
+
+This routes classes that share vocabulary with a class they must not be confused
+for. A standalone umbrella and a package policy both mention "schedule of
+underlying insurance," so no positive keyword separates them — but a package
+carries its own coverage-part declarations, which an umbrella never does.
+Excluding the umbrella class when those appear routes it deterministically
+instead of relying on an inconsistent LLM guess. The engine only matches the
+strings; which strings rule out which class is entirely user config, so nothing
+document-type-specific enters the engine. Disqualification needs textual
+evidence — a scanned page with no text layer excludes nothing.
+
 ## 0.72.1 — 2026-07-09
 
 **Mapping/enum alias matching is now whitespace-tolerant at extraction time,
