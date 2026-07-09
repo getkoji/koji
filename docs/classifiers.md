@@ -89,7 +89,28 @@ Each entry under `classes` is a label you can receive back. A class may declare:
 | `description` | Human description; also given to the LLM/vision tiers as the class definition. |
 | `keywords` | Case-insensitive keyword signals for the free keyword tier. Multi-word entries match as a phrase; single words match whole-word. |
 | `patterns` | Regular-expression signals for the keyword tier (case-insensitive). |
+| `exclude_keywords` | Disqualifying keywords. If **any** appears in the window text, this class is ruled out — it can't win the keyword tier and is removed from the LLM/vision candidate list. |
+| `exclude_patterns` | Disqualifying regexes, same rule-out semantics as `exclude_keywords`. |
 | `window` | Per-class override of how many leading pages to consider. |
+
+#### Disqualifying signals
+
+`keywords`/`patterns` say "this document *might* be class X." `exclude_keywords`/`exclude_patterns` say the opposite — "if the document has this, it is *definitely not* class X." An excluded class is a hard, deterministic gate across every tier: it can't score on keywords, and it isn't even offered to the LLM or vision model, so nothing can pick it.
+
+This is how you route classes that share vocabulary with a class they must not be confused for. A standalone commercial umbrella and a package policy both mention "schedule of underlying insurance," so no positive keyword can separate them — but a package carries its *own* coverage-part declarations, which an umbrella never does. Exclude the umbrella class when those appear:
+
+```yaml
+classes:
+  umbrella:
+    description: A standalone commercial umbrella / excess policy
+    exclude_keywords:
+      - "commercial property coverage part"
+      - "commercial general liability coverage part"
+  package:
+    description: A commercial package policy with its own property/GL coverage parts
+```
+
+Disqualification needs textual evidence: a scanned PDF with no text layer that reaches the vision tier has nothing to match, so no class is excluded there. The engine only matches the strings — which strings rule out which class is entirely your configuration, so nothing document-type-specific lives in the engine.
 
 `unknown` is reserved — you can't name a class `unknown`, because it's the label
 returned when nothing matches.

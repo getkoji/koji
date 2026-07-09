@@ -224,3 +224,91 @@ describe("runCascade — non-PDF documents", () => {
     expect(out.label).toBe("unknown");
   });
 });
+
+describe("runCascade — disqualifying signals (exclude_keywords / exclude_patterns)", () => {
+  it("keeps an excluded class from winning the keyword tier", async () => {
+    // The doc has umbrella-ish text, but it also carries its own GL coverage
+    // part — which disqualifies the standalone-umbrella class.
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([
+        { page: 1, text: "commercial umbrella schedule of underlying insurance; commercial general liability coverage part limits" },
+      ]),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const config = normalizeConfig({
+      classes: {
+        umbrella: {
+          keywords: ["umbrella", "schedule of underlying"],
+          exclude_keywords: ["general liability coverage part"],
+        },
+        package: { keywords: ["general liability coverage part"] },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("package");
+    expect(out.label).not.toBe("umbrella");
+  });
+
+  it("drops an excluded class from the LLM candidate set", async () => {
+    // No keyword decides; the LLM would happily say 'umbrella', but it's excluded
+    // and thus not offered — and can't be returned even if the model names it.
+    const generate = vi.fn(async (_prompt: string, _json?: boolean) => JSON.stringify({ label: "umbrella", confidence: 0.9 }));
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([
+        { page: 1, text: "this policy provides commercial property coverage part and general liability, plus a companion umbrella" },
+      ]),
+      classifyDocType: fakeDocType("digital_pdf"),
+      provider: { generate } as unknown as ModelProvider,
+    };
+    const config = normalizeConfig({
+      classes: {
+        umbrella: { description: "standalone umbrella", exclude_keywords: ["commercial property coverage part"] },
+        package: { description: "a package policy" },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    // 'umbrella' was excluded, so the model's 'umbrella' answer is rejected → unknown.
+    expect(out.label).not.toBe("umbrella");
+    // The prompt it saw must not have listed the excluded class.
+    const promptArg = generate.mock.calls[0]?.[0] ?? "";
+    expect(promptArg).toContain("package");
+    expect(promptArg).not.toContain("standalone umbrella");
+  });
+
+  it("does not exclude when the disqualifying signal is absent", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "commercial umbrella schedule of underlying insurance excess each occurrence" }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const config = normalizeConfig({
+      classes: {
+        umbrella: {
+          keywords: ["umbrella", "schedule of underlying"],
+          exclude_keywords: ["general liability coverage part"],
+        },
+        package: { keywords: ["businessowners"] },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("umbrella");
+  });
+
+  it("supports exclude_patterns (regex)", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "umbrella policy — Limit of Insurance $1,000,000 each occurrence over underlying" }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const config = normalizeConfig({
+      classes: {
+        umbrella: {
+          keywords: ["umbrella"],
+          exclude_patterns: ["coverage part\\s+limits?"],
+        },
+        other: { keywords: ["nomatch"] },
+      },
+    });
+    // pattern doesn't match → umbrella stays eligible and wins
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("umbrella");
+  });
+});
