@@ -18,7 +18,7 @@
 
 import type { ClassifierConfig } from "./config";
 import { classifyDocument, type DocumentType } from "../parse/classify";
-import { readPdfWindow, type GetPageTexts } from "./pdf-text";
+import { readPdfWindow, readTextWindow, isTextLike, type GetPageTexts } from "./pdf-text";
 import { densityRank, effectiveWindow } from "./window";
 import { scoreClasses } from "./keyword-match";
 import { buildClassifyPrompt, buildVisionClassifyPrompt, parseClassifyResponse } from "./prompt";
@@ -30,6 +30,16 @@ export interface DocumentInput {
   filename: string;
   mimeType: string;
   fileBuffer: Buffer;
+  /**
+   * Text already extracted from this document by the parse stage, when the
+   * caller has it. Used only when the cheap reader can't open the bytes at all
+   * (a .docx, an .xlsx) — a format the classifier would otherwise be blind to
+   * even though the pipeline around it can read the document fine.
+   *
+   * NOT used for a scanned PDF: pdfjs opens those, reports its page count, and
+   * returns blank pages, which is the cascade's cue to escalate to vision.
+   */
+  text?: string;
 }
 
 /** Renders the given pages to base64 PNG/JPEG images for the vision tier. */
@@ -55,7 +65,9 @@ export async function runCascade(
   config: ClassifierConfig,
   deps: CascadeDeps = {},
 ): Promise<ClassifyOutcome> {
-  const getPageTexts = deps.getPageTexts ?? readPdfWindow;
+  // A text-like document's bytes ARE its text; pdfjs would simply reject them.
+  const getPageTexts =
+    deps.getPageTexts ?? (isTextLike(input.filename, input.mimeType) ? readTextWindow : readPdfWindow);
   const classifyDocType = deps.classifyDocType ?? classifyDocument;
 
   let deepestTier: TierValue = Tier.METADATA;
@@ -73,9 +85,16 @@ export async function runCascade(
   let rankedPages: PageText[] = [];
   if (config.maxTier >= Tier.TEXT) {
     deepestTier = Tier.TEXT;
-    const { pages } = await getPageTexts(input.fileBuffer, window, config.scan);
-    allWindowPages = pages;
-    rankedPages = densityRank(pages);
+    const { pages, totalPages } = await getPageTexts(input.fileBuffer, window, config.scan);
+    // totalPages === 0 means the reader couldn't open the bytes as a document
+    // at all (a .docx, an .xlsx). If the caller already parsed it, classify on
+    // that text rather than going blind. A scanned PDF reports totalPages > 0
+    // with blank pages, so it still escalates to vision as before.
+    allWindowPages =
+      totalPages === 0 && pages.length === 0 && input.text?.trim()
+        ? [{ page: 1, text: input.text }]
+        : pages;
+    rankedPages = densityRank(allWindowPages);
   }
 
   const hasText = rankedPages.length > 0;

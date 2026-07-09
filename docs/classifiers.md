@@ -39,8 +39,17 @@ Two properties keep this cheap:
 
 Tiers 3 and 4 require a model endpoint configured in your
 [Model Catalog](configuration.md); tier 4 additionally needs a vision-capable
-model. If none is configured, the classifier uses only the free tiers and
-returns `unknown` for anything they can't decide.
+model. If a free tier decides the label, no model is needed at all. But if the
+cheap tiers can't decide and no model endpoint can be reached, the classifier
+**fails** rather than returning `unknown` — an outage must not be mistaken for
+"looked and couldn't tell", because a `classify` step's `unknown` sends a
+document down its pipeline's `default` route.
+
+**Input formats.** Tier 1 reads page text from a PDF. For a text-like document
+(`.md`, `.txt`, `.csv`, `.json`, `.yaml`, `.html`) the bytes are the text and
+are read directly. For any other format the parse stage handles — `.docx`,
+`.xlsx` — the classifier falls back to the text the pipeline already parsed. A
+scanned PDF has no text layer, so it skips to the vision tier as designed.
 
 ## Defining a classifier
 

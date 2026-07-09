@@ -1288,7 +1288,7 @@ async function executeTestStep(
           outcome = await classifyWithConfig(
             ctx.db as never,
             scope,
-            { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer },
+            { filename: docInfo.filename, mimeType: docInfo.mimeType, fileBuffer: docInfo.fileBuffer, text: docInfo.text },
             resolved.config,
             docInfo.parseProvider,
           );
