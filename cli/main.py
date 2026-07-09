@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.75.0"
+KOJI_VERSION = "0.75.1"
 
 
 def _version_callback(value: bool) -> None:
@@ -926,6 +926,12 @@ def push(
     if env_url and env_key:
         base_url = env_url.rstrip("/")
         headers: dict[str, str] = {"Authorization": f"Bearer {env_key}"}
+        # Scope to the requested project, same as resolve_api. Without this,
+        # push silently lands in the API key's bound project regardless of the
+        # requested scope — writing to the wrong project.
+        env_project = os.environ.get("KOJI_PROJECT")
+        if env_project:
+            headers["x-koji-project"] = env_project
     else:
         if profile_name:
             creds = load_credentials()
@@ -944,6 +950,11 @@ def push(
 
         headers = {"Authorization": f"Bearer {profile.api_key}"}
         base_url = profile.url.rstrip("/")
+        # Send the profile's project scope so push targets the project the user
+        # selected — not whatever project the API key happens to be bound to.
+        # An unreachable scope then 404s loudly instead of silently falling back.
+        if profile.project:
+            headers["x-koji-project"] = profile.project
 
     # Collect YAML files from the directory and common subdirectories
     root = Path(directory)

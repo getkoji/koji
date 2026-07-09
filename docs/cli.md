@@ -551,6 +551,8 @@ koji project delete old-project                     # delete a project (tenant:a
 
 `create` and `delete` require the `tenant:admin` permission; `list`/`use` need `tenant:read`. `use` (and `create --use`) update the active profile's default project in `~/.koji/credentials` — the same field `koji login --project <slug>` sets — so subsequent commands run against that project without re-authenticating. `create --name` defaults to the slug; slugs are lowercase letters, numbers, and hyphens (2–64 chars).
 
+> **API keys are bound to a single project.** `create` and `list` are tenant-level (a key can create a project and see every project in the tenant), but an API key can only *operate in* the one project it's bound to — scoping a request to any other project returns `404 Project not found`. So the key that creates a new project usually can't push to it: `create --use` detects this and tells you to mint a key for the new project instead of pinning your profile to a project every command would 404 on. To get a working key for a fresh project, create an API key **from within that project in the dashboard** (Settings → API Keys), then `koji login --api-key <key> --project <slug>`.
+
 ---
 
 ## Misc

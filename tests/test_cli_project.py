@@ -110,13 +110,29 @@ def test_create_with_name_and_description(monkeypatch):
     assert body == {"slug": "newco", "display_name": "New Co", "description": "the co"}
 
 
-def test_create_use_switches_active_profile(monkeypatch):
+def test_create_use_switches_when_reachable(monkeypatch):
     creds = _install_creds(monkeypatch)
-    _install_client(monkeypatch, [_make_response(201, {"slug": "newco"})])
+    # POST create (201), then a reachability probe (GET 200) → switch.
+    _install_client(monkeypatch, [_make_response(201, {"slug": "newco"}), _make_response(200, {"slug": "newco"})])
     result = runner.invoke(app, ["project", "create", "newco", "--use"])
     assert result.exit_code == 0, result.output
     assert creds.profiles["rnd"].project == "newco"
     creds.save.assert_called_once()
+
+
+def test_create_use_does_not_strand_when_key_cannot_reach(monkeypatch):
+    creds = _install_creds(monkeypatch)
+    # Create succeeds, but the key is bound elsewhere so the reachability probe
+    # 404s → do NOT switch (would strand every later command).
+    _install_client(
+        monkeypatch, [_make_response(201, {"slug": "newco"}), _make_response(404, {"error": "Project not found"})]
+    )
+    result = runner.invoke(app, ["project", "create", "newco", "--use"])
+    assert result.exit_code == 0, result.output
+    assert "created" in result.output.lower()
+    assert "not switching" in result.output.lower()
+    assert creds.profiles["rnd"].project is None
+    creds.save.assert_not_called()
 
 
 def test_create_conflict_exits(monkeypatch):
@@ -132,22 +148,54 @@ def test_create_conflict_exits(monkeypatch):
 
 def test_use_switches_after_verifying(monkeypatch):
     creds = _install_creds(monkeypatch)
-    _install_client(monkeypatch, [_make_response(200, {"slug": "prod"})])
+    # Reachability probe (GET scoped to target) → 200 → switch.
+    client = _install_client(monkeypatch, [_make_response(200, {"slug": "prod"})])
     result = runner.invoke(app, ["project", "use", "prod"])
     assert result.exit_code == 0, result.output
     assert creds.profiles["rnd"].project == "prod"
     creds.save.assert_called_once()
+    # The probe scopes to the TARGET, not the profile's current pin.
+    assert client.get.call_args_list[0].kwargs["headers"]["x-koji-project"] == "prod"
+
+
+def test_use_switches_away_from_broken_pin(monkeypatch):
+    # The footgun fix: profile pinned to a broken project, switching to a good
+    # one must work — the probe is scoped to the target, not the stale pin.
+    creds = _install_creds(monkeypatch)
+    creds.profiles["rnd"].project = "superkey-policy"  # broken pin
+    _install_client(monkeypatch, [_make_response(200, {"slug": "rnd"})])
+    result = runner.invoke(app, ["project", "use", "rnd"])
+    assert result.exit_code == 0, result.output
+    assert creds.profiles["rnd"].project == "rnd"
 
 
 def test_use_unknown_project_exits(monkeypatch):
     creds = _install_creds(monkeypatch)
-    _install_client(monkeypatch, [_make_response(404, {"error": "Project not found"})])
+    # Reachability 404, then a tenant-scoped list (empty) → "not found".
+    _install_client(
+        monkeypatch, [_make_response(404, {"error": "Project not found"}), _make_response(200, {"data": []})]
+    )
     result = runner.invoke(app, ["project", "use", "ghost"])
     assert result.exit_code != 0
     assert "not found" in result.output.lower()
-    # No switch on a bad project.
     assert creds.profiles["rnd"].project is None
     creds.save.assert_not_called()
+
+
+def test_use_existing_but_unreachable_gives_key_binding_message(monkeypatch):
+    creds = _install_creds(monkeypatch)
+    # Reachability 404, but the project IS in the tenant list → key-binding msg.
+    _install_client(
+        monkeypatch,
+        [
+            _make_response(404, {"error": "Project not found"}),
+            _make_response(200, {"data": [{"slug": "superkey-policy"}]}),
+        ],
+    )
+    result = runner.invoke(app, ["project", "use", "superkey-policy"])
+    assert result.exit_code != 0
+    assert "can't scope" in result.output.lower() or "bound to a single project" in result.output.lower()
+    assert creds.profiles["rnd"].project is None
 
 
 @pytest.mark.parametrize(
