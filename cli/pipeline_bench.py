@@ -109,7 +109,15 @@ class PipelineDocResult:
 
     @property
     def passed(self) -> int:
+        """Fields that matched EXACTLY (strict boolean) — for the per-doc trail."""
         return sum(1 for r in self.field_results if r.passed)
+
+    @property
+    def credit(self) -> float:
+        """Sum of element-wise field scores in [0, total]. An array field that is
+        4-of-5 correct contributes ~0.8 here but 0 to `passed`. This is what the
+        aggregate accuracy sums, matching validate's F1 scoring."""
+        return sum(r.weighted_score for r in self.field_results)
 
     @property
     def total(self) -> int:
@@ -117,7 +125,7 @@ class PipelineDocResult:
 
     @property
     def accuracy(self) -> float:
-        return self.passed / self.total if self.total else 0.0
+        return self.credit / self.total if self.total else 0.0
 
     @property
     def all_passed(self) -> bool:
@@ -161,12 +169,22 @@ class PipelineBenchResult:
 
     @property
     def passed_fields(self) -> int:
+        """Fields that matched exactly, over correctly-routed docs."""
         return sum(d.passed for d in self.doc_results if d.routing_ok)
 
     @property
+    def field_credit(self) -> float:
+        """Element-wise partial credit summed over correctly-routed docs — the
+        numerator of the F1-weighted accuracy."""
+        return sum(d.credit for d in self.doc_results if d.routing_ok)
+
+    @property
     def extraction_accuracy(self) -> float:
-        """Field accuracy over correctly-routed docs only."""
-        return self.passed_fields / self.scored_fields if self.scored_fields else 0.0
+        """F1-weighted field accuracy over correctly-routed docs. Array fields
+        contribute element-wise partial credit rather than all-or-nothing, so a
+        few mis-parsed line items no longer zero out an otherwise-correct doc.
+        Matches validate's server-side scorer."""
+        return self.field_credit / self.scored_fields if self.scored_fields else 0.0
 
     def routing_confusion(self) -> dict[str, dict[str, int]]:
         """Nested counts: expected schema -> routed schema -> count.
@@ -200,14 +218,16 @@ class PipelineBenchResult:
         """
         return [d for d in self.doc_results if d.classifier_failures]
 
-    def extraction_by_schema(self) -> dict[str, tuple[int, int]]:
-        """Per terminal schema: (passed_fields, total_fields) over correctly-routed docs."""
-        by_schema: dict[str, tuple[int, int]] = {}
+    def extraction_by_schema(self) -> dict[str, tuple[float, int]]:
+        """Per terminal schema: (field_credit, total_fields) over correctly-routed
+        docs. `field_credit` is F1-weighted (partial credit for arrays), so it
+        matches the headline accuracy and can be fractional."""
+        by_schema: dict[str, tuple[float, int]] = {}
         for d in self.doc_results:
             if not d.routing_ok:
                 continue
-            passed, total = by_schema.get(d.expected_schema, (0, 0))
-            by_schema[d.expected_schema] = (passed + d.passed, total + d.total)
+            credit, total = by_schema.get(d.expected_schema, (0.0, 0))
+            by_schema[d.expected_schema] = (credit + d.credit, total + d.total)
         return by_schema
 
     def to_dict(self) -> dict:
@@ -231,11 +251,16 @@ class PipelineBenchResult:
             },
             "extraction": {
                 "scored_fields": self.scored_fields,
-                "passed_fields": self.passed_fields,
-                "accuracy": self.extraction_accuracy,
+                "passed_fields": self.passed_fields,  # exact matches
+                "field_credit": round(self.field_credit, 4),  # F1-weighted numerator
+                "accuracy": self.extraction_accuracy,  # F1-weighted (matches validate)
                 "by_schema": {
-                    slug: {"passed": p, "total": t, "accuracy": (p / t if t else 0.0)}
-                    for slug, (p, t) in self.extraction_by_schema().items()
+                    slug: {
+                        "credit": round(credit, 4),
+                        "total": t,
+                        "accuracy": (credit / t if t else 0.0),
+                    }
+                    for slug, (credit, t) in self.extraction_by_schema().items()
                 },
             },
             "documents": [
@@ -259,6 +284,7 @@ class PipelineBenchResult:
                         for s in d.classify_steps
                     ],
                     "passed": d.passed,
+                    "credit": round(d.credit, 4),
                     "total": d.total,
                     "accuracy": d.accuracy,
                     "elapsed_ms": d.elapsed_ms,
@@ -270,6 +296,7 @@ class PipelineBenchResult:
                             "expected": r.expected,
                             "actual": r.actual,
                             "detail": r.detail,
+                            "score": round(r.weighted_score, 4),
                         }
                         for r in d.field_results
                         if not r.passed
@@ -557,15 +584,17 @@ def format_report(result: PipelineBenchResult) -> str:
             for s in broken[0].classifier_failures[:1]:
                 lines.append(f"     e.g. {broken[0].document_name}: {s.reasoning or s.method}")
 
-    # Extraction summary, broken out per terminal schema
+    # Extraction summary, broken out per terminal schema. Accuracy is
+    # F1-weighted (array fields earn partial credit); the exact-match count is
+    # shown alongside so an all-or-nothing reading is still available.
     lines.append("")
     lines.append(
-        f"EXTRACTION (correctly-routed only): {result.passed_fields}/{result.scored_fields} fields "
-        f"({result.extraction_accuracy * 100:.1f}%)"
+        f"EXTRACTION (correctly-routed only): {result.extraction_accuracy * 100:.1f}% F1 "
+        f"over {result.scored_fields} fields ({result.passed_fields} exact)"
     )
-    for slug, (passed, total) in sorted(result.extraction_by_schema().items()):
-        acc = (passed / total * 100) if total else 0.0
-        lines.append(f"  {slug}: {passed}/{total} fields ({acc:.1f}%)")
+    for slug, (credit, total) in sorted(result.extraction_by_schema().items()):
+        acc = (credit / total * 100) if total else 0.0
+        lines.append(f"  {slug}: {acc:.1f}% F1 ({credit:.1f}/{total} fields)")
 
     if result.error_count > 0:
         lines.append("")

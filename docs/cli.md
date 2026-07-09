@@ -488,6 +488,8 @@ koji pipeline bench doc-router --corpus ./corpus --json > bench.json # machine-r
 
 Extraction is scored **only for correctly-routed documents** — a mis-route makes field-level scores meaningless, so a mis-routed doc counts as a routing failure and is excluded from the extraction numbers rather than silently averaged in. Extraction accuracy is broken out **per terminal schema**, because outputs vary with the path a document takes through the DAG and a single blended number hides which branch is weak.
 
+Array fields (a document's `coverages`, `line_items`, …) are scored **element-wise by F1** — the same partial-credit semantics [`koji validate`](#koji-validate--backtest-a-schema-against-its-corpus) uses — so a `coverages` array with four of five elements right contributes ~0.8, not a full miss. The `EXTRACTION` line reports F1-weighted accuracy with the exact-match count in parentheses; each mismatched array shows its element F1 in the failure detail.
+
 ```
 koji pipeline bench — doc-router
 corpus: ./corpus
@@ -495,7 +497,7 @@ corpus: ./corpus
   ok inv_01.md → invoice_basic (4 fields, 812ms)
   MISROUTE rec_03.md: routed to invoice_basic, expected receipt_basic
   -- inv_07.md → invoice_basic: 3/4 fields (905ms)
-       total_amount: expected 100.0, got 1000.0
+       line_items: array items differ (80% element F1)
 
 ============================================================
 ROUTING: 18/20 docs to correct schema (90.0%)
@@ -503,9 +505,9 @@ ROUTING: 18/20 docs to correct schema (90.0%)
 
 CLASSIFY: 20 steps — keyword 6, llm 14
 
-EXTRACTION (correctly-routed only): 61/72 fields (84.7%)
-  invoice_basic: 40/44 fields (90.9%)
-  receipt_basic: 21/28 fields (75.0%)
+EXTRACTION (correctly-routed only): 87.9% F1 over 72 fields (61 exact)
+  invoice_basic: 91.4% F1 (40.2/44 fields)
+  receipt_basic: 82.1% F1 (23.0/28 fields)
 ```
 
 **The `CLASSIFY` line tells you whether the routing score means anything.** Each classify step reports the `method` that produced its label. A step that *ran* reports `keyword`, `llm`, or `vision`; a step that never inspected the document at all reports why — `no_classifier` (the referenced slug doesn't resolve in this project), `no_version` (the pinned version doesn't exist), `no_file`, or `no_provider` (no model endpoint was reachable).
@@ -526,7 +528,7 @@ CLASSIFY: 60 steps — llm 30, no_classifier 30
      These docs fell to their pipeline's default route. The ROUTING score above reflects a broken pipeline, not classifier accuracy — fix this before reading it.
 ```
 
-`--json` includes the same detail: a `classify.method_counts` rollup, `classify.docs_with_classifier_failures`, and a per-document `classify` array carrying each step's `method`, `reasoning`, `classifier`, and `classifier_version`.
+`--json` includes the same detail: a `classify.method_counts` rollup, `classify.docs_with_classifier_failures`, and a per-document `classify` array carrying each step's `method`, `reasoning`, `classifier`, and `classifier_version`. Extraction scoring is exposed as `extraction.field_credit` (the F1-weighted numerator) alongside `passed_fields` (exact matches), a per-schema `credit`, a per-document `credit`, and a `score` on each failure.
 
 Gated by the `pipeline:write` permission (same as `koji pipeline test`).
 
