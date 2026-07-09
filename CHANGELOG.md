@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.71.2 — 2026-07-09
+
+**`koji classify run` now runs the RELEASED classifier version — the same one the
+pipeline runs.** It resolved the highest version *number* instead, so once an
+unreleased candidate existed, `classify run` silently ran that draft while the
+ingestion pipeline ran the release. The standalone primitive and the pipeline
+disagreed on the same document with no indication why — which made it useless as
+a routing-tuning proxy. It now resolves the released version (the classifier's
+`currentVersionId`), matching the pipeline exactly.
+
+- `classify run` prints which config it used (`released v0.0.2`, `draft`, or
+  `local file <path>`) — source selection is no longer silent.
+- New `--draft` flag runs the latest unreleased candidate, for iterating before
+  release. A local `<slug>.yaml` still takes precedence for offline iteration.
+
 ## 0.71.1 — 2026-07-09
 
 **A referenced classifier can now read non-PDF documents.** The classify cascade's

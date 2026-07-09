@@ -2272,15 +2272,60 @@ def _fetch_classifier_versions(client: httpx.Client, base_url: str, headers: dic
     return body.get("versions") or body.get("data") or []
 
 
-def _resolve_classifier_config(client: httpx.Client, base_url: str, headers: dict, slug: str) -> str:
-    """Return the classifier's active config YAML: released version, else draft."""
+def _resolve_classifier_config(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict,
+    slug: str,
+    prefer_draft: bool = False,
+) -> tuple[str, str]:
+    """Return ``(config_yaml, source_label)`` for a classifier slug.
+
+    By default resolves the **released** version — the one the ingestion pipeline
+    runs (its ``currentVersionId``) — so a standalone ``classify run`` routes a
+    document exactly as the pipeline will. This is the whole point of the
+    primitive: it must be a faithful proxy for production routing.
+
+    The previous implementation returned ``latestVersion`` (the highest version
+    NUMBER), which silently diverged whenever an unreleased candidate existed —
+    ``classify run`` ran the draft while the pipeline ran the release, and the
+    two disagreed with no indication why.
+
+    ``prefer_draft=True`` runs the latest unreleased draft/candidate instead, for
+    iterating before release. With no released version, falls back to the draft
+    regardless.
+    """
     record = _fetch_classifier(client, base_url, headers, slug)
     latest = record.get("latestVersion") or {}
-    config = latest.get("yamlSource") or record.get("draftYaml")
-    if not config:
-        console.print(f"[red]Classifier '{slug}' has no released version or draft to run.[/red]")
+    draft = record.get("draftYaml")
+
+    if prefer_draft:
+        if draft:
+            return draft, "draft"
+        if latest.get("yamlSource"):
+            return latest["yamlSource"], f"latest {latest.get('version', '?')} (no separate draft)"
+        console.print(f"[red]Classifier '{slug}' has no draft to run.[/red]")
         raise typer.Exit(1)
-    return config
+
+    # Released version = the one the pipeline uses (active == currentVersionId).
+    versions = _fetch_classifier_versions(client, base_url, headers, slug)
+    active = next((v for v in versions if v.get("active")), None)
+    if active is not None:
+        num = active.get("versionNumber")
+        label = active.get("version", "?")
+        # The released version is often also the latest — reuse its inlined yaml.
+        if latest.get("versionNumber") == num and latest.get("yamlSource"):
+            return latest["yamlSource"], f"released {label}"
+        resp = client.get(f"{base_url}/api/classifiers/{slug}/versions/{num}", headers=headers)
+        if resp.status_code == 200 and resp.json().get("yamlSource"):
+            return resp.json()["yamlSource"], f"released {label}"
+
+    # No released version yet — fall back to the draft so a fresh classifier is
+    # still runnable, but say so.
+    if draft:
+        return draft, "draft (no released version)"
+    console.print(f"[red]Classifier '{slug}' has no released version or draft to run.[/red]")
+    raise typer.Exit(1)
 
 
 def _render_classify(filename: str, r: dict) -> None:
@@ -2349,21 +2394,32 @@ def classify_run(
         "Classification keys on the masthead / first page, so capping keeps large "
         "scans under the API upload limit.",
     ),
+    draft: bool = typer.Option(
+        False,
+        "--draft",
+        help="Run the latest unreleased draft/candidate instead of the released version. "
+        "Use while iterating before release; the default matches what the pipeline runs.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
     """Classify one document and show the label, confidence, method, and tier.
 
     Uses the LOCAL classifier YAML if a file is found (so you can iterate without
-    pushing); otherwise the server's released version (falling back to the draft).
-    Drives the standalone POST /api/classify primitive — nothing is persisted.
+    pushing); otherwise the server's RELEASED version — the exact version the
+    ingestion pipeline runs, so this is a faithful proxy for how the pipeline
+    will route the document. Pass --draft to run the latest unreleased candidate
+    instead. Drives the standalone POST /api/classify primitive — nothing is
+    persisted.
 
     Large multi-page PDF scans are capped to the first `--max-pages` pages before
     upload (classification only needs the masthead), which avoids the API's
     request-body size limit. Pass `--max-pages 0` to send the whole document.
     """
     base_url, headers = resolve_api(profile_name)
-    slug, local_yaml, _ = _load_classifier_arg(classifier)
+    slug, local_yaml, local_path = _load_classifier_arg(classifier)
+    if local_yaml is not None and draft:
+        err_console.print("[yellow]--draft ignored: running the local file instead.[/yellow]")
     content_type = mimetypes.guess_type(document.name)[0] or "application/octet-stream"
     upload_bytes = document.read_bytes()
     if max_pages > 0 and content_type == "application/pdf":
@@ -2374,7 +2430,13 @@ def classify_run(
                 f"[dim]large PDF — classifying the first {kept} of {total} pages (use --max-pages 0 to send all)[/dim]"
             )
     with httpx.Client(timeout=300) as client:
-        config = local_yaml or _resolve_classifier_config(client, base_url, headers, slug)
+        if local_yaml is not None:
+            config, source = local_yaml, f"local file {local_path}"
+        else:
+            config, source = _resolve_classifier_config(client, base_url, headers, slug, prefer_draft=draft)
+        # Always say which config ran — silent source selection is exactly what
+        # made `classify run` disagree with the pipeline without explanation.
+        err_console.print(f"[dim]config: {source}[/dim]")
         resp = client.post(
             f"{base_url}/api/classify",
             files={"file": (document.name, upload_bytes, content_type)},

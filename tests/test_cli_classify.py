@@ -128,47 +128,120 @@ def test_load_classifier_arg_missing_file_exits(tmp_path: Path, monkeypatch):
 # ── classify run ──────────────────────────────────────────────────────
 
 
-def test_run_fetches_config_then_classifies(monkeypatch, doc):
+# A classified result body, kept terse.
+_CLASSIFIED = {"label": "invoice", "confidence": 0.92, "method": "keyword", "tier_used": 1, "evidence_page": 2}
+
+
+def _record(*, current="v1", latest=None, draft=None):
+    return {"slug": "docs", "currentVersionId": current, "latestVersion": latest, "draftYaml": draft}
+
+
+def _posted_config(client) -> str:
+    """The `config` field the CLI POSTed to /api/classify."""
+    return client.post.call_args_list[0].kwargs["data"]["config"]
+
+
+def test_run_uses_released_version_matching_the_pipeline(monkeypatch, doc):
+    # Released == latest (versionNumber 1): the resolver reuses the inlined yaml,
+    # no extra version fetch. Sequence: GET record, GET versions, POST.
     client = _install_client(
         monkeypatch,
         [
-            _make_response(200, {"slug": "docs", "latestVersion": {"yamlSource": "name: docs\n"}, "draftYaml": None}),
             _make_response(
                 200,
-                {"label": "invoice", "confidence": 0.92, "method": "keyword", "tier_used": 1, "evidence_page": 2},
+                _record(latest={"versionNumber": 1, "version": "v0.0.1", "yamlSource": "name: docs\n# RELEASED\n"}),
             ),
+            _make_response(200, {"data": [{"id": "v1", "versionNumber": 1, "version": "v0.0.1", "active": True}]}),
+            _make_response(200, _CLASSIFIED),
         ],
     )
     result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
     assert result.exit_code == 0, result.output
     assert "invoice" in result.output
-    assert "92.0%" in result.output
-    # First call fetches the classifier record, second posts to /api/classify.
+    assert "released v0.0.1" in result.output  # source is surfaced
+    assert "# RELEASED" in _posted_config(client)
     assert client.get.call_args_list[0].args[0].endswith("/api/classifiers/docs")
-    post_url = client.post.call_args_list[0].args[0]
-    assert post_url.endswith("/api/classify")
+    assert client.post.call_args_list[0].args[0].endswith("/api/classify")
 
 
-def test_run_falls_back_to_draft_yaml(monkeypatch, doc):
+def test_run_ignores_unreleased_higher_version(monkeypatch, doc):
+    # THE BUG: latest is an unreleased v2, but the released pointer is v1. The
+    # pipeline runs v1, so `classify run` must too — not the v2 draft.
+    client = _install_client(
+        monkeypatch,
+        [
+            _make_response(
+                200,
+                _record(
+                    current="v1-id",
+                    latest={"versionNumber": 2, "version": "v0.0.2", "yamlSource": "name: docs\n# UNRELEASED V2\n"},
+                ),
+            ),
+            _make_response(
+                200,
+                {
+                    "data": [
+                        {"id": "v2-id", "versionNumber": 2, "version": "v0.0.2", "active": False},
+                        {"id": "v1-id", "versionNumber": 1, "version": "v0.0.1", "active": True},
+                    ]
+                },
+            ),
+            _make_response(200, {"versionNumber": 1, "yamlSource": "name: docs\n# RELEASED V1\n"}),
+            _make_response(200, _CLASSIFIED),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
+    assert result.exit_code == 0, result.output
+    posted = _posted_config(client)
+    assert "# RELEASED V1" in posted
+    assert "UNRELEASED V2" not in posted
+    assert "released v0.0.1" in result.output
+    # It fetched the released version explicitly by its number.
+    assert client.get.call_args_list[2].args[0].endswith("/api/classifiers/docs/versions/1")
+
+
+def test_run_draft_flag_runs_the_unreleased_draft(monkeypatch, doc):
+    client = _install_client(
+        monkeypatch,
+        [
+            _make_response(
+                200, _record(latest={"versionNumber": 1, "version": "v0.0.1"}, draft="name: docs\n# DRAFT\n")
+            ),
+            _make_response(200, _CLASSIFIED),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "run", "docs", str(doc), "--draft"])
+    assert result.exit_code == 0, result.output
+    assert "# DRAFT" in _posted_config(client)
+    assert "config: draft" in result.output
+    # --draft short-circuits the version lookup: only GET record, then POST.
+    assert client.get.call_count == 1
+
+
+def test_run_falls_back_to_draft_when_no_release(monkeypatch, doc):
     _install_client(
         monkeypatch,
         [
-            _make_response(200, {"slug": "docs", "latestVersion": None, "draftYaml": "name: docs\n"}),
+            _make_response(200, _record(current=None, latest=None, draft="name: docs\n")),
+            _make_response(200, {"data": []}),  # no versions → no active release
             _make_response(
-                200,
-                {"label": "receipt", "confidence": 0.5, "method": "llm", "tier_used": 3, "evidence_page": 1},
+                200, {"label": "receipt", "confidence": 0.5, "method": "llm", "tier_used": 3, "evidence_page": 1}
             ),
         ],
     )
     result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
     assert result.exit_code == 0, result.output
     assert "receipt" in result.output
+    assert "draft (no released version)" in result.output
 
 
 def test_run_no_config_available_exits(monkeypatch, doc):
     _install_client(
         monkeypatch,
-        [_make_response(200, {"slug": "docs", "latestVersion": None, "draftYaml": None})],
+        [
+            _make_response(200, _record(current=None, latest=None, draft=None)),
+            _make_response(200, {"data": []}),
+        ],
     )
     result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
     assert result.exit_code != 0
@@ -194,16 +267,23 @@ def test_run_uses_local_yaml_without_fetch(monkeypatch, doc, tmp_path):
     assert client.get.call_count == 0
 
 
+def _released_seq(*trailing):
+    """[GET record, GET versions] for a released==latest v0.0.1, then trailing responses."""
+    return [
+        _make_response(200, _record(latest={"versionNumber": 1, "version": "v0.0.1", "yamlSource": "name: docs\n"})),
+        _make_response(200, {"data": [{"id": "v1", "versionNumber": 1, "version": "v0.0.1", "active": True}]}),
+        *trailing,
+    ]
+
+
 def test_run_json_output(monkeypatch, doc):
     _install_client(
         monkeypatch,
-        [
-            _make_response(200, {"slug": "docs", "latestVersion": {"yamlSource": "name: docs\n"}}),
+        _released_seq(
             _make_response(
-                200,
-                {"label": "invoice", "confidence": 0.9, "method": "keyword", "tier_used": 1, "evidence_page": 2},
+                200, {"label": "invoice", "confidence": 0.9, "method": "keyword", "tier_used": 1, "evidence_page": 2}
             ),
-        ],
+        ),
     )
     result = runner.invoke(app, ["classify", "run", "docs", str(doc), "--json"])
     assert result.exit_code == 0, result.output
@@ -213,13 +293,11 @@ def test_run_json_output(monkeypatch, doc):
 def test_run_unknown_label_note(monkeypatch, doc):
     _install_client(
         monkeypatch,
-        [
-            _make_response(200, {"slug": "docs", "latestVersion": {"yamlSource": "name: docs\n"}}),
+        _released_seq(
             _make_response(
-                422,
-                {"error": "no class matched", "label": "unknown", "confidence": 0, "method": None, "tier_used": 0},
+                422, {"error": "no class matched", "label": "unknown", "confidence": 0, "method": None, "tier_used": 0}
             ),
-        ],
+        ),
     )
     result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
     assert result.exit_code == 0, result.output
@@ -227,13 +305,7 @@ def test_run_unknown_label_note(monkeypatch, doc):
 
 
 def test_run_error_exits(monkeypatch, doc):
-    _install_client(
-        monkeypatch,
-        [
-            _make_response(200, {"slug": "docs", "latestVersion": {"yamlSource": "name: docs\n"}}),
-            _make_response(500, {"error": "boom"}),
-        ],
-    )
+    _install_client(monkeypatch, _released_seq(_make_response(500, {"error": "boom"})))
     result = runner.invoke(app, ["classify", "run", "docs", str(doc)])
     assert result.exit_code != 0
     assert "classify" in result.output.lower()
