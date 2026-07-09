@@ -537,6 +537,22 @@ Gated by the `pipeline:write` permission (same as `koji pipeline test`).
 
 ---
 
+## Projects
+
+A **project** is the intra-tenant boundary that scopes schemas, pipelines, classifiers, sources, and jobs. Your profile carries a default project (the `x-koji-project` header sent on every request); manage them with `koji project`.
+
+```bash
+koji project list                                  # projects your key can see (● marks the active one)
+koji project create rnd --name "R&D"               # create a project (tenant:admin)
+koji project create rnd --use                       # …and switch the active profile to it
+koji project use rnd                                # scope the active profile to an existing project
+koji project delete old-project                     # delete a project (tenant:admin; --yes to skip the prompt)
+```
+
+`create` and `delete` require the `tenant:admin` permission; `list`/`use` need `tenant:read`. `use` (and `create --use`) update the active profile's default project in `~/.koji/credentials` — the same field `koji login --project <slug>` sets — so subsequent commands run against that project without re-authenticating. `create --name` defaults to the slug; slugs are lowercase letters, numbers, and hyphens (2–64 chars).
+
+---
+
 ## Misc
 
 ### `koji version`
