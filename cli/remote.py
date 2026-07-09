@@ -2543,3 +2543,27 @@ def classify_release(
         return
     released = result.get("released") or result.get("versionNumber")
     console.print(f"[green]✓[/green] released [cyan]{released}[/cyan] — now live")
+
+
+@classify_app.command("delete")
+def classify_delete(
+    slug: str = typer.Argument(..., help="Classifier slug to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Delete a classifier and all its versions.
+
+    Removes the classifier from the project. Pipelines that reference it by slug
+    will fail to resolve it until it's recreated. Use to clean up a test
+    classifier or to recreate one from scratch.
+    """
+    if not yes:
+        typer.confirm(f"Delete classifier '{slug}' and all its versions?", abort=True)
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.delete(f"{base_url}/api/classifiers/{slug}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 204):
+            _api_error(resp, f"delete {slug}")
+    console.print(f"[green]✓[/green] deleted classifier [cyan]{slug}[/cyan]")

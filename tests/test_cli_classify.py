@@ -78,6 +78,7 @@ def doc(tmp_path: Path) -> Path:
         ["classify", "versions", "--help"],
         ["classify", "promote", "--help"],
         ["classify", "release", "--help"],
+        ["classify", "delete", "--help"],
     ],
 )
 def test_commands_registered(args):
@@ -424,3 +425,32 @@ def test_release_error_exits(monkeypatch):
     result = runner.invoke(app, ["classify", "release", "docs"])
     assert result.exit_code != 0
     assert "release" in result.output.lower()
+
+
+# ── classify delete ───────────────────────────────────────────────────
+
+
+def test_delete_success(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.delete.return_value = _make_response(204, {})
+    result = runner.invoke(app, ["classify", "delete", "family_line_test", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "deleted" in result.output.lower()
+    assert client.delete.call_args_list[0].args[0].endswith("/api/classifiers/family_line_test")
+
+
+def test_delete_aborts_without_confirmation(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.delete.return_value = _make_response(204, {})
+    # No --yes and the prompt gets "n" → abort, no request sent.
+    result = runner.invoke(app, ["classify", "delete", "docs"], input="n\n")
+    assert result.exit_code != 0
+    assert client.delete.call_count == 0
+
+
+def test_delete_error_exits(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.delete.return_value = _make_response(404, {"error": "Classifier not found"})
+    result = runner.invoke(app, ["classify", "delete", "missing", "--yes"])
+    assert result.exit_code != 0
+    assert "delete" in result.output.lower()
