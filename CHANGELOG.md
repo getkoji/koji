@@ -2,6 +2,25 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.71.1 — 2026-07-09
+
+**A referenced classifier can now read non-PDF documents.** The classify cascade's
+cheap text tier read page text with pdfjs. Handed a `.md`, `.txt`, `.csv`, or
+`.docx`, pdfjs rejected the bytes, the cascade saw no text, and both the keyword
+and LLM tiers — which are gated on having text — were skipped. The step returned
+`unknown` with no error and the pipeline took its `default` edge. A DAG
+`classify` step using `classifier: <slug>` therefore mis-routed **every**
+non-PDF document, while the same pipeline with inline `labels` worked (that path
+reads the already-parsed text and never touches the cascade).
+
+The cascade now reads a text-like document's bytes directly (by MIME type, or by
+extension when the upload arrives as `application/octet-stream`), and falls back
+to the caller's already-parsed text when the reader can't open the bytes at all
+— which covers `.docx`, `.xlsx`, and anything else the parse stage handles.
+
+Scanned PDFs are unchanged: pdfjs opens them and reports a page count, so they
+still escalate to the vision tier rather than short-circuiting on OCR text.
+
 ## 0.71.0 — 2026-07-08
 
 **`koji pipeline bench` now reports why a classify step didn't classify.** The

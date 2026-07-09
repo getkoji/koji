@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readPdfWindow } from "./pdf-text";
+import { readPdfWindow, readTextWindow, isTextLike } from "./pdf-text";
 import { runCascade } from "./cascade";
 import { normalizeConfig } from "./config";
 
@@ -75,5 +75,37 @@ describe("cascade over a real PDF (deterministic path, no model)", () => {
     expect(out.method).toBe("keyword");
     expect(out.tierUsed).toBe(2);
     expect(out.evidencePage).toBe(2); // the real doc, not the routing slip
+  });
+});
+
+describe("isTextLike", () => {
+  it("accepts text mime types", () => {
+    expect(isTextLike("a.bin", "text/markdown")).toBe(true);
+    expect(isTextLike("a.bin", "text/plain")).toBe(true);
+    expect(isTextLike("a.bin", "application/json")).toBe(true);
+  });
+
+  it("falls back to the extension for octet-stream uploads", () => {
+    expect(isTextLike("notes.md", "application/octet-stream")).toBe(true);
+    expect(isTextLike("data.csv", "application/octet-stream")).toBe(true);
+  });
+
+  it("rejects PDFs and binary formats", () => {
+    expect(isTextLike("doc.pdf", "application/pdf")).toBe(false);
+    expect(isTextLike("doc.docx", "application/octet-stream")).toBe(false);
+    expect(isTextLike("scan.png", "image/png")).toBe(false);
+  });
+});
+
+describe("readTextWindow", () => {
+  it("returns the whole document as one page", async () => {
+    const out = await readTextWindow(Buffer.from("hello world"), 3, "head");
+    expect(out.totalPages).toBe(1);
+    expect(out.pages).toEqual([{ page: 1, text: "hello world" }]);
+  });
+
+  it("reports no pages for an empty document", async () => {
+    const out = await readTextWindow(Buffer.from("   \n"), 3, "head");
+    expect(out).toEqual({ totalPages: 0, pages: [] });
   });
 });

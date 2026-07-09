@@ -536,7 +536,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
             const outcome = await classifyWithConfig(
               db,
               scope,
-              { filename: doc.filename, mimeType: doc.mimeType, fileBuffer: file.data },
+              { filename: doc.filename, mimeType: doc.mimeType, fileBuffer: file.data, text: docText ?? undefined },
               resolved.config,
               _parseProvider ?? undefined,
             );

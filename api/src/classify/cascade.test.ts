@@ -137,3 +137,90 @@ describe("runCascade", () => {
     expect(out.label).toBe("invoice");
   });
 });
+
+describe("runCascade — non-PDF documents", () => {
+  const config = normalizeConfig({
+    classes: {
+      invoice: { keywords: ["invoice", "amount due", "remit to"] },
+      policy: { keywords: ["declarations"] },
+    },
+  });
+
+  it("classifies a markdown document with no injected reader", async () => {
+    // The bug: pdfjs rejects .md bytes, the cascade saw no text, and every doc
+    // fell through to `unknown` — which routes a pipeline to its default edge.
+    const md = {
+      filename: "doc.md",
+      mimeType: "text/markdown",
+      fileBuffer: Buffer.from("# Bill\n\nINVOICE — amount due, please remit to Acme\n"),
+    };
+    const out = await runCascade(md, config, { classifyDocType: fakeDocType("digital_pdf") });
+
+    expect(out.label).toBe("invoice");
+    expect(out.method).toBe("keyword");
+  });
+
+  it("sniffs a text-like extension even when the mime type is octet-stream", async () => {
+    const md = {
+      filename: "doc.md",
+      mimeType: "application/octet-stream",
+      fileBuffer: Buffer.from("invoice — amount due, remit to Acme"),
+    };
+    const out = await runCascade(md, config, { classifyDocType: fakeDocType("digital_pdf") });
+    expect(out.label).toBe("invoice");
+  });
+
+  it("falls back to caller-supplied text when the reader can't open the bytes", async () => {
+    // A .docx: pdfjs can't open it (totalPages 0), but the pipeline parsed it.
+    const deps: CascadeDeps = {
+      getPageTexts: vi.fn(async () => ({ totalPages: 0, pages: [] })),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const docx = {
+      filename: "doc.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      fileBuffer: Buffer.from("PK\x03\x04binary"),
+      text: "invoice — amount due, remit to Acme",
+    };
+    const out = await runCascade(docx, config, deps);
+    expect(out.label).toBe("invoice");
+    expect(out.method).toBe("keyword");
+  });
+
+  it("does NOT hijack a scanned PDF with caller text — it still escalates to vision", async () => {
+    // pdfjs opens a scanned PDF and reports pages that happen to be blank.
+    // totalPages > 0, so the parsed text must not short-circuit the vision tier.
+    const generateWithImage = vi.fn(async () => JSON.stringify({ label: "policy", confidence: 0.9 }));
+    const renderPageImages = vi.fn(async () => ["base64img"]);
+    const deps: CascadeDeps = {
+      getPageTexts: vi.fn(async () => ({ totalPages: 3, pages: [{ page: 1, text: "" }] })),
+      classifyDocType: fakeDocType("scanned_pdf"),
+      provider: { generate: vi.fn(), generateWithImage } as unknown as ModelProvider,
+      renderPageImages,
+    };
+    const scanned = {
+      filename: "scan.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: Buffer.from("%PDF-"),
+      text: "invoice — amount due, remit to Acme", // would win the keyword tier if used
+    };
+    const out = await runCascade(scanned, normalizeConfig({ max_tier: 4, classes: { invoice: { keywords: ["invoice", "amount due"] }, policy: { keywords: ["declarations"] } } }), deps);
+
+    expect(out.method).toBe("vision");
+    expect(out.label).toBe("policy");
+    expect(generateWithImage).toHaveBeenCalled();
+  });
+
+  it("ignores blank caller text", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: vi.fn(async () => ({ totalPages: 0, pages: [] })),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const out = await runCascade(
+      { filename: "d.docx", mimeType: "application/octet-stream", fileBuffer: Buffer.from("x"), text: "   \n " },
+      config,
+      deps,
+    );
+    expect(out.label).toBe("unknown");
+  });
+});
