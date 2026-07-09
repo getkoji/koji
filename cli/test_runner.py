@@ -362,16 +362,22 @@ def _resolve_mapping(value: str, mappings: dict) -> str:
     Mappings map canonical values to lists of aliases:
         {"10-K/A": ["10-K/A", "10K/A", "10-KA"], ...}
 
-    If `value` matches any alias (case-insensitive), the canonical
-    form is returned. If no match, the original value passes through.
+    If `value` matches any alias (case-insensitive, whitespace-normalized), the
+    canonical form is returned. If no match, the original value passes through.
+    Mirrors the extraction-time `foldVocabValue` (api pipeline.ts) so scoring and
+    extraction canonicalize identically.
     """
-    v_lower = value.strip().lower()
+
+    def fold(s: object) -> str:
+        return re.sub(r"\s+", " ", str(s).strip().lower())
+
+    v_norm = fold(value)
     for canonical, aliases in mappings.items():
-        if v_lower == str(canonical).strip().lower():
+        if v_norm == fold(canonical):
             return canonical
         if isinstance(aliases, list):
             for alias in aliases:
-                if v_lower == str(alias).strip().lower():
+                if v_norm == fold(alias):
                     return canonical
     return value
 

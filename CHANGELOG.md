@@ -2,6 +2,25 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.72.1 — 2026-07-09
+
+**Mapping/enum alias matching is now whitespace-tolerant at extraction time,
+matching the scorer.** The extraction-time resolver lowercased alias candidates
+but didn't trim or collapse internal whitespace, so a model emitting
+`" each occurrence"` or `"Each  Occurrence"` could slip past canonicalization
+while `koji validate`/`bench` (which trim) resolved it — the two disagreed on
+format drift. Both the extraction resolver (`api` pipeline) and the scorer
+(`_resolve_mapping`) now fold candidates identically: lowercase, trim, collapse
+internal whitespace. A value that equals a declared canonical code is still kept
+verbatim (a code wins over being another code's alias), and any verbatim-label
+sibling (e.g. `applies_to_raw`) is untouched.
+
+Note: this does **not** rewrite a value that is itself a valid canonical code.
+If a mapping declares both a `building` code and a `blanket_building` code whose
+aliases include `"Building"`, a model output of `"building"` stays `building` —
+that alias is unreachable by design. Author mappings so a code's name never
+collides with another code's alias.
+
 ## 0.72.0 — 2026-07-09
 
 **`koji pipeline bench` scores array fields element-wise (F1), matching
