@@ -833,6 +833,50 @@ describe("validateFields (nested depth)", () => {
     expect(extracted.coverages[1]!.applies_to).toBe("forgery");
   });
 
+  it("folds case and whitespace when matching a mapping alias", () => {
+    const fields = {
+      applies_to: {
+        type: "mapping",
+        mappings: {
+          each_occurrence: ["Each Occurrence"],
+          general_aggregate: ["General Aggregate"],
+        },
+      },
+    };
+    for (const raw of ["each occurrence", "EACH OCCURRENCE", "  each   occurrence ", "Each\nOccurrence"]) {
+      const extracted: Record<string, unknown> = { applies_to: raw };
+      validateFields(extracted, fields);
+      expect(extracted.applies_to).toBe("each_occurrence");
+    }
+  });
+
+  it("folds case/whitespace for enum options too", () => {
+    const fields = { status: { type: "enum", options: ["in_force"] } };
+    const extracted: Record<string, unknown> = { status: "  IN_FORCE " };
+    validateFields(extracted, fields);
+    expect(extracted.status).toBe("in_force");
+  });
+
+  it("keeps a value that is itself a canonical code (does not chase a colliding alias)", () => {
+    // Regression for the applies_to collision: `building` is a real code AND
+    // `blanket_building` lists "Building" as an alias. A value equal to a
+    // declared code must stay that code, not be rewritten to the aliasing one —
+    // no whitespace/case fix should change this. The dead alias is a schema bug,
+    // not something the resolver silently "corrects".
+    const fields = {
+      applies_to: {
+        type: "mapping",
+        mappings: {
+          building: ["Building Limit", "Building Coverage"],
+          blanket_building: ["Blanket Building", "Building"],
+        },
+      },
+    };
+    const extracted: Record<string, unknown> = { applies_to: "building" };
+    validateFields(extracted, fields);
+    expect(extracted.applies_to).toBe("building");
+  });
+
   it("recurses two levels deep (coverages[] -> limits[])", () => {
     const extracted = {
       coverages: [

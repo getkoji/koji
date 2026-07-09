@@ -703,3 +703,28 @@ class TestArrayF1Scoring:
         # Non-array fields: weighted_score derives from passed (1.0 / 0.0).
         assert compare_field("n", 100.0, 100.0).weighted_score == 1.0
         assert compare_field("n", 100.0, 200.0).weighted_score == 0.0
+
+
+# ── Mapping alias folding (case + whitespace) ─────────────────────────
+
+
+class TestResolveMappingFolding:
+    def test_case_and_whitespace_folded(self):
+        from cli.test_runner import _resolve_mapping
+
+        m = {"each_occurrence": ["Each Occurrence"], "general_aggregate": ["General Aggregate"]}
+        for raw in ["each occurrence", "EACH OCCURRENCE", "  each   occurrence ", "Each\nOccurrence"]:
+            assert _resolve_mapping(raw, m) == "each_occurrence"
+
+    def test_unmatched_passes_through(self):
+        from cli.test_runner import _resolve_mapping
+
+        assert _resolve_mapping("nope", {"a": ["x"]}) == "nope"
+
+    def test_value_equal_to_canonical_code_is_kept(self):
+        from cli.test_runner import _resolve_mapping
+
+        # `building` is a real code; it must not be rewritten to blanket_building
+        # just because that code lists "Building" as an alias.
+        m = {"building": ["Building Limit"], "blanket_building": ["Blanket Building", "Building"]}
+        assert _resolve_mapping("building", m) == "building"

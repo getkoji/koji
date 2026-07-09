@@ -700,6 +700,22 @@ function buildConfidence(
 // Validate field (matches Python pipeline.validate_field)
 // ---------------------------------------------------------------------------
 
+/**
+ * Fold a value for enum/mapping alias matching: lowercase, trim, and collapse
+ * internal whitespace runs to a single space. So "Building", " building", and
+ * "each  occurrence\n" all match their canonical option/alias regardless of the
+ * casing and spacing the model happened to emit.
+ *
+ * Used ONLY for the match; the value written to the output is always the
+ * schema's canonical option/code, and any verbatim-label sibling (e.g.
+ * `applies_to_raw`) is a separate field left untouched. Mirrors the scorer-side
+ * normalization in `_resolve_mapping` (cli/test_runner.py) so extraction-time
+ * canonicalization and validate scoring agree.
+ */
+function foldVocabValue(v: unknown): string {
+  return String(v).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 export function validateField(
   name: string,
   value: unknown,
@@ -749,10 +765,10 @@ export function validateField(
   } else if (fieldType === "enum") {
     const options = (spec.options ?? []) as unknown[];
     if (options.length > 0 && !options.includes(result)) {
-      const valueLower = String(result).toLowerCase();
+      const valueLower = foldVocabValue(result);
       let matched = false;
       for (const opt of options) {
-        const optLower = String(opt).toLowerCase();
+        const optLower = foldVocabValue(opt);
         if (optLower === valueLower || optLower.includes(valueLower) || valueLower.includes(optLower)) {
           result = opt;
           matched = true;
@@ -765,19 +781,21 @@ export function validateField(
     const mappings = (spec.mappings ?? {}) as Record<string, unknown[]>;
     if (Object.keys(mappings).length > 0) {
       const valueStr = String(result);
-      const valueLower = valueStr.toLowerCase();
+      const valueLower = foldVocabValue(valueStr);
       if (valueStr in mappings) {
+        // Already a canonical code — keep verbatim. (A value that equals a
+        // declared code wins over being an alias of another code.)
         result = valueStr;
       } else {
         let matched = false;
         for (const [canonical, aliases] of Object.entries(mappings)) {
-          if (valueLower === canonical.toLowerCase()) {
+          if (valueLower === foldVocabValue(canonical)) {
             result = canonical;
             matched = true;
             break;
           }
           for (const alias of aliases) {
-            if (valueLower === String(alias).toLowerCase()) {
+            if (valueLower === foldVocabValue(alias)) {
               result = canonical;
               matched = true;
               break;
@@ -788,7 +806,7 @@ export function validateField(
         if (!matched) {
           for (const [canonical, aliases] of Object.entries(mappings)) {
             for (const alias of aliases) {
-              const aliasLower = String(alias).toLowerCase();
+              const aliasLower = foldVocabValue(alias);
               if (aliasLower.includes(valueLower) || valueLower.includes(aliasLower)) {
                 result = canonical;
                 matched = true;

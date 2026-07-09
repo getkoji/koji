@@ -125,7 +125,9 @@ Each canonical key has a list of aliases. The extracted value is normalized to t
 - "CGL" → `"GL"`
 - "Workers Comp" → `"WC"`
 
-Matching is case-insensitive, with fuzzy substring fallback. Use `mapping` when downstream systems expect a fixed set of identifiers (e.g., insurance product codes, country codes, currency codes) rather than the raw text the document uses.
+Matching is case-insensitive and whitespace-normalized (leading/trailing trimmed, internal runs collapsed), with a fuzzy substring fallback — `" each  occurrence "` and `"Each Occurrence"` both resolve to the same code. The same normalization is used at extraction time and by `koji validate`/`bench` scoring, so they agree. Use `mapping` when downstream systems expect a fixed set of identifiers (e.g., insurance product codes, country codes, currency codes) rather than the raw text the document uses.
+
+> **Don't let a code's name collide with another code's alias.** A value that already equals a canonical key is kept as-is (a declared code wins over being an alias of a different code). So if you declare both a `building` code and a `blanket_building` code that lists `"Building"` as an alias, a document value of `"building"` resolves to `building` and the `"Building"` alias never fires — it's dead. Give each code a name no other code aliases.
 
 ### array
 
