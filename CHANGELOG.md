@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.72.0 — 2026-07-09
+
+**`koji pipeline bench` scores array fields element-wise (F1), matching
+`validate`.** Array fields (a document's `coverages`, `line_items`, …) were
+scored all-or-nothing: a `coverages` array with four of five elements right
+counted as a full miss, so the extraction number was dominated by whichever
+docs happened to have a perfect array. Array fields now earn partial credit —
+the F1 of element-wise precision and recall, the same semantics the server-side
+`validate` scorer uses — so that doc scores ~0.8 on the field instead of 0.
+
+The `EXTRACTION` line now reports F1-weighted accuracy with the exact-match
+count alongside (`96.0% F1 over 5 fields (4 exact)`), each mismatched array
+shows its element F1 in the failure detail, and `--json` gains `field_credit`
+per run and per schema plus a `score` on each failure. Scalar fields are
+unchanged (1.0/0.0), and `koji bench`'s pass/fail counting is unaffected.
+
+
 ## 0.71.2 — 2026-07-09
 
 **`koji classify run` now runs the RELEASED classifier version — the same one the

@@ -493,3 +493,54 @@ class TestClassifyDiagnostics:
         inv = next(x for x in d["documents"] if x["document"] == "inv_01.md")
         assert inv["classify"][0]["failed_to_run"] is True
         assert inv["classify"][0]["reasoning"] == "no match for v9"
+
+
+# ── Element-wise F1 aggregation ───────────────────────────────────────
+
+from cli.test_runner import FieldResult  # noqa: E402
+
+
+class TestF1Aggregation:
+    """The bench aggregate sums element-wise field scores, not exact-pass
+    booleans — a doc with a 4-of-5 coverages array is no longer scored 0."""
+
+    def _doc(self, field_results):
+        d = PipelineDocResult("d.pdf", "policies", expected_schema="policy", routed_schema="policy")
+        d.field_results = field_results
+        return d
+
+    def test_doc_credit_gives_partial_array_score(self):
+        d = self._doc(
+            [
+                FieldResult("carrier", passed=True),  # scalar hit → 1.0
+                FieldResult("coverages", passed=False, score=0.8),  # array 4/5
+            ]
+        )
+        assert d.passed == 1  # exact matches only
+        assert abs(d.credit - 1.8) < 1e-9  # 1.0 + 0.8 partial credit
+        assert abs(d.accuracy - 0.9) < 1e-9  # 1.8 / 2 fields
+
+    def test_bench_accuracy_is_f1_weighted_not_all_or_nothing(self):
+        result = PipelineBenchResult(pipeline="p", corpus_path="/c")
+        result.doc_results = [
+            self._doc([FieldResult("carrier", passed=True), FieldResult("coverages", passed=False, score=0.8)]),
+        ]
+        # All-or-nothing would score 1/2 = 50%. F1-weighted scores 1.8/2 = 90%.
+        assert abs(result.extraction_accuracy - 0.9) < 1e-9
+        assert result.passed_fields == 1  # exact count still available
+        assert abs(result.field_credit - 1.8) < 1e-9
+
+    def test_by_schema_credit_is_fractional(self):
+        result = PipelineBenchResult(pipeline="p", corpus_path="/c")
+        result.doc_results = [self._doc([FieldResult("coverages", passed=False, score=0.5)])]
+        by = result.extraction_by_schema()
+        assert abs(by["policy"][0] - 0.5) < 1e-9
+        assert by["policy"][1] == 1
+
+    def test_to_dict_exposes_credit(self):
+        result = PipelineBenchResult(pipeline="p", corpus_path="/c")
+        result.doc_results = [self._doc([FieldResult("coverages", passed=False, score=0.8)])]
+        d = result.to_dict()
+        assert abs(d["extraction"]["field_credit"] - 0.8) < 1e-9
+        assert d["extraction"]["passed_fields"] == 0  # no exact matches
+        assert d["documents"][0]["failures"][0]["score"] == 0.8

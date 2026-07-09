@@ -653,3 +653,53 @@ class TestProvenanceKeysExcludedFromScoring:
         ]
         r = compare_field("coverages", expected, actual, fuzzy_threshold=0.95)
         assert r.passed
+
+
+# ── Element-wise array F1 (partial credit) ────────────────────────────
+
+
+class TestArrayF1Scoring:
+    """Array fields carry a fractional `weighted_score` (element-wise F1) so the
+    bench aggregate isn't dominated by all-or-nothing arrays. `passed` stays a
+    strict boolean — these two must not be conflated."""
+
+    def test_exact_array_scores_one(self):
+        r = compare_field("tags", ["a", "b", "c"], ["a", "b", "c"])
+        assert r.passed
+        assert r.weighted_score == 1.0
+
+    def test_scalar_array_partial_credit(self):
+        # 2 of 3 expected present, no extras: P=2/2? no — actual has 2 items both
+        # correct → precision 1.0, recall 2/3 → F1 = 0.8.
+        r = compare_field("tags", ["a", "b", "c"], ["a", "b"])
+        assert not r.passed  # not an exact match
+        assert abs(r.weighted_score - 0.8) < 1e-6
+
+    def test_scalar_array_with_extra_hallucination(self):
+        # All 3 expected present but one spurious extra: recall 1.0, precision 3/4.
+        r = compare_field("tags", ["a", "b", "c"], ["a", "b", "c", "z"])
+        assert abs(r.weighted_score - (2 * 1.0 * 0.75 / 1.75)) < 1e-6
+
+    def test_disjoint_array_scores_zero(self):
+        r = compare_field("tags", ["a", "b"], ["x", "y"])
+        assert r.weighted_score == 0.0
+
+    def test_empty_vs_empty_scores_one(self):
+        # Handled by the empty-vs-empty branch before array logic.
+        r = compare_field("tags", [], [])
+        assert r.passed
+        assert r.weighted_score == 1.0
+
+    def test_array_of_dicts_partial_credit(self):
+        # 5 coverages, 4 identical, 1 with a wrong sub-field. Should land well
+        # above 0 and below 1 — the coverages case the bench used to zero out.
+        exp = [{"code": c, "limit": 100} for c in ("a", "b", "c", "d")] + [{"code": "e", "limit": 500}]
+        act = [{"code": c, "limit": 100} for c in ("a", "b", "c", "d")] + [{"code": "e", "limit": 999}]
+        r = compare_field("coverages", exp, act)
+        assert not r.passed
+        assert 0.8 < r.weighted_score < 1.0
+
+    def test_scalar_field_weighted_score_is_boolean(self):
+        # Non-array fields: weighted_score derives from passed (1.0 / 0.0).
+        assert compare_field("n", 100.0, 100.0).weighted_score == 1.0
+        assert compare_field("n", 100.0, 200.0).weighted_score == 0.0

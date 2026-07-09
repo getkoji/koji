@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,20 @@ class FieldResult:
     expected: Any = None
     actual: Any = None
     detail: str = ""
+    # Partial credit in [0,1]. None means "derive from `passed`" (1.0/0.0) —
+    # the case for every scalar field. Array fields set an explicit element-wise
+    # F1 so a 4-of-5 array scores ~0.8 instead of collapsing to pass/fail.
+    # Consumers that want partial credit read `weighted_score`; `passed` stays
+    # a strict boolean so exact-match counts and displays are unchanged.
+    score: float | None = None
+
+    @property
+    def weighted_score(self) -> float:
+        """Partial-credit score in [0,1]: the explicit `score` if set, else the
+        boolean `passed` as 1.0/0.0."""
+        if self.score is not None:
+            return self.score
+        return 1.0 if self.passed else 0.0
 
 
 @dataclass
@@ -292,6 +307,39 @@ def _array_of_dicts_similarity(expected: list, actual: list) -> float:
     return total_sim / len(expected)
 
 
+def _array_f1(expected: list, actual: list) -> float:
+    """Element-wise F1 for an array field, in [0,1].
+
+    Partial credit so a `coverages` array with 4 of 5 elements right scores
+    ~0.8 instead of collapsing to 0. Mirrors the semantics of validate's
+    server-side scorer (``value-compare.ts``): the F1 of quality-weighted
+    precision and recall over greedily-matched elements.
+
+    - Arrays of dicts: recall is the mean best-match similarity of each expected
+      element against the actual pool; precision is the same in reverse.
+    - Scalar (or mixed) arrays: precision/recall over the multiset intersection
+      of normalized element keys, so duplicates and order don't distort it.
+    """
+    if not expected and not actual:
+        return 1.0
+    if not expected or not actual:
+        return 0.0
+
+    if all(isinstance(v, dict) for v in expected) and all(isinstance(v, dict) for v in actual):
+        recall = _array_of_dicts_similarity(expected, actual)
+        precision = _array_of_dicts_similarity(actual, expected)
+    else:
+        exp_c = Counter(_normalize_for_set_compare(expected))
+        act_c = Counter(_normalize_for_set_compare(actual))
+        matched = sum((exp_c & act_c).values())
+        recall = matched / len(expected)
+        precision = matched / len(actual)
+
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
 def _normalize_for_set_compare(items: list) -> list[str]:
     """Produce canonical string keys for order-insensitive comparison.
 
@@ -417,12 +465,18 @@ def compare_field(
     if isinstance(expected, list) and isinstance(actual, list):
         exp_keys = sorted(_normalize_for_set_compare(expected))
         act_keys = sorted(_normalize_for_set_compare(actual))
+        # Element-wise F1 — the partial-credit score every array-field result
+        # below carries, so the aggregate isn't dominated by all-or-nothing
+        # arrays. `passed` stays a strict/threshold boolean; only `score` is
+        # fractional.
+        f1 = _array_f1(expected, actual)
         if exp_keys == act_keys:
             return FieldResult(
                 field_name=field_name,
                 passed=True,
                 expected=expected,
                 actual=actual,
+                score=1.0,
             )
         # Tolerant mode: when fuzzy_threshold is set, score by fraction
         # of expected items that have a match in actual. Handles the
@@ -439,6 +493,7 @@ def compare_field(
                     expected=expected,
                     actual=actual,
                     detail=f"fuzzy array match ({matched}/{len(exp_keys)} items, {ratio:.0%})",
+                    score=f1,
                 )
             # For arrays of dicts (like policies), exact JSON matching is
             # too strict — a single different limit name makes the entire
@@ -458,17 +513,19 @@ def compare_field(
                         expected=expected,
                         actual=actual,
                         detail=f"fuzzy structural match ({sim:.0%} similarity)",
+                        score=f1,
                     )
         if len(expected) != len(actual):
-            detail = f"array length: expected {len(expected)}, got {len(actual)}"
+            detail = f"array length: expected {len(expected)}, got {len(actual)} ({f1:.0%} element F1)"
         else:
-            detail = "array items differ"
+            detail = f"array items differ ({f1:.0%} element F1)"
         return FieldResult(
             field_name=field_name,
             passed=False,
             expected=expected,
             actual=actual,
             detail=detail,
+            score=f1,
         )
 
     # String comparison: case-insensitive after trimming whitespace.
