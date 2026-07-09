@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from cli.pipeline_bench import (
     PipelineBenchResult,
     PipelineDocResult,
+    _classify_steps,
     _terminal_extraction,
     bench_document,
     format_report,
@@ -321,3 +322,174 @@ class TestDocResultProps:
         assert d.routing_ok is True
         d.error = "boom"
         assert d.routing_ok is False
+
+
+# ── Classify diagnostics ──────────────────────────────────────────────
+
+
+def _classify_steps_from(outputs: list[dict]):
+    """Run raw classify-step outputs through the real parser."""
+    return _classify_steps(
+        [{"stepId": o.get("stepId", "classify"), "stepType": "classify", "output": o} for o in outputs]
+    )
+
+
+def _classify_response(classify_outputs: list[dict], routed_schema: str | None = None, fields: dict | None = None):
+    """A /test response with arbitrary classify step outputs."""
+    steps: list[dict] = [
+        {"stepId": o.pop("stepId", f"classify_{i}"), "stepType": "classify", "status": "completed", "output": o}
+        for i, o in enumerate(classify_outputs)
+    ]
+    if routed_schema is not None:
+        steps.append(
+            {
+                "stepId": "extract",
+                "stepType": "extract",
+                "status": "completed",
+                "output": {"schema": routed_schema, "fields": fields or {}, "fieldCount": len(fields or {})},
+            }
+        )
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"status": "completed", "steps": steps, "path": [], "totalCostUsd": 0.0}
+    return resp
+
+
+class TestClassifyDiagnostics:
+    def test_captures_method_and_version_from_test_response(self, tmp_path):
+        corpus = _make_mixed_corpus(tmp_path)
+        client = _mock_client(
+            [
+                _classify_response(
+                    [
+                        {
+                            "stepId": "classify_line",
+                            "label": "package",
+                            "method": "llm",
+                            "classifier": "family_line",
+                            "classifier_version": "v0.0.1",
+                        }
+                    ],
+                    routed_schema="invoice_basic",
+                    fields={"merchant_name": "Acme Corp"},
+                ),
+                _classify_response(
+                    [
+                        {
+                            "stepId": "classify_line",
+                            "label": "package",
+                            "method": "llm",
+                            "classifier": "family_line",
+                            "classifier_version": "v0.0.1",
+                        }
+                    ],
+                    routed_schema="receipt_basic",
+                    fields={"store": "Widget Co"},
+                ),
+            ]
+        )
+        result = run_pipeline_bench("p", corpus, "http://x", {}, client)
+
+        steps = result.doc_results[0].classify_steps
+        assert len(steps) == 1
+        assert steps[0].method == "llm"
+        assert steps[0].classifier_version == "v0.0.1"
+        assert steps[0].decided is True
+        assert steps[0].failed_to_run is False
+        assert result.classify_method_counts() == {"llm": 2}
+        assert result.docs_with_classifier_failures() == []
+
+    def test_distinguishes_resolution_failure_from_genuine_unknown(self):
+        """`no_classifier` never inspected the doc; `unknown` looked and couldn't tell."""
+        broken = PipelineDocResult("d", "c", expected_schema="a")
+        broken.classify_steps = _classify_steps_from(
+            [
+                {
+                    "stepId": "classify_line",
+                    "label": "unknown",
+                    "method": "no_classifier",
+                    "reasoning": "no released version",
+                }
+            ]
+        )
+        honest = PipelineDocResult("d", "c", expected_schema="a")
+        honest.classify_steps = _classify_steps_from(
+            [{"stepId": "classify_line", "label": "unknown", "method": "unknown"}]
+        )
+
+        assert broken.classifier_failures and broken.classify_steps[0].failed_to_run
+        # A genuine unknown is not a failure — it legitimately routes to default.
+        assert honest.classifier_failures == []
+        assert honest.classify_steps[0].failed_to_run is False
+        assert honest.classify_steps[0].decided is False
+
+    def test_report_shouts_when_a_classifier_never_ran(self, tmp_path):
+        """The 0%-routing-with-no-explanation case that motivated this."""
+        corpus = _make_mixed_corpus(tmp_path)
+        failure = {
+            "stepId": "classify_line",
+            "label": "unknown",
+            "method": "no_provider",
+            "reasoning": "no active model endpoint",
+        }
+        client = _mock_client(
+            [
+                _classify_response([dict(failure)], routed_schema="policy_generic", fields={}),
+                _classify_response([dict(failure)], routed_schema="policy_generic", fields={}),
+            ]
+        )
+        result = run_pipeline_bench("p", corpus, "http://x", {}, client)
+        report = format_report(result)
+
+        assert result.routing_accuracy == 0.0
+        assert len(result.docs_with_classifier_failures()) == 2
+        assert "never inspected the document" in report
+        assert "no_provider" in report
+        assert "no active model endpoint" in report
+        # The trail must explain each misroute inline, too.
+        assert "classify_line=unknown(no_provider)" in report
+
+    def test_report_stays_quiet_when_classifiers_ran(self, tmp_path):
+        corpus = _make_mixed_corpus(tmp_path)
+        client = _mock_client(
+            [
+                _classify_response(
+                    [{"stepId": "c", "label": "inv", "method": "keyword"}],
+                    routed_schema="invoice_basic",
+                    fields={"merchant_name": "Acme Corp"},
+                ),
+                _classify_response(
+                    [{"stepId": "c", "label": "rec", "method": "keyword"}],
+                    routed_schema="receipt_basic",
+                    fields={"store": "Widget Co"},
+                ),
+            ]
+        )
+        report = format_report(run_pipeline_bench("p", corpus, "http://x", {}, client))
+
+        assert "CLASSIFY: 2 steps — keyword 2" in report
+        assert "never inspected the document" not in report
+
+    def test_to_dict_exposes_classify_methods(self, tmp_path):
+        corpus = _make_mixed_corpus(tmp_path)
+        client = _mock_client(
+            [
+                _classify_response(
+                    [{"stepId": "c", "label": "unknown", "method": "no_version", "reasoning": "no match for v9"}],
+                    routed_schema="policy_generic",
+                    fields={},
+                ),
+                _classify_response(
+                    [{"stepId": "c", "label": "rec", "method": "llm"}],
+                    routed_schema="receipt_basic",
+                    fields={"store": "Widget Co"},
+                ),
+            ]
+        )
+        d = run_pipeline_bench("p", corpus, "http://x", {}, client).to_dict()
+
+        assert d["classify"]["method_counts"] == {"no_version": 1, "llm": 1}
+        assert d["classify"]["docs_with_classifier_failures"] == ["inv_01.md"]
+        inv = next(x for x in d["documents"] if x["document"] == "inv_01.md")
+        assert inv["classify"][0]["failed_to_run"] is True
+        assert inv["classify"][0]["reasoning"] == "no match for v9"

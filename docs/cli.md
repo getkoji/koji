@@ -494,10 +494,33 @@ corpus: ./corpus
 ============================================================
 ROUTING: 18/20 docs to correct schema (90.0%)
   receipt_basic: 2→invoice_basic
+
+CLASSIFY: 20 steps — keyword 6, llm 14
+
 EXTRACTION (correctly-routed only): 61/72 fields (84.7%)
   invoice_basic: 40/44 fields (90.9%)
   receipt_basic: 21/28 fields (75.0%)
 ```
+
+**The `CLASSIFY` line tells you whether the routing score means anything.** Each classify step reports the `method` that produced its label. A step that *ran* reports `keyword`, `llm`, or `vision`; a step that never inspected the document at all reports why — `no_classifier` (the referenced slug doesn't resolve in this project), `no_version` (the pinned version doesn't exist), `no_file`, or `no_provider` (no model endpoint was reachable).
+
+That distinction matters because both a failed classifier and a genuine `unknown` send a document down its pipeline's `default` edge — from the routed schema alone they are indistinguishable. When a classify step fails to run, the bench says so loudly and tells you not to trust the routing number:
+
+```
+  MISROUTE policy_04.pdf: routed to policy_generic, expected policy_harford_mutual
+       classify: classify_line=package(llm)  classify_carrier=unknown(no_classifier)
+       ! classify_carrier never ran (no_classifier): Classifier 'family_carrier' has no released version in this project
+
+============================================================
+ROUTING: 0/30 docs to correct schema (0.0%)
+
+CLASSIFY: 60 steps — llm 30, no_classifier 30
+
+  !! 30 of 30 documents had a classify step that never inspected the document (no_classifier).
+     These docs fell to their pipeline's default route. The ROUTING score above reflects a broken pipeline, not classifier accuracy — fix this before reading it.
+```
+
+`--json` includes the same detail: a `classify.method_counts` rollup, `classify.docs_with_classifier_failures`, and a per-document `classify` array carrying each step's `method`, `reasoning`, `classifier`, and `classifier_version`.
 
 Gated by the `pipeline:write` permission (same as `koji pipeline test`).
 
