@@ -2577,6 +2577,31 @@ project_app = typer.Typer(
 )
 
 
+def _tenant_scope(headers: dict[str, str]) -> dict[str, str]:
+    """Drop x-koji-project so a request resolves to the API key's own binding.
+    Used for tenant-level views (project list) and reachability checks, so they
+    work even when the active profile is pinned to a project the key can't reach
+    (or that no longer exists) — without that, you can't even list projects to
+    recover."""
+    return {k: v for k, v in headers.items() if k.lower() != "x-koji-project"}
+
+
+def _project_reachable(client: Any, base_url: str, headers: dict[str, str], slug: str) -> bool:
+    """Can requests scoped to `slug` actually resolve with this key? Scopes the
+    probe to the TARGET (not the profile's current pin), so it answers "will this
+    project work if I switch to it" — 404 means either no such project or the key
+    is bound to a different one (API keys are project-scoped)."""
+    resp = client.get(f"{base_url}/api/projects/{slug}", headers={**_tenant_scope(headers), "x-koji-project": slug})
+    return resp.status_code == 200
+
+
+def _project_slugs(client: Any, base_url: str, headers: dict[str, str]) -> list[str]:
+    resp = client.get(f"{base_url}/api/projects", headers=_tenant_scope(headers))
+    if resp.status_code != 200:
+        return []
+    return [p.get("slug") for p in resp.json().get("data", [])]
+
+
 def _switch_profile_project(profile_name: str | None, slug: str) -> bool:
     """Point a profile's default project at `slug` and persist it. Returns False
     (with a message) when there's no profile to update."""
@@ -2598,7 +2623,9 @@ def project_list(
     """List the projects in your tenant (those your key can access)."""
     base_url, headers = resolve_api(profile_name)
     with httpx.Client(timeout=60) as client:
-        resp = client.get(f"{base_url}/api/projects", headers=headers)
+        # Tenant-level view — never scope to the profile's project, so `list`
+        # still works when the profile is pinned to an unreachable project.
+        resp = client.get(f"{base_url}/api/projects", headers=_tenant_scope(headers))
         if _auth_error(resp, base_url):
             raise typer.Exit(1)
         if resp.status_code != 200:
@@ -2639,6 +2666,7 @@ def project_create(
     body: dict = {"slug": slug, "display_name": name or slug}
     if description:
         body["description"] = description
+    reachable = False
     with httpx.Client(timeout=60) as client:
         resp = client.post(f"{base_url}/api/projects", json=body, headers=headers)
         if _auth_error(resp, base_url):
@@ -2646,13 +2674,27 @@ def project_create(
         if resp.status_code not in (200, 201):
             _api_error(resp, f"create project {slug}")
         result = resp.json()
+        if use:
+            reachable = _project_reachable(client, base_url, headers, slug)
 
     if as_json:
         emit_json(result)
         return
     console.print(f"[green]✓[/green] created project [cyan]{slug}[/cyan]")
-    if use and _switch_profile_project(profile_name, slug):
-        console.print(f"  active profile now scoped to [cyan]{slug}[/cyan]")
+    if use:
+        # Only pin the profile if this key can actually operate in the new
+        # project. An API key is bound to ONE project, so the key that created
+        # this one usually can't scope to it — switching the profile there would
+        # strand every later command on a 404. Say so instead.
+        if reachable and _switch_profile_project(profile_name, slug):
+            console.print(f"  active profile now scoped to [cyan]{slug}[/cyan]")
+        else:
+            console.print(
+                f"  [yellow]![/yellow] not switching: this API key is bound to another project and "
+                f"can't operate in [cyan]{slug}[/cyan]. Create a key for it in the dashboard "
+                f"(Settings → API Keys within the project), then "
+                f"[bold]koji login --api-key <key> --project {slug}[/bold]."
+            )
 
 
 @project_app.command("use")
@@ -2663,16 +2705,22 @@ def project_use(
     """Scope the active profile to a project (sent as x-koji-project on every request)."""
     base_url, headers = resolve_api(profile_name)
     with httpx.Client(timeout=60) as client:
-        resp = client.get(f"{base_url}/api/projects/{slug}", headers=headers)
-        if _auth_error(resp, base_url):
-            raise typer.Exit(1)
-        if resp.status_code == 404:
+        # Probe the TARGET's scope, not the profile's current pin — so switching
+        # away from a broken/unreachable pin works instead of stranding you.
+        if _project_reachable(client, base_url, headers, slug):
+            if _switch_profile_project(profile_name, slug):
+                console.print(f"[green]✓[/green] active profile scoped to project [cyan]{slug}[/cyan]")
+            return
+        # Unreachable: distinguish "no such project" from "key not bound to it".
+        if slug in _project_slugs(client, base_url, headers):
+            err_console.print(
+                f"[red]Your API key can't scope to '{slug}'.[/red] API keys are bound to a single "
+                f"project. Create a key for '{slug}' in the dashboard (Settings → API Keys within "
+                f"that project), then [bold]koji login --api-key <key> --project {slug}[/bold]."
+            )
+        else:
             err_console.print(f"[red]Project '{slug}' not found. Run [bold]koji project list[/bold].[/red]")
-            raise typer.Exit(1)
-        if resp.status_code != 200:
-            _api_error(resp, f"use project {slug}")
-    if _switch_profile_project(profile_name, slug):
-        console.print(f"[green]✓[/green] active profile scoped to project [cyan]{slug}[/cyan]")
+    raise typer.Exit(1)
 
 
 @project_app.command("delete")

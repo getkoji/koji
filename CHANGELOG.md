@@ -2,6 +2,32 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.75.1 — 2026-07-09
+
+**Fixed: `koji push` ignored the profile's project and wrote to the API key's
+bound project.** `push` sent only an `Authorization` header — never
+`x-koji-project` — so a profile scoped to project A silently pushed to whatever
+project the key was bound to (B), with no error. It now sends the profile's
+project scope (and `KOJI_PROJECT` in env mode), so push targets the project you
+selected and **404s loudly on an unreachable scope** instead of falling back to
+the wrong project. If you ran `koji push` against a multi-project setup on
+0.75.0, check that your artifacts landed where you intended.
+
+**Fixed: `koji project use` could strand a profile.** It validated the target
+project using the profile's *current* pin, so once a profile was pinned to an
+unreachable project you couldn't switch back — the reset request carried the
+broken pin and 404'd. `use` now probes the *target's* scope, so switching away
+from a bad pin always works. It also distinguishes "no such project" from "your
+key is bound to a different project" (API keys are project-scoped), and
+`project list` no longer sends a project scope, so it works even when the
+profile is pinned to an unreachable project.
+
+**`koji project create --use` no longer strands you.** Because an API key is
+bound to a single project, the key that creates a project usually can't operate
+in it. `--use` now switches only if the new project is actually reachable by the
+key, and otherwise tells you to mint a key for it — rather than pinning the
+profile to a project every subsequent command will 404 on.
+
 ## 0.75.0 — 2026-07-09
 
 **New: `koji project` — manage projects from the CLI.** Projects (the
