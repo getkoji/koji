@@ -2,6 +2,29 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.74.0 — 2026-07-09
+
+**Fixed: releasing a new classifier version could wedge with a bare 500.** A new
+version's target semver was computed by bumping the **active** release, not the
+highest existing version. After a churned history where `currentVersionId` points
+at an older release than the newest one (e.g. active `v0.0.1` while a `v0.0.2`
+release also exists), a patch change targeted the already-occupied `v0.0.2`,
+violated the released-semver unique index, aborted the transaction, and failed
+the whole request — while the identical config under a new slug released fine. New
+versions are now bumped from the highest existing version, so they stay strictly
+monotonic and can't collide. A wedged classifier accepts new versions again with
+no manual repair.
+
+**500s now return a JSON body with the cause.** The API's uncaught-error handler
+returned a bare `text/plain` "Internal Server Error", which JSON clients (the CLI
+included) saw as an empty, unparseable body — turning a diagnosable failure into a
+blank 500. It now returns `{ error, message }`.
+
+**New: `koji classify delete <slug>`.** Deletes a classifier and all its versions
+(confirmation prompt; `--yes` to skip). Use it to clean up a test classifier or
+recreate one from scratch. Pipelines that reference the slug will fail to resolve
+it until it's recreated.
+
 ## 0.73.0 — 2026-07-09
 
 **Classifiers can declare disqualifying signals.** A class now accepts

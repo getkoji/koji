@@ -391,6 +391,7 @@ koji classify versions document_type                  # released lineage + candi
 koji classify promote document_type                   # graduate the latest candidate to a release + make it live
 koji classify release document_type                   # release directly, skipping the rc loop
 koji classify release ./classifiers/document_type.yaml  # …from a local file
+koji classify delete document_type                    # delete a classifier + all its versions
 ```
 
 `koji classify run` drives the standalone `POST /api/classify` primitive and **persists nothing**. By default it runs the classifier's **released** version — the exact version the ingestion pipeline runs — so its result is a faithful proxy for how the pipeline will route the document. It prints which config it used (`released v0.0.2`, `draft`, or `local file …`), then the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.
@@ -401,6 +402,8 @@ koji classify release ./classifiers/document_type.yaml  # …from a local file
 For a large multi-page PDF, only the first `--max-pages` pages (default 3) are uploaded — classification reads the masthead, and this keeps big scans under the API's upload size limit; pass `--max-pages 0` to send the whole file.
 
 `koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
+
+`koji classify delete <slug>` removes a classifier and all its versions (confirmation prompt; `--yes` to skip). Pipelines that reference the slug will fail to resolve it until it's recreated — use it to clean up a test classifier or to recreate one from scratch.
 
 To **register** a classifier as a named resource (so pipelines can reference it and it gets a version history), give the file `kind: classifier` and `koji push` it — the same way you push schemas and pipelines. `koji push -d .` scans a `classifiers/` subdirectory alongside `schemas/` and `pipelines/`.
 

@@ -19,6 +19,51 @@ export function hashYaml(yaml: string): string {
   return createHash("sha256").update(yaml).digest("hex");
 }
 
+type Triple = { major: number; minor: number; patch: number };
+
+/**
+ * Target semver for a new version: the requested bump applied to the **highest
+ * existing** version, not just the active one. The first-ever version is
+ * `v0.0.1`.
+ *
+ * Bumping from the active release alone is wrong when a higher version already
+ * exists — which happens after a churned history where `currentVersionId` points
+ * at an older release than the newest one. Example: active `v0.0.1`, but a
+ * `v0.0.2` release also exists; a patch change bumps active→`v0.0.2`, collides
+ * with the existing `v0.0.2` on the released-semver unique index, aborts the
+ * transaction, and the whole request fails. Bumping from the highest keeps every
+ * new version strictly monotonic and collision-free regardless of the pointer.
+ *
+ * Pure and total for testability.
+ */
+export function nextReleaseTarget(highest: Triple | null, bump: Bump): Triple {
+  if (!highest) return { major: 0, minor: 0, patch: 1 };
+  return bumpTarget(highest, bump);
+}
+
+/** The highest (major,minor,patch) across ALL of a classifier's versions —
+ *  released or candidate — or null when it has none. */
+async function highestSemver(
+  tx: Parameters<Parameters<typeof withRLS>[2]>[0],
+  classifierId: string,
+): Promise<Triple | null> {
+  const [top] = await tx
+    .select({
+      major: schema.classifierVersions.major,
+      minor: schema.classifierVersions.minor,
+      patch: schema.classifierVersions.patch,
+    })
+    .from(schema.classifierVersions)
+    .where(eq(schema.classifierVersions.classifierId, classifierId))
+    .orderBy(
+      desc(schema.classifierVersions.major),
+      desc(schema.classifierVersions.minor),
+      desc(schema.classifierVersions.patch),
+    )
+    .limit(1);
+  return top ?? null;
+}
+
 export interface VersionRef extends Semver {
   id: string;
   versionNumber: number;
@@ -96,7 +141,9 @@ export async function snapshotCandidate(
     const bump: Bump =
       opts.bumpOverride ??
       deriveClassifierBump((active?.parsedJson as Record<string, unknown>) ?? null, opts.parsed);
-    const target = active ? bumpTarget(active, bump) : { major: 0, minor: 0, patch: 1 };
+    // Bump LEVEL comes from the content diff vs the active release; the target
+    // itself is computed from the highest existing version so it can't collide.
+    const target = nextReleaseTarget(await highestSemver(tx, opts.classifierId), bump);
 
     // rc.N for this target release.
     const cands = await tx
@@ -264,7 +311,8 @@ export async function releaseDirect(
     const bump: Bump =
       opts.bumpOverride ??
       deriveClassifierBump((active?.parsedJson as Record<string, unknown>) ?? null, opts.parsed);
-    const target = active ? bumpTarget(active, bump) : { major: 0, minor: 0, patch: 1 };
+    // Target from the highest existing version, not `active` — see nextReleaseTarget.
+    const target = nextReleaseTarget(await highestSemver(tx, opts.classifierId), bump);
 
     const versionNumber = await nextVersionNumber(tx, opts.classifierId);
     const [row] = await tx

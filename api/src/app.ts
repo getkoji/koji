@@ -183,7 +183,10 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     }
     console.error(`[koji-api] ${c.req.method} ${c.req.path} ERROR:`, err.message);
     console.error(err.stack?.split("\n").slice(0, 5).join("\n"));
-    return c.text("Internal Server Error", 500);
+    // Return a JSON body carrying the cause. Previously this was a bare
+    // `text/plain` "Internal Server Error", which every JSON client parsed as an
+    // empty/unparseable body — turning a diagnosable failure into a blank 500.
+    return c.json({ error: "Internal Server Error", message: err.message }, 500);
   });
 
   if (deps.requestLogger !== false) {
