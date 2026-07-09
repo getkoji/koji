@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.74.0"
+KOJI_VERSION = "0.75.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -1265,6 +1265,7 @@ from .remote import (  # noqa: E402
     classify_app,
     corpus_app,
     pipeline_app,
+    project_app,
     review_app,
     run_doc,
     schema_app,
@@ -1278,6 +1279,7 @@ app.add_typer(review_app, name="review")
 app.add_typer(schema_app, name="schema")
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(classify_app, name="classify")
+app.add_typer(project_app, name="project")
 
 
 if __name__ == "__main__":

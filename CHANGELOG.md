@@ -2,6 +2,24 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.75.0 — 2026-07-09
+
+**New: `koji project` — manage projects from the CLI.** Projects (the
+intra-tenant boundary scoping schemas, pipelines, classifiers, and jobs) could
+only be created in the dashboard; the CLI could merely select one via
+`koji login --project`. Now:
+
+- `koji project list` — projects your key can access (● marks the active one)
+- `koji project create <slug> [--name] [--description] [--use]` — create a
+  project (`tenant:admin`); `--use` switches the active profile to it in one step
+- `koji project use <slug>` — scope the active profile to an existing project
+- `koji project delete <slug>` — delete a project (`tenant:admin`; `--yes` skips
+  the prompt)
+
+`use` and `create --use` persist the project on the active profile (the same
+`x-koji-project` default `koji login --project` sets), so scripted setup of a new
+project no longer needs the dashboard.
+
 ## 0.74.0 — 2026-07-09
 
 **Fixed: releasing a new classifier version could wedge with a bare 500.** A new

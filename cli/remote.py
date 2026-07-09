@@ -2567,3 +2567,129 @@ def classify_delete(
         if resp.status_code not in (200, 204):
             _api_error(resp, f"delete {slug}")
     console.print(f"[green]✓[/green] deleted classifier [cyan]{slug}[/cyan]")
+
+
+# ── Projects ──────────────────────────────────────────────────────────
+
+project_app = typer.Typer(
+    help="Manage projects — the intra-tenant boundary that scopes schemas, pipelines, classifiers, sources, and jobs.",
+    no_args_is_help=True,
+)
+
+
+def _switch_profile_project(profile_name: str | None, slug: str) -> bool:
+    """Point a profile's default project at `slug` and persist it. Returns False
+    (with a message) when there's no profile to update."""
+    creds = load_credentials()
+    name = profile_name or creds.current
+    if not name or name not in creds.profiles:
+        err_console.print("[yellow]No active profile to switch — run [bold]koji login[/bold] first.[/yellow]")
+        return False
+    creds.profiles[name].project = slug
+    creds.save()
+    return True
+
+
+@project_app.command("list")
+def project_list(
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List the projects in your tenant (those your key can access)."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/projects", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, "list projects")
+        data = resp.json().get("data", [])
+
+    if as_json:
+        emit_json(data)
+        return
+    if not data:
+        console.print("[dim]No projects.[/dim]")
+        return
+    creds = load_credentials()
+    active_name = profile_name or creds.current
+    active_project = creds.profiles[active_name].project if active_name in creds.profiles else None
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("", width=1)
+    table.add_column("Slug", style="cyan")
+    table.add_column("Name")
+    table.add_column("Description", style="dim")
+    for p in data:
+        marker = "[green]●[/green]" if p.get("slug") == active_project else ""
+        table.add_row(marker, p.get("slug", ""), p.get("displayName", ""), p.get("description") or "")
+    console.print(table)
+
+
+@project_app.command("create")
+def project_create(
+    slug: str = typer.Argument(..., help="Project slug (lowercase letters, numbers, hyphens; 2-64 chars)."),
+    name: str = typer.Option(None, "--name", "-n", help="Display name (default: the slug)."),
+    description: str = typer.Option(None, "--description", "-d", help="Optional description."),
+    use: bool = typer.Option(False, "--use", help="Switch the active profile to this project after creating it."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Create a project in your tenant (requires the tenant:admin permission)."""
+    base_url, headers = resolve_api(profile_name)
+    body: dict = {"slug": slug, "display_name": name or slug}
+    if description:
+        body["description"] = description
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(f"{base_url}/api/projects", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 201):
+            _api_error(resp, f"create project {slug}")
+        result = resp.json()
+
+    if as_json:
+        emit_json(result)
+        return
+    console.print(f"[green]✓[/green] created project [cyan]{slug}[/cyan]")
+    if use and _switch_profile_project(profile_name, slug):
+        console.print(f"  active profile now scoped to [cyan]{slug}[/cyan]")
+
+
+@project_app.command("use")
+def project_use(
+    slug: str = typer.Argument(..., help="Project slug to scope this profile to."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Scope the active profile to a project (sent as x-koji-project on every request)."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/projects/{slug}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 404:
+            err_console.print(f"[red]Project '{slug}' not found. Run [bold]koji project list[/bold].[/red]")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"use project {slug}")
+    if _switch_profile_project(profile_name, slug):
+        console.print(f"[green]✓[/green] active profile scoped to project [cyan]{slug}[/cyan]")
+
+
+@project_app.command("delete")
+def project_delete(
+    slug: str = typer.Argument(..., help="Project slug to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Delete a project (requires tenant:admin). Its schemas, pipelines, and jobs
+    become inaccessible; this does not delete the tenant."""
+    if not yes:
+        typer.confirm(f"Delete project '{slug}'?", abort=True)
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.delete(f"{base_url}/api/projects/{slug}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 204):
+            _api_error(resp, f"delete project {slug}")
+    console.print(f"[green]✓[/green] deleted project [cyan]{slug}[/cyan]")
