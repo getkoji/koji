@@ -717,6 +717,8 @@ fields:
 
 Categories are detected from section titles (strong signal — one keyword in the title matches) and content keywords (weaker signal — requires 2+ keyword matches in the body). Sections that don't match any defined category are labeled `other`.
 
+> **Gotcha: a field's value can live in a chunk you didn't expect the category of — and `look_in` will hard-filter it out.** The page-1 cover/masthead block (agent column, letterhead, "contact your agent…") frequently carries no category keywords of its own, so it lands in `other` — not `declarations`. A field like `agency_name` whose value is *only* in that block, scoped to `look_in: [declarations]`, then routes to zero chunks that contain its value and comes back null or grabs a decoy from a boilerplate chunk — no amount of `prefer_contains`/`max_chunks`/`isolate` tuning helps, because ranking runs *after* the category filter has already dropped the right chunk. Before assuming a field is un-routable, check the category of the chunk that actually holds its value (the routing diagnosis flags this as `answerInRoutedChunks: false`; see the CLI guide). The fix is usually to add `other` to that field's `look_in` (and give it an agent/masthead-specific `prefer_contains` so the cover block still ranks first), or to add keywords that make the mapper categorize that block correctly.
+
 For an insurance schema, you might define categories like `declarations`, `endorsement`, `conditions`, `exclusions`, etc. For a contract, `parties`, `term`, `compensation`, `termination`. The right categories are the ones that match your document type.
 
 #### Tuning classification
