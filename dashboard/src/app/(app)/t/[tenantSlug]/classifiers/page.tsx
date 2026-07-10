@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Tags, Plus, ChevronRight, Loader2 } from "lucide-react";
-import { api, classifiers as classifiersApi, type ClassifierRow } from "@/lib/api";
+import { classifiers as classifiersApi, type ClassifierRow } from "@/lib/api";
+import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 
 export default function ClassifiersPage() {
@@ -30,27 +31,31 @@ export default function ClassifiersPage() {
   }, [load]);
 
   return (
-    <div className="mx-auto w-full max-w-[900px] px-6 py-8">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-[18px] font-medium text-ink flex items-center gap-2">
-            <Tags className="h-[18px] w-[18px] text-ink-3" />
-            Classifiers
-          </h1>
-          <p className="text-[13px] text-ink-3 mt-1 max-w-[560px]">
-            Sort documents into your own classes with a cost cascade — cheap
-            deterministic signals first, model calls only for the hard tail.
-          </p>
-        </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New classifier
-        </button>
-      </div>
-
+    <ListLayout
+      header={
+        <>
+          <Breadcrumbs items={[{ label: "Classifiers" }]} />
+          <PageHeader
+            title="Classifiers"
+            meta={
+              <span>
+                Sort documents into your own classes with a cost cascade — cheap deterministic
+                signals first, model calls only for the hard tail.
+              </span>
+            }
+            actions={
+              <button
+                onClick={() => setShowCreate(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New classifier
+              </button>
+            }
+          />
+        </>
+      }
+    >
       {error && (
         <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">
           {error}
@@ -112,7 +117,7 @@ export default function ClassifiersPage() {
           }}
         />
       )}
-    </div>
+    </ListLayout>
   );
 }
 
