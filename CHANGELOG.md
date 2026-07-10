@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.78.0 — 2026-07-10
+
+**Improved: the document mapper splits chunks at page/section rules, not just
+headings.** Parsers sometimes pack two logically distinct sections under one
+heading with only a horizontal rule (`---`) between them — e.g. a notice page
+immediately followed by a declarations page. Previously the whole block was
+classified on its head text, so the second section inherited the wrong category
+and a field scoped with `look_in` would never see it. The mapper now also splits
+at CommonMark thematic breaks and classifies each part on its own text, while
+coalescing adjacent same-category (and small/unclassified) fragments so a
+homogeneous section stays a single chunk. This lifts extraction of fields that
+live on a page the parser merged into an unrelated section (measured: large
+recovery of declarations-header fields on multi-page package documents) with no
+change to well-structured documents that have a heading per section.
+
 ## 0.77.1 — 2026-07-10
 
 **Fixed: total duration now shows the real run time on pipeline (DAG) jobs.**
