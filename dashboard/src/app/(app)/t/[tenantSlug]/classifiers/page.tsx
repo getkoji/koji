@@ -90,7 +90,7 @@ export default function ClassifiersPage() {
               href={`${base}/classifiers/${c.slug}`}
               className="flex items-center justify-between px-4 py-3 hover:bg-ink/[0.02] transition-colors group"
             >
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-medium text-ink truncate">{c.displayName}</div>
                 <div className="text-[12px] text-ink-3 truncate">
                   {c.description || <span className="text-ink-4">No description</span>}
