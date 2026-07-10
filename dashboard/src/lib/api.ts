@@ -883,10 +883,12 @@ export const pipelines = {
   /**
    * Update pipeline configuration. Omit a field to leave it unchanged.
    * `parse_provider_id: null` clears the pin (revert to tenant default).
+   * Changing `schema_id` resets the pipeline to `auto` version mode server-side.
    */
   update: (
     idOrSlug: string,
     body: {
+      schema_id?: string;
       model_provider_id?: string;
       parse_provider_id?: string | null;
       review_threshold?: number;

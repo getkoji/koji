@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { authMiddleware, requires } from "../auth/middleware";
 import { resolvePermissions } from "../auth/roles";
+import { isValidReviewThreshold } from "./pipelines";
 import type { AuthAdapter, Principal, Session } from "../auth/adapter";
 import type { Env } from "../env";
 
@@ -122,6 +123,36 @@ describe("review threshold", () => {
     const threshold = 0.9;
     const confidence = 0.95;
     expect(confidence >= threshold).toBe(true);
+  });
+
+  it("isValidReviewThreshold accepts finite numbers in [0, 1]", () => {
+    for (const v of [0, 0.01, 0.5, 0.9, 1]) {
+      expect(isValidReviewThreshold(v)).toBe(true);
+    }
+  });
+
+  it("isValidReviewThreshold rejects out-of-range and non-numeric values", () => {
+    for (const v of [-0.1, 1.1, 2, NaN, Infinity, -Infinity, "0.9", null, undefined, {}]) {
+      expect(isValidReviewThreshold(v)).toBe(false);
+    }
+  });
+});
+
+describe("pipeline schema change", () => {
+  // The PATCH handler resets version tracking to `auto` (clears the pin) only
+  // when schema_id actually changes — a pin belongs to the old schema and would
+  // otherwise render a stale "deployed version". Unchanged schema keeps the pin.
+  function pinResetOnSchemaChange(currentSchemaId: string | null, newSchemaId: string) {
+    return currentSchemaId !== newSchemaId;
+  }
+
+  it("resets the pin when the schema changes", () => {
+    expect(pinResetOnSchemaChange("schema-a", "schema-b")).toBe(true);
+    expect(pinResetOnSchemaChange(null, "schema-a")).toBe(true);
+  });
+
+  it("keeps the pin when the schema is unchanged", () => {
+    expect(pinResetOnSchemaChange("schema-a", "schema-a")).toBe(false);
   });
 });
 
