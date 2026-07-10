@@ -344,6 +344,8 @@ export function resolveNextSteps(edges: TestEdge[], output: Record<string, unkno
 export async function handleDagRun(job: QueuedJob): Promise<void> {
   const db = _db!;
   const storage = _storage!;
+  // Wall-clock start of the run. Used for the document's total duration.
+  const runStart = Date.now();
   const { documentId, pipelineId, startStepId, inheritedOutputs, skipCache } = job.payload as {
     documentId: string;
     pipelineId: string;
@@ -1071,7 +1073,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
   // documents silently bypassed HITL review.
   const lastOutput = stepOutputs[Object.keys(stepOutputs).pop() ?? ""];
   const wasSplit = lastOutput?.fan_out === true;
-  const runDurationMs = Date.now() - (doc as any).startedAt?.getTime?.() || 0;
+  const runDurationMs = Date.now() - runStart;
 
   // A step threw. The document has no trustworthy outcome — fail it loudly
   // rather than letting the tail below stamp it `delivered`.

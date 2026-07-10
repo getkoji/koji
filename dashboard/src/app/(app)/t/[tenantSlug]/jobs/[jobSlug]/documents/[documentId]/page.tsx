@@ -887,10 +887,14 @@ function buildMetrics(
   doc: DocumentDetail,
   stages: TraceStage[],
 ): Array<{ label: string; value: string; unit: string; sub: string; ok?: boolean; warn?: boolean }> {
+  // `?? ` alone is wrong here: a stored total of 0 (e.g. DAG runs before the
+  // duration fix) is not "no data" — it's a bad value we must fall past. Prefer
+  // the first positive source, else sum the stage durations we already have.
+  const stageSum = stages.reduce((s, x) => s + x.durationMs, 0);
   const totalMs =
-    doc.trace?.totalDurationMs ??
-    doc.durationMs ??
-    stages.reduce((s, x) => s + x.durationMs, 0);
+    (doc.trace?.totalDurationMs && doc.trace.totalDurationMs > 0 && doc.trace.totalDurationMs) ||
+    (doc.durationMs && doc.durationMs > 0 && doc.durationMs) ||
+    stageSum;
   const totalSec = totalMs / 1000;
 
   const passed = stages.filter((s) => s.status === "ok").length;

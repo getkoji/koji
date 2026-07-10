@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.77.1 — 2026-07-10
+
+**Fixed: total duration now shows the real run time on pipeline (DAG) jobs.**
+The trace/document detail page reported `0.0s` for every pipeline-processed
+document even though the individual stages showed their real durations. Two
+causes: the DAG runner computed the document's total from a `startedAt` field it
+never loaded (always yielding `0`), and the trace page treated a stored `0` as a
+valid total instead of falling back to the sum of stage durations. New runs now
+persist the wall-clock duration, and the page sums the visible stages when no
+positive total is stored (so already-processed documents display correctly too).
+
 ## 0.77.0 — 2026-07-10
 
 **Added: edit a pipeline's schema and review threshold from the dashboard.** The
