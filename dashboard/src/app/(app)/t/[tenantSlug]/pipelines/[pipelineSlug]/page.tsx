@@ -641,8 +641,14 @@ interface ParseProviderOption {
   isDefault: boolean;
 }
 
+interface SchemaOption {
+  id: string;
+  slug: string;
+  displayName: string;
+}
+
 // ──────────────────────────────────────────────────────────────────────
-// Edit configuration dialog — model endpoint + parse engine
+// Edit configuration dialog — schema, model endpoint, parse engine, threshold
 
 function EditConfigDialog({
   pipeline,
@@ -653,13 +659,16 @@ function EditConfigDialog({
   onClose: () => void;
   onSaved: () => void | Promise<unknown>;
 }) {
+  const [schemaId, setSchemaId] = useState(pipeline.schemaId ?? "");
   const [modelProviderId, setModelProviderId] = useState(pipeline.modelProviderId ?? "");
   const [parseProviderId, setParseProviderId] = useState(pipeline.parseProviderId ?? "");
+  const [reviewThreshold, setReviewThreshold] = useState(pipeline.reviewThreshold ?? "0.9");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // Read chat-capable models from /api/credentials (same source as the create
-  // dialog) and parse endpoints from /api/parse-providers.
+  // dialog), parse endpoints from /api/parse-providers, and schemas from
+  // /api/schemas.
   const { data: credentials, loading: modelsLoading } = useApi(
     useCallback(
       () => api.get<{ data: CredentialResponse[] }>("/api/credentials").then((r) => r.data),
@@ -676,6 +685,21 @@ function EditConfigDialog({
       [],
     ),
   );
+  const { data: schemas, loading: schemasLoading } = useApi(
+    useCallback(
+      () => api.get<{ data: SchemaOption[] }>("/api/schemas").then((r) => r.data),
+      [],
+    ),
+  );
+
+  const schemaOptions = useMemo(() => {
+    const opts = (schemas ?? []).map((s) => ({ id: s.id, label: s.displayName }));
+    // Keep the current schema visible even if it's not in the fetched list.
+    if (pipeline.schemaId && !opts.some((o) => o.id === pipeline.schemaId)) {
+      opts.unshift({ id: pipeline.schemaId, label: `${pipeline.schemaName ?? "Current schema"} (current)` });
+    }
+    return opts;
+  }, [schemas, pipeline.schemaId, pipeline.schemaName]);
 
   const modelOptions = useMemo(() => {
     const opts = toPickerOptions(credentials, "chat").map((p) => ({ id: p.id, label: p.label }));
@@ -713,13 +737,22 @@ function EditConfigDialog({
       setErr("Select a model endpoint.");
       return;
     }
+    const threshold = Number(reviewThreshold);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      setErr("Review threshold must be a number between 0 and 1.");
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
       await pipelinesApi.update(pipeline.slug, {
+        // Only send schema_id when one is selected — never unset an attached
+        // schema. Changing it resets the pinned version server-side.
+        ...(schemaId ? { schema_id: schemaId } : {}),
         model_provider_id: modelProviderId,
         // Empty string clears the pin → tenant default.
         parse_provider_id: parseProviderId || null,
+        review_threshold: threshold,
       });
       await onSaved();
     } catch (e) {
@@ -748,11 +781,41 @@ function EditConfigDialog({
           </button>
         </div>
         <p className="text-[12.5px] text-ink-3 mb-4">
-          Change the model endpoint used for extraction and the parse/OCR engine for{" "}
+          Change the schema, model endpoint, parse/OCR engine, and review threshold for{" "}
           <strong className="text-ink">{pipeline.displayName}</strong>.
         </p>
 
         <div className="space-y-4">
+          <div>
+            <label className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
+              Schema
+            </label>
+            <select
+              value={schemaId}
+              onChange={(e) => setSchemaId(e.target.value)}
+              disabled={schemasLoading}
+              className="w-full h-[32px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+            >
+              <option value="">
+                {schemasLoading
+                  ? "Loading schemas…"
+                  : (schemas ?? []).length === 0
+                  ? "No schemas available"
+                  : "Not set — select a schema…"}
+              </option>
+              {schemaOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11.5px] text-ink-3 mt-1">
+              The output contract this pipeline extracts to. Changing it resets version tracking to
+              auto (the schema&apos;s live release); pin a specific version from the Deployment
+              section.
+            </p>
+          </div>
+
           <div>
             <label className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
               Model endpoint
@@ -804,6 +867,25 @@ function EditConfigDialog({
             <p className="text-[11.5px] text-ink-3 mt-1">
               Override the document parse/OCR engine for this pipeline. Defaults to the tenant parse
               default.
+            </p>
+          </div>
+
+          <div>
+            <label className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
+              Review threshold
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              value={reviewThreshold}
+              onChange={(e) => setReviewThreshold(e.target.value)}
+              className="w-24 h-[32px] rounded-sm border border-input bg-white px-2 font-mono text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+            />
+            <p className="text-[11.5px] text-ink-3 mt-1">
+              Documents whose confidence falls below this value route to human review. Between 0 and
+              1.
             </p>
           </div>
         </div>

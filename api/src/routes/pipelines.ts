@@ -80,6 +80,17 @@ function validateRetryPolicy(input: unknown): RetryPolicy | { error: string } {
   return { maxAttempts, backoffBaseMs, backoffMaxMs, retryTransient };
 }
 
+/**
+ * A pipeline's review threshold is a confidence fraction: documents whose
+ * confidence falls below it route to human review. It must be a finite number
+ * in [0, 1] — an out-of-range or non-numeric value is stored verbatim and then
+ * silently disables review routing at runtime (the `Number.isFinite` guard in
+ * `decideDocumentOutcome`), so we reject it at the edge.
+ */
+export function isValidReviewThreshold(t: unknown): t is number {
+  return typeof t === "number" && Number.isFinite(t) && t >= 0 && t <= 1;
+}
+
 export const pipelinesRouter = new Hono<Env>();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -432,6 +443,10 @@ pipelinesRouter.post(
     return c.json({ error: "name and slug are required" }, 400);
   }
 
+  if (body.review_threshold !== undefined && !isValidReviewThreshold(body.review_threshold)) {
+    return c.json({ error: "review_threshold must be a number between 0 and 1" }, 400);
+  }
+
   // If yaml is provided, mark as a DAG pipeline and store the source.
   // Full compilation is deferred to validate/deploy when @koji/pipeline lands.
   let pipelineType = "simple";
@@ -537,14 +552,38 @@ pipelinesRouter.patch("/:idOrSlug", requires("pipeline:write"), async (c) => {
       }
     }
   }
-  if (body.schema_id !== undefined) updates.schemaId = body.schema_id;
+  if (body.schema_id !== undefined) {
+    updates.schemaId = body.schema_id;
+    // Changing the schema invalidates any pinned version — the pin belongs to
+    // the OLD schema, so leaving it set would make the Deployment section show
+    // a stale/mismatched deployed version (the runner already falls back to the
+    // new schema's live release; this keeps the stored state honest). Reset to
+    // auto only when the schema actually changes.
+    const current = (
+      await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+        tx
+          .select({ schemaId: schema.pipelines.schemaId })
+          .from(schema.pipelines)
+          .where(eq(schema.pipelines.id, pipelineId))
+          .limit(1),
+      )
+    )[0];
+    if (current && current.schemaId !== body.schema_id) {
+      updates.versionMode = "auto";
+      updates.activeSchemaVersionId = null;
+    }
+  }
   if (body.model_provider_id !== undefined) updates.modelProviderId = body.model_provider_id;
   // parse_provider_id pins a tenant parse endpoint; null clears the pin (use
   // the tenant default / system heavy provider). Mirrors model_provider_id.
   if (body.parse_provider_id !== undefined)
     updates.parseProviderId = body.parse_provider_id || null;
-  if (body.review_threshold !== undefined)
+  if (body.review_threshold !== undefined) {
+    if (!isValidReviewThreshold(body.review_threshold)) {
+      return c.json({ error: "review_threshold must be a number between 0 and 1" }, 400);
+    }
     updates.reviewThreshold = body.review_threshold.toString();
+  }
   if (body.config !== undefined) updates.configJson = body.config;
 
   const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>

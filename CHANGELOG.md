@@ -2,6 +2,24 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.77.0 — 2026-07-10
+
+**Added: edit a pipeline's schema and review threshold from the dashboard.** The
+pipeline detail page's Edit configuration dialog now covers all four editable
+settings — schema, model endpoint, parse engine, and review threshold — not just
+the model/parse pair. This also fills a gap: a pipeline with no schema attached
+("not set") could previously only get one at creation time, leaving it stuck;
+you can now attach a schema from the detail page.
+
+**Fixed: review threshold is now validated to `[0, 1]`** on both create and
+update. Previously an out-of-range or non-numeric value was stored verbatim and
+silently disabled review routing entirely (documents never routed to review).
+
+**Fixed: changing a pipeline's schema resets version tracking to `auto`.**
+Previously a schema change left the pinned version pointing at the old schema, so
+the Deployment section showed a stale/mismatched "deployed version." The pin is
+now cleared when the schema actually changes.
+
 ## 0.76.0 — 2026-07-10
 
 **Added: edit a pipeline's model endpoint and parse engine from the dashboard.**
