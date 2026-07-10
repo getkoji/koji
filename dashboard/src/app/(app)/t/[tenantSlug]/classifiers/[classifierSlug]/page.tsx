@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ChevronLeft, Loader2, Upload, Play, Save, Rocket, History } from "lucide-react";
+import { Loader2, Upload, Play, Save, Rocket, History } from "lucide-react";
+import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import {
   classifiers as classifiersApi,
   ApiError,
@@ -143,27 +144,39 @@ export default function ClassifierDetailPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1100px] px-6 py-8">
-      <Link
-        href={`${base}/classifiers`}
-        className="inline-flex items-center gap-1 text-[12.5px] text-ink-3 hover:text-ink mb-3"
-      >
-        <ChevronLeft className="h-3.5 w-3.5" />
-        Classifiers
-      </Link>
-
-      <div className="flex items-start justify-between mb-5">
-        <div>
-          <h1 className="text-[18px] font-medium text-ink">{detail.displayName}</h1>
-          <p className="text-[12.5px] text-ink-3 mt-0.5">
-            {detail.description || <span className="text-ink-4">No description</span>}
-            <span className="text-ink-4 ml-2 font-mono">
-              {detail.latestVersion ? `live ${detail.latestVersion.version ?? `v${detail.latestVersion.versionNumber}`}` : "no released version"}
-            </span>
-          </p>
-        </div>
-      </div>
-
+    <ListLayout
+      header={
+        <>
+          <Breadcrumbs
+            items={[
+              { label: tenantSlug, href: base },
+              { label: "Classifiers", href: `${base}/classifiers` },
+              { label: detail.displayName },
+            ]}
+          />
+          <PageHeader
+            title={detail.displayName}
+            badge={
+              detail.latestVersion ? (
+                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-medium px-2 py-0.5 rounded-sm bg-vermillion/[0.10] text-vermillion-2">
+                  <span className="uppercase tracking-[0.08em]">live</span>
+                  {detail.latestVersion.version ?? `v${detail.latestVersion.versionNumber}`}
+                </span>
+              ) : (
+                <span className="inline-flex items-center font-mono text-[10px] font-medium px-2 py-0.5 rounded-sm uppercase tracking-[0.08em] bg-cream-2 text-ink-3">
+                  no released version
+                </span>
+              )
+            }
+            meta={
+              <span>
+                {detail.description || <span className="text-ink-4">No description</span>}
+              </span>
+            }
+          />
+        </>
+      }
+    >
       {notice && (
         <div
           className={`text-[12px] px-3 py-1.5 rounded-sm mb-4 ${
@@ -255,7 +268,7 @@ export default function ClassifierDetailPage() {
         {/* Test panel */}
         <TestPanel slug={slug} yaml={yaml} />
       </div>
-    </div>
+    </ListLayout>
   );
 }
 
