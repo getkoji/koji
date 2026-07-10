@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.76.0 — 2026-07-10
+
+**Added: edit a pipeline's model endpoint and parse engine from the dashboard.**
+The pipeline detail page's Configuration section now has an **Edit** button
+(for members with `pipeline:write`) that opens a dialog to change the model
+endpoint used for extraction and the parse/OCR engine — the same two settings
+you pick when creating a pipeline. Previously these could only be set at
+creation time or via `PATCH /api/pipelines/{idOrSlug}`. Clearing the parse
+engine reverts the pipeline to the tenant parse default.
+
 ## 0.75.1 — 2026-07-09
 
 **Fixed: `koji push` ignored the profile's project and wrote to the API key's

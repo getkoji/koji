@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -22,6 +22,7 @@ import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { MoveToProjectDialog } from "@/components/shared/MoveToProjectDialog";
 import {
+  api,
   pipelines as pipelinesApi,
   sources as sourcesApi,
   selectedProjectSlug,
@@ -31,6 +32,7 @@ import {
   type RetryPolicy,
   type SchemaVersion,
 } from "@/lib/api";
+import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { statusTone, statusLabel, formatRelativeTime, formatAbsoluteTime } from "../format";
@@ -46,6 +48,7 @@ export default function PipelineDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
+  const [editConfigOpen, setEditConfigOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -246,7 +249,12 @@ export default function PipelineDetailPage() {
           onOpenDeploy={() => setDeployOpen(true)}
           onSetAuto={handleSetAuto}
         />
-        <ConfigurationSection pipeline={pipeline} tenantSlug={tenantSlug} />
+        <ConfigurationSection
+          pipeline={pipeline}
+          tenantSlug={tenantSlug}
+          canWrite={canWrite}
+          onEdit={() => setEditConfigOpen(true)}
+        />
         <RetryPolicySection pipeline={pipeline} canWrite={canWrite} onSaved={refetch} />
         <ConnectedSourcesSection
           pipeline={pipeline}
@@ -291,6 +299,16 @@ export default function PipelineDetailPage() {
             setMoveOpen(false);
             // The pipeline left the current project — return to the list.
             router.push(`/t/${tenantSlug}/pipelines`);
+          }}
+        />
+      )}
+      {editConfigOpen && canWrite && (
+        <EditConfigDialog
+          pipeline={pipeline}
+          onClose={() => setEditConfigOpen(false)}
+          onSaved={async () => {
+            setEditConfigOpen(false);
+            await refetch();
           }}
         />
       )}
@@ -490,9 +508,13 @@ function DeploymentSection({
 function ConfigurationSection({
   pipeline,
   tenantSlug,
+  canWrite,
+  onEdit,
 }: {
   pipeline: PipelineDetail;
   tenantSlug: string;
+  canWrite: boolean;
+  onEdit: () => void;
 }) {
   const config = (pipeline.configJson ?? {}) as {
     stages?: Record<string, Record<string, unknown>>;
@@ -500,7 +522,20 @@ function ConfigurationSection({
   const stages = config.stages ?? {};
 
   return (
-    <Section title="Configuration">
+    <Section
+      title="Configuration"
+      action={
+        canWrite ? (
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors"
+          >
+            <PenLine className="w-3 h-3" />
+            Edit
+          </button>
+        ) : null
+      }
+    >
       <div className="divide-y divide-dotted divide-border">
         <ConfigRow label="Schema">
           {pipeline.schemaSlug && pipeline.schemaName ? (
@@ -595,6 +630,208 @@ function ConfigRow({
         {label}
       </span>
       <span className="text-[12.5px] min-w-0">{children}</span>
+    </div>
+  );
+}
+
+interface ParseProviderOption {
+  id: string;
+  displayName: string;
+  provider: string;
+  isDefault: boolean;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Edit configuration dialog — model endpoint + parse engine
+
+function EditConfigDialog({
+  pipeline,
+  onClose,
+  onSaved,
+}: {
+  pipeline: PipelineDetail;
+  onClose: () => void;
+  onSaved: () => void | Promise<unknown>;
+}) {
+  const [modelProviderId, setModelProviderId] = useState(pipeline.modelProviderId ?? "");
+  const [parseProviderId, setParseProviderId] = useState(pipeline.parseProviderId ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Read chat-capable models from /api/credentials (same source as the create
+  // dialog) and parse endpoints from /api/parse-providers.
+  const { data: credentials, loading: modelsLoading } = useApi(
+    useCallback(
+      () => api.get<{ data: CredentialResponse[] }>("/api/credentials").then((r) => r.data),
+      [],
+    ),
+  );
+  const { data: parseProviders, loading: parseLoading } = useApi(
+    useCallback(
+      () =>
+        api
+          .get<{ data: ParseProviderOption[] }>("/api/parse-providers")
+          .then((r) => r.data)
+          .catch(() => []),
+      [],
+    ),
+  );
+
+  const modelOptions = useMemo(() => {
+    const opts = toPickerOptions(credentials, "chat").map((p) => ({ id: p.id, label: p.label }));
+    // Keep the current pin visible even if that model was since deactivated
+    // (and thus filtered out of the picker) — losing it silently would
+    // change the pipeline the moment the user saves.
+    if (pipeline.modelProviderId && !opts.some((o) => o.id === pipeline.modelProviderId)) {
+      const label = pipeline.modelProviderName
+        ? `${pipeline.modelProviderName}${pipeline.modelProviderModel ? ` — ${pipeline.modelProviderModel}` : ""} (current)`
+        : "Current endpoint";
+      opts.unshift({ id: pipeline.modelProviderId, label });
+    }
+    return opts;
+  }, [credentials, pipeline.modelProviderId, pipeline.modelProviderName, pipeline.modelProviderModel]);
+
+  const parseOptions = useMemo(() => {
+    const opts = (parseProviders ?? []).map((p) => ({
+      id: p.id,
+      label: `${p.displayName}${p.isDefault ? " — default" : ""}`,
+    }));
+    if (pipeline.parseProviderId && !opts.some((o) => o.id === pipeline.parseProviderId)) {
+      const label = pipeline.parseProviderName
+        ? `${pipeline.parseProviderName}${pipeline.parseProviderType ? ` — ${pipeline.parseProviderType}` : ""} (current)`
+        : "Current engine";
+      opts.unshift({ id: pipeline.parseProviderId, label });
+    }
+    return opts;
+  }, [parseProviders, pipeline.parseProviderId, pipeline.parseProviderName, pipeline.parseProviderType]);
+
+  const noModels = !modelsLoading && modelOptions.length === 0;
+
+  async function handleSave() {
+    if (saving) return;
+    if (!modelProviderId) {
+      setErr("Select a model endpoint.");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await pipelinesApi.update(pipeline.slug, {
+        model_provider_id: modelProviderId,
+        // Empty string clears the pin → tenant default.
+        parse_provider_id: parseProviderId || null,
+      });
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[480px] p-6">
+        <div className="flex items-start justify-between mb-1">
+          <h2
+            className="font-display text-[22px] font-medium text-ink leading-tight"
+            style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50" }}
+          >
+            Edit configuration
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-4 hover:text-ink transition-colors p-1 -m-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-[12.5px] text-ink-3 mb-4">
+          Change the model endpoint used for extraction and the parse/OCR engine for{" "}
+          <strong className="text-ink">{pipeline.displayName}</strong>.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
+              Model endpoint
+            </label>
+            <select
+              value={modelProviderId}
+              onChange={(e) => setModelProviderId(e.target.value)}
+              disabled={noModels}
+              className="w-full h-[32px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+            >
+              <option value="">
+                {modelsLoading
+                  ? "Loading endpoints…"
+                  : noModels
+                  ? "No endpoints configured"
+                  : "Select an endpoint…"}
+              </option>
+              {modelOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {noModels && (
+              <p className="text-[11.5px] text-ink-3 mt-1">
+                No chat model endpoints configured. Add one in{" "}
+                <span className="font-mono">Project settings → Model providers</span>.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-ink-4 block mb-1">
+              Parse engine
+            </label>
+            <select
+              value={parseProviderId}
+              onChange={(e) => setParseProviderId(e.target.value)}
+              disabled={parseLoading}
+              className="w-full h-[32px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 disabled:opacity-50"
+            >
+              <option value="">Tenant default (auto)</option>
+              {parseOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11.5px] text-ink-3 mt-1">
+              Override the document parse/OCR engine for this pipeline. Defaults to the tenant parse
+              default.
+            </p>
+          </div>
+        </div>
+
+        {err && (
+          <div className="mt-3 text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">
+            {err}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end gap-2 mt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || noModels || !modelProviderId}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
