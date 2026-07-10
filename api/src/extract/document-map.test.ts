@@ -374,3 +374,68 @@ describe("buildDocumentMap", () => {
     expect(chunks[0]!.charCount).toBeGreaterThan(0);
   });
 });
+
+describe("buildDocumentMap — thematic-break sub-splitting", () => {
+  const schema = {
+    categories: { keywords: { alpha: ["alpha"], bravo: ["bravo"] } },
+    classification: { threshold: 1 },
+  };
+
+  // A substantial (>= MIN_STANDALONE_LINES) block of a category.
+  const alphaBlock = ["alpha one", "alpha two", "alpha three", "alpha four"].join("\n");
+  const bravoBlock = ["bravo one", "bravo two", "bravo three", "bravo four"].join("\n");
+
+  it("splits a heading section at a thematic break when the parts differ in category", () => {
+    // One heading block that a parser merged two logical sections into, with only
+    // a page rule (no heading) between them — the real-world failure shape.
+    const md = ["# Page", alphaBlock, "", "---", "", bravoBlock].join("\n");
+    const chunks = buildDocumentMap(md, schema);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]!.category).toBe("alpha");
+    expect(chunks[1]!.category).toBe("bravo");
+    // The second part is reachable as its own chunk (not buried in the first part
+    // where a category filter on the head classification would drop it).
+    expect(chunks[1]!.content).toContain("bravo one");
+  });
+
+  it("coalesces same-category fragments so homogeneous sections stay one chunk", () => {
+    const md = ["# Page", alphaBlock, "", "---", "", alphaBlock].join("\n");
+    const chunks = buildDocumentMap(md, schema);
+    expect(chunks.length).toBe(1);
+    expect(chunks[0]!.category).toBe("alpha");
+  });
+
+  it("absorbs an insubstantial different-category fragment instead of fragmenting", () => {
+    // A one-line stray of another category (e.g. a page header) must NOT peel off
+    // into its own chunk — it stays with the substantial run.
+    const md = ["# Page", alphaBlock, "", "---", "", "bravo", "", "---", "", alphaBlock].join("\n");
+    const chunks = buildDocumentMap(md, schema);
+    expect(chunks.length).toBe(1);
+    expect(chunks[0]!.category).toBe("alpha");
+    expect(chunks[0]!.content).toContain("bravo");
+  });
+
+  it("does not treat a table delimiter row as a thematic break", () => {
+    const md = ["# Page", "| A | B |", "|---|---|", "| 1 | 2 |"].join("\n");
+    const chunks = buildDocumentMap(md, schema);
+    expect(chunks.length).toBe(1);
+    expect(chunks[0]!.content).toContain("|---|---|");
+  });
+
+  it("recognises `***`, `___` and spaced thematic breaks too", () => {
+    for (const rule of ["***", "___", "- - -"]) {
+      const md = ["# Page", alphaBlock, "", rule, "", bravoBlock].join("\n");
+      const chunks = buildDocumentMap(md, schema);
+      expect(chunks.length).toBe(2);
+      expect(chunks.map((c) => c.category)).toEqual(["alpha", "bravo"]);
+    }
+  });
+
+  it("reindexes sequentially across split fragments", () => {
+    const md = ["# Page", alphaBlock, "---", bravoBlock, "# Next", alphaBlock].join("\n");
+    const chunks = buildDocumentMap(md, schema);
+    for (let i = 0; i < chunks.length; i++) {
+      expect(chunks[i]!.index).toBe(i);
+    }
+  });
+});

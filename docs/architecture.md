@@ -194,7 +194,7 @@ The extraction pipeline is the core of Koji. Instead of sending an entire docume
 
 ### Phase 1: Map
 
-The mapper splits markdown into **chunks** by heading structure. Each chunk gets:
+The mapper splits markdown into **chunks** by heading structure, then refines the split at **thematic breaks** — CommonMark horizontal rules (`---`, `***`, `___`) that parsers emit at page/section boundaries. When a parser packs two logically distinct sections under one heading with only a page rule between them (e.g. a notice page immediately followed by a declarations page), splitting there lets each part be classified on its own text instead of the head of the merged block — otherwise a category filter (`look_in`) would drop the second part. To avoid over-fragmenting, adjacent fragments of the same category (and small or unclassified fragments like page headers/footers) are **coalesced** back together, so a homogeneous section stays one chunk and only a genuine, substantial category shift creates a boundary. Each chunk gets:
 
 - A **category** (e.g., `header`, `line_items`, `totals` — or anything you define) inferred from your schema's `categories.keywords` block. Without a schema, every chunk is `other`.
 - **Signals** — built-in structural detectors: `has_dollar_amounts`, `has_dates`, `has_key_value_pairs`, `has_tables`. Schemas can define **custom signals** via regex patterns (e.g., `has_policy_numbers` for insurance, `has_invoice_numbers` for invoices).

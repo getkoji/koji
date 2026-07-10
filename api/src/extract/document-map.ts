@@ -524,6 +524,47 @@ function splitOversizedChunks(
   return out;
 }
 
+// ── Thematic-break sub-splitting ─────────────────────────────────────
+
+/**
+ * A CommonMark thematic break: a line consisting solely of >=3 of the same
+ * marker character (`-`, `*`, or `_`), optionally separated by spaces. Parsers
+ * emit these at page/section boundaries, so they mark where one logical section
+ * can end and another begin WITHOUT a heading between them. NOT a table
+ * delimiter row (those contain `|`) and NOT a heading. Purely structural
+ * markdown — carries no document-type knowledge.
+ */
+const THEMATIC_BREAK_RE = /^\s*([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+function isThematicBreak(line: string): boolean {
+  return THEMATIC_BREAK_RE.test(line);
+}
+
+/**
+ * A fragment must carry at least this many non-blank lines to be allowed to
+ * split off as its own chunk on a category change. Below it, a fragment is
+ * "insubstantial" (a page header/footer, a stray rule-bounded line) and is
+ * absorbed into its neighbour rather than fragmenting the document. Bounds the
+ * chunk-count inflation from splitting on every page rule.
+ */
+const MIN_STANDALONE_LINES = 4;
+
+function substantialLineCount(content: string): number {
+  return content.split("\n").filter((l) => l.trim()).length;
+}
+
+/** A heading-delimited section: its title and the raw lines beneath it. */
+interface RawSection {
+  title: string;
+  lines: string[];
+}
+
+/** A classified fragment of a section (content + its category). */
+interface ClassifiedFragment {
+  content: string;
+  category: string;
+}
+
 // ── Main Entry Point ────────────────────────────────────────────────
 
 export function buildDocumentMap(
@@ -540,32 +581,94 @@ export function buildDocumentMap(
   const customSignals = compileCustomSignals(schemaDef ?? null);
   const classificationConfig = buildClassificationConfig(schemaDef ?? null);
 
-  const chunks: Chunk[] = [];
+  // Pass 1: group lines into heading-delimited sections (split at `#` lines).
+  const sections: RawSection[] = [];
   let currentTitle = "Document Start";
   let currentLines: string[] = [];
-  let index = 0;
-
-  function finalize(): void {
-    const content = currentLines.join("\n").trim();
-    if (!content) return;
-    const category = classifyChunk(currentTitle, content, categoryKeywords, classificationConfig);
-    const signals = detectSignals(content, customSignals);
-    chunks.push(makeChunk(index, currentTitle, content, category, signals));
-    index++;
-  }
-
   for (const line of markdown.split("\n")) {
     if (line.startsWith("#")) {
-      finalize();
+      sections.push({ title: currentTitle, lines: currentLines });
       currentTitle = line.replace(/^#+\s*/, "");
       currentLines = [];
     } else {
       currentLines.push(line);
     }
   }
+  sections.push({ title: currentTitle, lines: currentLines });
 
-  // Last section
-  finalize();
+  // Pass 2: within each section, sub-split at thematic breaks, classify each
+  // fragment on ITS OWN text, then coalesce consecutive same-category fragments
+  // back together. Rationale: a parser can merge two logically distinct sections
+  // into one heading block when there's no heading between them (e.g. a notice
+  // page immediately followed by a declarations page separated only by a page
+  // rule). Classifying the whole block on its head window then mislabels the
+  // second part and a category filter (`look_in`) drops it. Splitting on the
+  // structural page/section rule lets each part classify correctly. Coalescing
+  // means a homogeneous section collapses right back to one chunk — fragmentation
+  // is bounded by the number of category TRANSITIONS, not the number of rules.
+  const chunks: Chunk[] = [];
+  let index = 0;
+  for (const section of sections) {
+    // Fragments = runs of lines between thematic breaks (the rule line itself is
+    // a separator and is dropped).
+    const fragments: string[][] = [];
+    let frag: string[] = [];
+    for (const line of section.lines) {
+      if (isThematicBreak(line)) {
+        fragments.push(frag);
+        frag = [];
+      } else {
+        frag.push(line);
+      }
+    }
+    fragments.push(frag);
+
+    // Classify each non-empty fragment on its own content.
+    const classified: ClassifiedFragment[] = [];
+    for (const f of fragments) {
+      const content = f.join("\n").trim();
+      if (!content) continue;
+      const category = classifyChunk(section.title, content, categoryKeywords, classificationConfig);
+      classified.push({ content, category });
+    }
+    if (classified.length === 0) continue;
+
+    // Coalesce fragments back together. A fragment only starts a NEW chunk when
+    // it is a substantial block of a genuinely different category; otherwise it
+    // is absorbed into the current run. Specifically a fragment is absorbed when:
+    //   • it shares the current run's category, or
+    //   • it is "insubstantial" — category `other` (no signal) or below the
+    //     min standalone size (a page header/footer or stray rule-bounded line).
+    // A run that so far holds only insubstantial/`other` content adopts the first
+    // substantial category it meets. This keeps a homogeneous section as one
+    // chunk and only peels off a real, sizeable category shift (e.g. a notice
+    // page followed by a declarations page) — the case the split exists to fix.
+    // All fragments of a section share the heading title (title-based routing
+    // still works; the category is what drives `look_in`).
+    const merged: ClassifiedFragment[] = [];
+    let run: ClassifiedFragment = classified[0]!;
+    for (let i = 1; i < classified.length; i++) {
+      const f = classified[i]!;
+      const insubstantial = f.category === "other" || substantialLineCount(f.content) < MIN_STANDALONE_LINES;
+      if (f.category === run.category) {
+        run = { content: `${run.content}\n\n${f.content}`, category: run.category };
+      } else if (insubstantial) {
+        run = { content: `${run.content}\n\n${f.content}`, category: run.category };
+      } else if (run.category === "other") {
+        run = { content: `${run.content}\n\n${f.content}`, category: f.category };
+      } else {
+        merged.push(run);
+        run = f;
+      }
+    }
+    merged.push(run);
+
+    for (const m of merged) {
+      const signals = detectSignals(m.content, customSignals);
+      chunks.push(makeChunk(index, section.title, m.content, m.category, signals));
+      index++;
+    }
+  }
 
   return splitOversizedChunks(chunks, categoryKeywords, classificationConfig, customSignals);
 }
