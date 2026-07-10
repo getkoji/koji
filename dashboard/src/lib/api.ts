@@ -880,6 +880,18 @@ export interface SchemaVersion {
 export const pipelines = {
   list: () => api.get<{ data: PipelineRow[] }>("/api/pipelines").then((r) => r.data),
   get: (idOrSlug: string) => api.get<PipelineDetail>(`/api/pipelines/${idOrSlug}`),
+  /**
+   * Update pipeline configuration. Omit a field to leave it unchanged.
+   * `parse_provider_id: null` clears the pin (revert to tenant default).
+   */
+  update: (
+    idOrSlug: string,
+    body: {
+      model_provider_id?: string;
+      parse_provider_id?: string | null;
+      review_threshold?: number;
+    },
+  ) => api.patch<PipelineDetail>(`/api/pipelines/${idOrSlug}`, body),
   schemaVersions: (schemaSlug: string) =>
     api
       .get<{ data: SchemaVersion[] }>(`/api/schemas/${schemaSlug}/versions`)
