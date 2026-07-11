@@ -1578,6 +1578,7 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
   const [cached] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
+        id: schema.parseCache.id,
         storageKey: schema.parseCache.storageKey,
         pages: schema.parseCache.pages,
         ocrSkipped: schema.parseCache.ocrSkipped,
@@ -1602,6 +1603,21 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
     return c.json({ error: "No cached markdown for this document" }, 404);
   }
 
+  // A parse result is NOT immutable: re-parsing (a cache-bust, a provider
+  // switch, or a corruption-fallback that swaps engines) writes a *new*
+  // parse_cache row — a new id under the same (tenant, file_hash). Caching the
+  // body as immutable would pin the client to a stale parse for an hour after a
+  // re-parse (the exact symptom in oss-435: the Parsed pane kept showing the
+  // pre-fix garbage). Instead, tag the response with the row id and require
+  // revalidation, so an unchanged parse is a cheap 304 but a re-parse surfaces
+  // immediately.
+  const etag = `"pc-${cached.id}"`;
+  c.header("Cache-Control", "private, no-cache");
+  c.header("ETag", etag);
+  if (c.req.header("if-none-match") === etag) {
+    return c.body(null, 304);
+  }
+
   const blob = await storage.getBuffer(cached.storageKey);
   if (!blob) {
     return c.json({ error: "Cache blob missing from storage" }, 404);
@@ -1614,9 +1630,6 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
     return c.json({ error: "Cached markdown is unreadable" }, 500);
   }
 
-  // Markdown is immutable per (tenant, file_hash) — safe to cache on the
-  // client for an hour. The session cookie keeps it private.
-  c.header("Cache-Control", "private, max-age=3600");
   return c.json({
     markdown: payload.markdown ?? "",
     pages: payload.pages ?? cached.pages ?? null,
