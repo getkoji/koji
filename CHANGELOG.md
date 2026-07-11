@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.79.4 — 2026-07-11
+
+**Fixed: Google Document AI parses no longer scramble two-column form headers.**
+The linearizer ordered page elements by a plain top-to-bottom, then
+left-to-right sort. Because two cells in the same visual row almost never share
+an exact vertical position, the sort never reached the left-to-right tie-break
+and the two columns interleaved — tearing every label away from its value on the
+declaration/summary headers that use a two-column label/value grid (so a field's
+value could land next to an unrelated label). Element ordering now clusters
+groups into rows by vertical overlap, then orders left-to-right within each row,
+keeping each label adjacent to its value. Reading order is unchanged for
+single-column and tabular content.
+
 ## 0.79.3 — 2026-07-11
 
 **Fixed: the document "Parsed" view no longer shows a stale parse after a
