@@ -120,15 +120,31 @@ function scalarMatch(expected: unknown, got: unknown): boolean {
   if (e === a) return true;
 
   // Numeric comparison with currency/thousands stripping and small tolerance.
+  // Confirm-only: a genuine quantity match returns true; a numeric mismatch
+  // falls through to the punctuation check below (so "704-376-9896" vs
+  // "704.376.9896", which parseFloat reads as 704 vs 704.376, isn't rejected
+  // here as a number when it's really a formatting-only phone difference).
   const eNum = parseFloat(e.replace(/[$,]/g, ""));
   const aNum = parseFloat(a.replace(/[$,]/g, ""));
   if (!Number.isNaN(eNum) && !Number.isNaN(aNum)) {
     // Only treat as numeric match when the whole string is numeric-ish,
     // otherwise "3 cats" would equal "3 dogs".
-    if (/^[$,\d.\s-]+$/.test(e) && /^[$,\d.\s-]+$/.test(a)) {
-      return Math.abs(eNum - aNum) < 0.01;
+    if (/^[$,\d.\s-]+$/.test(e) && /^[$,\d.\s-]+$/.test(a) && Math.abs(eNum - aNum) < 0.01) {
+      return true;
     }
   }
+
+  // Punctuation-insensitive comparison: collapse every run of non-alphanumeric
+  // characters to a single space so a formatting-only difference is not scored
+  // as a mismatch — e.g. "CHARLOTTE, NC" vs "CHARLOTTE NC", "704-376-9896" vs
+  // "704.376.9896". This forgives punctuation/whitespace ONLY: because the
+  // alphanumerics must still be identical in the same order, it never masks a
+  // content difference (a missing "Ste 300", a different PO box number, or a
+  // dropped "Company" all still fail).
+  const punct = (s: string) => s.replace(/[^a-z0-9]+/g, " ").trim();
+  const ep = punct(e);
+  if (ep.length > 0 && ep === punct(a)) return true;
+
   return false;
 }
 

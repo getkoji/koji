@@ -45,6 +45,19 @@ describe("compareValues — scalars", () => {
     expect(compareValues("3 cats", "3 dogs").match).toBe(false);
   });
 
+  it("forgives punctuation-only differences (comma placement, phone separators)", () => {
+    expect(compareValues("CHARLOTTE, NC 28226", "CHARLOTTE NC 28226").match).toBe(true);
+    expect(compareValues("PO BOX 4810, DAVIDSON, NC", "PO BOX 4810, DAVIDSON NC").match).toBe(true);
+    expect(compareValues("704-376-9896", "704.376.9896").match).toBe(true);
+  });
+
+  it("still fails when alphanumeric content differs, not just punctuation", () => {
+    // dropped unit ("Ste 300"), different PO box, dropped entity suffix
+    expect(compareValues("705 Griffith St, Ste 300, Davidson", "705 Griffith St, Davidson").match).toBe(false);
+    expect(compareValues("PO BOX 4810", "PO BOX 12457").match).toBe(false);
+    expect(compareValues("Allmerica Financial Benefit Insurance Company", "Allmerica Financial Benefit Insurance").match).toBe(false);
+  });
+
   it("treats null vs value as a mismatch with em-dash display", () => {
     const r = compareValues("commercial_property", null);
     expect(r.match).toBe(false);
