@@ -378,4 +378,20 @@ describe("detectCorruption", () => {
     ).join(" ");
     expect(detectCorruption(prose)).toBeNull();
   });
+
+  it("flags an undecodable text layer (control-byte garbage)", () => {
+    // A broken ToUnicode CMap makes pdfjs emit raw glyph ids — C0 control bytes
+    // and 0xFF — instead of characters. This slips past the fragmentation and
+    // space-mangle arms (the failing doc measured shortRatio 0.54, longRatio
+    // 0.06 — just under each threshold), so it needs the non-printable arm.
+    const garbage = "\x00\x02\x03\x04\x05\x06\x07\x08\x0b\x0e\x0f\x10\x11\x12\x13\xff".repeat(200);
+    expect(detectCorruption(garbage)).toMatch(/non-printable|undecodable/);
+  });
+
+  it("does not flag prose containing legitimate accented/Unicode text", () => {
+    // Real non-ASCII (accents, em dashes, currency, smart quotes) is not
+    // control-byte garbage and must not trip the non-printable arm.
+    const text = "Café Müller — naïve résumé €50 “quoted” façade Zürich policy terms apply. ".repeat(50);
+    expect(detectCorruption(text)).toBeNull();
+  });
 });

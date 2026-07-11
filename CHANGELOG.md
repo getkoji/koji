@@ -2,7 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
-## 0.79.1 — 2026-07-11
+## 0.79.2 — 2026-07-11
+
+**Fixed: digital PDFs with an undecodable text layer now fall back to the heavy
+parse provider instead of extracting garbage.** Digital PDFs are parsed on a
+fast pdfjs path, and a corruption check falls back to the heavy provider (OCR)
+when that output looks unusable. A PDF with a broken/absent ToUnicode CMap
+(PScript5/Distiller custom-encoded fonts) makes pdfjs emit the font's raw glyph
+ids — control bytes and `0xFF` fill — in place of characters; the page renders
+fine but the text is garbage. That form slipped between the existing checks
+(fragmentation and space-mangle), so the garbage was trusted, cached, and
+extracted (near-empty results, review status). The corruption check now also
+flags a high fraction of non-printable/control bytes, routing these documents to
+the OCR-based heavy provider. Companion to 0.79.1, which handled the same
+corruption on the docling parse path.
 
 **Fixed: large documents with an undecodable text layer no longer fail
 extraction.** Some PDFs (notably PScript5/Distiller output with custom-encoded
