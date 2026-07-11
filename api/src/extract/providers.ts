@@ -49,6 +49,25 @@ export function isSystemicProviderError(e: unknown): boolean {
   return e instanceof ProviderHttpError && [400, 401, 403, 404].includes(e.status);
 }
 
+/**
+ * A `context_length_exceeded` 400 — the prompt was larger than the model's
+ * context window. Unlike other 400s (malformed request, bad params) this is
+ * *recoverable* by splitting the input into smaller calls, so callers that can
+ * re-split should retry rather than fail the document. Matched on the provider
+ * message because the wire shape differs across OpenAI/Azure/compatible
+ * endpoints, but the phrasing ("maximum context length", "context_length_exceeded",
+ * "reduce the length", "too many tokens") is stable.
+ */
+export function isContextLengthError(e: unknown): boolean {
+  return (
+    e instanceof ProviderHttpError &&
+    e.status === 400 &&
+    /context[ _]length|maximum context|reduce the length|too many tokens|context window/i.test(
+      e.message,
+    )
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Ollama
 // ---------------------------------------------------------------------------

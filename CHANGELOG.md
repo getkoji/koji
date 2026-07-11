@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.79.1 — 2026-07-11
+
+**Fixed: large documents with an undecodable text layer no longer fail
+extraction.** Some PDFs (notably PScript5/Distiller output with custom-encoded
+fonts) carry a text layer whose fonts have a broken or absent ToUnicode CMap:
+the page renders perfectly, but every text extractor emits high-entropy garbage
+(glyph-index escapes like `/14 /i255`) instead of characters. That garbage
+tokenizes ~3× denser than prose, so a long document could build an extraction
+prompt far larger than it looked and the model would reject it with
+`context_length_exceeded` — failing the whole document. Two fixes: (1) the parse
+service now detects an undecodable text layer and recovers it with full-page
+OCR, which reads the rendered glyphs directly; and (2) the extraction engine
+estimates prompt size by character class (digits and non-ASCII/control bytes
+count as denser than prose) and, as a backstop, splits-and-retries when a model
+reports a prompt exceeded its context window rather than failing outright.
+
 ## 0.79.0 — 2026-07-10
 
 **Added: multi-project and all-access API keys.** An API key was previously

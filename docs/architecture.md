@@ -127,6 +127,15 @@ Table- vs text-heaviness is a **geometric** signal (the fraction of lines that r
   this adds no dependency. (This mirrors the API-side corruption check, so a
   digital PDF that pdfjs mangles is re-extracted cleanly even after it falls
   back to the heavy provider.)
+- Recovers **undecodable** text layers: some PDFs (PScript5/Distiller output
+  with custom-encoded fonts) have a broken or absent ToUnicode CMap, so every
+  text backend emits glyph-index escapes (`/14 /i255`) instead of characters
+  even though the page renders fine — a failure neither the glyph-name nor the
+  space-mangle check catches. The service detects the high escape-token ratio
+  and re-parses the document with full-page OCR, which reads the rendered glyphs
+  directly, keeping the OCR output only when it resolves the garble. Left
+  unrecovered, this garbage tokenizes ~3× denser than prose and can push a long
+  document's extraction prompt past the model's context window.
 
 This service is memory-intensive. Allocate 8-12GB to Docker Desktop for reliable operation.
 

@@ -13,9 +13,15 @@
 
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
-import { isSystemicProviderError, type ModelProvider } from "./providers";
+import { isContextLengthError, isSystemicProviderError, type ModelProvider } from "./providers";
 import { vocabHint } from "./schema-tree";
-import { estimateTokens, packChunksToBudget, promptCharBudget, promptFits } from "./context-budget";
+import {
+  estimateTokens,
+  packChunksToBudget,
+  promptCharBudget,
+  promptFits,
+  splitChunkByChars,
+} from "./context-budget";
 
 // ---------------------------------------------------------------------------
 // Shape rendering — recursive array/object description for prompts
@@ -688,6 +694,100 @@ function totalContentChars(chunks: Chunk[]): number {
   return total;
 }
 
+/** Hard cap on budget-split recursion. Reached only for pathologically
+ * unsplittable input; well above the ~log2(chunks) depth any real document
+ * needs, so it never truncates a legitimate split — it just stops an infinite
+ * loop if a lone tiny chunk keeps getting rejected. */
+const MAX_BUDGET_SPLIT_DEPTH = 12;
+
+/**
+ * Split a chunk set into two when budget packing alone can't make progress —
+ * either a single oversized chunk, or a set the character budget accepts whole
+ * but the model still rejects as too long (the token estimate guessed low).
+ * Halves by chunk count; a lone chunk is halved at line boundaries by chars.
+ */
+function forceSplit(chunks: Chunk[]): Chunk[][] {
+  if (chunks.length >= 2) {
+    const mid = Math.ceil(chunks.length / 2);
+    return [chunks.slice(0, mid), chunks.slice(mid)];
+  }
+  if (chunks.length === 1) {
+    const only = chunks[0]!;
+    const parts = splitChunkByChars(only, Math.max(1, Math.ceil(only.content.length / 2)));
+    if (parts.length >= 2) return parts.map((p) => [p]);
+  }
+  return [chunks];
+}
+
+/**
+ * Run one group over a chunk set, returning the per-call sub-results to merge.
+ *
+ * The prompt is issued as a single call when it fits the estimated budget.
+ * Otherwise — or when the model rejects a prompt the estimate thought would fit
+ * (`context_length_exceeded`; the char-based token estimate undercounts dense
+ * or garbled content) — the chunks are packed into budget-fitting subsets (a
+ * lone oversized chunk split at line boundaries) and each subset runs
+ * recursively. Context chunks are dropped first when they're what's blowing the
+ * budget, since they repeat in every call. `forceSplit` guarantees each level
+ * strictly shrinks the input, so the retry always converges.
+ */
+async function runGroupChunks(
+  group: RouteGroup,
+  chunks: Chunk[],
+  ctx: Chunk[] | null,
+  schemaName: string,
+  schemaConfig: Record<string, unknown> | null,
+  provider: ModelProvider,
+  depth: number,
+): Promise<Record<string, unknown>[]> {
+  const prompt = buildGroupPrompt({ ...group, chunks }, schemaName, ctx, schemaConfig);
+
+  if (promptFits(prompt)) {
+    try {
+      return [await extractGroupCall(prompt, group, provider)];
+    } catch (e) {
+      // The model is the source of truth on its own context window. If it
+      // rejects a prompt the estimate cleared, split and retry rather than
+      // failing the document — every other systemic 400 still surfaces.
+      if (!isContextLengthError(e) || depth >= MAX_BUDGET_SPLIT_DEPTH) throw e;
+      console.warn(
+        `[koji-extract] Group ${JSON.stringify(group.fields)}: prompt estimated to fit but the model ` +
+          `returned context_length_exceeded — forcing a split (depth ${depth})`,
+      );
+    }
+  }
+
+  let effectiveCtx = ctx;
+  let overhead = Math.max(0, prompt.length - totalContentChars(chunks));
+  if (effectiveCtx && effectiveCtx.length > 0 && promptCharBudget() - overhead < MIN_CONTENT_BUDGET_CHARS) {
+    // Context chunks are per-call constants — when they're what's eating the
+    // budget, dropping them frees far more room than tighter packing would.
+    effectiveCtx = null;
+    const bare = buildGroupPrompt({ ...group, chunks }, schemaName, null, schemaConfig);
+    overhead = Math.max(0, bare.length - totalContentChars(chunks));
+  }
+
+  let bins = packChunksToBudget(
+    chunks,
+    contentBudgetFor(overhead, `Group ${JSON.stringify(group.fields)}`),
+  );
+  if (bins.length < 2) bins = forceSplit(chunks);
+  if (bins.length < 2 || depth >= MAX_BUDGET_SPLIT_DEPTH) {
+    // Can't split further (or hit the depth cap): run it once and let any
+    // provider error surface honestly rather than looping.
+    return [await extractGroupCall(prompt, group, provider)];
+  }
+
+  console.log(
+    `[koji-extract] Group ${JSON.stringify(group.fields)} prompt ~${estimateTokens(prompt)} tokens ` +
+      `exceeds the context budget — splitting ${chunks.length} chunks into ${bins.length} calls`,
+  );
+  const nested = await Promise.all(
+    bins.map((bin) => runGroupChunks(group, bin, effectiveCtx, schemaName, schemaConfig, provider, depth + 1)),
+  );
+  return nested.flat();
+}
+
 /**
  * Extract fields from a group of co-located fields.
  * Port of Python extract_group (without semaphore — caller handles concurrency).
@@ -695,7 +795,9 @@ function totalContentChars(chunks: Chunk[]): number {
  * When the group's chunks don't fit the model context window in one call, the
  * chunk set is packed into consecutive budget-fitting subsets, one call runs
  * per subset (context chunks dropped first if they're what's blowing the
- * budget), and the results are merged — scalars first-found, arrays unioned.
+ * budget), and the results are merged — scalars first-found, arrays unioned. If
+ * the model rejects a prompt the estimate cleared, the subset is split further
+ * and retried (see `runGroupChunks`).
  */
 export async function extractGroup(
   group: RouteGroup,
@@ -704,37 +806,18 @@ export async function extractGroup(
   contextChunks?: Chunk[] | null,
   schemaConfig?: Record<string, unknown> | null,
 ): Promise<Record<string, unknown>> {
-  const prompt = buildGroupPrompt(group, schemaName, contextChunks, schemaConfig);
-  let result: Record<string, unknown>;
-
-  if (promptFits(prompt)) {
-    result = await extractGroupCall(prompt, group, provider);
-  } else {
-    let ctx = contextChunks;
-    let overhead = Math.max(0, prompt.length - totalContentChars(group.chunks));
-    if (promptCharBudget() - overhead < MIN_CONTENT_BUDGET_CHARS && ctx && ctx.length > 0) {
-      // Context chunks are per-call constants — when they're what's eating the
-      // budget, dropping them frees far more room than tighter packing would.
-      ctx = null;
-      const bare = buildGroupPrompt(group, schemaName, null, schemaConfig);
-      overhead = Math.max(0, bare.length - totalContentChars(group.chunks));
-    }
-    const bins = packChunksToBudget(
-      group.chunks,
-      contentBudgetFor(overhead, `Group ${JSON.stringify(group.fields)}`),
-    );
-    console.log(
-      `[koji-extract] Group ${JSON.stringify(group.fields)} prompt ~${estimateTokens(prompt)} tokens ` +
-        `exceeds the context budget — splitting ${group.chunks.length} chunks into ${bins.length} calls`,
-    );
-    const subResults = await Promise.all(
-      bins.map((bin) => {
-        const subPrompt = buildGroupPrompt({ ...group, chunks: bin }, schemaName, ctx, schemaConfig);
-        return extractGroupCall(subPrompt, group, provider);
-      }),
-    );
-    result = mergeGroupResults(subResults, group);
-  }
+  const subResults = await runGroupChunks(
+    group,
+    group.chunks,
+    contextChunks ?? null,
+    schemaName,
+    schemaConfig ?? null,
+    provider,
+    0,
+  );
+  // Preserve the single-call path exactly: a group that fit in one call returns
+  // that call's result verbatim (no merge pass). Only split groups merge.
+  const result = subResults.length === 1 ? subResults[0]! : mergeGroupResults(subResults, group);
 
   // Log fields that came back null
   const expectedFields = Object.keys(group.fieldSpecs ?? {});
@@ -783,7 +866,10 @@ export async function fillGap(
       if (result[fieldName] != null) return result;
       last = result;
     } catch (e) {
-      if (isSystemicProviderError(e)) throw e;
+      // A context-length overflow on a single subset is recoverable: skip this
+      // subset (the field stays null → routed to review) rather than failing
+      // the whole document. Other systemic errors still surface.
+      if (isSystemicProviderError(e) && !isContextLengthError(e)) throw e;
       console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
     }
   }
@@ -887,7 +973,9 @@ export async function enumerateRows(
         const value = result[fieldName];
         return Array.isArray(value) ? value : [];
       } catch (e) {
-        if (isSystemicProviderError(e)) throw e;
+        // Context-length overflow on one subset is recoverable — skip it and
+        // keep the rows already found, rather than failing the document.
+        if (isSystemicProviderError(e) && !isContextLengthError(e)) throw e;
         console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
         return [];
       }

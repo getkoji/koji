@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import type { ModelProvider } from "./providers";
+import { ProviderHttpError } from "./providers";
 import { promptFits } from "./context-budget";
 import {
   describeArrayItem,
@@ -1054,6 +1055,57 @@ describe("context-budget splitting", () => {
     });
     await extractGroup(group, "test", provider);
     expect(provider.generate).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression (oss-434): the char-based token estimate can undercount
+  // token-dense content (digit tables, control/0xFF bytes from a broken font
+  // layer), so a prompt the estimate cleared can still be rejected by the model
+  // with context_length_exceeded. The group must split and retry rather than
+  // failing the document with a raw 400.
+  it("retries with a split when the model rejects an estimated-to-fit prompt", async () => {
+    const OVERFLOW_CHARS = 70_000;
+    const generate = vi.fn().mockImplementation((prompt: string) => {
+      if (prompt.length > OVERFLOW_CHARS) {
+        return Promise.reject(
+          new ProviderHttpError(
+            400,
+            'OpenAI 400: {"error":{"message":"maximum context length is 128000 tokens. However, your messages resulted in 285896 tokens.","code":"context_length_exceeded"}}',
+          ),
+        );
+      }
+      return Promise.resolve(JSON.stringify({ name: "Acme" }));
+    });
+    const provider: ModelProvider = { generate };
+
+    // One ~100k-char chunk: comfortably under the ~356k char budget (so
+    // promptFits clears it and the first call is a single shot), but the mock
+    // model rejects any prompt over 70k — the estimate guessed low.
+    const group = makeGroup({
+      fieldSpecs: { name: { type: "string" } },
+      chunks: [makeChunk({ index: 0, title: "Big", content: "NAME Acme\n" + "a".repeat(100_000) })],
+    });
+
+    const result = await extractGroup(group, "test", provider);
+
+    // Did not throw; the field was recovered from a split call.
+    expect(result.name).toBe("Acme");
+    // First shot overflowed; the split retries succeeded.
+    expect(generate.mock.calls.length).toBeGreaterThan(1);
+    const overflowed = generate.mock.calls.filter(([p]) => (p as string).length > OVERFLOW_CHARS);
+    expect(overflowed.length).toBe(1);
+  });
+
+  it("still surfaces a non-context-length 400 instead of splitting forever", async () => {
+    const generate = vi
+      .fn()
+      .mockRejectedValue(new ProviderHttpError(400, "OpenAI 400: invalid_request_error — bad schema"));
+    const group = makeGroup({
+      fieldSpecs: { name: { type: "string" } },
+      chunks: [makeChunk({ index: 0, title: "D", content: "Acme" })],
+    });
+    await expect(extractGroup(group, "test", { generate })).rejects.toThrow(/invalid_request_error/);
+    // A genuine 400 is not retryable — one call, then surface.
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   it("gap-fill walks subsets sequentially and stops at the first hit", async () => {
