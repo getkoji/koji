@@ -366,6 +366,47 @@ interface OrderedGroup {
   top: number;
   /** Left edge (normalized) for horizontal tie-break; Infinity when unknown. */
   left: number;
+  /** Height (normalized) — used to cluster groups into rows by vertical
+   * overlap; 0 when geometry is unknown. */
+  height: number;
+}
+
+/**
+ * Two groups share a visual row when their vertical extents overlap by at least
+ * 30% of the shorter one. Anchored to the row's top-most group so a tall element
+ * can't chain-merge successive rows. Falls back to a small top-distance test
+ * when a height is missing, and to exact-top equality when geometry is absent.
+ */
+function sameRow(anchor: OrderedGroup, g: OrderedGroup): boolean {
+  if (!Number.isFinite(anchor.top) || !Number.isFinite(g.top)) return anchor.top === g.top;
+  const minH = Math.min(anchor.height, g.height);
+  if (minH <= 0) return Math.abs(g.top - anchor.top) < 0.004;
+  const overlap = Math.min(anchor.top + anchor.height, g.top + g.height) - Math.max(anchor.top, g.top);
+  return overlap / minH >= 0.3;
+}
+
+/**
+ * Order page groups in human reading order: cluster into horizontal rows by
+ * vertical overlap, order rows top-to-bottom, and order groups left-to-right
+ * within each row.
+ *
+ * A plain top-then-left sort fails on two-column label/value layouts (common in
+ * form headers): two cells in the same visual row almost never share an exact
+ * `top`, so the comparator never reaches the left tie-break and cells from
+ * different columns interleave — decoupling every label from its value.
+ * Banding by vertical overlap keeps a label adjacent to its value. Groups with
+ * no geometry (`top === Infinity`) keep their original order at the end.
+ */
+function orderGroupsIntoRows(groups: OrderedGroup[]): OrderedGroup[] {
+  const byTop = [...groups].sort((a, b) => a.top - b.top || a.order - b.order);
+  const rows: OrderedGroup[][] = [];
+  for (const g of byTop) {
+    const row = rows[rows.length - 1];
+    if (row && sameRow(row[0]!, g)) row.push(g);
+    else rows.push([g]);
+  }
+  for (const row of rows) row.sort((a, b) => a.left - b.left || a.order - b.order);
+  return rows.flat();
 }
 
 /**
@@ -421,6 +462,7 @@ export class GoogleDocAiCanonicalizer implements ChunkCanonicalizer<GoogleDocume
           order: order++,
           top: bbox ? bbox.y : Infinity,
           left: bbox ? bbox.x : Infinity,
+          height: bbox ? bbox.h : 0,
         });
       }
 
@@ -446,18 +488,15 @@ export class GoogleDocAiCanonicalizer implements ChunkCanonicalizer<GoogleDocume
           order: order++,
           top: bbox ? bbox.y : Infinity,
           left: bbox ? bbox.x : Infinity,
+          height: bbox ? bbox.h : 0,
         });
       });
 
-      // Reading order: top-to-bottom, then left-to-right; stable on ties / when
-      // geometry is missing (preserves the provider's emitted order).
-      groups.sort((a, b) => {
-        if (a.top !== b.top) return a.top - b.top;
-        if (a.left !== b.left) return a.left - b.left;
-        return a.order - b.order;
-      });
-
-      for (const g of groups) drafts.push(...g.units);
+      // Reading order: cluster into rows by vertical overlap, order rows
+      // top-to-bottom and groups left-to-right within a row. A plain
+      // top-then-left sort interleaves the columns of a two-column label/value
+      // layout (form headers) because same-row cells rarely share an exact `top`.
+      for (const g of orderGroupsIntoRows(groups)) drafts.push(...g.units);
     });
 
     return assignUnitIds(drafts);

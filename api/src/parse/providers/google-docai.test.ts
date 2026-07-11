@@ -271,3 +271,70 @@ describe("GoogleDocAiProvider — response shaping", () => {
     ).rejects.toThrow(/access token/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reading order — two-column label/value layouts (oss-437)
+//
+// A dec header lays labels in one column and their values in another, at
+// slightly different `top` values. A plain top-then-left sort orders purely by
+// `top`, so it never reaches the left tie-break and the two columns interleave —
+// every label is torn away from its value. Row-banding (cluster by vertical
+// overlap, then left-to-right within the row) keeps each pair adjacent.
+// ---------------------------------------------------------------------------
+
+describe("GoogleDocAiCanonicalizer — two-column reading order (oss-437)", () => {
+  const canon = new GoogleDocAiCanonicalizer();
+
+  // Label column (left) and value column (right). Each value sits a hair ABOVE
+  // its label (so a naive top-sort emits value-before-label and interleaves
+  // successive rows — the exact Auto-Owners dec scramble). Fed in reversed
+  // order to prove geometry, not input order, drives the result.
+  const poly = (x: number, y: number, w: number, h: number) => ({
+    normalizedVertices: [
+      { x, y },
+      { x: x + w, y },
+      { x: x + w, y: y + h },
+      { x, y: y + h },
+    ],
+  });
+  const text = "AGENCY" + "BEARING GROUP LLC" + "POLICY NUMBER" + "244615-43" + "INSURED" + "EDINBOROUGH HOA";
+  const para = (start: number, end: number, x: number, y: number, w: number, h: number) => ({
+    layout: {
+      textAnchor: { textSegments: [{ startIndex: String(start), endIndex: String(end) }] },
+      boundingPoly: poly(x, y, w, h),
+    },
+  });
+  const doc: GoogleDocument = {
+    text,
+    pages: [
+      {
+        pageNumber: 1,
+        // Deliberately reversed vs. reading order.
+        paragraphs: [
+          para(52, 67, 0.55, 0.3, 0.4, 0.03), // EDINBOROUGH HOA (value, row 3)
+          para(45, 52, 0.05, 0.315, 0.2, 0.03), // INSURED        (label, row 3)
+          para(36, 45, 0.55, 0.2, 0.3, 0.03), // 244615-43       (value, row 2)
+          para(23, 36, 0.05, 0.215, 0.3, 0.03), // POLICY NUMBER  (label, row 2)
+          para(6, 23, 0.55, 0.1, 0.4, 0.03), // BEARING GROUP LLC (value, row 1)
+          para(0, 6, 0.05, 0.115, 0.2, 0.03), // AGENCY           (label, row 1)
+        ],
+      },
+    ],
+  };
+
+  it("keeps each label adjacent to its value (rows banded, left-to-right within row)", () => {
+    const chunks = canon.toChunks(doc);
+    expect(chunks.map((c) => c.text)).toEqual([
+      "AGENCY",
+      "BEARING GROUP LLC",
+      "POLICY NUMBER",
+      "244615-43",
+      "INSURED",
+      "EDINBOROUGH HOA",
+    ]);
+    // Guard against the pre-fix scramble, where the value preceded its label.
+    const md = spineToMarkdown(chunks);
+    expect(md.indexOf("AGENCY")).toBeLessThan(md.indexOf("BEARING GROUP LLC"));
+    expect(md.indexOf("INSURED")).toBeLessThan(md.indexOf("EDINBOROUGH HOA"));
+  });
+});
