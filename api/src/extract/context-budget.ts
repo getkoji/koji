@@ -14,10 +14,18 @@
  * subsets (splitting any single oversized chunk at line boundaries). The
  * callers in group-extract.ts run one call per subset and merge the results.
  *
- * Token estimation is chars/3.25 — deliberately conservative. Dense markdown
- * tables (pipes, numbers) tokenize at ~3–3.5 chars/token, well below the ~4 of
- * running prose; underestimating tokens here means a 400 instead of one extra
- * split, so the estimate errs toward splitting.
+ * Token estimation is content-aware, not a flat chars/token ratio. Running
+ * prose tokenizes at ~4 chars/token, but digit runs and non-ASCII/control bytes
+ * are far denser: a broken font layer (glyph-id bytes, no ToUnicode CMap) or a
+ * number-heavy table measured ~1.1–1.2 chars/token with the o200k tokenizer —
+ * 3× what a flat 3.25 assumes. A flat ratio therefore *undercounts* exactly the
+ * documents that overflow, letting a 350k-token prompt slip past the guard and
+ * hit the model's 128k wall as an unrecoverable 400. We instead weight each
+ * character class by its measured token cost so the estimate stays at-or-above
+ * the real count for dense content while leaving clean prose unchanged.
+ * Underestimating means a 400 instead of one extra split, so the estimate errs
+ * toward splitting; the group extractor also retries-on-overflow as a backstop
+ * for the residual cases where even this estimate guesses low.
  */
 
 import type { Chunk } from "./chunker";
@@ -33,14 +41,61 @@ export const COMPLETION_MAX_TOKENS = 16_384;
 /** Headroom for estimation error and message scaffolding. */
 const SAFETY_MARGIN_TOKENS = 2_048;
 
+/** Chars per token for running prose / ASCII letters and spaces — the loosest
+ * (most token-efficient) class, where BPE merges whole words. */
 const CHARS_PER_TOKEN = 3.25;
 
 /** Per-chunk prompt scaffolding: `### {title}\n\n` plus the `\n\n---\n\n`
  * separator between blocks. */
 const CHUNK_BLOCK_OVERHEAD_CHARS = 16;
 
+/** Token cost per character by class, calibrated against o200k_base on real
+ * documents (see the estimator comment). Costs are conservative: each is at or
+ * above the measured cost so a prompt is never estimated smaller than it
+ * tokenizes.
+ *   - digits: ~1.15 chars/token (o200k groups ≤3 digits/token, but mixed
+ *     numeric/punctuation tables run denser) → 1/1.15 ≈ 0.87 tok/char
+ *   - non-ASCII / C0 control: worst case, ~1.6 tok/char (multibyte UTF-8 and
+ *     lone control/0xFF bytes from broken font layers each cost ≥1 token, often
+ *     more) — clean text has ~0 of these, so this never inflates prose
+ *   - other ASCII punctuation/symbols: ~2 chars/token */
+const TOK_PER_DIGIT = 1 / 1.15;
+const TOK_PER_NONPRINT = 1.6;
+const TOK_PER_OTHER_ASCII = 1 / 2.0;
+const TOK_PER_PROSE = 1 / CHARS_PER_TOKEN;
+
+/**
+ * Estimate the token count of `text`, weighting each character by the token
+ * cost of its class. Deliberately conservative (never under-counts on the
+ * dense/garbled content that overflows) while matching the old flat estimate on
+ * clean prose, which is almost entirely letters and spaces.
+ */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  let digits = 0;
+  let nonPrint = 0;
+  let otherAscii = 0;
+  let prose = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 128 || (c < 32 && c !== 9 && c !== 10 && c !== 13)) {
+      // Non-ASCII or a C0 control other than tab/newline/CR: the token-dense
+      // classes — multibyte glyphs and the lone control/0xFF bytes a broken
+      // ToUnicode CMap leaks into the text layer.
+      nonPrint++;
+    } else if (c >= 48 && c <= 57) {
+      digits++;
+    } else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 32 || c === 9 || c === 10 || c === 13) {
+      prose++;
+    } else {
+      otherAscii++;
+    }
+  }
+  return Math.ceil(
+    prose * TOK_PER_PROSE +
+      digits * TOK_PER_DIGIT +
+      nonPrint * TOK_PER_NONPRINT +
+      otherAscii * TOK_PER_OTHER_ASCII,
+  );
 }
 
 /** Whether a fully-built prompt fits the context window with the completion

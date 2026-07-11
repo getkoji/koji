@@ -22,6 +22,33 @@ describe("estimateTokens", () => {
   it("returns 0 for empty text", () => {
     expect(estimateTokens("")).toBe(0);
   });
+
+  // oss-434: the estimate is content-aware. Digit-dense and non-ASCII/control
+  // content tokenizes far denser than prose, so for the same length the
+  // estimate must be higher — a flat chars/token ratio undercounts exactly the
+  // documents that overflow.
+  it("estimates digit-dense content higher than prose of the same length", () => {
+    const prose = "the quick brown fox jumps over the lazy dog ".repeat(1000);
+    const digits = "1234567890".repeat(prose.length / 10);
+    expect(estimateTokens(digits)).toBeGreaterThan(estimateTokens(prose));
+  });
+
+  it("estimates control/0xFF garbage near one token per char", () => {
+    // A broken font layer leaks C0 control bytes and 0xFF in place of text.
+    const garbage = "ÿ".repeat(10_000);
+    // Measured ~1.1 chars/token on real garbled docs; the estimate must be at
+    // least ~1 token/char so it never clears a prompt the model will reject.
+    expect(estimateTokens(garbage)).toBeGreaterThanOrEqual(garbage.length);
+  });
+
+  it("leaves clean prose roughly at the old flat estimate (no over-split regression)", () => {
+    const prose = "the quick brown fox jumps over the lazy dog ".repeat(1000);
+    const flat = Math.ceil(prose.length / 3.25);
+    const est = estimateTokens(prose);
+    // Within ~10% of the historical estimate for prose.
+    expect(est).toBeGreaterThanOrEqual(Math.floor(flat * 0.9));
+    expect(est).toBeLessThanOrEqual(Math.ceil(flat * 1.1));
+  });
 });
 
 describe("promptFits", () => {

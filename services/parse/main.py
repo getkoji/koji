@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.79.0")
+app = FastAPI(title="Koji Parse Service", version="0.79.1")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -110,6 +110,38 @@ def _looks_space_mangled(markdown: str) -> bool:
         return False
     long_ratio = sum(1 for t in tokens if len(t) >= 20) / len(tokens)
     return long_ratio > 0.1
+
+
+# A standalone `/NNN` or `/iNNN` token — Docling's representation of a glyph it
+# could not map to a character. Anchored so it matches only whole tokens, never
+# a `/` inside a URL, path, date, or fraction.
+_GLYPH_INDEX_RE = re.compile(r"^/i?\d+$")
+
+
+def _looks_undecodable(text: str) -> bool:
+    """True if `text` is dominated by unresolved glyph-index escapes.
+
+    Some PDFs (notably PScript5/Distiller output with custom-encoded fonts) carry
+    a text layer whose fonts have a broken or absent ToUnicode CMap, so Docling
+    can't map glyphs to characters and its default backend emits the raw glyph
+    ids as `/NNN` / `/iNNN` escape tokens (e.g. "/14 /i255") even though the page
+    *renders* perfectly. This is neither `/uniXXXX` (`_has_glyph_garble`, which
+    re-parses with pypdfium — no help here, pypdfium emits its own garbage) nor a
+    long-token signature (`_looks_space_mangled`), so neither existing detector
+    catches it. Left in place the garbage extracts to nothing and tokenizes ~3x
+    denser than prose, blowing the downstream context-window budget. Recovery is
+    full-page OCR, which reads the rendered glyphs directly. Real text
+    effectively never contains standalone `/NNN` tokens, so a high ratio is a
+    decisive, zero-false-positive signal (measured ~1.0 on the failing docs vs
+    ~0 on clean text). See oss-434.
+    """
+    if not text:
+        return False
+    tokens = text.split()
+    if len(tokens) < 50:
+        return False
+    escapes = sum(1 for t in tokens if _GLYPH_INDEX_RE.match(t))
+    return escapes / len(tokens) > 0.10
 
 
 def _poppler_extract(file_path: str) -> dict | None:
@@ -371,6 +403,21 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
         if _has_glyph_garble(markdown):
             print("[koji-parse] WARNING: glyph garble persists after pypdfium fallback")
 
+    # Undecodable text layer: a broken/absent ToUnicode CMap makes the fonts emit
+    # their raw glyph ids (low control bytes / 0xFF) instead of characters. No
+    # text backend can recover this — the characters simply are not in the file —
+    # but the page renders correctly, so re-run with full-page OCR to read the
+    # glyphs off the rendered image, bypassing the garbage text layer. Only
+    # accept the OCR output if it actually resolves the garble. See oss-434.
+    if _looks_undecodable(markdown):
+        print("[koji-parse] undecodable text layer detected — recovering with full-page OCR")
+        ocr_result = get_converter(ocr=True).convert(file_path)
+        ocr_markdown = ocr_result.document.export_to_markdown()
+        if not _looks_undecodable(ocr_markdown):
+            result, markdown = ocr_result, ocr_markdown
+        else:
+            print("[koji-parse] WARNING: OCR recovery did not resolve the garble; keeping docling output")
+
     # Space-mangled text layer (Type-3 / custom-encoded fonts): docling's text
     # backends reconstruct inter-word spacing from run geometry and drop it
     # entirely on these fonts, so whole phrases collapse into one token. Poppler
@@ -430,7 +477,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.63.0"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.79.1"}
 
 
 @app.post("/parse")

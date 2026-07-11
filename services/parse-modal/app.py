@@ -254,6 +254,35 @@ def _looks_space_mangled(markdown: str) -> bool:
     return long_ratio > 0.1
 
 
+# A standalone `/NNN` or `/iNNN` token — Docling's representation of a glyph it
+# could not map to a character. Anchored so it matches only whole tokens.
+# Mirrors services/parse/main.py (oss-434).
+_GLYPH_INDEX_RE = re.compile(r"^/i?\d+$")
+
+
+def _looks_undecodable(text: str) -> bool:
+    """True if `text` is dominated by unresolved glyph-index escapes.
+
+    A broken/absent ToUnicode CMap (PScript5/Distiller custom-encoded fonts)
+    leaves Docling unable to map glyphs to characters; its default backend emits
+    the raw glyph ids as `/NNN` / `/iNNN` escape tokens (e.g. "/14 /i255") even
+    though the page renders fine. Neither `/uniXXXX` (`_has_glyph_garble`) nor a
+    long-token signature (`_looks_space_mangled`), so neither existing detector
+    catches it. Left in place the garbage extracts to nothing and tokenizes ~3x
+    denser than prose, blowing the downstream context budget. Recovery is
+    full-page OCR. Real text effectively never contains standalone `/NNN`
+    tokens, so a high ratio is a decisive signal. Mirrors
+    services/parse/main.py (oss-434).
+    """
+    if not text:
+        return False
+    tokens = text.split()
+    if len(tokens) < 50:
+        return False
+    escapes = sum(1 for t in tokens if _GLYPH_INDEX_RE.match(t))
+    return escapes / len(tokens) > 0.10
+
+
 def _poppler_extract(file_path: str) -> dict | None:
     """Re-extract text + word bboxes with poppler's ``pdftotext -bbox-layout``.
 
@@ -734,6 +763,21 @@ def _convert_bytes(
             markdown = result.document.export_to_markdown()
             if _has_glyph_garble(markdown):
                 print("[koji-parse-modal] WARNING: glyph garble persists after pypdfium fallback")
+
+        # Undecodable text layer: a broken/absent ToUnicode CMap makes the fonts
+        # emit their raw glyph ids (low control bytes / 0xFF) instead of
+        # characters. No text backend can recover this, but the page renders
+        # correctly, so re-run with full-page OCR to read the glyphs off the
+        # rendered image. Only accept the OCR output if it resolves the garble.
+        # See oss-434.
+        if _looks_undecodable(markdown):
+            print("[koji-parse-modal] undecodable text layer detected — recovering with full-page OCR")
+            ocr_result = _get_converter(ocr=True).convert(tmp_path)
+            ocr_markdown = ocr_result.document.export_to_markdown()
+            if not _looks_undecodable(ocr_markdown):
+                result, markdown = ocr_result, ocr_markdown
+            else:
+                print("[koji-parse-modal] WARNING: OCR recovery did not resolve the garble; keeping docling output")
 
         # Space-mangled text layer (Type-3 / custom-encoded fonts): docling's
         # backends drop inter-word spacing on these fonts, collapsing whole

@@ -24,7 +24,30 @@ if "fastapi" not in sys.modules:
     _fastapi_mock.Request = MagicMock()
     sys.modules["fastapi"] = _fastapi_mock
 
-from app import _looks_space_mangled, _poppler_extract  # noqa: E402
+from app import _looks_space_mangled, _looks_undecodable, _poppler_extract  # noqa: E402
+
+
+class TestLooksUndecodable:
+    """oss-434: a broken/absent ToUnicode CMap makes Docling emit unresolved
+    glyphs as `/NNN` / `/iNNN` index escapes. Mirrors
+    services/parse/test_glyph_garble.py."""
+
+    def test_detects_glyph_index_escapes(self):
+        assert _looks_undecodable("/14 /2 /49 /28 /0 /1 /2 /3 /i255 /7 /8 /9 /18 /19 /20 " * 100) is True
+
+    def test_clean_prose_not_flagged(self):
+        assert _looks_undecodable("NOTICE OF PRIVACY PRACTICES. We value your business. " * 100) is False
+
+    def test_dates_fractions_and_paths_not_flagged(self):
+        assert _looks_undecodable("See 12/25/2026 or 24/7 support, ratio 1/2, path /usr/bin, N/A. " * 100) is False
+
+    def test_legitimate_accented_text_not_flagged(self):
+        assert _looks_undecodable("Café Müller — naïve résumé €50 “quoted” façade Zürich " * 100) is False
+
+    def test_short_and_empty_not_flagged(self):
+        assert _looks_undecodable("") is False
+        assert _looks_undecodable(None) is False
+        assert _looks_undecodable("/14 /2 /49") is False
 
 
 class TestLooksSpaceMangled:

@@ -7,6 +7,7 @@ import {
   createProvider,
   ProviderHttpError,
   isSystemicProviderError,
+  isContextLengthError,
 } from "./providers";
 
 // ---------------------------------------------------------------------------
@@ -407,5 +408,27 @@ describe("ProviderHttpError / isSystemicProviderError (oss-346)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("isContextLengthError (oss-434)", () => {
+  it("recognizes a context_length_exceeded 400 as recoverable", () => {
+    expect(
+      isContextLengthError(
+        new ProviderHttpError(
+          400,
+          'OpenAI 400: {"error":{"message":"This model\'s maximum context length is 128000 tokens. However, your messages resulted in 285896 tokens.","code":"context_length_exceeded"}}',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat other 400s (or non-400s) as context-length errors", () => {
+    expect(isContextLengthError(new ProviderHttpError(400, "OpenAI 400: invalid_request_error — bad schema"))).toBe(
+      false,
+    );
+    expect(isContextLengthError(new ProviderHttpError(413, "context_length_exceeded"))).toBe(false);
+    expect(isContextLengthError(new ProviderHttpError(401, "bad key"))).toBe(false);
+    expect(isContextLengthError(new Error("context length"))).toBe(false);
   });
 });
