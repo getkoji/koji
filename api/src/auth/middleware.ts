@@ -154,6 +154,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       const keyHashHex = createHash("sha256").update(token).digest("hex");
       const [row] = await db
         .select({
+          id: schema.apiKeys.id,
           tenantId: schema.apiKeys.tenantId,
           projectId: schema.apiKeys.projectId,
           userId: schema.apiKeys.createdBy,
@@ -176,10 +177,12 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
           email: row.email,
           name: row.name,
         };
-        // Stash the tenant + project from the key so tenant/project
-        // resolution can use them when no headers are present.
+        // Stash the tenant + project + id from the key so tenant/project
+        // resolution can use them when no headers are present. projectId is
+        // null for an all-access key; the id resolves the multi-project grants.
         c.set("apiKeyTenantId", row.tenantId);
-        c.set("apiKeyProjectId", row.projectId);
+        c.set("apiKeyProjectId", row.projectId ?? undefined);
+        c.set("apiKeyId", row.id);
       }
     }
 
@@ -254,18 +257,51 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     // non-member probe which project slugs exist in a tenant.
     const projectSlug = c.req.header("x-koji-project");
     const apiKeyProjectId = c.get("apiKeyProjectId") as string | undefined;
+    const apiKeyId = c.get("apiKeyId") as string | undefined;
+    const isApiKey = !!apiKeyTenantId;
     let projectNotFound = false;
     let projectForbidden = false;
 
-    // Per-member project access (oss-370). Only session/org users are
-    // restrictable — an API key is already project-bound, so it's its own
-    // boundary and skips this. `accessibleProjectIds === null` means
-    // unrestricted (all projects); a Set means the member is limited to those.
+    // The set of projects the caller may reach. `null` = unrestricted (every
+    // project in the tenant); a Set = limited to exactly those projects.
+    // Members (oss-370) and API keys (oss-433) share this machinery.
     let accessibleProjectIds: Set<string> | null = null;
     // For a restricted member, the per-project role(s) keyed by project id —
     // used in Stage 3 to compute project-scoped capability (oss-372).
     let projectRolesByProject: Map<string, string[]> | null = null;
-    if (!apiKeyTenantId) {
+    // A key's preferred default project (its `project_id`) when no
+    // x-koji-project header is sent — only used if it's still an accessible,
+    // live project. undefined ⇒ fall back to the tenant default.
+    let keyDefaultProject: string | undefined;
+
+    if (isApiKey) {
+      // An API key's project scope mirrors the member `projectRestricted`
+      // model (see `api_keys.project_id`):
+      //   - grant rows present         → multi-project: allowed = the grants.
+      //   - no grants, project_id set  → single-project: allowed = {project_id}.
+      //   - no grants, project_id null → all-access: unrestricted (null).
+      const grants = apiKeyId
+        ? await db
+            .select({ projectId: schema.apiKeyProjectAccess.projectId })
+            .from(schema.apiKeyProjectAccess)
+            .where(
+              and(
+                eq(schema.apiKeyProjectAccess.tenantId, tenant.id),
+                eq(schema.apiKeyProjectAccess.apiKeyId, apiKeyId),
+              ),
+            )
+        : [];
+      if (grants.length > 0) {
+        accessibleProjectIds = new Set(grants.map((g) => g.projectId));
+        keyDefaultProject =
+          apiKeyProjectId && accessibleProjectIds.has(apiKeyProjectId) ? apiKeyProjectId : undefined;
+      } else if (apiKeyProjectId) {
+        accessibleProjectIds = new Set([apiKeyProjectId]);
+        keyDefaultProject = apiKeyProjectId;
+      } else {
+        accessibleProjectIds = null; // all-access
+      }
+    } else {
       const [m] = await db
         .select({ restricted: schema.memberships.projectRestricted })
         .from(schema.memberships)
@@ -293,7 +329,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     const canAccessProject = (id: string) =>
       accessibleProjectIds === null || accessibleProjectIds.has(id);
     // Expose to routes (e.g. GET /api/projects filters the switcher to the
-    // projects this member can actually reach). null = unrestricted.
+    // projects the caller can actually reach). null = unrestricted.
     c.set("accessibleProjectIds", accessibleProjectIds);
 
     if (projectSlug) {
@@ -308,51 +344,42 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
           ),
         )
         .limit(1);
-      if (!project || (apiKeyProjectId && project.id !== apiKeyProjectId)) {
-        // A key naming a project other than its own gets the same answer as
-        // a missing project — the key cannot see outside its binding.
+      if (!project) {
         projectNotFound = true;
       } else if (!canAccessProject(project.id)) {
-        // The project exists and the user is a tenant member, but is
-        // restricted from it — a plain 403 (no oracle concern, they're a
-        // member), answered after the membership check.
-        projectForbidden = true;
+        // The caller can't reach this project. An API key must not even learn
+        // the project exists (it could otherwise probe which slugs a tenant
+        // has), so it gets the same 404 as a missing project; a member — who
+        // legitimately belongs to the tenant — gets a plain 403.
+        if (isApiKey) projectNotFound = true;
+        else projectForbidden = true;
       } else {
         c.set("projectId", project.id);
       }
-    } else if (apiKeyProjectId) {
-      // Re-validate the binding: a soft-deleted project must not remain an
-      // operable ghost scope for previously-issued keys.
-      const [project] = await db
-        .select({ id: schema.projects.id })
-        .from(schema.projects)
-        .where(
-          and(
-            eq(schema.projects.id, apiKeyProjectId),
-            eq(schema.projects.tenantId, tenant.id),
-            isNull(schema.projects.deletedAt),
-          ),
-        )
-        .limit(1);
-      if (!project) {
-        return c.json({ error: "The project this API key belongs to has been deleted" }, 403);
-      }
-      c.set("projectId", project.id);
     } else {
+      // No x-koji-project header — pick a default project the caller can
+      // access. Preference: the key's own default project, then the tenant
+      // default (slug matches the tenant slug), then the oldest live project.
       const candidates = await db
         .select({ id: schema.projects.id })
         .from(schema.projects)
         .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
         .where(and(eq(schema.projects.tenantId, tenant.id), isNull(schema.projects.deletedAt)))
         .orderBy(
+          sql`(${schema.projects.id} = ${keyDefaultProject ?? NO_PROJECT_SENTINEL}) DESC`,
           sql`(${schema.projects.slug} = ${schema.tenants.slug}) DESC`,
           schema.projects.createdAt,
           schema.projects.id,
         );
-      // A restricted member's default is the first project they can access.
       const project = candidates.find((p) => canAccessProject(p.id));
       if (project) {
         c.set("projectId", project.id);
+      } else if (isApiKey && accessibleProjectIds !== null) {
+        // A single-/multi-project key whose entire accessible set is gone (e.g.
+        // its only bound project was soft-deleted). The key is scoped to
+        // projects that no longer exist — refuse rather than silently widening
+        // it to tenant-wide.
+        return c.json({ error: "The project this API key belongs to has been deleted" }, 403);
       } else if (accessibleProjectIds !== null) {
         // A restricted member with NO accessible project must NOT fall through
         // to tenant-wide scope (which would expose every project's data via
@@ -361,8 +388,9 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         // tenant-level routes (no project policy) still work.
         c.set("projectId", NO_PROJECT_SENTINEL);
       }
-      // else: unrestricted member + tenant with zero projects (mid-setup) →
-      // leave unset; tenant-wide is correct until the default project exists.
+      // else: unrestricted (all-access key or unrestricted member) + tenant
+      // with zero live projects (mid-setup) → leave unset; tenant-wide is
+      // correct until the default project exists.
     }
 
     // --- Stage 3: Load grants ---
@@ -455,8 +483,13 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
     // project permission sets are disjoint, so the union is unambiguous:
     // org-level routes read the org powers, project-scoped routes read the
     // project-role powers.
+    //
+    // An API key (oss-433) is NOT subject to the project-role narrowing even
+    // when it is multi/single-project-scoped: its project *set* limits which
+    // projects it can reach (enforced via the resolved projectId + RLS), not
+    // its capability. A key acts with its creator's full role permissions.
     let grants: Set<Permission>;
-    if (accessibleProjectIds === null) {
+    if (accessibleProjectIds === null || isApiKey) {
       grants = resolvePermissions(membership.roles);
     } else {
       grants = new Set<Permission>();

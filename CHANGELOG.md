@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.79.0 — 2026-07-10
+
+**Added: multi-project and all-access API keys.** An API key was previously
+bound to exactly one project. A key can now be scoped to a single project (the
+default, unchanged), a specific set of projects, or all projects in the
+workspace (tenant-wide). A multi/all-access key resolves its active project
+from the `x-koji-project` header on each request (falling back to a default
+project), and can only reach projects within its scope — a header naming a
+project outside the scope still answers `404`, and keys never cross tenants. A
+key's scope limits which projects it can reach, not its capability within them.
+The scope is chosen when creating a key (Settings → API keys). Multi-project and
+all-access keys are an organization/enterprise feature. Existing keys keep their
+single-project behavior with no change.
+
 ## 0.78.1 — 2026-07-10
 
 **Fixed: scalar scoring no longer fails on formatting-only differences.** String

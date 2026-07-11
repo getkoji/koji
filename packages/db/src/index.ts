@@ -40,6 +40,7 @@ export const RLS_POLICIES: readonly string[] = [
   "projects",
   "project_access",
   "api_keys",
+  "api_key_project_access",
   "audit_log",
   "invites",
   "schemas",
@@ -105,22 +106,26 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
   "parse_endpoints",
   "provider_credentials",
   "webhook_targets",
-  "api_keys",
   "jobs",
   "review_items",
   "agent_sessions",
 ];
 
 /**
- * `notifications` is project-scoped too, but its `project_id` is NULLABLE:
- * tenant-level notifications (queue failures, billing) belong to no project
- * and must stay visible in every project view. So it gets a null-AWARE
- * variant of the project policy — `project_id IS NULL` always passes — rather
- * than the strict predicate the tables above use. It is deliberately NOT in
- * PROJECT_RLS_TABLES (whose policy is strict); rls.test.ts covers it
- * separately. See `drizzle/0001_rls.sql`.
+ * Project-scoped tables whose `project_id` is NULLABLE, so they get a
+ * null-AWARE variant of the project policy — `project_id IS NULL` always
+ * passes — rather than the strict predicate the tables above use. Deliberately
+ * NOT in PROJECT_RLS_TABLES (whose policy is strict); rls.test.ts covers the
+ * null-aware behavior separately. See `drizzle/0001_rls.sql`.
+ *
+ *   - `notifications`: tenant-level notifications (queue failures, billing)
+ *     belong to no project and must stay visible in every project view.
+ *   - `api_keys`: an all-access key has a NULL project_id (it belongs to no
+ *     single project) and must stay visible/manageable from every project view,
+ *     exactly like a tenant-wide notification. Single/multi keys keep a
+ *     non-null project_id and are narrowed normally.
  */
-export const PROJECT_NULLABLE_RLS_TABLES: readonly string[] = ["notifications"];
+export const PROJECT_NULLABLE_RLS_TABLES: readonly string[] = ["notifications", "api_keys"];
 
 /**
  * Tables intentionally global (not tenant-scoped). RLS is NOT enabled on

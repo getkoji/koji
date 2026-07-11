@@ -67,7 +67,11 @@ export type Env = {
     parseConfig: ParseConfig | null;
     /** Tenant ID resolved from an API key (set by auth middleware). */
     apiKeyTenantId: string | undefined;
-    /** Project ID the API key is bound to (set by auth middleware). */
+    /** The API key's DEFAULT project, or undefined for an all-access key
+     *  (set by auth middleware). See `api_keys.project_id`. */
     apiKeyProjectId: string | undefined;
+    /** The authenticating API key's id — used to resolve its multi-project
+     *  grant set (set by auth middleware). */
+    apiKeyId: string | undefined;
   };
 };

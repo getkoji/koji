@@ -6,16 +6,41 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 
+interface KeyScope {
+  mode: "single" | "projects" | "all";
+  projectId: string | null;
+  projectIds: string[];
+}
+
 interface ApiKey {
   id: string;
   name: string;
   keyPrefix: string;
   scopes: string[];
+  scope?: KeyScope;
   lastUsedAt: string | null;
   expiresAt: string | null;
   createdAt: string;
   revokedAt: string | null;
   createdBy: string;
+}
+
+interface ProjectOption {
+  id: string;
+  slug: string;
+  displayName: string;
+}
+
+/** Human label for a key's project scope, using the tenant's project names. */
+function scopeLabel(scope: KeyScope | undefined, projectsById: Map<string, ProjectOption>): string {
+  if (!scope || scope.mode === "single") {
+    const id = scope?.projectId;
+    return id ? (projectsById.get(id)?.displayName ?? "1 project") : "this project";
+  }
+  if (scope.mode === "all") return "All projects";
+  const names = scope.projectIds.map((id) => projectsById.get(id)?.displayName ?? "?");
+  if (names.length <= 2) return names.join(", ");
+  return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -42,6 +67,10 @@ export default function ApiKeysPage() {
   const { data: keys, loading, error: fetchError, refetch } = useApi(
     useCallback(() => api.get<{ data: ApiKey[] }>("/api/api-keys").then((r) => r.data), []),
   );
+  const { data: projects } = useApi(
+    useCallback(() => api.get<{ data: ProjectOption[] }>("/api/projects").then((r) => r.data), []),
+  );
+  const projectsById = new Map((projects ?? []).map((p) => [p.id, p]));
 
   const activeKeys = (keys ?? []).filter((k) => !k.revokedAt);
   const revokedKeys = (keys ?? []).filter((k) => k.revokedAt);
@@ -120,6 +149,9 @@ export default function ApiKeysPage() {
                 <div className="flex items-center gap-4">
                   <span className="text-[12.5px] text-ink font-medium">{k.name}</span>
                   <span className="font-mono text-[11px] text-ink-3">{k.keyPrefix}</span>
+                  {k.scope && k.scope.mode !== "single" && (
+                    <Badge>{scopeLabel(k.scope, projectsById)}</Badge>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   <Meta>created {timeAgo(k.createdAt)}</Meta>
@@ -166,6 +198,7 @@ export default function ApiKeysPage() {
       {/* Create key dialog */}
       {showCreate && (
         <CreateKeyDialog
+          projects={projects ?? []}
           onClose={() => setShowCreate(false)}
           onCreated={(key) => {
             setShowCreate(false);
@@ -206,23 +239,48 @@ export default function ApiKeysPage() {
   );
 }
 
+type ScopeMode = "single" | "projects" | "all";
+
 function CreateKeyDialog({
+  projects,
   onClose,
   onCreated,
 }: {
+  projects: ProjectOption[];
   onClose: () => void;
   onCreated: (key: string) => void;
 }) {
   const [name, setName] = useState("");
+  const [scopeMode, setScopeMode] = useState<ScopeMode>("single");
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function toggleProject(id: string) {
+    setSelectedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (scopeMode === "projects" && selectedProjects.size === 0) {
+      setError("Select at least one project, or choose a different scope.");
+      return;
+    }
     setCreating(true);
     try {
-      const result = await api.post<{ key: string }>("/api/api-keys", { name });
+      const project_scope =
+        scopeMode === "single"
+          ? { mode: "single" as const }
+          : scopeMode === "all"
+            ? { mode: "all" as const }
+            : { mode: "projects" as const, project_ids: [...selectedProjects] };
+      const result = await api.post<{ key: string }>("/api/api-keys", { name, project_scope });
       onCreated(result.key);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create key");
@@ -230,10 +288,16 @@ function CreateKeyDialog({
     }
   }
 
+  const scopeOptions: { mode: ScopeMode; label: string; hint: string }[] = [
+    { mode: "single", label: "This project", hint: "Key can act only in the current project." },
+    { mode: "projects", label: "Specific projects", hint: "Key can act in the projects you choose." },
+    { mode: "all", label: "All projects", hint: "Key can act in every project in this workspace." },
+  ];
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-ink/20" onClick={onClose} />
-      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6">
+      <div className="relative bg-cream border border-border rounded-sm shadow-lg w-full max-w-[420px] p-6 max-h-[85vh] overflow-y-auto">
         <h2 className="text-[15px] font-medium text-ink mb-1">Create API key</h2>
         <p className="text-[12.5px] text-ink-3 mb-5">
           Give this key a name so you can identify it later.
@@ -251,6 +315,53 @@ function CreateKeyDialog({
               className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
             />
           </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Project access</label>
+            <div className="space-y-1">
+              {scopeOptions.map((opt) => (
+                <button
+                  key={opt.mode}
+                  type="button"
+                  onClick={() => setScopeMode(opt.mode)}
+                  className={`w-full text-left rounded-sm border px-3 py-2 transition-colors ${
+                    scopeMode === opt.mode
+                      ? "border-ink bg-ink/5"
+                      : "border-border hover:border-ink/40"
+                  }`}
+                >
+                  <div className="text-[12.5px] text-ink font-medium">{opt.label}</div>
+                  <div className="text-[11px] text-ink-3">{opt.hint}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {scopeMode === "projects" && (
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium text-ink">Projects</label>
+              <div className="max-h-[180px] overflow-y-auto border border-border rounded-sm divide-y divide-border">
+                {projects.length === 0 ? (
+                  <div className="px-3 py-2 text-[12px] text-ink-3">No projects available.</div>
+                ) : (
+                  projects.map((p) => (
+                    <label
+                      key={p.id}
+                      className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-ink/[0.03]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedProjects.has(p.id)}
+                        onChange={() => toggleProject(p.id)}
+                        className="accent-ink"
+                      />
+                      <span className="text-[12.5px] text-ink truncate">{p.displayName}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm">{error}</div>
