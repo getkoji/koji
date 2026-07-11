@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.79.3 — 2026-07-11
+
+**Fixed: the document "Parsed" view no longer shows a stale parse after a
+re-parse.** The parsed-markdown endpoint cached its response in the browser for
+an hour as if a parse were immutable per file. It isn't — re-running a document
+(or a parse-provider switch, or a corruption fallback that swaps engines) writes
+a new parse result, so the view could keep showing the old markdown for up to an
+hour, including right after a fix that changed how the document parses. The
+endpoint now tags each response with the parse result's identity and requires
+revalidation: an unchanged parse is served from cache cheaply, but a re-parse
+shows up immediately.
+
 ## 0.79.2 — 2026-07-11
 
 **Fixed: digital PDFs with an undecodable text layer now fall back to the heavy
