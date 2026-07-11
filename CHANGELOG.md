@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.78.1 — 2026-07-10
+
+**Fixed: scalar scoring no longer fails on formatting-only differences.** String
+comparison in `koji validate` / `koji bench` (and extraction reconciliation) was
+case- and whitespace-tolerant but treated punctuation as significant, so a
+correct extraction that differed from ground truth only in comma placement
+(`CHARLOTTE, NC` vs `CHARLOTTE NC`) or separators (`704-376-9896` vs
+`704.376.9896`) scored as a full miss. Comparison now collapses runs of
+non-alphanumeric characters to a single space before matching. It forgives
+punctuation/whitespace only — the alphanumerics must still match in order, so a
+content difference (a dropped unit, a different PO box, a missing entity suffix)
+still fails. Both scorers (TypeScript `value-compare`, Python `test_runner`) were
+updated in lockstep so `validate` and `bench` continue to agree.
+
 ## 0.78.0 — 2026-07-10
 
 **Improved: the document mapper splits chunks at page/section rules, not just

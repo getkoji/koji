@@ -553,6 +553,20 @@ def compare_field(
                 expected=expected,
                 actual=actual,
             )
+        # Punctuation-insensitive match: collapse every run of non-alphanumeric
+        # characters to a single space so a formatting-only difference is not a
+        # failure — "CHARLOTTE, NC" vs "CHARLOTTE NC", "704-376-9896" vs
+        # "704.376.9896". Forgives punctuation/whitespace ONLY: the alphanumerics
+        # must still match in order, so it never masks a content difference.
+        _ep = re.sub(r"[^a-z0-9]+", " ", expected.lower()).strip()
+        _ea = re.sub(r"[^a-z0-9]+", " ", actual.lower()).strip()
+        if _ep and _ep == _ea:
+            return FieldResult(
+                field_name=field_name,
+                passed=True,
+                expected=expected,
+                actual=actual,
+            )
         # Fuzzy match: when the exact check fails and a threshold is set,
         # accept strings that are "close enough" — catches OCR typos like
         # "TEO HENG" vs "TED HENG" or "SDN BHD" vs "SON BHD" on degraded
