@@ -1,8 +1,43 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { authMiddleware, requires, getTenantId, getPrincipal } from "../auth/middleware";
+import { deriveScope, visibleFromProject } from "./api-keys";
 import type { AuthAdapter, Principal, Session } from "../auth/adapter";
 import type { Env } from "../env";
+
+describe("API key scope derivation + visibility (oss-433)", () => {
+  const P1 = "p1", P2 = "p2", P3 = "p3";
+
+  it("derives single/projects/all from project_id + grants", () => {
+    expect(deriveScope(P1, [])).toEqual({ mode: "single", projectId: P1, projectIds: [P1] });
+    expect(deriveScope(P1, [P1, P2])).toEqual({ mode: "projects", projectId: P1, projectIds: [P1, P2] });
+    expect(deriveScope(null, [P1, P2])).toEqual({ mode: "projects", projectId: null, projectIds: [P1, P2] });
+    expect(deriveScope(null, [])).toEqual({ mode: "all", projectId: null, projectIds: [] });
+  });
+
+  it("a tenant-wide caller (no project) sees every key", () => {
+    expect(visibleFromProject(deriveScope(P1, []), null)).toBe(true);
+    expect(visibleFromProject(deriveScope(null, []), null)).toBe(true);
+    expect(visibleFromProject(deriveScope(P1, [P2]), null)).toBe(true);
+  });
+
+  it("a single-project key is visible only from its own project", () => {
+    expect(visibleFromProject(deriveScope(P1, []), P1)).toBe(true);
+    expect(visibleFromProject(deriveScope(P1, []), P2)).toBe(false);
+  });
+
+  it("an all-access key is visible from every project", () => {
+    expect(visibleFromProject(deriveScope(null, []), P1)).toBe(true);
+    expect(visibleFromProject(deriveScope(null, []), P3)).toBe(true);
+  });
+
+  it("a multi-project key is visible only from projects in its set", () => {
+    const scope = deriveScope(P1, [P1, P2]);
+    expect(visibleFromProject(scope, P1)).toBe(true);
+    expect(visibleFromProject(scope, P2)).toBe(true);
+    expect(visibleFromProject(scope, P3)).toBe(false);
+  });
+});
 
 function createMockAdapter(users: Map<string, Principal>): AuthAdapter {
   return {

@@ -560,10 +560,11 @@ describe("structural RLS guarantees", () => {
       expect(p.permissive).toBe("RESTRICTIVE");
     }
 
-    // `projects` is the boundary object itself; `project_access` references a
-    // project_id but is a tenant-scoped access-grant table (managed by admins),
-    // NOT a project-isolated resource — neither carries a project policy.
-    const notProjectScoped = new Set(["projects", "project_access"]);
+    // `projects` is the boundary object itself; `project_access` and
+    // `api_key_project_access` reference a project_id but are tenant-scoped
+    // access-grant tables (managed by admins), NOT project-isolated resources —
+    // none carries a project policy.
+    const notProjectScoped = new Set(["projects", "project_access", "api_key_project_access"]);
     const missingPolicy = tablesWithProjectId
       .map((r) => r.table_name)
       .filter((t) => !notProjectScoped.has(t) && !covered.has(t));
@@ -644,6 +645,65 @@ describe("notifications project scoping (null-aware)", () => {
   test("another tenant sees none of tenant A's notifications", async () => {
     const rows = await withRLS(db, { tenantId: tenantB, projectId: projA }, (tx) =>
       tx.execute(sql`SELECT title FROM notifications`),
+    );
+    expect(rows.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// API keys — null-aware project policy (oss-433)
+// ---------------------------------------------------------------------------
+// A single/multi-project key carries a non-null project_id and is narrowed to
+// the current project. An all-access key has a NULL project_id and, like a
+// tenant-wide notification, stays visible in EVERY project view so it can be
+// managed from anywhere. Cross-tenant isolation still holds absolutely.
+
+describe("api_keys project scoping (null-aware)", () => {
+  const projX = randomUUID();
+  const projY = randomUUID();
+
+  beforeAll(async () => {
+    await rootDb.execute(sql.raw(`
+      INSERT INTO projects (id, tenant_id, slug, display_name, created_by)
+      VALUES ('${projX}', '${tenantA}', 'key-x', 'Key X', '${userA}'),
+             ('${projY}', '${tenantA}', 'key-y', 'Key Y', '${userA}')
+    `));
+    // Two single-project keys (bound to X and Y) + one all-access key (NULL).
+    await rootDb.execute(sql.raw(`
+      INSERT INTO api_keys (tenant_id, project_id, name, key_prefix, key_hash, scopes, created_by)
+      VALUES
+        ('${tenantA}', '${projX}', 'ak-single-x', 'koji_x...1', decode(repeat('a',64),'hex'), ARRAY['*'], '${userA}'),
+        ('${tenantA}', '${projY}', 'ak-single-y', 'koji_y...2', decode(repeat('b',64),'hex'), ARRAY['*'], '${userA}'),
+        ('${tenantA}', NULL,       'ak-all',      'koji_a...3', decode(repeat('c',64),'hex'), ARRAY['*'], '${userA}')
+    `));
+  }, 30_000);
+
+  const names = sql`name IN ('ak-single-x', 'ak-single-y', 'ak-all')`;
+
+  test("a project scope sees that project's key AND the all-access key", async () => {
+    const rows = await withRLS(db, { tenantId: tenantA, projectId: projX }, (tx) =>
+      tx.execute(sql`SELECT name FROM api_keys WHERE ${names} ORDER BY name`),
+    );
+    expect(rows.map((r: any) => r.name)).toEqual(["ak-all", "ak-single-x"]);
+  });
+
+  test("a different project does not see project X's key, still sees all-access", async () => {
+    const rows = await withRLS(db, { tenantId: tenantA, projectId: projY }, (tx) =>
+      tx.execute(sql`SELECT name FROM api_keys WHERE ${names} ORDER BY name`),
+    );
+    expect(rows.map((r: any) => r.name)).toEqual(["ak-all", "ak-single-y"]);
+  });
+
+  test("tenant-wide scope (no project) sees all of the tenant's keys", async () => {
+    const rows = await withRLS(db, tenantA, (tx) =>
+      tx.execute(sql`SELECT name FROM api_keys WHERE ${names} ORDER BY name`),
+    );
+    expect(rows.map((r: any) => r.name)).toEqual(["ak-all", "ak-single-x", "ak-single-y"]);
+  });
+
+  test("another tenant sees none of tenant A's keys — not even the all-access one", async () => {
+    const rows = await withRLS(db, { tenantId: tenantB, projectId: projX }, (tx) =>
+      tx.execute(sql`SELECT name FROM api_keys WHERE ${names}`),
     );
     expect(rows.length).toBe(0);
   });

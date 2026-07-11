@@ -232,6 +232,13 @@
       "when": 1783337009704,
       "tag": "0032_daily_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1783733187623,
+      "tag": "0033_workable_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

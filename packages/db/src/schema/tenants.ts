@@ -19,7 +19,6 @@ import {
   deletedAt,
   inet,
   primaryKey,
-  projectId,
   tenantId,
   updatedAt,
 } from "./_shared";
@@ -220,9 +219,17 @@ export const apiKeys = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
-    // The project this key is bound to. API-key requests without an explicit
-    // x-koji-project header are scoped to this project (see auth middleware).
-    projectId: projectId().references(() => projects.id),
+    // The key's DEFAULT project — used when a request sends no explicit
+    // x-koji-project header. Its meaning depends on the key's scope (mirrors
+    // the member `projectRestricted` model, see auth middleware):
+    //   - set, no `api_key_project_access` rows  → single-project key. The key
+    //     may act ONLY in this project (the default case; every legacy key).
+    //   - set/NULL, with grant rows              → multi-project key. Allowed
+    //     projects are the grant rows; this column (if set) is the default.
+    //   - NULL, no grant rows                    → all-access key. May act in
+    //     any project in the tenant; the header (or tenant default) picks one.
+    // NULLABLE: an all-access key belongs to no single project.
+    projectId: uuid("project_id").references(() => projects.id),
     name: varchar("name", { length: 255 }).notNull(),
     keyPrefix: varchar("key_prefix", { length: 16 }).notNull(),
     keyHash: bytea("key_hash").notNull(),
@@ -240,6 +247,34 @@ export const apiKeys = pgTable(
     hashIdx: index("api_keys_hash_idx").on(t.keyHash).where(sql`revoked_at IS NULL`),
     tenantIdx: index("api_keys_tenant_idx").on(t.tenantId),
     projectIdx: index("api_keys_project_idx").on(t.projectId),
+  }),
+);
+
+/**
+ * Per-key project grants (multi-project API keys). Only meaningful for a key
+ * that is NOT single-project-bound: such a key may act in exactly the projects
+ * listed here. Single-project keys (project_id set, no rows) and all-access
+ * keys (project_id NULL, no rows) ignore this table. This is the API-key
+ * analogue of `project_access` for members. Tenant-scoped only (no project
+ * RLS) — it is a grant table read at auth time, not a project-isolated
+ * resource; rows are removed when the key, project, or tenant goes away.
+ */
+export const apiKeyProjectAccess = pgTable(
+  "api_key_project_access",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    apiKeyId: uuid("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    keyProjectIdx: uniqueIndex("api_key_project_access_key_project_idx").on(t.apiKeyId, t.projectId),
+    tenantKeyIdx: index("api_key_project_access_tenant_key_idx").on(t.tenantId, t.apiKeyId),
   }),
 );
 

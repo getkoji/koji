@@ -17,13 +17,15 @@ Tenant-scoped endpoints identify the workspace via the `x-koji-tenant` header
 (or, on hosted deployments, the auth token's organization claim).
 
 Within a tenant, **projects are the isolation boundary**: schemas, pipelines,
-jobs, sources, classifiers, review items, model/parse endpoints, webhooks, and
-API keys each belong to exactly one project, and requests only see the
-resources of the project they resolve to. Resolution order:
+jobs, sources, classifiers, review items, model/parse endpoints, and webhooks
+each belong to exactly one project, and requests only see the resources of the
+project they resolve to. Resolution order:
 
 1. `x-koji-project: <project-slug>` header, when present (`404` if the slug
-   doesn't exist in the tenant).
-2. The API key's own project — every API key is created inside a project.
+   doesn't exist in the tenant — or, for an API key, if it's outside the key's
+   scope; see below).
+2. The API key's default project (the project it was created in, for a
+   single-project key).
 3. The tenant's default project (the one whose slug matches the tenant slug,
    falling back to the oldest project).
 
@@ -33,12 +35,24 @@ x-koji-tenant: your-tenant-slug
 x-koji-project: your-project-slug   # optional with session auth
 ```
 
-**API keys are a project boundary, not a default.** A key can only operate
-inside the project it was created in: an `x-koji-project` header naming any
-other project answers `404`, a key is rejected (`403`) for any tenant other
-than its own, and a key whose project has been deleted stops working (`403`).
-To work in another project, create a key there. Session-authenticated
-requests (the dashboard) may name any live project in the tenant.
+**An API key's project scope.** A key is scoped to one of:
+
+- **single project** (the default; every legacy key) — the project it was
+  created in. An `x-koji-project` header naming any other project answers `404`
+  (a key never learns which other projects exist), and a key whose only project
+  is deleted stops working (`403`).
+- **specific projects** — a chosen set. The `x-koji-project` header may name any
+  project in the set; anything else answers `404`. With no header the key
+  defaults to its bound project (or the first in the set).
+- **all projects** (tenant-wide) — the header may name any live project in the
+  tenant; with no header it resolves the tenant default.
+
+A key still cannot cross tenants — it is rejected (`403`) for any tenant other
+than its own. A key acts with its creator's role permissions; its project scope
+limits **which** projects it can reach, not its capability within them.
+Multi-project and all-access keys are an organization/enterprise feature.
+Session-authenticated requests (the dashboard) may name any live project the
+member can access.
 
 Resource slugs are unique **per project**, not per tenant: two projects can
 each have a pipeline named `invoices`. Deleting a workspace's last remaining
@@ -53,8 +67,9 @@ Within a granted project the member's capability comes from that project role
 (not their workspace role); org-level powers (member/tenant/billing) always come
 from the workspace role and are never granted per-project. Requests to a project
 the member can't access return `403`. `GET /api/members/{id}/project-access`
-returns the current setting + roles. API keys are unaffected — a key is bound to
-one project. Existing members are grandfathered (keep current access).
+returns the current setting + roles. API keys are scoped independently (see
+"An API key's project scope" above). Existing members are grandfathered (keep
+current access).
 
 **Managing a project's roster.** The endpoints above are member-centric (one
 member across projects). To manage a single project's roster instead:

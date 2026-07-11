@@ -262,6 +262,16 @@ CREATE POLICY project_access_tenant_isolation ON project_access FOR ALL
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
+-- api_key_project_access (oss-433): per-key project grants for multi-project
+-- keys. Tenant-scoped only (like project_access) — it is a grant table read at
+-- auth time, NOT a project-isolated resource, so it carries no project policy.
+ALTER TABLE api_key_project_access ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_key_project_access FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS api_key_project_access_tenant_isolation ON api_key_project_access;
+CREATE POLICY api_key_project_access_tenant_isolation ON api_key_project_access FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 -- ────────────────────────────────────────────────────────────────────────
 -- Project isolation (intra-tenant boundary).
 --
@@ -315,10 +325,13 @@ CREATE POLICY webhook_targets_project_isolation ON webhook_targets AS RESTRICTIV
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
+-- api_keys is null-aware (like notifications): an all-access key has a NULL
+-- project_id and must stay visible in every project view. Single/multi keys
+-- carry a non-null project_id and are narrowed to the current project.
 DROP POLICY IF EXISTS api_keys_project_isolation ON api_keys;
 CREATE POLICY api_keys_project_isolation ON api_keys AS RESTRICTIVE FOR ALL
-  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
-  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
 DROP POLICY IF EXISTS jobs_project_isolation ON jobs;
 CREATE POLICY jobs_project_isolation ON jobs AS RESTRICTIVE FOR ALL
