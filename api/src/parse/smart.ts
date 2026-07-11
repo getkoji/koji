@@ -202,8 +202,34 @@ export class SmartParseProvider implements ParseProvider {
  *   A rare false positive (a doc genuinely dense in long tokens) is harmless:
  *   the heavy provider still extracts it correctly, just off the fast path. See
  *   oss-400.
+ * - `nonPrintableRatio > 0.05`: an *undecodable* text layer. A broken or absent
+ *   ToUnicode CMap (PScript5/Distiller custom-encoded fonts) makes pdfjs emit
+ *   the font's raw glyph ids — C0 control bytes and 0xFF fill — in place of
+ *   characters. The page renders fine but the text is garbage, and it tokenizes
+ *   ~3x denser than prose, so left on the fast path it later overflows the
+ *   extraction context window. This form slips past both arms above (the failing
+ *   doc measured shortRatio 0.54 and longRatio 0.06 — just under each
+ *   threshold), so it needs its own check. Decoded text contains essentially
+ *   none of these bytes, so a small fraction is a decisive, low-false-positive
+ *   signal; the heavy provider re-reads the rendered glyphs via OCR. See oss-435.
  */
 export function detectCorruption(markdown: string): string | null {
+  // Undecodable text layer — checked first and before the token-count floor: a
+  // fully garbled document is still garbage even if it's short.
+  if (markdown.length >= 200) {
+    let nonPrintable = 0;
+    for (let i = 0; i < markdown.length; i++) {
+      const c = markdown.charCodeAt(i);
+      if (c === 0xfffd || c === 0xff || (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0c && c !== 0x0d)) {
+        nonPrintable++;
+      }
+    }
+    const nonPrintableRatio = nonPrintable / markdown.length;
+    if (nonPrintableRatio > 0.05) {
+      return `${(nonPrintableRatio * 100).toFixed(0)}% non-printable/control bytes (undecodable text layer)`;
+    }
+  }
+
   const stripped = markdown.replace(/[#*`|>\-_]/g, " ");
   const tokens = stripped.split(/\s+/).filter((t) => /[A-Za-z0-9]/.test(t));
   if (tokens.length < 50) return null;
