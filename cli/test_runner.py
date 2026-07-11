@@ -558,9 +558,9 @@ def compare_field(
         # failure — "CHARLOTTE, NC" vs "CHARLOTTE NC", "704-376-9896" vs
         # "704.376.9896". Forgives punctuation/whitespace ONLY: the alphanumerics
         # must still match in order, so it never masks a content difference.
-        _punct = lambda s: re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
-        _ep = _punct(expected)
-        if _ep and _ep == _punct(actual):
+        _ep = re.sub(r"[^a-z0-9]+", " ", expected.lower()).strip()
+        _ea = re.sub(r"[^a-z0-9]+", " ", actual.lower()).strip()
+        if _ep and _ep == _ea:
             return FieldResult(
                 field_name=field_name,
                 passed=True,
