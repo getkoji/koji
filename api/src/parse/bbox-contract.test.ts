@@ -71,8 +71,11 @@ describe("isNormalizedBBox / assertNormalizedBBox", () => {
 
 describe("PositionalChunkCanonicalizer (pdfjs digital path) emits canonical bboxes", () => {
   // ParsedPage geometry is in absolute top-down page units (the shape
-  // DigitalPdfProvider builds after flipping PDF user space to top-left). A
-  // 1000x2000 page with one line near the top edge (y=100).
+  // DigitalPdfProvider builds after flipping PDF user space to top-left).
+  // TextItem.y is the glyph BASELINE (where the text sits), not the top of its
+  // box — glyphs extend upward from the baseline, so the box top is one glyph
+  // height above it. A 1000x2000 page with one line whose baseline is at y=100
+  // and glyph height 40 → box top at y=60.
   const item: TextItem = {
     text: "Policy Number ABC-123",
     x: 100,
@@ -94,11 +97,14 @@ describe("PositionalChunkCanonicalizer (pdfjs digital path) emits canonical bbox
   it("normalizes absolute page units into [0,1] top-left", () => {
     expectAllChunksNormalized(chunks, "positional");
     const box = chunks[0]!.bbox!;
-    // x=100/1000, y=100/2000, w=300/1000, h=40/2000
+    // x=100/1000, box top=(100-40)/2000=0.03, w=300/1000, h=40/2000
     expect(box.x).toBeCloseTo(0.1, 9);
-    expect(box.y).toBeCloseTo(0.05, 9);
+    expect(box.y).toBeCloseTo(0.03, 9);
     expect(box.w).toBeCloseTo(0.3, 9);
     expect(box.h).toBeCloseTo(0.02, 9);
+    // The box bottom lands on the baseline (100/2000), so the glyphs sit inside
+    // the box rather than one line below it.
+    expect(box.y + box.h).toBeCloseTo(0.05, 9);
   });
 
   it("keeps a top-of-page line near y=0 (top-left origin)", () => {
