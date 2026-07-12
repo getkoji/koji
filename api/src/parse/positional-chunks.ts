@@ -73,8 +73,12 @@ export interface ReconstructedTable {
 
 /** Normalized box for a single text item, or undefined if the page has no size. */
 function itemBox(item: TextItem, page: PageDims): BBox | undefined {
+  // `item.y` is the glyph baseline (top-down), where the text sits — not the
+  // top of its box. Glyphs extend upward from the baseline, so the box top is
+  // one glyph height above it. Using the raw baseline as the top drops the
+  // provenance box a full line below the text.
   return normalizeBBox(
-    { x: item.x, y: item.y, w: item.width, h: item.height },
+    { x: item.x, y: Math.max(0, item.y - item.height), w: item.width, h: item.height },
     page.width,
     page.height,
   );

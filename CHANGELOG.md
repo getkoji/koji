@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.79.5 — 2026-07-12
+
+**Fixed: provenance highlight boxes on digital (text-layer) PDFs no longer sit
+one line below the text.** The digital-PDF parser stored each text run's glyph
+*baseline* as the top of its bounding box and then extended the box downward by
+a full glyph height. Since glyphs sit *above* their baseline, every highlight
+rendered roughly one line-height below the words it was meant to mark. The box
+now extends upward from the baseline, so highlights land on the text. Line
+grouping and reading order are unchanged (the baseline is still the line-group
+anchor); only the emitted box geometry moved. Affects the text_map and the
+positional-chunk bboxes used by the document, build, and review viewers.
+
 ## 0.79.4 — 2026-07-11
 
 **Fixed: Google Document AI parses no longer scramble two-column form headers.**

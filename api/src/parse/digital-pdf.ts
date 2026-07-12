@@ -98,11 +98,19 @@ export class DigitalPdfProvider implements ParseProvider {
           });
 
           for (const item of textItems) {
+            // `item.y` is the glyph baseline in top-down space (see toTextItem),
+            // which is where the text sits, NOT the top of its box. Glyphs
+            // extend UPWARD from the baseline, so the box top is one glyph
+            // height above it. Emitting `item.y` here as the box top drops the
+            // highlight a full line below the text. Subtract the height so the
+            // box covers the glyphs. (`item.y` itself stays the baseline for
+            // buildLines' line-grouping anchor — do not shift it there.)
+            const boxTop = Math.max(0, item.y - item.height);
             text_map.push({
               text: item.text,
               page: pageNum,
               x: viewport.width > 0 ? item.x / viewport.width : 0,
-              y: viewport.height > 0 ? item.y / viewport.height : 0,
+              y: viewport.height > 0 ? boxTop / viewport.height : 0,
               w: viewport.width > 0 ? item.width / viewport.width : 0,
               h: viewport.height > 0 ? item.height / viewport.height : 0,
             });
