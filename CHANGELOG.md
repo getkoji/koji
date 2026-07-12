@@ -2,6 +2,27 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.80.0 — 2026-07-12
+
+**Added: faithfulness gate — extracted numbers the model invented are now
+nulled instead of surfacing as fabricated values.** Models are told to leave an
+unprinted numeric field null, but they frequently placeholder-fill `0` (or an
+estimate) instead — a not-stated deductible surfacing as a real-looking `$0` is
+worse than an honest `null`. After extraction, every numeric value is checked
+against the verbatim source text the model cited for it; a number that does not
+appear there (compared numerically, so `9` still matches `"$9.00"` and `50000`
+matches `"$50,000"`, while a fabricated `0` does not match `"$50,000"`) is set
+to `null` and its confidence drops, routing it to review rather than shipping a
+wrong value. The check runs per value and recurses into nested array items
+(e.g. each row of a coverage's limit schedule), and is deliberately
+conservative: only numeric fields are gated, and a value is kept when the model
+cited no source text for it (cannot verify). Non-numeric fields, strings, and
+enums are untouched.
+
+_Known limitation:_ the check is row-granular — a fabricated number that happens
+to equal another field's value printed in the same row is kept. Closing that
+needs per-field source text within rows (tracked as follow-up).
+
 ## 0.79.5 — 2026-07-12
 
 **Fixed: provenance highlight boxes on digital (text-layer) PDFs no longer sit

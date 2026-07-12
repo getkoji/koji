@@ -14,6 +14,7 @@
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import { isContextLengthError, isSystemicProviderError, type ModelProvider } from "./providers";
+import { nullUnanchoredNumerics } from "./faithfulness";
 import { vocabHint } from "./schema-tree";
 import {
   estimateTokens,
@@ -557,6 +558,17 @@ async function extractGroupCall(
       return {};
     }
 
+    // Faithfulness gate: null numbers the model invented — any numeric value
+    // absent from the verbatim `__source_text` it cited. Runs BEFORE source
+    // texts are harvested/stripped so nested rows still carry their text.
+    const nulled = nullUnanchoredNumerics(parsed);
+    if (nulled.length > 0) {
+      console.log(
+        `[koji-extract] Faithfulness gate nulled ${nulled.length} unanchored numeric(s): ` +
+          nulled.slice(0, 8).map((n) => `${n.path}=${n.value}`).join(", "),
+      );
+    }
+
     // `__confidence` is stripped at parse time (parseJsonResponse). We no
     // longer surface __llm_confidence on the result — it was a noisy signal
     // that callers eventually started routing on, even after we'd "stopped
@@ -860,6 +872,7 @@ export async function fillGap(
         console.log(`[koji-extract] Gap fill for ${fieldName} returned invalid JSON`);
         continue;
       }
+      nullUnanchoredNumerics(parsed);
 
       // `__confidence` is stripped at parse time — see parseJsonResponse.
       const result = unwrapNestedResult(parsed, new Set([fieldName]));
@@ -969,6 +982,7 @@ export async function enumerateRows(
         const raw = await provider.generate(subPrompt, true);
         const parsed = parseJsonResponse(raw);
         if (!parsed) return [];
+        nullUnanchoredNumerics(parsed);
         const result = unwrapNestedResult(parsed, new Set([fieldName]));
         const value = result[fieldName];
         return Array.isArray(value) ? value : [];

@@ -67,6 +67,17 @@ Output: `"total_amount": 1234.56`
 
 Integer values stay as integers (no `.0` suffix).
 
+**Faithfulness gate.** Numeric values are held to their source: after extraction,
+each number is checked against the verbatim text the model cited for it, and a
+number that does not appear there is set to `null` (its confidence drops to
+`not_found`, routing it to review). This prevents a model from filling an
+unstated figure with a fabricated `0` or an estimate — a not-stated deductible
+comes back `null`, not a misleading `$0`. The comparison is numeric, so `9`
+matches a printed `$9.00` and `50000` matches `$50,000`; a genuinely printed
+`$0` is kept. The check applies to numeric fields at every depth, including
+values inside array rows. It is conservative: a number is kept when the model
+cited no source text for it (nothing to verify against).
+
 ### date
 
 Dates are normalized to ISO 8601 (`YYYY-MM-DD`) regardless of the source format.

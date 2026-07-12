@@ -209,6 +209,64 @@ function findNumericBounded(haystack: string, needle: string): { offset: number;
 }
 
 /**
+ * Locate a numeric value within `region` as a standalone number — trying the
+ * raw form first, then `$`/comma-formatted variants — using bounded matching
+ * so "0" never matches inside "50,000" and "$1,000" never matches inside
+ * "$1,000,000". Returns the hit offset/length, or null when the number does
+ * not appear on its own.
+ *
+ * Shared by array-item provenance resolution (to place a bbox) and the
+ * faithfulness gate (to decide whether a number is grounded), so both use
+ * identical matching semantics.
+ */
+export function findNumericInRegion(
+  region: string,
+  value: number | string,
+): { offset: number; length: number } | null {
+  const strVal = typeof value === "number" ? String(value) : value;
+  const direct = findNumericBounded(region, strVal);
+  if (direct) return direct;
+  const num = typeof value === "number" ? value : parseFloat(strVal.replace(/[$,]/g, ""));
+  if (Number.isNaN(num)) return null;
+  const formatted = num.toLocaleString("en-US");
+  for (const candidate of [`$${formatted}`, formatted, `$${num}`, String(num)]) {
+    const hit = findNumericBounded(region, candidate);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Every complete numeric token in `text`, parsed to a Number. Grouping commas
+ *  are stripped; whole comma/decimal-grouped runs are read as ONE number, so
+ *  "$1,000,000" yields 1000000 (not 1, 000, 000) and "9.00" yields 9. */
+function numbersInText(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
+    const n = parseFloat(m[0].replace(/,/g, ""));
+    if (!Number.isNaN(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * True when `value` occurs as a complete number in `region`, compared
+ * NUMERICALLY (not by string boundary): every numeric token in the region is
+ * parsed and checked for equality against the value. This is robust to
+ * format differences that trip up boundary regexes — `9` matches `"9.00"`,
+ * `70.3` matches `"70.30"`, `50000` matches `"$50,000"` — while still refusing
+ * spurious sub-matches: a fabricated `0` does NOT match `"$50,000"` (whose only
+ * token is 50000), and `1000` does NOT match `"$1,000,000"` (token 1000000).
+ *
+ * Used by the faithfulness gate to decide whether the model actually read a
+ * number off the page (present in the text it cited) or invented it.
+ */
+export function numericAnchoredInText(region: string, value: number | string): boolean {
+  const target = typeof value === "number" ? value : parseFloat(String(value).replace(/[$,]/g, ""));
+  if (Number.isNaN(target)) return false;
+  return numbersInText(region).some((n) => Math.abs(n - target) < 1e-9);
+}
+
+/**
  * Try matching with HTML entity variants: `&` ↔ `&amp;`.
  * PDF parsers often produce `&amp;` in markdown while the LLM extracts `&`.
  */
@@ -1175,21 +1233,9 @@ function resolveArray(
             let localHit: { offset: number; length: number } | null = null;
 
             if (isNumeric) {
-              // Use bounded matching to avoid "$1,000" matching inside "$1,000,000"
-              localHit = findNumericBounded(region, strVal);
-              if (!localHit) {
-                // Try formatted dollar/number variants with boundary check
-                const candidates: string[] = [];
-                const num = typeof propValue === "number" ? propValue : parseFloat(strVal.replace(/[$,]/g, ""));
-                if (!isNaN(num)) {
-                  const formatted = num.toLocaleString("en-US");
-                  candidates.push(`$${formatted}`, formatted, `$${num}`, String(num));
-                }
-                for (const c of candidates) {
-                  localHit = findNumericBounded(region, c);
-                  if (localHit) break;
-                }
-              }
+              // Bounded matching (shared with the faithfulness gate) — avoids
+              // "$1,000" matching inside "$1,000,000"; tries $/comma variants.
+              localHit = findNumericInRegion(region, propValue);
             } else {
               // String value: try the value, then its printed aliases (the model
               // usually returns the canonical code, e.g. `each_occurrence`, while
