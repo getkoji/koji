@@ -13,11 +13,13 @@
 import { describe, it, expect } from "vitest";
 import {
   resolvePromotion,
+  denormalizedProvenance,
   isUuid,
   parseUrgentBelow,
   parseOverrideProvenance,
   buildAnchoredSpan,
 } from "./review";
+import type { ProvenanceMap } from "../extract/provenance";
 import { resolvePermissions } from "../auth/roles";
 
 describe("parseOverrideProvenance — override provenance validation", () => {
@@ -144,6 +146,33 @@ describe("resolvePromotion — draft/approved + validate-exclusion invariant", (
       // a human approves the draft.
       expect(d.writeDenormalizedGt).toBe(false);
     }
+  });
+});
+
+describe("denormalizedProvenance — geometry follows the homework gate", () => {
+  const prov: ProvenanceMap = {
+    total_amount: {
+      offset: -1,
+      length: 0,
+      page: 1,
+      bbox: { x: 0.62, y: 0.81, w: 0.18, h: 0.03 },
+      resolution: "anchored",
+    },
+  };
+
+  it("approved (writeDenormalizedGt) → geometry reaches the scored copy", () => {
+    expect(denormalizedProvenance(true, prov)).toEqual(prov);
+  });
+
+  it("provisional draft → geometry EXCLUDED from the scored copy, like values", () => {
+    // Same safety property as values: an agent-authored draft must not leak
+    // its anchored geometry into the denormalized GT that validate scores.
+    expect(denormalizedProvenance(false, prov)).toBeNull();
+  });
+
+  it("null provenance passes through unchanged (value-only labels)", () => {
+    expect(denormalizedProvenance(true, null)).toBeNull();
+    expect(denormalizedProvenance(false, null)).toBeNull();
   });
 });
 

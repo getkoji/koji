@@ -9,6 +9,7 @@ import { compileSchema } from "../schemas/compiler";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues } from "../extract/value-compare";
+import type { ProvenanceMap } from "../extract/provenance";
 import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
@@ -841,8 +842,17 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   const entryId = c.req.param("entryId")!;
   const principal = getPrincipal(c);
 
-  const body = await c.req.json<{ values: Record<string, unknown> }>();
+  const body = await c.req.json<{
+    values: Record<string, unknown>;
+    /**
+     * Optional per-field provenance (ProvenanceMap) captured by the
+     * ground-truth builder when the human confirmed/anchored a value. Additive:
+     * when absent the row is a value-only label, exactly as before.
+     */
+    provenance?: ProvenanceMap;
+  }>();
   if (!body.values) return c.json({ error: "values is required" }, 400);
+  const provenance = body.provenance ?? null;
 
   // Get the latest GT to set supersedes_id
   const [latest] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
@@ -858,6 +868,7 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
       tenantId,
       corpusEntryId: entryId,
       payloadJson: body.values,
+      provenanceJson: provenance,
       authoredBy: principal.userId,
       reviewStatus: "draft",
       supersedesId: latest?.id ?? null,
@@ -867,7 +878,11 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   // Also update the corpus entry's ground_truth_json for quick access
   await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.corpusEntries)
-      .set({ groundTruthJson: body.values, updatedAt: new Date() })
+      .set({
+        groundTruthJson: body.values,
+        groundTruthProvenanceJson: provenance,
+        updatedAt: new Date(),
+      })
       .where(eq(schema.corpusEntries.id, entryId))
   );
 

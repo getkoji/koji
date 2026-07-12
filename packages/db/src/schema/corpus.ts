@@ -42,6 +42,16 @@ export const corpusEntries = pgTable(
     contentHash: char("content_hash", { length: 64 }).notNull(),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     groundTruthJson: jsonb("ground_truth_json").notNull(),
+    /**
+     * Optional per-field provenance for the denormalized ground truth — a
+     * `ProvenanceMap` (field → ProvenanceSpan) mirroring the shape extraction
+     * returns alongside its values. Retains page + bbox + source span so a
+     * label is auditable (re-parse can check the geometry still resolves) and
+     * usable for region-anchored / faithfulness scoring. Nullable and additive:
+     * value-only labels (the pre-existing shape) leave it NULL, and the scorer
+     * continues to read `groundTruthJson` alone.
+     */
+    groundTruthProvenanceJson: jsonb("ground_truth_provenance_json"),
     source: varchar("source", { length: 64 }).notNull(),
     sourceRef: varchar("source_ref", { length: 255 }),
     addedBy: uuid("added_by")
@@ -78,6 +88,13 @@ export const corpusEntryGroundTruth = pgTable(
       .references(() => corpusEntries.id, { onDelete: "cascade" }),
     schemaVersionId: uuid("schema_version_id").references(() => schemaVersions.id),
     payloadJson: jsonb("payload_json").notNull(),
+    /**
+     * Optional per-field provenance for this versioned ground-truth row, same
+     * `ProvenanceMap` shape as `corpusEntries.groundTruthProvenanceJson`. Kept
+     * on the append-only row so geometry is versioned with the values it
+     * anchors. Nullable/additive — value-only rows leave it NULL.
+     */
+    provenanceJson: jsonb("provenance_json"),
     authoredBy: uuid("authored_by")
       .notNull()
       .references(() => users.id),
