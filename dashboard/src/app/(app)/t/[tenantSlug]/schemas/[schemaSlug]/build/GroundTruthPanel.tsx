@@ -60,6 +60,12 @@ interface Props {
   onSelectionConfigChange: (cfg: SelectionConfig | null) => void;
   /** Ask the parent to highlight a field in the viewer. */
   onFocusField?: (field: string | null) => void;
+  /** Called after a successful save (the corpus labeling queue advances on it). */
+  onSaved?: () => void;
+  /** Scalar field names to always show, even when empty — so a labeler can fill
+   *  in fields the model missed. Unioned with the fields present in `extracted`.
+   *  When omitted, only extracted fields appear (the build-page behavior). */
+  schemaFields?: string[];
 }
 
 /** Rank buckets worst-first so a human's attention lands on the shaky ones. */
@@ -92,6 +98,8 @@ export function GroundTruthPanel({
   provenance,
   onSelectionConfigChange,
   onFocusField,
+  onSaved,
+  schemaFields,
 }: Props) {
   // Editable working copies, seeded from the proposal and reset per document.
   const [values, setValues] = useState<Record<string, unknown>>(extracted);
@@ -180,7 +188,12 @@ export function GroundTruthPanel({
   // Only top-level scalar fields get the confirm/correct treatment; nested
   // arrays/objects are carried through on save but not funnel-controlled here.
   const scalarFields = useMemo(() => {
-    const keys = Object.keys(values).filter((k) => isScalar(values[k]));
+    // Union of extracted scalar fields with the schema's declared scalar fields
+    // (when provided), so a labeler can also fill in fields the model missed.
+    const valueKeys = Object.keys(values).filter((k) => isScalar(values[k]));
+    const keys = Array.from(new Set([...valueKeys, ...(schemaFields ?? [])])).filter(
+      (k) => !(k in values) || isScalar(values[k]),
+    );
     return keys
       .map((k) => {
         const span = prov[k] ?? null;
@@ -190,7 +203,7 @@ export function GroundTruthPanel({
         return { key: k, conf };
       })
       .sort((a, b) => CONFIDENCE_RANK[a.conf] - CONFIDENCE_RANK[b.conf] || a.key.localeCompare(b.key));
-  }, [values, prov]);
+  }, [values, prov, schemaFields]);
 
   const needsReview = scalarFields.filter((f) => f.conf !== "exact" && !reviewed.has(f.key)).length;
 
@@ -218,6 +231,7 @@ export function GroundTruthPanel({
         provenance: prov,
       });
       setSaved(true);
+      onSaved?.();
     } catch (err) {
       console.error("Failed to save ground truth:", err);
       setRegionHint(err instanceof Error ? err.message : "Failed to save ground truth.");
