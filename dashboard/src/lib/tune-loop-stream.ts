@@ -35,6 +35,7 @@ export interface RunLoopArgs {
   yaml: string;
   model?: string;
   maxIterations?: number;
+  onStatus?: (message: string) => void;
   onRound: (r: LoopRound) => void;
   onComplete: (result: LoopResult) => void;
   onError: (error: string) => void;
@@ -115,7 +116,8 @@ export async function runCorpusTuneLoopStream(args: RunLoopArgs): Promise<void> 
         } catch {
           continue;
         }
-        if (currentEvent === "round") args.onRound(data as LoopRound);
+        if (currentEvent === "status") args.onStatus?.((data as { message?: string }).message ?? "");
+        else if (currentEvent === "round") args.onRound(data as LoopRound);
         else if (currentEvent === "complete") args.onComplete(data as LoopResult);
         else if (currentEvent === "error") args.onError((data as { error?: string }).error ?? "Tuning loop failed");
         currentEvent = "message";

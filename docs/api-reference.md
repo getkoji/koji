@@ -1431,7 +1431,7 @@ Run the tuning loop optimizing for **whole-corpus accuracy** (not one document).
 | `model` | string? | Override the extraction/proposal model. |
 | `max_iterations` | number? | Round cap, 1–8 (default 5). |
 
-**Response.** Streams **SSE** by default: a `round` event per round (`{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation }`) then a `complete` event. Send `Accept: application/json` for a single aggregate:
+**Response.** Streams **SSE** by default: a `round` event per round (`{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation }`) then a `complete` event. A `status` event also streams fine-grained progress (`{ message }`) between rounds — scoring, focus, proposing, re-scoring — for a live "thinking" view. Send `Accept: application/json` for a single aggregate:
 
 ```jsonc
 {
