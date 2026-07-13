@@ -97,4 +97,22 @@ test.describe("trace page", () => {
     await expect(page.getByText("Rerun")).toBeVisible();
     await expect(page.getByText("Download JSON")).toBeVisible();
   });
+
+  test("rerun dropdown offers re-extract and reparse, sending the right skip_cache", async ({ page }) => {
+    await navigateToTrace(page);
+
+    // Opening the Rerun menu reveals both choices.
+    await page.getByRole("button", { name: /Rerun/ }).click();
+    await expect(page.getByText("Re-extract only")).toBeVisible();
+    await expect(page.getByText("Reparse & extract")).toBeVisible();
+
+    // "Reparse & extract" must POST skip_cache: true (fresh parse); the default
+    // "Re-extract only" must POST skip_cache: false (reuse cached parse).
+    const rerunPost = page.waitForRequest(
+      (req) => req.url().includes("/rerun") && req.method() === "POST",
+    );
+    await page.getByText("Reparse & extract").click();
+    const req = await rerunPost;
+    expect(req.postDataJSON()).toMatchObject({ skip_cache: true });
+  });
 });
