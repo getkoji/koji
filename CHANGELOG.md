@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.80.1 — 2026-07-13
+
+**Fixed: an optional list field that legitimately extracts as empty (`[]`) no
+longer floods the review queue.** An empty array was scored `0.30` by the
+engine's provenance formula (no provenance for zero items, but validation
+"passed"), which trips the default review threshold — so a document with a
+legitimately-empty optional list (e.g. no endorsements, no line items) routed to
+review. Meanwhile an optional *null scalar* in the identical "no value" state was
+already re-credited to `1.0` and auto-delivered. That asymmetry is fixed: at the
+routing/scoring layer an empty array is now treated exactly like a null — an
+optional empty list scores `1.0` (auto-delivers), a required empty list scores
+`0.0` (routes to review, symmetric with a required null). Non-empty arrays are
+unchanged (still scored per-element). The engine's provenance formula is
+untouched; only the review-routing resolver changed, so the confidence shown in
+the UI matches the routing decision.
+
 ## 0.80.0 — 2026-07-12
 
 **Added: faithfulness gate — extracted numbers the model invented are now
