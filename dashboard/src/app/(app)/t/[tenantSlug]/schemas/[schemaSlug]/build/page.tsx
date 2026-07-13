@@ -166,7 +166,7 @@ export default function BuildPage() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
   const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
-  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results">("agent");
+  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results" | "groundtruth">("agent");
   const [gtSelection, setGtSelection] = useState<SelectionConfig | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
@@ -792,6 +792,14 @@ export default function BuildPage() {
                   Results
                   {extracting && <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-vermillion-2 animate-pulse" />}
                 </button>
+                <button
+                  onClick={() => setEditorTab("groundtruth")}
+                  className={`px-3 py-1.5 font-mono text-[10px] font-medium tracking-[0.08em] uppercase border-b-2 transition-colors flex items-center gap-1 ${editorTab === "groundtruth" ? "text-ink border-vermillion-2" : "text-ink-4 border-transparent hover:text-ink"} ${!extractionResult && !extracting ? "opacity-30 cursor-not-allowed" : ""}`}
+                  disabled={!extractionResult && !extracting}
+                >
+                  <MapPin className="w-3 h-3" />
+                  Ground truth
+                </button>
               </div>
               <button
                 onClick={() => setFocusPanel(focusPanel === "editor" ? "split" : "editor")}
@@ -1053,18 +1061,6 @@ export default function BuildPage() {
                           });
                           })()}
                         </div>
-
-                        {/* Ground-truth builder — confirm-vs-correct funnel */}
-                        {selectedDocId && (
-                          <GroundTruthPanel
-                            schemaSlug={schemaSlug}
-                            entryId={selectedDocId}
-                            extracted={extractionResult.extracted}
-                            provenance={extractionResult.provenance ?? undefined}
-                            onSelectionConfigChange={setGtSelection}
-                            onFocusField={setHighlightedField}
-                          />
-                        )}
                       </>
                     )}
                   </div>
@@ -1086,6 +1082,30 @@ export default function BuildPage() {
                     ) : (
                       <div className="text-[12px] text-ink-4">Run extraction to see results here.</div>
                     )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Ground truth tab */}
+            {editorTab === "groundtruth" && (
+              <div className="flex-1 min-h-0 overflow-y-auto p-3">
+                {extractionResult?.extracted && selectedDocId ? (
+                  <GroundTruthPanel
+                    schemaSlug={schemaSlug}
+                    entryId={selectedDocId}
+                    extracted={extractionResult.extracted}
+                    provenance={extractionResult.provenance ?? undefined}
+                    onSelectionConfigChange={setGtSelection}
+                    onFocusField={setHighlightedField}
+                  />
+                ) : (
+                  <div className="h-full flex items-center justify-center">
+                    <div className="text-[12px] text-ink-4 text-center max-w-[280px]">
+                      {selectedDocId
+                        ? "Run extraction to propose values, then confirm or correct them here to build ground truth."
+                        : "Select a document and run extraction to build ground truth."}
+                    </div>
                   </div>
                 )}
               </div>
