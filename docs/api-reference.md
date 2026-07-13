@@ -1356,6 +1356,39 @@ Delete a schema.
 
 Versions use semver. **Candidates** carry a prerelease tag (`v0.0.4-rc.7`) and are never live; **releases** (`v0.0.4`) are activatable. `schemas.currentVersionId` points at the live release. The major/minor/patch bump is auto-derived by diffing the candidate's output shape against the active release (`required→optional` / removed / retyped fields = major; additive/stricter = minor; tuning only = patch).
 
+### `POST /api/schemas/{slug}/tune`
+
+Run **one schema-tuning iteration** against a single labeled corpus entry: extract the document with the given schema, score it against the entry's ground truth, diagnose each failing field (including *routing* — did the model even see the answer?), and ask the model to propose a minimal edit. Read-only — it does **not** apply, snapshot, or persist anything; the caller decides what to do with the proposal. This is the score-aware counterpart to the free-form build agent, and the unit the autonomous tuning loop drives repeatedly. Auth: `job:run`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `corpus_entry_id` | string | The labeled exemplar to tune against. Must have ground truth (`400` otherwise). |
+| `yaml` | string | The current schema YAML to evaluate and improve. |
+| `model` | string? | Override the extraction/proposal model. |
+
+**Response** `200 OK`:
+
+```jsonc
+{
+  "before": {
+    "accuracy": 60.0,           // % of ground-truth fields correct before the edit
+    "passed": false,            // true ⇒ nothing to fix, no proposal returned
+    "failing": [
+      { "name": "premium",
+        "expected": "1200",
+        "got": "12000",
+        "routingHint": "model saw the text but chose the wrong value (fix the field description/hint)" }
+    ]
+  },
+  "proposedYaml": "name: ...\nfields:\n  ...",  // null if the model produced no valid YAML
+  "explanation": "Tightened the premium field description to the annual figure."
+}
+```
+
+`routingHint` distinguishes a **routing miss** (the answer never reached the model — fix `look_in`/`hints`) from a **selection error** (the model saw it and chose wrong — fix the field description). Proposals are compiled before returning (with one retry); an uncompilable proposal returns `proposedYaml: null` with a `compileError`. `422` for invalid input YAML, `404` for an unknown entry.
+
 ### `POST /api/schemas/{slug}/validate`
 
 Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a **candidate** (dedup by content hash) **without activating it**, ties the run to that candidate, and scores it. Without `yaml`, scores the latest stored version (back-compat). Auth: `job:run`.

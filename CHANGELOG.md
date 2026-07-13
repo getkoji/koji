@@ -2,6 +2,10 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.86.0 — 2026-07-13
+
+**Added: schema tuning — a score-aware "propose a fix" step (`POST /api/schemas/{slug}/tune`).** The build agent proposes schema edits blind (from a chat message + a raw excerpt). This closes the loop: given a schema and one *labeled* corpus entry, it runs the schema, measures where it fails against ground truth, diagnoses each failing field — including whether the model even *saw* the answer (a routing miss you fix with `look_in`/`hints`) versus saw it and chose wrong (a description/prompt fix) — and asks the model for a minimal edit grounded in that evidence. It returns the before-scores and the proposed YAML without applying anything. This is the foundation for the iterative tuning loop; a follow-up drives it autonomously (extract → score → propose → re-run) with human checkpoints. API only in this release — no dashboard surface yet.
+
 ## 0.85.1 — 2026-07-13
 
 **Fixed: the corpus "Pipeline" source filter now means something concrete.** It

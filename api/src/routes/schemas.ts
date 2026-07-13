@@ -20,6 +20,7 @@ import { resolveMimeType } from "../ingestion/mime";
 import { resolveParse } from "../ingestion/seam";
 import { mapWithConcurrency } from "../parse/pdf-slice";
 import { computeValidateResult } from "../schemas/validate-scoring";
+import { runTuneIteration } from "../schemas/tune";
 import {
   runValidateDoc,
   maybeFinalizeValidateRun,
@@ -1064,6 +1065,98 @@ schemas.post(
     return c.json(updated);
   },
 );
+
+/**
+ * POST /api/schemas/:slug/tune — one schema-tuning iteration on an exemplar.
+ *
+ * Runs the given schema YAML against a single labeled corpus entry, scores it
+ * against ground truth, diagnoses each failing field (incl. routing: did the
+ * model even see the answer?), and asks the model to propose a minimal edit.
+ * Returns the before-scores + the proposed YAML — it does NOT apply or persist
+ * anything (the caller/loop decides). The score-aware counterpart to the free-
+ * form build agent; the autonomous loop drives this repeatedly.
+ */
+schemas.post("/:slug/tune", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1),
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const body = await c.req.json<{ corpus_entry_id?: string; yaml?: string; model?: string }>();
+  if (!body.corpus_entry_id) return c.json({ error: "corpus_entry_id is required" }, 400);
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+  // Capture into locals — property narrowing on `body.*` is reset across the
+  // intervening awaits below.
+  const corpusEntryId = body.corpus_entry_id;
+  const yaml = body.yaml;
+
+  // Validate the input YAML up front; the proposal is validated separately.
+  let schemaDef: Record<string, unknown>;
+  try {
+    compileSchema(yaml);
+    const { parse: parseYaml } = await import("yaml");
+    schemaDef = parseYaml(yaml) as Record<string, unknown>;
+  } catch (err) {
+    return c.json({ error: "Invalid schema YAML", detail: err instanceof Error ? err.message : String(err) }, 422);
+  }
+
+  const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusEntries.id,
+        filename: schema.corpusEntries.filename,
+        storageKey: schema.corpusEntries.storageKey,
+        mimeType: schema.corpusEntries.mimeType,
+        contentHash: schema.corpusEntries.contentHash,
+        groundTruthJson: schema.corpusEntries.groundTruthJson,
+      })
+      .from(schema.corpusEntries)
+      .where(
+        and(
+          eq(schema.corpusEntries.id, corpusEntryId),
+          eq(schema.corpusEntries.schemaId, s.id),
+          isNull(schema.corpusEntries.deletedAt),
+        ),
+      )
+      .limit(1),
+  );
+  if (!entry) return c.json({ error: "Corpus entry not found" }, 404);
+
+  const groundTruth = entry.groundTruthJson as Record<string, unknown> | null;
+  if (!groundTruth || Object.keys(groundTruth).length === 0) {
+    return c.json({ error: "This corpus entry has no ground truth to tune against" }, 400);
+  }
+
+  try {
+    const result = await runTuneIteration({
+      db,
+      storage: c.get("storage"),
+      scope: getRlsScope(c),
+      tenantId,
+      defaultParseProvider: c.get("parseProvider"),
+      parseConfig: c.get("parseConfig"),
+      entry: {
+        id: entry.id,
+        filename: entry.filename,
+        storageKey: entry.storageKey,
+        mimeType: entry.mimeType,
+        contentHash: entry.contentHash,
+      },
+      groundTruth,
+      yaml,
+      schemaDef,
+      model: body.model,
+    });
+    return c.json(result);
+  } catch (err) {
+    console.error("[tune] iteration failed:", err);
+    return c.json({ error: "Tuning failed", detail: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
 
 /**
  * POST /api/schemas/:slug/validate — run validation.
