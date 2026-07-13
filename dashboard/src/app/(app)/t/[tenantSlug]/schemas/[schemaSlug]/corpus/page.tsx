@@ -4,18 +4,23 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { parse as parseYaml } from "yaml";
-import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion, Trash2 } from "lucide-react";
+import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, FileQuestion, Trash2, ListChecks } from "lucide-react";
 import { api } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { CorpusLabelStepper, type QueueEntry } from "./CorpusLabelStepper";
 
 interface CorpusEntry {
   id: string; filename: string; fileSize: number; mimeType: string;
   source: string; tags: string[]; createdAt: string; hasGroundTruth?: boolean;
+  reviewStatus?: string | null;
 }
+
+/** Scalar (non-container) schema field types — the ones the funnel edits inline. */
+const CONTAINER_TYPES = new Set(["object", "array", "list", "table"]);
 
 interface SchemaField {
   name: string; type: string; required?: boolean; nullable?: boolean;
@@ -127,6 +132,33 @@ export default function CorpusPage() {
   const allEntries = entries ?? [];
   const gtCount = allEntries.filter((e) => e.hasGroundTruth).length;
   const needsGtCount = allEntries.filter((e) => !e.hasGroundTruth).length;
+
+  // Labeling queue (focused stepper). Entry id we started on, or null when the
+  // three-panel list view is showing.
+  const [labelStartId, setLabelStartId] = useState<string | null>(null);
+
+  const scalarFields = useMemo(
+    () => fields.filter((f) => !CONTAINER_TYPES.has(f.type)).map((f) => f.name),
+    [fields],
+  );
+
+  // Queue order: unlabeled first, then drafts, then approved — so labeling work
+  // floats to the top. Stable secondary sort by filename.
+  const labelQueue: QueueEntry[] = useMemo(() => {
+    const rank = (e: CorpusEntry) =>
+      !e.hasGroundTruth ? 0 : e.reviewStatus === "approved" ? 2 : 1;
+    return [...allEntries]
+      .sort((a, b) => rank(a) - rank(b) || a.filename.localeCompare(b.filename))
+      .map((e) => ({
+        id: e.id,
+        filename: e.filename,
+        mimeType: e.mimeType,
+        reviewStatus: e.reviewStatus,
+        hasGroundTruth: e.hasGroundTruth,
+      }));
+  }, [allEntries]);
+
+  const firstToLabel = labelQueue.find((e) => !e.hasGroundTruth) ?? labelQueue[0];
 
   const filtered = allEntries.filter((e) => {
     if (srcFilter === "Upload" && e.source !== "upload") return false;
@@ -259,6 +291,24 @@ export default function CorpusPage() {
     );
   }
 
+  // Focused labeling stepper — takes over the viewport when active.
+  if (labelStartId) {
+    return (
+      <div className="h-[calc(100vh-60px)]">
+        <CorpusLabelStepper
+          schemaSlug={schemaSlug}
+          tenantSlug={tenantSlug}
+          schemaYaml={schemaDetail?.latestVersion?.yamlSource ?? null}
+          scalarFields={scalarFields}
+          queue={labelQueue}
+          startId={labelStartId}
+          onSaved={() => refetch()}
+          onExit={() => { setLabelStartId(null); refetch(); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-[calc(100vh-60px)]">
       {/* Header */}
@@ -281,12 +331,24 @@ export default function CorpusPage() {
             </p>
           )}
         </div>
-        {hasPermission("corpus:write") && (
-          <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
-            <Upload className="w-3.5 h-3.5" />{uploading ? "Uploading..." : "Add document"}
-            <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif" onChange={(e) => { if (e.target.files?.[0]) handleUpload(e.target.files[0]); }} />
-          </label>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {hasPermission("corpus:write") && firstToLabel && (
+            <button
+              onClick={() => setLabelStartId(firstToLabel.id)}
+              title="Step through the corpus building ground truth"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-cream-2 text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors"
+            >
+              <ListChecks className="w-3.5 h-3.5" />
+              {needsGtCount > 0 ? `Label (${needsGtCount})` : "Label"}
+            </button>
+          )}
+          {hasPermission("corpus:write") && (
+            <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+              <Upload className="w-3.5 h-3.5" />{uploading ? "Uploading..." : "Add document"}
+              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif" onChange={(e) => { if (e.target.files?.[0]) handleUpload(e.target.files[0]); }} />
+            </label>
+          )}
+        </div>
       </div>
 
       {/* Three-panel body */}

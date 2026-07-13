@@ -512,6 +512,15 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       tags: schema.corpusEntries.tags,
       groundTruthJson: schema.corpusEntries.groundTruthJson,
       createdAt: schema.corpusEntries.createdAt,
+      // Latest ground-truth version's review status (draft/approved), or null
+      // when the entry has no GT row yet. Lets the labeling queue distinguish
+      // unlabeled / draft / approved without a per-entry fetch. Runs inside the
+      // RLS tx, so it's tenant-scoped like the rest of the query.
+      reviewStatus: sql<string | null>`(
+        SELECT review_status FROM corpus_entry_ground_truth
+        WHERE corpus_entry_id = ${schema.corpusEntries.id}
+        ORDER BY created_at DESC LIMIT 1
+      )`,
     }).from(schema.corpusEntries)
       .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
       .orderBy(desc(schema.corpusEntries.createdAt))

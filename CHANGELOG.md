@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.84.0 — 2026-07-13
+
+**Added: a corpus labeling queue — a focused stepper for building ground truth
+across many documents.** The corpus page now has a **Label** button that opens a
+full-screen, keyboard-driven editor and steps through entries one at a time
+(unlabeled first, then drafts, then approved). Each entry shows the document in
+the shared viewer on the left and the confirm-vs-correct funnel on the right, so
+**draw-a-box-to-correct** works here too — the same editor as the build page, but
+in a queue. It seeds each entry from any existing ground truth, offers an
+optional "Propose with AI" (runs extraction to pre-fill), shows every schema
+field (so you can fill in ones the model missed), and advances to the next entry
+on save. `j`/`k` step, `s` skips, `Esc` exits; the header tracks "N / M · N to
+go". The corpus list now also carries each entry's review status (unlabeled /
+draft / approved) to drive the queue.
+
 ## 0.83.1 — 2026-07-13
 
 **Fixed: localized text-layer corruption on one page of a large document no
