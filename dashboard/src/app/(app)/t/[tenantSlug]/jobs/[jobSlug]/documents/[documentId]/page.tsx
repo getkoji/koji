@@ -1,8 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes } from "react";
 import { useParams } from "next/navigation";
-import { Crosshair, X } from "lucide-react";
+import { Crosshair, X, ChevronDown } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@koji/ui";
 import { DocumentViewer, pickDocumentRenderer } from "@/components/shared/DocumentViewer";
 import type { RegionSelection } from "@/components/shared/PdfViewer";
 import { useAuth } from "@/lib/auth-context";
@@ -32,29 +40,21 @@ function MetaDot() {
   return <span className="text-cream-4 text-[8px]">●</span>;
 }
 
-function GhostButton({
-  children,
-  onClick,
-  disabled,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  title?: string;
-}) {
+const GhostButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement>
+>(function GhostButton({ children, className, ...props }, ref) {
   return (
     <button
+      ref={ref}
       type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-cream text-ink border border-border-strong hover:border-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed${className ? ` ${className}` : ""}`}
+      {...props}
     >
       {children}
     </button>
   );
-}
+});
 
 export default function TraceViewPage() {
   const params = useParams<{ tenantSlug: string; jobSlug: string; documentId: string }>();
@@ -328,18 +328,21 @@ export default function TraceViewPage() {
   const [rerunning, setRerunning] = useState(false);
   const [failing, setFailing] = useState(false);
 
-  const handleRerun = useCallback(async () => {
-    if (!data) return;
-    setRerunning(true);
-    try {
-      await jobsApi.rerunDocument(jobSlug, documentId);
-      await refetch();
-    } catch {
-      // Swallow — the refetch below will surface the real state.
-    } finally {
-      setRerunning(false);
-    }
-  }, [data, jobSlug, documentId, refetch]);
+  const handleRerun = useCallback(
+    async (reparse: boolean) => {
+      if (!data) return;
+      setRerunning(true);
+      try {
+        await jobsApi.rerunDocument(jobSlug, documentId, { reparse });
+        await refetch();
+      } catch {
+        // Swallow — the refetch below will surface the real state.
+      } finally {
+        setRerunning(false);
+      }
+    },
+    [data, jobSlug, documentId, refetch],
+  );
 
   const handleForceFail = useCallback(async () => {
     if (!data) return;
@@ -478,19 +481,52 @@ export default function TraceViewPage() {
         }
         actions={
           <>
-            <GhostButton
-              onClick={handleRerun}
-              disabled={rerunning || data.status === "extracting"}
-              title={
-                data.status === "extracting"
-                  ? "Document is currently processing"
-                  : "Re-queue this document for extraction"
-              }
-            >
-              {rerunning ? (
-                <span className="inline-block w-3.5 h-3.5 border-2 border-ink/30 border-t-ink rounded-full animate-spin" />
-              ) : "Rerun"}
-            </GhostButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <GhostButton
+                  disabled={rerunning || data.status === "extracting"}
+                  title={
+                    data.status === "extracting"
+                      ? "Document is currently processing"
+                      : "Re-queue this document"
+                  }
+                >
+                  {rerunning ? (
+                    <span className="inline-block w-3.5 h-3.5 border-2 border-ink/30 border-t-ink rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      Rerun
+                      <ChevronDown className="w-3.5 h-3.5 opacity-50" />
+                    </>
+                  )}
+                </GhostButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[280px]">
+                <DropdownMenuLabel className="font-mono text-[10px] tracking-[0.1em] uppercase text-ink-4">
+                  Rerun this document
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => handleRerun(false)}
+                  className="flex flex-col items-start gap-0.5 py-2"
+                >
+                  <span className="font-medium">Re-extract only</span>
+                  <span className="text-[11px] text-ink-4">
+                    Reuse the cached parse — faster, no re-parse cost.
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => handleRerun(true)}
+                  className="flex flex-col items-start gap-0.5 py-2"
+                >
+                  <span className="font-medium">Reparse &amp; extract</span>
+                  <span className="text-[11px] text-ink-4">
+                    Parse the document again from source, then extract. Use when
+                    the parsed text itself looks wrong.
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {(data.status === "extracting" || data.status === "parsing") && (
               <GhostButton
                 onClick={handleForceFail}
@@ -637,7 +673,9 @@ export default function TraceViewPage() {
           {isProcessing && !liveExtraction && (
             <div className="flex items-center gap-2 px-4 py-2 bg-[#2B6A9E]/[0.08] border border-[#2B6A9E]/20 rounded-sm mb-2 shrink-0">
               <span className="inline-block w-3 h-3 border-2 border-[#2B6A9E]/30 border-t-[#2B6A9E] rounded-full animate-spin" />
-              <span className="font-mono text-[11px] text-[#2B6A9E]">Re-extracting — showing previous results</span>
+              <span className="font-mono text-[11px] text-[#2B6A9E]">
+                {data.status === "parsing" ? "Reparsing" : "Re-extracting"} — showing previous results
+              </span>
             </div>
           )}
 

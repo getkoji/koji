@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.85.0 — 2026-07-13
+
+**Added: choose re-extract vs reparse when rerunning a document.** The Rerun
+button on the document trace page is now a dropdown with two options: *Re-extract
+only* (reuse the cached parse — fast, the previous default) and *Reparse &
+extract* (parse the document again from source, then extract). Reparse is what
+you want when the parsed text itself looks wrong — e.g. after a parser fix — so
+you can pick up the corrected parse without re-uploading. The processing banner
+now says "Reparsing" or "Re-extracting" to match.
+
 ## 0.84.0 — 2026-07-13
 
 **Added: a corpus labeling queue — a focused stepper for building ground truth

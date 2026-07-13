@@ -602,8 +602,15 @@ export const jobs = {
         `/api/jobs/${jobSlug}/documents/${docId}/deliveries`,
       )
       .then((r) => r.data),
-  rerunDocument: (jobSlug: string, docId: string) =>
-    api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/rerun`, {}),
+  /**
+   * Re-queue a document. By default reuses the cached parse and only re-runs
+   * extraction; pass `{ reparse: true }` to force a fresh parse first (bypasses
+   * and refreshes the parse cache) — needed when the parse itself was wrong.
+   */
+  rerunDocument: (jobSlug: string, docId: string, opts?: { reparse?: boolean }) =>
+    api.post<{ ok: true }>(`/api/jobs/${jobSlug}/documents/${docId}/rerun`, {
+      skip_cache: opts?.reparse === true,
+    }),
   /** Resolve a normalized page region to the document text underneath it
    *  (highlight-to-correct). `text: null` = nothing there — fall back to
    *  typed input. */
