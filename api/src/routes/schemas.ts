@@ -22,6 +22,7 @@ import { mapWithConcurrency } from "../parse/pdf-slice";
 import { computeValidateResult } from "../schemas/validate-scoring";
 import { runTuneIteration } from "../schemas/tune";
 import { runTuneLoop } from "../schemas/tune-loop";
+import { runCorpusTuneLoop, type CorpusEntryWithGt } from "../schemas/corpus-tune-loop";
 import { streamSSE } from "hono/streaming";
 import {
   runValidateDoc,
@@ -1287,6 +1288,133 @@ schemas.post("/:slug/tune/loop", requires("job:run"), async (c) => {
         onIteration: async (it) => {
           await stream.writeSSE({ event: "iteration", data: JSON.stringify(it) });
         },
+      });
+      await stream.writeSSE({ event: "complete", data: JSON.stringify(result) });
+    } catch (err) {
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: err instanceof Error ? err.message : "Tuning loop failed" }) });
+    }
+  });
+});
+
+/**
+ * POST /api/schemas/:slug/tune/corpus-loop — corpus-optimizing tune loop.
+ *
+ * Optimizes for WHOLE-CORPUS accuracy (not one doc): each round scores the
+ * schema across every labeled corpus doc, focuses on a failing one to guide the
+ * edit, then re-scores the corpus and keeps the edit only if overall accuracy
+ * improved (rejecting fixes that regress other docs). Streams SSE `round` events
+ * + a final `complete`, or returns JSON with `Accept: application/json`.
+ * Auth: job:run.
+ */
+schemas.post("/:slug/tune/corpus-loop", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+  const projectId = getProjectId(c);
+
+  const [s] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1),
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const body = await c.req.json<{ yaml?: string; model?: string; max_iterations?: number }>();
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+  const startYaml = body.yaml;
+  const model = body.model;
+  const maxIterations = body.max_iterations;
+
+  const compiledInput = compileSchema(startYaml);
+  if (!compiledInput.ok) {
+    return c.json({ error: "Invalid schema YAML", detail: compiledInput.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ") }, 422);
+  }
+
+  // Every labeled corpus doc is a training signal.
+  const rows = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusEntries.id,
+        filename: schema.corpusEntries.filename,
+        storageKey: schema.corpusEntries.storageKey,
+        mimeType: schema.corpusEntries.mimeType,
+        contentHash: schema.corpusEntries.contentHash,
+        groundTruthJson: schema.corpusEntries.groundTruthJson,
+      })
+      .from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt))),
+  );
+  const entries: CorpusEntryWithGt[] = rows
+    .filter((r) => {
+      const gt = r.groundTruthJson as Record<string, unknown> | null;
+      return gt != null && typeof gt === "object" && Object.keys(gt).length > 0;
+    })
+    .map((r) => ({
+      id: r.id, filename: r.filename, storageKey: r.storageKey, mimeType: r.mimeType, contentHash: r.contentHash,
+      groundTruth: r.groundTruthJson as Record<string, unknown>,
+    }));
+  if (entries.length === 0) {
+    return c.json({ error: "No corpus documents with ground truth to tune against" }, 400);
+  }
+
+  const scope = getRlsScope(c);
+  // Best-effort audit session (project-scoped), mirroring /tune/loop.
+  let sessionId: string | null = null;
+  if (projectId) {
+    try {
+      const [existing] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.select({ id: schema.agentSessions.id }).from(schema.agentSessions)
+          .where(and(eq(schema.agentSessions.context, "schema_tuner"), eq(schema.agentSessions.contextEntityId, s.id), eq(schema.agentSessions.userId, principal.userId)))
+          .limit(1),
+      );
+      if (existing) sessionId = existing.id;
+      else {
+        const [created] = await withRLS(db, { tenantId, projectId }, (tx) =>
+          tx.insert(schema.agentSessions).values({ tenantId, projectId, userId: principal.userId, context: "schema_tuner", contextEntityId: s.id }).returning({ id: schema.agentSessions.id }),
+        );
+        sessionId = created?.id ?? null;
+      }
+    } catch (err) {
+      console.warn("[tune/corpus-loop] could not open audit session:", err);
+    }
+  }
+  const recordEdit = async (n: number, yaml: string, explanation: string) => {
+    if (!sessionId) return;
+    try {
+      const [msg] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.insert(schema.agentMessages).values({ tenantId, sessionId: sessionId!, role: "assistant", content: explanation }).returning({ id: schema.agentMessages.id }),
+      );
+      if (!msg) return;
+      await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.insert(schema.agentProposedEdits).values({ tenantId, sessionId: sessionId!, messageId: msg.id, editKind: "schema_yaml", targetId: s.id, diffText: explanation, proposedChangeJson: { yaml, iteration: n }, status: "proposed" }),
+      );
+    } catch (err) {
+      console.warn("[tune/corpus-loop] could not record proposal:", err);
+    }
+  };
+
+  const loopDeps = {
+    db, storage: c.get("storage"), scope, tenantId,
+    defaultParseProvider: c.get("parseProvider"), parseConfig: c.get("parseConfig"),
+    entries, startYaml, model, maxIterations,
+  };
+
+  const accept = c.req.header("accept") ?? "";
+  if (!accept.includes("text/event-stream")) {
+    try {
+      const result = await runCorpusTuneLoop({ ...loopDeps, onEdit: recordEdit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[tune/corpus-loop] failed:", err);
+      return c.json({ error: "Tuning loop failed", detail: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  }
+
+  return streamSSE(c, async (stream) => {
+    try {
+      const result = await runCorpusTuneLoop({
+        ...loopDeps,
+        onEdit: recordEdit,
+        onRound: async (r) => { await stream.writeSSE({ event: "round", data: JSON.stringify(r) }); },
       });
       await stream.writeSSE({ event: "complete", data: JSON.stringify(result) });
     } catch (err) {

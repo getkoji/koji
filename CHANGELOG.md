@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.89.0 — 2026-07-13
+
+**Added: a corpus-optimizing tune loop (`POST /api/schemas/{slug}/tune/corpus-loop`).**
+The autonomous loop now optimizes for **whole-corpus accuracy** instead of a single
+document. Each round scores the schema across every labeled corpus doc, focuses on a
+failing one to guide the edit, then re-scores the whole corpus — keeping the change only
+if overall accuracy improved and nothing regressed, and shifting focus to whatever fails
+next (regressions included). This is the by-hand workflow: use a broken document to guide
+the schema while maximizing for the corpus. Verified live over a 2-document corpus taking
+83% → 92% → 100%, with focus shifting to the second document once the first was fixed.
+Streams SSE `round` events or returns a JSON aggregate. The earlier single-doc
+`tune/loop` remains for quick per-document fixes.
+
 ## 0.88.0 — 2026-07-13
 
 **Added: an Auto-tune tab in the schema build workbench.** Select a labeled

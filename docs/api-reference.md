@@ -1419,6 +1419,35 @@ Run the tuning iteration **autonomously**: extract → score → propose → app
 
 The loop stops early when the schema passes, when the model can't propose a fix (`stuck_no_proposal`), or when two consecutive iterations don't improve (`stuck_no_improvement`). Each applied proposal is recorded to `agent_proposed_edits` for audit. `422` for invalid input YAML, `404` for an unknown entry, `400` when the entry has no ground truth.
 
+### `POST /api/schemas/{slug}/tune/corpus-loop`
+
+Run the tuning loop optimizing for **whole-corpus accuracy** (not one document). Each round scores the schema across every labeled corpus doc, focuses on a failing one to guide the edit, proposes a change, then **re-scores the whole corpus** — keeping the edit only if overall accuracy improved and nothing regressed. This is the corpus-optimizing counterpart to `tune/loop`: a failing document guides the schema's evolution while the objective stays the corpus. Auth: `job:run`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `yaml` | string | The starting schema YAML. |
+| `model` | string? | Override the extraction/proposal model. |
+| `max_iterations` | number? | Round cap, 1–8 (default 5). |
+
+**Response.** Streams **SSE** by default: a `round` event per round (`{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation }`) then a `complete` event. Send `Accept: application/json` for a single aggregate:
+
+```jsonc
+{
+  "rounds": [
+    { "n": 1, "accuracy": 91.7, "docsPassed": 1, "docsTotal": 2, "accepted": true, "focusDoc": "meridian_invoice.docx", "fixing": ["currency"], "regressions": [], "explanation": "..." },
+    { "n": 2, "accuracy": 100, "docsPassed": 2, "docsTotal": 2, "accepted": true, "focusDoc": "sample_01.md", "fixing": ["currency"], "regressions": [], "explanation": "..." }
+  ],
+  "finalYaml": "name: ...",
+  "finalAccuracy": 100,
+  "baselineAccuracy": 83.3,
+  "stopReason": "passed"    // passed | no_improvement | max_iterations | propose_failed
+}
+```
+
+A proposal is accepted only when corpus accuracy does not drop **and** no field regresses; otherwise it's rejected and the next round tries again. Requires at least one corpus doc with ground truth (`400` otherwise). Each accepted proposal is recorded to `agent_proposed_edits`.
+
 ### `POST /api/schemas/{slug}/validate`
 
 Backtest against corpus ground truth. With `yaml` in the body, snapshots it as a **candidate** (dedup by content hash) **without activating it**, ties the run to that candidate, and scores it. Without `yaml`, scores the latest stored version (back-compat). Auth: `job:run`.

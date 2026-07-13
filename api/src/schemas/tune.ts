@@ -93,12 +93,40 @@ function routingHint(diag: { answerInRoutedChunks?: boolean | null } | null | un
  * Run one tuning iteration: extract the exemplar, score it against ground
  * truth, and (if anything failed) ask the model for a minimal fix.
  */
-export async function runTuneIteration(args: TuneIterationArgs): Promise<TuneIterationResult> {
-  const { db, storage, scope, tenantId, entry, groundTruth, yaml, schemaDef, model } = args;
-  const startTime = Date.now();
+/** Corpus entry shape the extractor needs. */
+export interface TuneEntry {
+  id: string;
+  filename: string;
+  storageKey: string;
+  mimeType: string;
+  contentHash: string;
+}
 
-  // 1. Parse + extract this one document (no schema_run persistence — this is
-  //    an ephemeral proposal, not a committed run).
+export interface EntryExtraction {
+  extracted: Record<string, unknown>;
+  confidenceScores: Record<string, number>;
+  routingPlan?: Record<string, unknown>;
+  markdown: string;
+}
+
+/**
+ * Parse + extract one corpus entry with a schema — no schema_run persistence.
+ * Shared by the single-doc tuner and the whole-corpus scorer so both use the
+ * exact same extraction path (parse seam + extractFields, BYO model → env
+ * fallback). Returns the routing plan so callers can build routing diagnoses.
+ */
+export async function extractEntryValues(args: {
+  db: Db;
+  storage: StorageProvider;
+  scope: RlsScope;
+  tenantId: string;
+  defaultParseProvider: ParseProvider;
+  parseConfig: ParseConfig | null;
+  entry: TuneEntry;
+  schemaDef: Record<string, unknown>;
+  model?: string;
+}): Promise<EntryExtraction> {
+  const { db, storage, scope, tenantId, entry, schemaDef, model } = args;
   const { provider: parseProvider, fingerprint } = await resolveParse(db, scope, {
     parseProviderId: null,
     defaultProvider: args.defaultParseProvider,
@@ -139,6 +167,26 @@ export async function runTuneIteration(args: TuneIterationArgs): Promise<TuneIte
     parsed.textMap,
     parsed.chunks,
   );
+  return {
+    extracted: extractResult.extracted ?? {},
+    confidenceScores: extractResult.confidence_scores ?? {},
+    routingPlan: (extractResult.routing_plan as Record<string, unknown>) ?? undefined,
+    markdown: parsed.markdown,
+  };
+}
+
+export async function runTuneIteration(args: TuneIterationArgs): Promise<TuneIterationResult> {
+  const { db, storage, scope, tenantId, entry, groundTruth, yaml, schemaDef, model } = args;
+  const startTime = Date.now();
+
+  // 1. Parse + extract this one document (no schema_run persistence).
+  const extractResult = await extractEntryValues({
+    db, storage, scope, tenantId,
+    defaultParseProvider: args.defaultParseProvider,
+    parseConfig: args.parseConfig,
+    entry, schemaDef, model,
+  });
+  const parsed = { markdown: extractResult.markdown };
 
   // 2. Score + diagnose against ground truth. computeValidateResult is pure and
   //    works for a single doc: pass a one-element results array, no prior
@@ -152,8 +200,8 @@ export async function runTuneIteration(args: TuneIterationArgs): Promise<TuneIte
         filename: entry.filename,
         groundTruth,
         extracted: extractResult.extracted ?? {},
-        confidenceScores: extractResult.confidence_scores ?? {},
-        routingPlan: (extractResult.routing_plan as never) ?? undefined,
+        confidenceScores: extractResult.confidenceScores ?? {},
+        routingPlan: (extractResult.routingPlan as never) ?? undefined,
       },
     ],
     new Map(),
