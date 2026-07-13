@@ -78,6 +78,8 @@ export interface RunCorpusTuneLoopArgs extends LoopDeps {
   maxIterations?: number;
   onRound?: (r: CorpusTuneRound) => Promise<void> | void;
   onEdit?: (n: number, yaml: string, explanation: string) => Promise<void> | void;
+  /** Fine-grained "what I'm doing right now" narration between rounds. */
+  onStatus?: (message: string) => Promise<void> | void;
 }
 
 function stringify(v: unknown): string {
@@ -103,13 +105,18 @@ async function scoreCorpus(
   schemaDef: Record<string, unknown>,
   model: string | undefined,
   prevExtractedMap: Map<string, Record<string, unknown>>,
+  onStatus?: (message: string) => Promise<void> | void,
 ): Promise<{ result: ScoreResult; extractedByEntry: Map<string, EntryExtraction> }> {
+  let done = 0;
   const perDoc = await mapWithConcurrency(entries, SCORE_CONCURRENCY, async (e) => {
     try {
       const ex = await extractEntryValues({ ...deps, entry: e, schemaDef, model });
       return { entry: e, ex };
     } catch {
       return null; // parse/extract failure — dropped from scoring this round
+    } finally {
+      done++;
+      await onStatus?.(`Scoring across the corpus — ${done}/${entries.length} documents`);
     }
   });
   const ok = perDoc.filter((x): x is { entry: CorpusEntryWithGt; ex: EntryExtraction } => x != null);
@@ -188,7 +195,7 @@ const valuesOf = (m: Map<string, EntryExtraction>): Map<string, Record<string, u
   new Map([...m].map(([id, ex]) => [id, ex.extracted]));
 
 export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<CorpusTuneResult> {
-  const { entries, startYaml, model, onRound, onEdit, ...deps } = args;
+  const { entries, startYaml, model, onRound, onEdit, onStatus, ...deps } = args;
   const max = Math.max(1, Math.min(args.maxIterations ?? 5, 8));
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const { provider } = await resolveTenantProvider(deps.db, deps.scope, model ? { preferModel: model } : undefined);
@@ -197,7 +204,9 @@ export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<Co
   if (!startCompiled.ok) throw new Error("starting schema is invalid");
 
   const empty = new Map<string, Record<string, unknown>>();
-  let best = await scoreCorpus(deps, entries, startCompiled.parsed as Record<string, unknown>, model, empty);
+  await onStatus?.(`Scoring the current schema across ${entries.length} labeled documents…`);
+  let best = await scoreCorpus(deps, entries, startCompiled.parsed as Record<string, unknown>, model, empty, onStatus);
+  await onStatus?.(`Baseline: ${best.result.overallAccuracy.toFixed(1)}% across the corpus`);
   let bestYaml = startYaml;
   let bestAcc = best.result.overallAccuracy;
   const baselineAccuracy = bestAcc;
@@ -215,6 +224,11 @@ export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<Co
       stopReason = "passed"; // nothing failing to fix
       break;
     }
+    const worstHint = focus.failing[0]?.routingHint ?? "";
+    await onStatus?.(
+      `Round ${n}: focusing on ${focus.filename} — ${focus.failing.map((f) => f.name).join(", ")}${worstHint ? ` (${worstHint})` : ""}`,
+    );
+    await onStatus?.("Asking the model for a fix…");
     const proposal = await proposeEdit(provider, bestYaml, bestAcc, focus);
     if (!proposal) {
       noImprovement++;
@@ -225,9 +239,10 @@ export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<Co
     }
 
     // Re-score the proposal across the corpus, measuring regressions vs. the best.
+    await onStatus?.("Re-checking the change across the whole corpus…");
     const compiledProp = compileSchema(proposal.yaml);
     const scored = compiledProp.ok
-      ? await scoreCorpus(deps, entries, compiledProp.parsed as Record<string, unknown>, model, valuesOf(best.extractedByEntry))
+      ? await scoreCorpus(deps, entries, compiledProp.parsed as Record<string, unknown>, model, valuesOf(best.extractedByEntry), onStatus)
       : null;
     // Accept any non-regressing proposal (>= best AND no field regressed), not
     // just strictly-better ones — a lateral step lets the schema evolve toward a

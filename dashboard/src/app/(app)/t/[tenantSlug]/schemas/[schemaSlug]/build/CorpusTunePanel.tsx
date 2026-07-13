@@ -51,6 +51,7 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
   const [rounds, setRounds] = useState<LoopRound[]>([]);
   const [result, setResult] = useState<LoopResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
@@ -63,6 +64,7 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
     setRounds([]);
     setResult(null);
     setError(null);
+    setStatus(null);
     setValidateResult(null);
     setPromoted(null);
     setGateError(null);
@@ -73,6 +75,7 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
         yaml,
         model,
         maxIterations: 5,
+        onStatus: (msg) => setStatus(msg),
         onRound: (r) => setRounds((prev) => [...prev, r]),
         onComplete: (r) => {
           setResult(r);
@@ -169,7 +172,8 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
           ))}
           {phase === "running" && (
             <div className="px-3 py-2 flex items-center gap-1.5 text-[11px] text-ink-4">
-              <Loader2 className="w-3 h-3 animate-spin" /> tuning across the corpus…
+              <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+              <span className="italic">{status ?? "starting…"}</span>
             </div>
           )}
         </div>

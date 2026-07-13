@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.91.0 — 2026-07-13
+
+**Improved: Auto-tune now narrates what it\'s doing instead of just spinning.**
+The corpus tuning loop streams fine-grained progress between rounds — "Scoring
+across the corpus — 8/12 documents", "Baseline: 83%", "Round 1: focusing on
+meridian_invoice — currency (routing miss)", "Asking the model for a fix…",
+"Re-checking across the corpus…" — so the (multi-minute) run reads like the
+agent thinking out loud rather than an opaque spinner. The structured per-round
+result cards remain as the history. Delivered as a new `status` SSE event on the
+corpus-loop endpoint.
+
 ## 0.90.1 — 2026-07-13
 
 **Fixed: Auto-tune (and build extraction) failed with "Schema not found" on
