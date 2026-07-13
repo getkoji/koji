@@ -450,6 +450,12 @@ function provenanceHit(span: ProvenanceSpan | null | undefined): boolean {
  *   - null/undefined value: required → 0.0, optional → 1.0. The engine
  *     scores every null 0.0 ("not_found"), but an optional field that is
  *     legitimately absent from the document is not a review reason.
+ *   - empty array (`[]`): treated the same as null — required → 0.0,
+ *     optional → 1.0. The engine's provenance formula (0.70·prov + 0.30·val)
+ *     scores an empty array 0.30 (prov 0.0, val "passed"), which trips the
+ *     review threshold for a legitimately-absent optional list. This is the
+ *     symmetric case to a null scalar: "no value" is not a review reason for
+ *     an optional field (oss-444).
  *   - non-null value: the engine's score, verbatim.
  *   - non-null value the engine didn't score (defensive — the standard
  *     extraction paths score every extracted field): fall back to the
@@ -468,7 +474,12 @@ export function resolveFieldConfidences(
   const scores: Record<string, number> = {};
   for (const [name, schema] of Object.entries(fields)) {
     const value = extractedValues[name];
-    if (value === null || value === undefined) {
+    // "No value" — a null/undefined scalar OR an empty array — is scored from
+    // the schema alone (required → 0.0, optional → 1.0), NOT from the engine
+    // score. The engine scores a null 0.0 and an empty array 0.30; neither is
+    // a review reason for a legitimately-absent optional field. Keeping both
+    // cases here keeps null scalars and empty lists symmetric (oss-444).
+    if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
       scores[name] = Boolean(schema.required) ? 0.0 : 1.0;
       continue;
     }

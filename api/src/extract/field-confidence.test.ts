@@ -333,6 +333,65 @@ describe("resolveFieldConfidences (engine scores + schema sweep)", () => {
     expect(scores.optional_field).toBe(1.0); // optional null is not a review reason
   });
 
+  it("treats an empty array like a null: optional [] → 1.0, required [] → 0.0 (oss-444)", () => {
+    const schemaDef = {
+      fields: {
+        required_list: { type: "array", required: true, items: { type: "string" } },
+        optional_list: { type: "array", items: { type: "string" } },
+      },
+    };
+    const extracted = { required_list: [], optional_list: [] };
+    // The engine scores an empty array 0.30 (prov 0.0, val "passed") — that
+    // number must NOT be used verbatim for the "no value" case.
+    const scores = resolveFieldConfidences(schemaDef, extracted, {
+      required_list: 0.3,
+      optional_list: 0.3,
+    });
+    expect(scores.required_list).toBe(0.0); // required empty list flags (symmetric with null)
+    expect(scores.optional_list).toBe(1.0); // optional empty list auto-delivers
+  });
+
+  it("does not disturb non-empty arrays — engine score used verbatim", () => {
+    const schemaDef = {
+      fields: {
+        coverages: { type: "array", items: { type: "object", properties: { limit: { type: "string" } } } },
+      },
+    };
+    const extracted = { coverages: [{ limit: "$1,000,000" }] };
+    const scores = resolveFieldConfidences(schemaDef, extracted, { coverages: 0.87 });
+    expect(scores.coverages).toBe(0.87);
+  });
+
+  it("scores an empty optional array from the schema even with no engine score", () => {
+    const schemaDef = {
+      fields: {
+        tags: { type: "array", items: { type: "string" } },
+        codes: { type: "array", required: true, items: { type: "string" } },
+      },
+    };
+    const scores = resolveFieldConfidences(schemaDef, { tags: [], codes: [] }, null);
+    expect(scores.tags).toBe(1.0);
+    expect(scores.codes).toBe(0.0);
+  });
+
+  it("a doc whose only low field is an optional empty array does not route to review", () => {
+    const schemaDef = {
+      fields: {
+        name: { type: "string" },
+        endorsements: { type: "array", items: { type: "string" } },
+      },
+    };
+    const extracted = { name: "Acme", endorsements: [] };
+    const scores = resolveFieldConfidences(schemaDef, extracted, {
+      name: 1.0,
+      endorsements: 0.3, // engine's empty-array score
+    });
+    const docConfidence = aggregateDocConfidence(scores);
+    expect(docConfidence).toBe(1.0);
+    // Default review threshold 0.9 → nothing below it → no review.
+    expect(findLowestField(scores, 0.9)).toBeNull();
+  });
+
   it("falls back to the deterministic scorer when the engine has no score", () => {
     const schemaDef = {
       fields: {
