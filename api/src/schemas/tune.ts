@@ -195,37 +195,35 @@ export async function runTuneIteration(args: TuneIterationArgs): Promise<TuneIte
     doc_type: undefined,
   });
   const raw = await provider.generate(prompt, false);
-  let parsedResp = parseAgentResponse(raw);
-
-  // Validate the proposal; one retry feeding the compiler error back, mirroring
-  // the build agent's contract.
-  if (parsedResp.yaml) {
-    try {
-      compileSchema(parsedResp.yaml);
-    } catch (compileErr) {
-      const errMsg = compileErr instanceof Error ? compileErr.message : String(compileErr);
-      const retryPrompt = `${prompt}\n\n### Tuner\n${raw}\n\n### System\nThat schema failed to compile: ${errMsg}\nReturn corrected COMPLETE YAML in a <yaml> block.\n\n### Tuner`;
-      const retryRaw = await provider.generate(retryPrompt, false);
-      const retryParsed = parseAgentResponse(retryRaw);
-      if (retryParsed.yaml) {
-        try {
-          compileSchema(retryParsed.yaml);
-          parsedResp = retryParsed;
-        } catch (retryErr) {
-          return {
-            before,
-            proposedYaml: null,
-            explanation: parsedResp.explanation,
-            compileError: retryErr instanceof Error ? retryErr.message : String(retryErr),
-          };
-        }
-      }
-    }
+  const parsedResp = parseAgentResponse(raw);
+  if (!parsedResp.yaml) {
+    return { before, proposedYaml: null, explanation: parsedResp.explanation };
   }
 
-  return {
-    before,
-    proposedYaml: parsedResp.yaml,
-    explanation: parsedResp.explanation,
-  };
+  // Validate the proposal. compileSchema RETURNS errors (it does not throw), and
+  // it is strict — an unknown property or bad type is a real error. If invalid,
+  // retry once feeding the exact errors back; the compiler is the guardrail that
+  // keeps a bogus proposal from being returned as if it were a valid fix.
+  const compiled = compileSchema(parsedResp.yaml);
+  if (compiled.ok) {
+    return { before, proposedYaml: parsedResp.yaml, explanation: parsedResp.explanation };
+  }
+
+  const errMsg = fmtCompileErrors(compiled.errors);
+  const retryPrompt = `${prompt}\n\n### Tuner\n${raw}\n\n### System\nThat schema is invalid: ${errMsg}\nReturn corrected COMPLETE YAML in a <yaml> block, using ONLY properties from the spec.\n\n### Tuner`;
+  const retryRaw = await provider.generate(retryPrompt, false);
+  const retryParsed = parseAgentResponse(retryRaw);
+  if (retryParsed.yaml) {
+    const recompiled = compileSchema(retryParsed.yaml);
+    if (recompiled.ok) {
+      return { before, proposedYaml: retryParsed.yaml, explanation: retryParsed.explanation };
+    }
+    return { before, proposedYaml: null, explanation: retryParsed.explanation, compileError: fmtCompileErrors(recompiled.errors) };
+  }
+  // Retry produced no usable YAML — never return the invalid original.
+  return { before, proposedYaml: null, explanation: parsedResp.explanation, compileError: errMsg };
+}
+
+function fmtCompileErrors(errors: Array<{ field?: string; message: string }>): string {
+  return errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ");
 }

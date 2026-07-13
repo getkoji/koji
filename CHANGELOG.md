@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.86.2 — 2026-07-13
+
+**Fixed: schema-tuner proposals are now honored and validated.** Two issues,
+both found running the tune loop live: (1) `POST /api/schemas/{slug}/tune`
+checked the schema compiler with try/catch, but `compileSchema` *returns* errors
+rather than throwing — so an invalid proposal was passed through instead of
+retried. It now inspects the compiler result and retries once with the exact
+errors, and never returns an uncompilable schema. (2) A field's freeform
+extractor hint could be written as either `extraction_guidance` (used by the
+pipeline/ingestion path and the built-in templates) or `extraction_hint` (used
+by the build/validate/tune extraction path) — the two paths read different keys,
+so a tuner (or template) hint written as one was silently ignored by the other.
+Both keys are now treated as synonyms everywhere, including the hint-leak guard.
+End result: a tuner proposal that adds `extraction_guidance` to a failing field
+now actually improves extraction (verified: a real invoice went 83% → 100% after
+applying one proposal).
+
 ## 0.86.1 — 2026-07-13
 
 **Fixed: the schema-tuner (and build agent) now applies proposals wrapped in

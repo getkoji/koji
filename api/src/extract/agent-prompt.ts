@@ -139,14 +139,14 @@ const TUNE_SYSTEM_PROMPT = `You are Koji Schema Tuner. You are given an extracti
 ${SCHEMA_SPEC}
 
 HOW TO REASON ABOUT EACH FAILURE:
-- "model never saw the answer" → the correct text was not in the chunks routed to this field. Fix ROUTING: adjust the field's \`look_in\`/category or add/loosen \`hints\` so the right section reaches the model. Do NOT just reword the description.
-- "model saw the text but chose the wrong value" → routing is fine; the model misread intent. Fix the FIELD DESCRIPTION or add a disambiguating hint/example so the correct value is unambiguous.
+- "model never saw the answer" → the correct text was not in the chunks routed to this field. Give the field a clearer \`extraction_guidance\` describing where the value lives / what it looks like so the extractor finds it. Do NOT just reword the description.
+- "model saw the text but chose the wrong value" → the model misread intent. Sharpen the \`description\` or add a disambiguating \`extraction_guidance\` (e.g. "the grand total, not the subtotal") so the correct value is unambiguous.
 - "could not determine" → use your judgment from the document excerpt.
 
 RULES:
 - Make the SMALLEST change that fixes the failing fields. Do not rewrite unrelated fields.
 - Preserve every existing field and passing behavior unless a change is required to fix a failure.
-- Only use types and properties defined in the spec above (e.g. \`hints\`, \`look_in\` for extraction guidance). Do NOT invent properties.
+- Only use properties defined in the spec above (e.g. \`extraction_guidance\` for a per-field hint). Do NOT invent properties.
 - Always return the COMPLETE updated YAML, never a diff.
 
 RESPONSE FORMAT (required):
