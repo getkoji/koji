@@ -26,6 +26,16 @@ export interface ModelProvider {
   generate(prompt: string, jsonMode?: boolean): Promise<string>;
   /** Generate with an image (vision). Base64 PNG + text prompt. */
   generateWithImage?(prompt: string, imageBase64: string, jsonMode?: boolean): Promise<string>;
+  /**
+   * Stream generation token-by-token: `onToken` receives each text delta as it
+   * arrives; the full concatenated text is returned. Optional — callers should
+   * fall back to `generate` when a provider doesn't implement it.
+   */
+  generateStream?(
+    prompt: string,
+    onToken: (delta: string) => void,
+    jsonMode?: boolean,
+  ): Promise<string>;
 }
 
 /**
@@ -71,6 +81,43 @@ export function isContextLengthError(e: unknown): boolean {
 // ---------------------------------------------------------------------------
 // Ollama
 // ---------------------------------------------------------------------------
+
+/**
+ * Consume an OpenAI-style `chat/completions` SSE stream: each `data:` line is a
+ * chunk with `choices[0].delta.content`. Calls `onToken` per delta and returns
+ * the full concatenated text. Shared by OpenAI + Azure providers.
+ */
+async function consumeOpenAIStream(resp: Response, onToken: (delta: string) => void): Promise<string> {
+  const reader = resp.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === "[DONE]") continue;
+      try {
+        const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) {
+          full += delta;
+          onToken(delta);
+        }
+      } catch {
+        // ignore keep-alives / partial lines
+      }
+    }
+  }
+  return full;
+}
 
 export class OllamaProvider implements ModelProvider {
   constructor(
@@ -139,6 +186,25 @@ export class OpenAIProvider implements ModelProvider {
       choices: Array<{ message: { content: string } }>;
     };
     return body.choices[0]!.message.content;
+  }
+
+  async generateStream(prompt: string, onToken: (delta: string) => void, jsonMode = false): Promise<string> {
+    const payload: Record<string, unknown> = {
+      model: this.model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_tokens: COMPLETION_MAX_TOKENS,
+      stream: true,
+    };
+    if (jsonMode) payload.response_format = { type: "json_object" };
+    const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `OpenAI ${resp.status}: ${await resp.text()}`);
+    return consumeOpenAIStream(resp, onToken);
   }
 
   async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {
@@ -262,6 +328,54 @@ export class AnthropicProvider implements ModelProvider {
     });
     if (!resp.ok) throw new ProviderHttpError(resp.status, `Anthropic ${resp.status}: ${await resp.text()}`);
     return AnthropicProvider.extractText(await resp.json() as { content?: Array<{ type: string; text?: string }> });
+  }
+
+  async generateStream(prompt: string, onToken: (delta: string) => void, jsonMode = false): Promise<string> {
+    const effectivePrompt = jsonMode ? prompt + AnthropicProvider.JSON_SUFFIX : prompt;
+    const resp = await fetch(`${this.baseUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": AnthropicProvider.ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: COMPLETION_MAX_TOKENS,
+        temperature: 0,
+        stream: true,
+        messages: [{ role: "user", content: effectivePrompt }],
+      }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!resp.ok) throw new ProviderHttpError(resp.status, `Anthropic ${resp.status}: ${await resp.text()}`);
+    // Anthropic SSE: `content_block_delta` events carry `delta.text`.
+    const reader = resp.body?.getReader();
+    if (!reader) return "";
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let full = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        try {
+          const json = JSON.parse(trimmed.slice(5).trim()) as { type?: string; delta?: { text?: string } };
+          if (json.type === "content_block_delta" && json.delta?.text) {
+            full += json.delta.text;
+            onToken(json.delta.text);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return full;
   }
 
   async generateWithImage(prompt: string, imageBase64: string, jsonMode = true): Promise<string> {

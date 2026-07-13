@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.92.0 — 2026-07-13
+
+**Improved: Auto-tune streams the model's actual reasoning as it works.** Beyond
+the phase narration, each proposal now shows the model *thinking out loud* —
+streamed token-by-token — about which failing field it's tackling, what the
+document shows, why it's failing (routing vs. wording), and the change it's about
+to make. The extraction model providers (OpenAI, Anthropic) gained a streaming
+generate path, and the tuner asks the model to reason in a `<thinking>` block
+that's relayed live to the panel. It reads like watching an engineer work the
+schema, not a spinner.
+
 ## 0.91.0 — 2026-07-13
 
 **Improved: Auto-tune now narrates what it\'s doing instead of just spinning.**

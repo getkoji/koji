@@ -1415,6 +1415,7 @@ schemas.post("/:slug/tune/corpus-loop", requires("job:run"), async (c) => {
         ...loopDeps,
         onEdit: recordEdit,
         onStatus: async (message) => { await stream.writeSSE({ event: "status", data: JSON.stringify({ message }) }); },
+        onThinking: (delta) => { void stream.writeSSE({ event: "thinking", data: JSON.stringify({ delta }) }); },
         onRound: async (r) => { await stream.writeSSE({ event: "round", data: JSON.stringify(r) }); },
       });
       await stream.writeSSE({ event: "complete", data: JSON.stringify(result) });
