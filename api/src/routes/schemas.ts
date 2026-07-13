@@ -21,6 +21,8 @@ import { resolveParse } from "../ingestion/seam";
 import { mapWithConcurrency } from "../parse/pdf-slice";
 import { computeValidateResult } from "../schemas/validate-scoring";
 import { runTuneIteration } from "../schemas/tune";
+import { runTuneLoop } from "../schemas/tune-loop";
+import { streamSSE } from "hono/streaming";
 import {
   runValidateDoc,
   maybeFinalizeValidateRun,
@@ -1157,6 +1159,140 @@ schemas.post("/:slug/tune", requires("job:run"), async (c) => {
     console.error("[tune] iteration failed:", err);
     return c.json({ error: "Tuning failed", detail: err instanceof Error ? err.message : String(err) }, 502);
   }
+});
+
+/**
+ * POST /api/schemas/:slug/tune/loop — autonomous tuning loop on one exemplar.
+ *
+ * Drives /tune repeatedly (extract → score → propose → apply → re-run) until the
+ * schema passes or the loop stalls, returning the best-scoring schema + the full
+ * trace. Applies nothing durable (snapshot/promote is the human-gated step).
+ * Streams SSE progress by default (`iteration` events + a final `complete`);
+ * send `Accept: application/json` for a single aggregate response. Auth: job:run.
+ */
+schemas.post("/:slug/tune/loop", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+  const projectId = getProjectId(c);
+
+  const [s] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1),
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const body = await c.req.json<{ corpus_entry_id?: string; yaml?: string; model?: string; max_iterations?: number }>();
+  if (!body.corpus_entry_id) return c.json({ error: "corpus_entry_id is required" }, 400);
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+  // Capture into locals — property narrowing on body.* is reset across awaits.
+  const corpusEntryId = body.corpus_entry_id;
+  const startYaml = body.yaml;
+  const model = body.model;
+  const maxIterations = body.max_iterations;
+
+  const compiledInput = compileSchema(startYaml);
+  if (!compiledInput.ok) {
+    return c.json(
+      { error: "Invalid schema YAML", detail: compiledInput.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ") },
+      422,
+    );
+  }
+
+  const [entry] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusEntries.id,
+        filename: schema.corpusEntries.filename,
+        storageKey: schema.corpusEntries.storageKey,
+        mimeType: schema.corpusEntries.mimeType,
+        contentHash: schema.corpusEntries.contentHash,
+        groundTruthJson: schema.corpusEntries.groundTruthJson,
+      })
+      .from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.id, corpusEntryId), eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
+      .limit(1),
+  );
+  if (!entry) return c.json({ error: "Corpus entry not found" }, 404);
+  const groundTruth = entry.groundTruthJson as Record<string, unknown> | null;
+  if (!groundTruth || Object.keys(groundTruth).length === 0) {
+    return c.json({ error: "This corpus entry has no ground truth to tune against" }, 400);
+  }
+
+  // Find-or-create an audit session so each applied proposal is recorded.
+  // Best-effort, and project-scoped (agent_sessions requires a project).
+  const scope = getRlsScope(c);
+  let sessionId: string | null = null;
+  if (projectId) {
+    try {
+      const [existing] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.select({ id: schema.agentSessions.id }).from(schema.agentSessions)
+          .where(and(eq(schema.agentSessions.context, "schema_tuner"), eq(schema.agentSessions.contextEntityId, s.id), eq(schema.agentSessions.userId, principal.userId)))
+          .limit(1),
+      );
+      if (existing) sessionId = existing.id;
+      else {
+        const [created] = await withRLS(db, { tenantId, projectId }, (tx) =>
+          tx.insert(schema.agentSessions).values({ tenantId, projectId, userId: principal.userId, context: "schema_tuner", contextEntityId: s.id }).returning({ id: schema.agentSessions.id }),
+        );
+        sessionId = created?.id ?? null;
+      }
+    } catch (err) {
+      console.warn("[tune/loop] could not open audit session:", err);
+    }
+  }
+
+  const recordEdit = async (n: number, yaml: string, explanation: string) => {
+    if (!sessionId) return;
+    try {
+      const [msg] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.insert(schema.agentMessages).values({ tenantId, sessionId: sessionId!, role: "assistant", content: explanation }).returning({ id: schema.agentMessages.id }),
+      );
+      if (!msg) return;
+      await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx.insert(schema.agentProposedEdits).values({
+          tenantId, sessionId: sessionId!, messageId: msg.id,
+          editKind: "schema_yaml", targetId: s.id, diffText: explanation,
+          proposedChangeJson: { yaml, iteration: n }, status: "proposed",
+        }),
+      );
+    } catch (err) {
+      console.warn("[tune/loop] could not record proposal:", err);
+    }
+  };
+
+  const loopDeps = {
+    db, storage: c.get("storage"), scope, tenantId,
+    defaultParseProvider: c.get("parseProvider"), parseConfig: c.get("parseConfig"),
+    entry: { id: entry.id, filename: entry.filename, storageKey: entry.storageKey, mimeType: entry.mimeType, contentHash: entry.contentHash },
+    groundTruth, model, startYaml, maxIterations,
+  };
+
+  const accept = c.req.header("accept") ?? "";
+  if (!accept.includes("text/event-stream")) {
+    try {
+      const result = await runTuneLoop({ ...loopDeps, onEdit: recordEdit });
+      return c.json(result);
+    } catch (err) {
+      console.error("[tune/loop] failed:", err);
+      return c.json({ error: "Tuning loop failed", detail: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  }
+
+  return streamSSE(c, async (stream) => {
+    try {
+      const result = await runTuneLoop({
+        ...loopDeps,
+        onEdit: recordEdit,
+        onIteration: async (it) => {
+          await stream.writeSSE({ event: "iteration", data: JSON.stringify(it) });
+        },
+      });
+      await stream.writeSSE({ event: "complete", data: JSON.stringify(result) });
+    } catch (err) {
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: err instanceof Error ? err.message : "Tuning loop failed" }) });
+    }
+  });
 });
 
 /**

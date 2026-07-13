@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.87.0 — 2026-07-13
+
+**Added: autonomous schema-tuning loop (`POST /api/schemas/{slug}/tune/loop`).**
+Drives the single tuning step in a loop against one labeled exemplar — extract →
+score → propose → apply → re-run — until the schema passes or the loop stalls,
+returning the best-scoring schema found plus the full per-iteration trace. It
+self-corrects: if a proposal doesn't help, it proposes again rather than giving
+up (verified end-to-end taking a real invoice 83% → 100% over three iterations,
+recovering after the first proposal fell short). Streams SSE progress by default
+(an `iteration` event per round + a final `complete`), or returns a single JSON
+aggregate with `Accept: application/json`. Stops early on pass, on no-proposal,
+or after two non-improving rounds; each applied proposal is recorded to
+`agent_proposed_edits` for audit. Applies nothing durable — snapshotting a
+candidate and whole-corpus validation/promote remains a separate human-gated
+step. This is increment 2 of the iterative tuning loop.
+
 ## 0.86.2 — 2026-07-13
 
 **Fixed: schema-tuner proposals are now honored and validated.** Two issues,

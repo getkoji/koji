@@ -1387,7 +1387,37 @@ Run **one schema-tuning iteration** against a single labeled corpus entry: extra
 }
 ```
 
-`routingHint` distinguishes a **routing miss** (the answer never reached the model — fix `look_in`/`hints`) from a **selection error** (the model saw it and chose wrong — fix the field description). Proposals are compiled before returning (with one retry); an uncompilable proposal returns `proposedYaml: null` with a `compileError`. `422` for invalid input YAML, `404` for an unknown entry.
+`routingHint` distinguishes a **routing miss** (the answer never reached the model) from a **selection error** (the model saw it and chose wrong — fix the field description). Proposals are compiled before returning (with one retry); an uncompilable proposal returns `proposedYaml: null` with a `compileError`. `422` for invalid input YAML, `404` for an unknown entry.
+
+### `POST /api/schemas/{slug}/tune/loop`
+
+Run the tuning iteration **autonomously**: extract → score → propose → apply → re-run, repeating until the schema passes on the exemplar or the loop stalls. Returns the best-scoring schema found plus the full trace. Applies nothing durable — snapshotting a candidate and whole-corpus validation/promote is a separate, human-gated step. Auth: `job:run`.
+
+**Request body**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `corpus_entry_id` | string | The labeled exemplar to tune against (must have ground truth). |
+| `yaml` | string | The starting schema YAML. |
+| `model` | string? | Override the extraction/proposal model. |
+| `max_iterations` | number? | Iteration cap, 1–10 (default 5). |
+
+**Response.** Streams **SSE** by default: an `iteration` event per round (`{ n, accuracy, failing, proposed, explanation }`) then a final `complete` event with the aggregate. Send `Accept: application/json` for a single aggregate response:
+
+```jsonc
+{
+  "iterations": [
+    { "n": 1, "accuracy": 83.3, "failing": ["currency"], "proposed": true, "explanation": "..." },
+    { "n": 2, "accuracy": 83.3, "failing": ["currency"], "proposed": true, "explanation": "..." },
+    { "n": 3, "accuracy": 100, "failing": [], "proposed": false, "explanation": "..." }
+  ],
+  "finalYaml": "name: ...\nfields:\n  ...",   // the best-scoring schema tried
+  "finalAccuracy": 100,
+  "stopReason": "passed"    // passed | stuck_no_proposal | stuck_no_improvement | max_iterations | compile_error
+}
+```
+
+The loop stops early when the schema passes, when the model can't propose a fix (`stuck_no_proposal`), or when two consecutive iterations don't improve (`stuck_no_improvement`). Each applied proposal is recorded to `agent_proposed_edits` for audit. `422` for invalid input YAML, `404` for an unknown entry, `400` when the entry has no ground truth.
 
 ### `POST /api/schemas/{slug}/validate`
 
