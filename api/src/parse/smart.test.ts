@@ -394,4 +394,78 @@ describe("detectCorruption", () => {
     const text = "Café Müller — naïve résumé €50 “quoted” façade Zürich policy terms apply. ".repeat(50);
     expect(detectCorruption(text)).toBeNull();
   });
+
+  // A verbatim dec-page header pdfjs mangled on a real digital PDF (Cincinnati
+  // Pillar policy). The words are split into 1-2 char fragments with stranded
+  // single letters ("C", "o", "m", "i") — the localized-mangle signature.
+  const mangledDecHeader =
+    "The Ci nc i nn at i I n su ra nc e C o m pa ny " +
+    "A Sto ck In su r a n ce C o m p an y " +
+    "Head qu ar ter s : 62 00 S. G il mor e Ro ad, Fa irf ield , O H 4 50 14 - 514 1 " +
+    "Mai ling ad dr es s : P.O . Box 14 54 96, Cinc in na ti, O H 452 50 - 549 6 " +
+    "www.c infi n.c om n 513 - 870 - 200 0";
+
+  it("flags a concentrated space-mangle (caught by any arm)", () => {
+    // In isolation the mangled block is dense enough to trip the document-level
+    // shortRatio arm; the point of the windowed arm is the *diluted* case below.
+    expect(detectCorruption(mangledDecHeader)).not.toBeNull();
+  });
+
+  it("flags a localized mangle buried in a mostly-clean document", () => {
+    // The regression this arm exists for: one scrambled dec page inside an
+    // otherwise-clean multi-page policy. The document-level arms (shortRatio,
+    // longRatio) wash out below threshold; the windowed single-letter arm still
+    // catches the bad span. ~1500 clean tokens dwarf the ~90 mangled ones.
+    const cleanPara =
+      "Your insurance premium is being paid directly to us rather than to your insurance agency. " +
+      "We appreciate your prompt payment of the premium and the trust you place in our coverage. ";
+    const buried = cleanPara.repeat(40) + " " + mangledDecHeader + " " + cleanPara.repeat(40);
+    // Specifically the windowed arm — the doc-level arms are washed out here.
+    expect(detectCorruption(buried)).toMatch(/single-letter/);
+  });
+
+  it("does not flag short-token tables (state-code lists)", () => {
+    // Insurance docs are full of legitimate short-token runs — state-abbrev fee
+    // schedules like "$25 AL, AZ, AR, CA ...". These are uppercase 2-char codes,
+    // never stranded single lowercase letters, so the single-letter arm ignores
+    // them. Repeated to clear the 50-token floor.
+    const stateList =
+      "$25 AL, AZ, AR, CA, CO, CT, DE, DC, GA, HI, ID, IL, IN, IA, KS, LA, ME, MI, MN, MS, " +
+      "MO, NE, NV, NH, NM, ND, OH, OK, OR, PA, SD, TN, TX, UT, VT, VA, WA, WI, WV and WY. ";
+    expect(detectCorruption(stateList.repeat(4))).toBeNull();
+  });
+
+  it("does not flag ACORD certificate tables (uppercase insurer-row markers)", () => {
+    // A real ACORD COI packs legitimate single letters: insurer-row codes
+    // (A/B/C/D) and Y/N checkbox flags. They are UPPERCASE, so the lowercase-only
+    // fragment rule ignores them. This washed out a false positive on real COIs.
+    const coi =
+      "COMBINED SINGLE LIMIT 1,000,000 B ANY AUTO ANY AUTO Y Y BAP8088033 00 01/01/2019 " +
+      "BODILY INJURY B AUTOS ONLY OWNED AUTOS ONLY Y Y BAP8088033 00 PROPERTY DAMAGE " +
+      "C UMBRELLA LIAB OCCUR EX00A6019 EACH OCCURRENCE D WORKERS COMPENSATION Y N ";
+    expect(detectCorruption(coi.repeat(4))).toBeNull();
+  });
+
+  it("does not flag decorative single-letter glyph runs (bullets/daggers)", () => {
+    // Skills-matrix and footnote tables render Wingdings bullets as a repeated
+    // letter ("l l l l l l"). It is a single distinct letter, so the >=4-distinct
+    // guard ignores it — unlike a mangled span, which spans the alphabet. Embedded
+    // in surrounding prose as in the real filing, so the document-level arms stay
+    // quiet and this isolates the windowed arm's diversity guard.
+    const prose =
+      "The board evaluates director qualifications across the skills relevant to our strategy. ";
+    const bulletRow =
+      "Financial expertise l l l l l l l l l l l l l l l l l l l l l l l l ";
+    const bullets = prose.repeat(20) + bulletRow.repeat(6) + prose.repeat(20);
+    expect(detectCorruption(bullets)).toBeNull();
+  });
+
+  it("does not flag prose with occasional middle initials", () => {
+    // Middle initials ("John B Smith") are legitimate single letters, but sparse
+    // — a member roster stays well under the 15%-per-window threshold.
+    const roster = Array.from({ length: 120 }, (_, i) =>
+      `Director ${["John", "Mary", "Peter", "Susan"][i % 4]} ${String.fromCharCode(66 + (i % 20))} Thompson served the association board`,
+    ).join(". ");
+    expect(detectCorruption(roster)).toBeNull();
+  });
 });
