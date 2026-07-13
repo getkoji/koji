@@ -1070,7 +1070,7 @@ Promote a reviewed document into the schema's corpus as ground truth.
 | `to` | string | no | Tag applied to the new corpus entry. |
 | `groundTruth` | object | no | `{ field: value }` label to use (provisional only). Defaults to the document's current extraction. |
 
-The source file is copied into a corpus-scoped storage key. Dedup is by `(schemaId, contentHash)`: re-promoting a document appends a new ground-truth version to the existing entry instead of duplicating it.
+The source file is copied into a corpus-scoped storage key. Dedup is by `(schemaId, contentHash)`: re-promoting a document appends a new ground-truth version to the existing entry instead of duplicating it. Any anchored provenance the document carries (from [`resolve-region`](#post-apijobsslugdocumentsdociresolve-region) corrections) travels with the label into the corpus, gated identically to the values — geometry only reaches the scored (denormalized) ground truth for **approved** labels, never for provisional drafts.
 
 **Response** `201 Created` — `{ corpusEntryId, groundTruthId, reviewStatus, provisional, deduped, filename, fieldCount }`.
 
@@ -1081,6 +1081,43 @@ The source file is copied into a corpus-scoped storage key. Dedup is by `(schema
 | `409` | Item is not resolved+approved and `provisional` was not set. |
 | `400` | Item has no associated document or no extracted values to promote. |
 | `404` | Review item or source file not found. |
+
+### `POST /api/schemas/{slug}/corpus/{entryId}/ground-truth`
+
+Save ground truth for a corpus entry. Append-only: creates a new draft ground-truth version (previous versions are preserved via `supersedesId`) and updates the entry's denormalized `groundTruthJson` for quick access.
+
+**Auth:** Bearer token. Requires `corpus:write` permission.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `values` | object | yes | The `{ field: value }` ground-truth label. This is what `validate` scores against. |
+| `provenance` | object | no | Per-field provenance map (`{ field: ProvenanceSpan }`) — the same shape extraction returns alongside its values, retaining each value's `page`, `bbox`, source `chunk`, and resolution rung. Captured by the ground-truth builder when a value is confirmed or anchored via [`resolve-region`](#post-apischemasslugcorpusentryidresolve-region). Additive: omit it for a value-only label. Retained so a label stays auditable and region-anchored. |
+
+**Response** `201 Created` — the new ground-truth row.
+
+### `POST /api/schemas/{slug}/corpus/{entryId}/resolve-region`
+
+Resolve a page region to the document text underneath it — the corpus-scoped twin of [`/api/jobs/{slug}/documents/{docId}/resolve-region`](#post-apijobsslugdocumentsdociresolve-region), used by the ground-truth builder's draw-a-box-to-correct flow. Stateless read against the cached parse `text_map`; no LLM, no writes.
+
+**Auth:** Bearer token. Requires `corpus:read` permission.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `page` | integer | yes | Page number, 1-indexed. |
+| `bbox` | object | yes | `{ x, y, w, h }` normalized to `[0,1]`, top-left origin, with `w, h > 0`. |
+
+**Response** `200 OK` — `{ text, words, bbox }` snapped to the matched words, or `{ text: null, words: [], bbox: null }` when the selection resolves to nothing (no parse cache, no geometry, or a region over whitespace). Callers treat `text: null` as "fall back to typed input" — a correction is never blocked on geometry.
+
+**Errors**
+
+| Status | Meaning |
+|--------|---------|
+| `400` | `page`/`bbox` missing or malformed. |
+| `404` | Corpus entry not found. |
 
 ### `POST /api/schemas/{slug}/corpus/{entryId}/ground-truth/{gtId}/approve`
 

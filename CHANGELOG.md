@@ -2,6 +2,28 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.82.0 — 2026-07-13
+
+**Added: ground-truth builder in the schema build workbench.** The build page's
+"Save as ground truth" step is now a confirm-vs-correct funnel instead of a
+blind save. After extraction proposes values for a corpus document, each field
+shows a source-confidence badge — *exact source*, *best guess*, or *no source
+located*, derived from how confidently its provenance was placed — with the
+uncertain fields sorted first so attention lands where the model is shaky. For
+each field the human can confirm the proposed value as-is, correct it by typing,
+or **correct it by drawing a box on the document**: the drag resolves to the
+text underneath and snaps both the value and its geometry into the label.
+Ground truth is now saved *with* per-field provenance (page, bbox, source span),
+so labels stay auditable and region-anchored. Value-only labels still work
+unchanged.
+
+New endpoints: `POST /api/schemas/{slug}/corpus/{entryId}/resolve-region`
+(region→text lookup for the draw-to-correct flow) and an optional `provenance`
+field on `POST /api/schemas/{slug}/corpus/{entryId}/ground-truth`. Promoting a
+reviewed document into the corpus now carries its anchored corrections' geometry
+along too, gated identically to the values (an agent-authored draft never leaks
+geometry into the scored ground truth).
+
 ## 0.81.0 — 2026-07-13
 
 **Improved: the faithfulness gate now checks each array-row value against its
