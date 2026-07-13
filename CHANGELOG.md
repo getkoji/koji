@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.85.1 — 2026-07-13
+
+**Fixed: the corpus "Pipeline" source filter now means something concrete.** It
+was defined as "not an upload," and entries promoted from the review queue were
+stored with source `review` — so the tab was really "not-upload" and its label
+didn't match any real value. Entries promoted from a pipeline job now carry
+source `pipeline`, and the Upload/Pipeline filters match their sources
+explicitly. Legacy `review`-sourced entries are aliased to the Pipeline filter,
+so nothing already in a corpus disappears.
+
 ## 0.85.0 — 2026-07-13
 
 **Added: choose re-extract vs reparse when rerunning a document.** The Rerun

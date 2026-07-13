@@ -608,7 +608,11 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
       fileSize: file.data.length,
       mimeType: corpusMime,
       contentHash,
-      source: "review",
+      // "pipeline" = this entry originated from a pipeline job (via the review
+      // queue), as opposed to a manual "upload". The corpus source filter keys
+      // on this. Legacy entries promoted before this used "review" (aliased in
+      // the UI filter for backward compatibility).
+      source: "pipeline",
       sourceRef: item.reviewId,
       // Denormalized GT is what `validate` scores. Only populate it for
       // approved (human-gated) labels; provisional drafts stay excluded.
