@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2, Trash2 } from "lucide-react";
+import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2, Trash2, Wand2 } from "lucide-react";
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
@@ -17,6 +17,7 @@ import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import type { SelectionConfig } from "@/components/shared/PdfViewer";
 import { AgentPanel } from "./AgentPanel";
 import { GroundTruthPanel } from "./GroundTruthPanel";
+import { TuneLoopPanel } from "./TuneLoopPanel";
 
 // ── Types ──
 
@@ -56,6 +57,7 @@ interface CorpusEntry {
   mimeType: string;
   source: string;
   createdAt: string;
+  hasGroundTruth?: boolean;
 }
 
 interface ParsedField {
@@ -166,7 +168,7 @@ export default function BuildPage() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
   const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
-  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results" | "groundtruth">("agent");
+  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results" | "groundtruth" | "tune">("agent");
   const [gtSelection, setGtSelection] = useState<SelectionConfig | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
@@ -800,6 +802,13 @@ export default function BuildPage() {
                   <MapPin className="w-3 h-3" />
                   Ground truth
                 </button>
+                <button
+                  onClick={() => setEditorTab("tune")}
+                  className={`px-3 py-1.5 font-mono text-[10px] font-medium tracking-[0.08em] uppercase border-b-2 transition-colors flex items-center gap-1 ${editorTab === "tune" ? "text-ink border-vermillion-2" : "text-ink-4 border-transparent hover:text-ink"}`}
+                >
+                  <Wand2 className="w-3 h-3" />
+                  Tune
+                </button>
               </div>
               <button
                 onClick={() => setFocusPanel(focusPanel === "editor" ? "split" : "editor")}
@@ -1108,6 +1117,22 @@ export default function BuildPage() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Tune tab — autonomous tuning loop */}
+            {editorTab === "tune" && (
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <TuneLoopPanel
+                  schemaSlug={schemaSlug}
+                  tenantSlug={tenantSlug}
+                  entryId={selectedDocId}
+                  filename={selectedDoc?.filename}
+                  hasGroundTruth={selectedDoc?.hasGroundTruth}
+                  yaml={yaml}
+                  model={selectedModel || undefined}
+                  onApply={(next) => { setYaml(next); setEditorTab("schema"); }}
+                />
               </div>
             )}
           </div>

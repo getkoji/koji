@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.88.0 — 2026-07-13
+
+**Added: an Auto-tune tab in the schema build workbench.** Select a labeled
+corpus document and the schema improves itself: the panel runs the autonomous
+tuning loop live — showing each round's accuracy climbing, which fields still
+fail, and the model's reasoning — until it passes or stalls. On convergence you
+**Apply** the improved schema to the editor, then the two safety gates: validate
+the applied schema across the WHOLE corpus (so a fix on one document can't
+silently regress others), and **Promote to live**, which the server blocks if
+the candidate introduced any regression. This makes the iterative schema-tuning
+loop drivable end-to-end without the CLI — increment 3, completing the loop.
+
 ## 0.87.0 — 2026-07-13
 
 **Added: autonomous schema-tuning loop (`POST /api/schemas/{slug}/tune/loop`).**
