@@ -100,7 +100,7 @@ export function selectedProjectSlug(tenantSlug: string | undefined): string | un
  * Returns undefined when neither is known — the server then falls back to the
  * tenant's default project, matching pre-0.48 behavior.
  */
-function getCurrentProjectSlug(tenantSlug: string | undefined): string | undefined {
+export function getCurrentProjectSlug(tenantSlug: string | undefined): string | undefined {
   if (typeof window === "undefined") return undefined;
   const inUrl = window.location.pathname.match(/\/projects\/([^/]+)/)?.[1];
   if (inUrl) return inUrl;

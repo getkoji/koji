@@ -7,7 +7,7 @@
  * follow-up.)
  */
 
-import { getAuthTokenProvider } from "@/lib/api";
+import { getAuthTokenProvider, getCurrentProjectSlug } from "@/lib/api";
 
 export interface LoopRound {
   n: number;
@@ -65,6 +65,11 @@ export async function runCorpusTuneLoopStream(args: RunLoopArgs): Promise<void> 
     Accept: "text/event-stream",
     "x-koji-tenant": args.tenantSlug,
   };
+  // Direct SSE fetch bypasses the shared client, so attach the active project
+  // header ourselves — without it, project-scoped RLS can't see the schema
+  // ("Schema not found").
+  const projectSlug = getCurrentProjectSlug(args.tenantSlug);
+  if (projectSlug) headers["x-koji-project"] = projectSlug;
   const tokenProvider = getAuthTokenProvider();
   if (tokenProvider) {
     const token = await tokenProvider();
