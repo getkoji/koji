@@ -14,7 +14,9 @@ import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { DocumentViewer } from "@/components/shared/DocumentViewer";
+import type { SelectionConfig } from "@/components/shared/PdfViewer";
 import { AgentPanel } from "./AgentPanel";
+import { GroundTruthPanel } from "./GroundTruthPanel";
 
 // ── Types ──
 
@@ -165,8 +167,7 @@ export default function BuildPage() {
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
   const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
   const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results">("agent");
-  const [savingGT, setSavingGT] = useState(false);
-  const [gtSaved, setGtSaved] = useState(false);
+  const [gtSelection, setGtSelection] = useState<SelectionConfig | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
   const [docPreviewUrl, setDocPreviewUrl] = useState<string | null>(null);
@@ -321,7 +322,6 @@ export default function BuildPage() {
           ocr_skipped: resp.data.ocr_skipped,
         });
         setEditorTab("results");
-        setGtSaved(false);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -414,7 +414,6 @@ export default function BuildPage() {
     if (!selectedDocId || !currentYaml || !hasModelEndpoint) return;
     setExtracting(true);
     setExtractionResult(null);
-    setGtSaved(false);
     setParseProgress({ pages: 0, scanned: false, ocr_skipped: false, estimated_seconds: 0, percent: 0, estimated_remaining_seconds: 0, phase: "detecting" });
 
     // SSE streaming can't go through the Next.js middleware proxy (socket
@@ -1055,33 +1054,16 @@ export default function BuildPage() {
                           })()}
                         </div>
 
-                        {/* Save as Ground Truth */}
+                        {/* Ground-truth builder — confirm-vs-correct funnel */}
                         {selectedDocId && (
-                          <div className="mt-3">
-                            <button
-                              disabled={savingGT || gtSaved}
-                              onClick={async () => {
-                                setSavingGT(true);
-                                try {
-                                  await api.post(`/api/schemas/${schemaSlug}/corpus/${selectedDocId}/ground-truth`, {
-                                    values: extractionResult.extracted,
-                                  });
-                                  setGtSaved(true);
-                                } catch (err) {
-                                  console.error("Failed to save ground truth:", err);
-                                } finally {
-                                  setSavingGT(false);
-                                }
-                              }}
-                              className={`w-full py-2 rounded-sm text-[12px] font-medium transition-colors ${
-                                gtSaved
-                                  ? "bg-green/10 text-green border border-green/30 cursor-default"
-                                  : "bg-cream-2 text-ink-3 border border-border hover:border-ink hover:text-ink"
-                              } disabled:opacity-50`}
-                            >
-                              {gtSaved ? "Saved as ground truth" : savingGT ? "Saving..." : "Save as ground truth"}
-                            </button>
-                          </div>
+                          <GroundTruthPanel
+                            schemaSlug={schemaSlug}
+                            entryId={selectedDocId}
+                            extracted={extractionResult.extracted}
+                            provenance={extractionResult.provenance ?? undefined}
+                            onSelectionConfigChange={setGtSelection}
+                            onFocusField={setHighlightedField}
+                          />
                         )}
                       </>
                     )}
@@ -1233,6 +1215,7 @@ export default function BuildPage() {
                   lazy={false}
                   markdown={extractionResult?.markdown ?? null}
                   provenance={extractionResult?.provenance}
+                  selection={gtSelection ?? undefined}
                   className="border border-border rounded-sm h-full overflow-hidden"
                 />
               )}
