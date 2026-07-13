@@ -310,7 +310,7 @@ ${content}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear \u2014 do not paraphrase or reformat. Also include a top-level "__source_text" object mapping each field name to the EXACT verbatim text from the document for that field's value \u2014 the characters as they appear, before any formatting or normalization. And include a "__source_context" object mapping each field name to the full line or sentence where the value appears, for disambiguation. Example: if extracting effective_date from "Policy Period: From 12-04-17 To 12-04-18", return {"effective_date": "2017-12-04", "__source_text": {"effective_date": "12-04-17"}, "__source_context": {"effective_date": "Policy Period: From 12-04-17 To 12-04-18"}}.${extraBlock}
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear \u2014 do not paraphrase or reformat. Also include a "__field_source_text" property on that object: an OBJECT mapping each of the object's OWN field names to the EXACT verbatim text for THAT specific field's value (the characters as printed, before normalization) \u2014 include a field ONLY if its value is actually printed in the document, and copy just the snippet for that one value, not the whole row. Example: {"amount": "$1,234.00", "rate": "4.5%"} (include a field only if its value is actually printed for that item). Also include a top-level "__source_text" object mapping each field name to the EXACT verbatim text from the document for that field's value \u2014 the characters as they appear, before any formatting or normalization. And include a "__source_context" object mapping each field name to the full line or sentence where the value appears, for disambiguation. Example: if extracting effective_date from "Policy Period: From 12-04-17 To 12-04-18", return {"effective_date": "2017-12-04", "__source_text": {"effective_date": "12-04-17"}, "__source_context": {"effective_date": "Policy Period: From 12-04-17 To 12-04-18"}}.${extraBlock}
 
 JSON:`;
 }
@@ -444,6 +444,9 @@ export function extractSourceTexts(
         const obj = item as Record<string, unknown>;
         const src = obj.__source_text;
         delete obj.__source_text;
+        // Per-field source text is consumed by the faithfulness gate at parse
+        // time (before this harvest); strip it here so it never reaches output.
+        delete obj.__field_source_text;
         texts.push(typeof src === "string" ? src : "");
       } else {
         texts.push("");

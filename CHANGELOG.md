@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.81.0 — 2026-07-13
+
+**Improved: the faithfulness gate now checks each array-row value against its
+OWN cited source text, not the whole row.** v0.80.0 verified a row's numbers
+against a single verbatim string covering the entire row, which left a hole: a
+fabricated number could survive by matching a *different* field's value printed
+in the same row (e.g. an invented `deductible: 0` borrowing a genuine `$0`
+printed for that row's building-value line). The extraction prompt now asks the
+model to cite source text per field within each array item
+(`__field_source_text`), and the gate verifies each value against its own
+field's text. When a row provides only the older row-level text, the gate
+falls back to the v0.80.0 row-granularity behavior, so nothing regresses. No
+change to output shape or provenance highlights; the per-field citations are
+internal and stripped before output.
+
 ## 0.80.1 — 2026-07-13
 
 **Fixed: an optional list field that legitimately extracts as empty (`[]`) no

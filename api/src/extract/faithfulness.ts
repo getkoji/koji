@@ -51,16 +51,30 @@ interface ObjectSource {
   fieldMap?: Record<string, string>;
 }
 
+function toFieldMap(v: unknown): Record<string, string> | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const map: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof val === "string") map[k] = val;
+  }
+  return map;
+}
+
 function sourceForObject(obj: Record<string, unknown>): ObjectSource {
+  // Per-FIELD source text (a map cited for each of the row's own fields) is
+  // preferred: it lets a fabricated number be checked against ITS field's
+  // cited text, not the whole row — so a `0` invented for one field can't
+  // borrow a genuine `$0` printed for another field in the same row.
+  const perField = toFieldMap(obj.__field_source_text);
+  if (perField) return { fieldMap: perField };
+
+  // Fallback (top-level scalar map, or an array row that only cited a single
+  // row-level string): the top-level `__source_text` is a field→text map; an
+  // array item's is one verbatim string covering the whole row.
   const st = obj.__source_text;
   if (typeof st === "string") return { rowText: st };
-  if (st && typeof st === "object" && !Array.isArray(st)) {
-    const fieldMap: Record<string, string> = {};
-    for (const [k, v] of Object.entries(st as Record<string, unknown>)) {
-      if (typeof v === "string") fieldMap[k] = v;
-    }
-    return { fieldMap };
-  }
+  const map = toFieldMap(st);
+  if (map) return { fieldMap: map };
   return {};
 }
 
