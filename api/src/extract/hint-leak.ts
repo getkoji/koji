@@ -66,6 +66,9 @@ export function collectHintText(fieldSpec: Record<string, unknown> | undefined):
     if (!spec || typeof spec !== "object" || Array.isArray(spec)) return;
     const s = spec as Record<string, unknown>;
     if (typeof s.extraction_hint === "string") parts.push(s.extraction_hint);
+    // `extraction_guidance` is a synonym for `extraction_hint` (both feed the
+    // extractor prompt, oss-455) — guard against leaking either verbatim.
+    if (typeof s.extraction_guidance === "string") parts.push(s.extraction_guidance);
     const by = s.extraction_hint_by;
     if (by && typeof by === "object" && !Array.isArray(by)) {
       for (const variants of Object.values(by as Record<string, unknown>)) {

@@ -1095,14 +1095,15 @@ schemas.post("/:slug/tune", requires("job:run"), async (c) => {
   const yaml = body.yaml;
 
   // Validate the input YAML up front; the proposal is validated separately.
-  let schemaDef: Record<string, unknown>;
-  try {
-    compileSchema(yaml);
-    const { parse: parseYaml } = await import("yaml");
-    schemaDef = parseYaml(yaml) as Record<string, unknown>;
-  } catch (err) {
-    return c.json({ error: "Invalid schema YAML", detail: err instanceof Error ? err.message : String(err) }, 422);
+  // compileSchema returns errors (it does not throw), so check the result.
+  const compiledInput = compileSchema(yaml);
+  if (!compiledInput.ok) {
+    return c.json(
+      { error: "Invalid schema YAML", detail: compiledInput.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ") },
+      422,
+    );
   }
+  const schemaDef = compiledInput.parsed as Record<string, unknown>;
 
   const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx

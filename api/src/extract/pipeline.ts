@@ -141,7 +141,7 @@ function buildPrompt(
   // Extraction notes (hints)
   const noteLines: string[] = [];
   for (const [name, spec] of Object.entries(fields)) {
-    const hint = typeof spec === "object" ? (spec as any)?.extraction_hint : undefined;
+    const hint = typeof spec === "object" ? ((spec as any)?.extraction_hint ?? (spec as any)?.extraction_guidance) : undefined;
     if (typeof hint === "string" && hint.trim()) {
       noteLines.push(`- **${name}**: ${hint.trim()}`);
     }

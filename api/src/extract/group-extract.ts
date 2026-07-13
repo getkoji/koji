@@ -125,7 +125,11 @@ export function collectExtractionNotes(
   for (const [name, spec] of Object.entries(fields)) {
     if (typeof spec !== "object") continue;
     const parts: string[] = [];
-    const hint = spec.extraction_hint as string | undefined;
+    // `extraction_guidance` and `extraction_hint` are synonyms for a field's
+    // freeform extractor hint; different paths historically read different keys
+    // (ingestion reads guidance, extractFields read hint), so honor both here so
+    // template/tuner guidance actually reaches the prompt (oss-455).
+    const hint = (spec.extraction_hint ?? spec.extraction_guidance) as string | undefined;
     if (typeof hint === "string" && hint.trim()) {
       parts.push(hint.trim());
     }
@@ -343,7 +347,7 @@ export function buildGapFillPrompt(
 
   const fieldLine = `  - ${fieldName}: ${typeLabel}${reqLabel}${descLabel}`;
 
-  const hint = typeof fieldSpec === "object" ? (fieldSpec.extraction_hint as string) : undefined;
+  const hint = typeof fieldSpec === "object" ? ((fieldSpec.extraction_hint ?? fieldSpec.extraction_guidance) as string) : undefined;
   let notesSection = "";
   if (typeof hint === "string" && hint.trim()) {
     notesSection = `\n## Extraction notes\n\n- **${fieldName}**: ${hint.trim()}\n`;
