@@ -1,37 +1,41 @@
 /**
- * Client for the autonomous tuning loop SSE endpoint
- * (`POST /api/schemas/:slug/tune/loop`). Like the extraction runner, SSE can't
- * go through the Next proxy, so this discovers the direct API URL and parses the
- * event stream, delivering `iteration` and `complete` events via callbacks.
- * (Shares the same shape as lib/extraction-run.ts; converging the two is
- * tracked as a follow-up.)
+ * Client for the corpus-optimizing tune loop SSE endpoint
+ * (`POST /api/schemas/:slug/tune/corpus-loop`). SSE can't go through the Next
+ * proxy, so this discovers the direct API URL and parses the event stream,
+ * delivering `round` and `complete` events via callbacks.
+ * (Shares the shape of lib/extraction-run.ts; converging is tracked as a
+ * follow-up.)
  */
 
 import { getAuthTokenProvider } from "@/lib/api";
 
-export interface LoopIteration {
+export interface LoopRound {
   n: number;
   accuracy: number;
-  failing: string[];
-  proposed: boolean;
+  docsPassed: number;
+  docsTotal: number;
+  accepted: boolean;
+  focusDoc: string;
+  fixing: string[];
+  regressions: string[];
   explanation: string;
 }
 
 export interface LoopResult {
-  iterations: LoopIteration[];
+  rounds: LoopRound[];
   finalYaml: string;
   finalAccuracy: number;
-  stopReason: "passed" | "stuck_no_proposal" | "stuck_no_improvement" | "max_iterations" | "compile_error";
+  baselineAccuracy: number;
+  stopReason: "passed" | "no_improvement" | "max_iterations" | "propose_failed";
 }
 
 export interface RunLoopArgs {
   schemaSlug: string;
   tenantSlug: string;
-  corpusEntryId: string;
   yaml: string;
   model?: string;
   maxIterations?: number;
-  onIteration: (it: LoopIteration) => void;
+  onRound: (r: LoopRound) => void;
   onComplete: (result: LoopResult) => void;
   onError: (error: string) => void;
 }
@@ -54,7 +58,7 @@ async function discoverApiBase(): Promise<string> {
   return apiBase;
 }
 
-export async function runTuneLoopStream(args: RunLoopArgs): Promise<void> {
+export async function runCorpusTuneLoopStream(args: RunLoopArgs): Promise<void> {
   const apiBase = await discoverApiBase();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -67,11 +71,10 @@ export async function runTuneLoopStream(args: RunLoopArgs): Promise<void> {
     if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const resp = await fetch(`${apiBase}/api/schemas/${args.schemaSlug}/tune/loop`, {
+  const resp = await fetch(`${apiBase}/api/schemas/${args.schemaSlug}/tune/corpus-loop`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      corpus_entry_id: args.corpusEntryId,
       yaml: args.yaml,
       ...(args.model ? { model: args.model } : {}),
       ...(args.maxIterations ? { max_iterations: args.maxIterations } : {}),
@@ -107,7 +110,7 @@ export async function runTuneLoopStream(args: RunLoopArgs): Promise<void> {
         } catch {
           continue;
         }
-        if (currentEvent === "iteration") args.onIteration(data as LoopIteration);
+        if (currentEvent === "round") args.onRound(data as LoopRound);
         else if (currentEvent === "complete") args.onComplete(data as LoopResult);
         else if (currentEvent === "error") args.onError((data as { error?: string }).error ?? "Tuning loop failed");
         currentEvent = "message";
