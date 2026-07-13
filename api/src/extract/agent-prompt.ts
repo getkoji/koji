@@ -146,7 +146,7 @@ HOW TO REASON ABOUT EACH FAILURE:
 RULES:
 - Make the SMALLEST change that fixes the failing fields. Do not rewrite unrelated fields.
 - Preserve every existing field and passing behavior unless a change is required to fix a failure.
-- Only use types and properties from the spec above.
+- Only use types and properties defined in the spec above (e.g. \`hints\`, \`look_in\` for extraction guidance). Do NOT invent properties.
 - Always return the COMPLETE updated YAML, never a diff.
 
 RESPONSE FORMAT (required):
@@ -273,17 +273,36 @@ ${currentYaml}
  * Uses XML-style tags rather than JSON because YAML content contains
  * characters that break JSON escaping.
  */
+/**
+ * Extract the YAML the model proposed. We ask for a `<yaml>` block, but models
+ * (esp. smaller ones, and reliably on the larger tuning prompt) return a
+ * ```yaml fenced block instead — so the tag-only match silently yielded `null`
+ * and the whole proposal was dropped. Accept, in order: the `<yaml>` tag, a
+ * ```yaml```/```yml``` fence, then a bare ``` fence that looks like a schema
+ * (has a top-level `name:`/`fields:`). Exported for tests.
+ */
+export function extractProposedYaml(raw: string): string | null {
+  const tag = raw.match(/<yaml>([\s\S]*?)<\/yaml>/);
+  if (tag?.[1]?.trim()) return tag[1].trim();
+  const yamlFence = raw.match(/```ya?ml\s*\n([\s\S]*?)```/i);
+  if (yamlFence?.[1]?.trim()) return yamlFence[1].trim();
+  const bareFence = raw.match(/```\s*\n([\s\S]*?)```/);
+  if (bareFence?.[1] && /(^|\n)\s*(name|fields)\s*:/.test(bareFence[1])) {
+    return bareFence[1].trim();
+  }
+  return null;
+}
+
 export function parseAgentResponse(raw: string): {
   yaml: string | null;
   explanation: string;
   doc_type: string | null;
 } {
-  const yamlMatch = raw.match(/<yaml>([\s\S]*?)<\/yaml>/);
   const explanationMatch = raw.match(/<explanation>([\s\S]*?)<\/explanation>/);
   const docTypeMatch = raw.match(/<doc_type>([\s\S]*?)<\/doc_type>/);
 
   return {
-    yaml: yamlMatch?.[1]?.trim() ?? null,
+    yaml: extractProposedYaml(raw),
     explanation: explanationMatch?.[1]?.trim() ?? raw.trim().slice(0, 200),
     doc_type: docTypeMatch?.[1]?.trim() ?? null,
   };

@@ -1,5 +1,39 @@
 import { describe, it, expect } from "vitest";
-import { buildTunePrompt, type TuneFieldReport } from "./agent-prompt";
+import { buildTunePrompt, parseAgentResponse, extractProposedYaml, type TuneFieldReport } from "./agent-prompt";
+
+describe("extractProposedYaml — tolerate the formats models actually emit", () => {
+  const schema = "name: invoice\nfields:\n  currency:\n    type: string";
+
+  it("reads a <yaml> tag block", () => {
+    expect(extractProposedYaml(`<yaml>\n${schema}\n</yaml>\n<explanation>x</explanation>`)).toBe(schema);
+  });
+
+  it("reads a ```yaml fenced block (what gpt-4o-mini returns on the tune prompt)", () => {
+    // Regression: the tune endpoint always returned proposedYaml=null because
+    // the model fences its YAML instead of using the <yaml> tag (found live).
+    expect(extractProposedYaml("```yaml\n" + schema + "\n```\n<explanation>x</explanation>")).toBe(schema);
+  });
+
+  it("reads a ```yml fence too", () => {
+    expect(extractProposedYaml("```yml\n" + schema + "\n```")).toBe(schema);
+  });
+
+  it("reads a bare ``` fence only when it looks like a schema", () => {
+    expect(extractProposedYaml("```\n" + schema + "\n```")).toBe(schema);
+    expect(extractProposedYaml("```\nsome shell command\n```")).toBeNull();
+  });
+
+  it("prefers the <yaml> tag over a fence when both appear", () => {
+    const tagged = "name: tagged\nfields: {}";
+    expect(extractProposedYaml(`<yaml>\n${tagged}\n</yaml>\n\`\`\`yaml\nname: fenced\n\`\`\``)).toBe(tagged);
+  });
+
+  it("parseAgentResponse now surfaces fenced yaml (was null)", () => {
+    const r = parseAgentResponse("```yaml\n" + schema + "\n```\n<explanation>added hint</explanation>");
+    expect(r.yaml).toBe(schema);
+    expect(r.explanation).toBe("added hint");
+  });
+});
 
 describe("buildTunePrompt — the diagnosis→prompt bridge", () => {
   const failing: TuneFieldReport[] = [
