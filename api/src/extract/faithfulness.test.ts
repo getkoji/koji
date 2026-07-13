@@ -97,6 +97,43 @@ describe("nullUnanchoredNumerics — array rows", () => {
   });
 });
 
+describe("nullUnanchoredNumerics — per-field source text (oss-441)", () => {
+  it("checks each value against ITS field's cited text, not the whole row", () => {
+    // The row-granularity hole: `b`'s fabricated 0 would match the `$0` that
+    // legitimately belongs to a DIFFERENT field if we checked the whole row.
+    // With per-field source text, `b` is checked against its own cited text.
+    const parsed = {
+      rows: [
+        {
+          a: 100,
+          b: 0,
+          __source_text: "A $100  B $0", // row string (fallback) contains a 0
+          __field_source_text: { a: "A $100", b: "B $200" }, // b's own text has no 0
+        },
+      ],
+    };
+    const nulled = nullUnanchoredNumerics(parsed);
+    const row = (parsed.rows[0] as Record<string, unknown>);
+    expect(row.a).toBe(100); // anchored in its own text → kept
+    expect(row.b).toBeNull(); // not in its own text → nulled (hole closed)
+    expect(nulled).toEqual([{ path: "rows[0].b", value: 0 }]);
+  });
+
+  it("prefers per-field text over the row string when both are present", () => {
+    const parsed = {
+      rows: [
+        {
+          amount: 50,
+          __source_text: "line total 50 unit 50", // row has 50
+          __field_source_text: { amount: "unit price 9.99" }, // but amount's own text does not
+        },
+      ],
+    };
+    nullUnanchoredNumerics(parsed);
+    expect((parsed.rows[0] as Record<string, unknown>).amount).toBeNull();
+  });
+});
+
 describe("nullUnanchoredNumerics — top-level scalars", () => {
   it("verifies each scalar against its own __source_text map entry", () => {
     const parsed = {

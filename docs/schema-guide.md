@@ -74,9 +74,11 @@ number that does not appear there is set to `null` (its confidence drops to
 unstated figure with a fabricated `0` or an estimate — a not-stated deductible
 comes back `null`, not a misleading `$0`. The comparison is numeric, so `9`
 matches a printed `$9.00` and `50000` matches `$50,000`; a genuinely printed
-`$0` is kept. The check applies to numeric fields at every depth, including
-values inside array rows. It is conservative: a number is kept when the model
-cited no source text for it (nothing to verify against).
+`$0` is kept. The check applies to numeric fields at every depth, and inside an
+array row each value is checked against the text cited for *that* field — so a
+fabricated number can't borrow a real value printed elsewhere in the same row.
+It is conservative: a number is kept when the model cited no source text for it
+(nothing to verify against).
 
 ### date
 
