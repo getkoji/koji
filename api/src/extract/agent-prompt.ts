@@ -105,6 +105,104 @@ fields:
 <explanation>Brief description of what changed and why.</explanation>`;
 
 // ---------------------------------------------------------------------------
+// Tune prompt (score-aware) — the schema-tuning loop's proposal step
+// ---------------------------------------------------------------------------
+
+/** One field's measured failure, fed to the tuner so it edits with evidence. */
+export interface TuneFieldReport {
+  name: string;
+  /** Ground-truth value (stringified for the prompt). */
+  expected: string;
+  /** What the current schema extracted (stringified; "(nothing)" when absent). */
+  got: string;
+  /**
+   * Plain-language routing diagnosis. `answerInRoutedChunks: false` ⇒ the model
+   * never saw the answer (fix which sections/hints route to this field);
+   * `true` ⇒ it saw the text but chose wrong (fix the field description/prompt);
+   * `null` ⇒ undeterminable.
+   */
+  routingHint: string;
+}
+
+export interface TuneContext {
+  /** Overall accuracy on this exemplar before the edit (0–100). */
+  accuracy: number;
+  /** The fields that failed, worst first. */
+  failing: TuneFieldReport[];
+  /** Document excerpt for grounding (first ~2000 chars). */
+  markdown_head: string;
+  doc_type?: string;
+}
+
+const TUNE_SYSTEM_PROMPT = `You are Koji Schema Tuner. You are given an extraction schema, one document, and a MEASURED report of how the current schema scored against known-correct ground truth on that document. Your job is to propose a minimal edit to the schema YAML that fixes the failing fields.
+
+${SCHEMA_SPEC}
+
+HOW TO REASON ABOUT EACH FAILURE:
+- "model never saw the answer" → the correct text was not in the chunks routed to this field. Fix ROUTING: adjust the field's \`look_in\`/category or add/loosen \`hints\` so the right section reaches the model. Do NOT just reword the description.
+- "model saw the text but chose the wrong value" → routing is fine; the model misread intent. Fix the FIELD DESCRIPTION or add a disambiguating hint/example so the correct value is unambiguous.
+- "could not determine" → use your judgment from the document excerpt.
+
+RULES:
+- Make the SMALLEST change that fixes the failing fields. Do not rewrite unrelated fields.
+- Preserve every existing field and passing behavior unless a change is required to fix a failure.
+- Only use types and properties from the spec above.
+- Always return the COMPLETE updated YAML, never a diff.
+
+RESPONSE FORMAT (required):
+<yaml>
+name: ...
+fields:
+  ...
+</yaml>
+<explanation>1-3 sentences: which fields you changed and why (reference the diagnosis).</explanation>`;
+
+/**
+ * Build the score-aware tuning prompt: current schema + a measured failure
+ * report (expected vs got + routing diagnosis per failing field) + a document
+ * excerpt. This is what distinguishes the tuner from the free-form builder —
+ * it edits against evidence, not a chat message.
+ */
+export function buildTunePrompt(currentYaml: string, ctx: TuneContext): string {
+  const failingBlock = ctx.failing.length
+    ? ctx.failing
+        .map(
+          (f) =>
+            `- ${f.name}\n    expected: ${f.expected}\n    extracted: ${f.got}\n    diagnosis: ${f.routingHint}`,
+        )
+        .join("\n")
+    : "  (no failing fields)";
+
+  const reportBlock = `<extraction_report>
+Accuracy on this document: ${ctx.accuracy.toFixed(1)}%
+Failing fields (expected vs. what the current schema extracted):
+${failingBlock}
+</extraction_report>`;
+
+  const docBlock = ctx.markdown_head
+    ? `<document_excerpt>
+${ctx.doc_type ? `Document type: ${ctx.doc_type}\n` : ""}${ctx.markdown_head}
+</document_excerpt>`
+    : "<document_excerpt>\n(unavailable)\n</document_excerpt>";
+
+  const schemaBlock = currentYaml.trim()
+    ? `<current_schema>\n${currentYaml}\n</current_schema>`
+    : "<current_schema>\n(empty)\n</current_schema>";
+
+  return [
+    TUNE_SYSTEM_PROMPT,
+    "",
+    reportBlock,
+    "",
+    docBlock,
+    "",
+    schemaBlock,
+    "",
+    "### Tuner",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Prompt builder
 // ---------------------------------------------------------------------------
 
