@@ -212,6 +212,21 @@ export class SmartParseProvider implements ParseProvider {
  *   threshold), so it needs its own check. Decoded text contains essentially
  *   none of these bytes, so a small fraction is a decisive, low-false-positive
  *   signal; the heavy provider re-reads the rendered glyphs via OCR. See oss-435.
+ * - lowercase, varied single-letter fragments in any sliding window: *localized*
+ *   space-mangling. The three arms above are document-level, so a scrambled dec
+ *   page buried in an otherwise-clean 100-page policy washes out below every
+ *   threshold (a real 102-page doc measured a whole-doc single-letter ratio of
+ *   0.007 while two of its pages were badly mangled — `"The Ci nc i nn at i I n
+ *   su ra nc e C o m pa ny"`, `"B L E FOR D E FE N S E C OS T S"`). pdfjs strands
+ *   one-letter word fragments on these fonts. We slide a window over the token
+ *   stream and fire on the worst one (>15% fragments) when it also holds >=4
+ *   distinct fragment letters. Two guards make this word-mangling-specific and
+ *   yielded 0 false positives across 1114 clean corpus docs: lowercase-excluding-
+ *   "a" drops uppercase table markers (ACORD insurer rows "B/C/D", Y/N flags),
+ *   and the distinct-letter floor drops decorative glyph runs that survive as one
+ *   repeated letter (bullets "l l l l l", footnote daggers "f f f"). A false
+ *   positive only costs a poppler re-parse (correct output, off the fast path).
+ *   See oss-445.
  */
 export function detectCorruption(markdown: string): string | null {
   // Undecodable text layer — checked first and before the token-count floor: a
@@ -246,5 +261,50 @@ export function detectCorruption(markdown: string): string | null {
   if (longRatio > 0.1) {
     return `${(longRatio * 100).toFixed(0)}% tokens are >=20 chars (space-mangled text layer)`;
   }
+
+  // Localized space-mangling: slide a window over the token stream and fire on
+  // the worst window, so a scrambled page can't hide behind a document-wide
+  // average. The signature is a *lowercase, varied* single-letter token: pdfjs
+  // strands one-letter fragments of broken words ("The Ci nc i nn at i I n su ra
+  // nc e"). Two guards keep this specific to word-mangling, verified against
+  // 1114 clean corpus docs (0 false positives):
+  //   - lowercase, excluding "a": "a" is the only real one-letter lowercase word,
+  //     and this drops uppercase table markers (ACORD insurer rows "B/C/D",
+  //     Y/N flags) that are legitimate single letters.
+  //   - >= 4 distinct letters in the window: a mangled span spans the alphabet
+  //     (measured 10 distinct), while decorative glyph runs that survive as one
+  //     repeated letter — bullets rendered "l l l l l", footnote daggers "f f f"
+  //     — collapse to 1-2 distinct and are ignored.
+  const isFragment = (t: string) =>
+    t.length === 1 && t >= "a" && t <= "z" && t !== "a";
+  const WINDOW = Math.min(100, tokens.length);
+  const counts = new Map<string, number>();
+  const bump = (t: string, d: number) => {
+    if (!isFragment(t)) return;
+    const n = (counts.get(t) ?? 0) + d;
+    if (n <= 0) counts.delete(t);
+    else counts.set(t, n);
+  };
+  const total = () => {
+    let s = 0;
+    for (const v of counts.values()) s += v;
+    return s;
+  };
+  for (let i = 0; i < WINDOW; i++) bump(tokens[i]!, 1);
+  const fires = () => total() / WINDOW > 0.15 && counts.size >= 4;
+  let hit = fires();
+  let hitRatio = total() / WINDOW;
+  for (let i = WINDOW; i < tokens.length && !hit; i++) {
+    bump(tokens[i]!, 1);
+    bump(tokens[i - WINDOW]!, -1);
+    if (fires()) {
+      hit = true;
+      hitRatio = total() / WINDOW;
+    }
+  }
+  if (hit) {
+    return `${(hitRatio * 100).toFixed(0)}% single-letter word fragments in a ${WINDOW}-token window (localized space-mangled text)`;
+  }
+
   return null;
 }
