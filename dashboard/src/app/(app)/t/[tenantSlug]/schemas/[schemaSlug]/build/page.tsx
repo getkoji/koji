@@ -17,7 +17,7 @@ import { DocumentViewer } from "@/components/shared/DocumentViewer";
 import type { SelectionConfig } from "@/components/shared/PdfViewer";
 import { AgentPanel } from "./AgentPanel";
 import { GroundTruthPanel } from "./GroundTruthPanel";
-import { TuneLoopPanel } from "./TuneLoopPanel";
+import { CorpusTunePanel } from "./CorpusTunePanel";
 
 // ── Types ──
 
@@ -168,7 +168,9 @@ export default function BuildPage() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<Array<{ field?: string; message: string }>>([]);
   const [focusPanel, setFocusPanel] = useState<"split" | "editor" | "document">("split");
-  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results" | "groundtruth" | "tune">("agent");
+  const [editorTab, setEditorTab] = useState<"agent" | "schema" | "results" | "groundtruth">("agent");
+  // Within the Agent tab: free-form chat vs. the corpus-optimizing auto-tune loop.
+  const [agentMode, setAgentMode] = useState<"chat" | "tune">("chat");
   const [gtSelection, setGtSelection] = useState<SelectionConfig | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<CorpusEntry | null>(null);
@@ -802,13 +804,6 @@ export default function BuildPage() {
                   <MapPin className="w-3 h-3" />
                   Ground truth
                 </button>
-                <button
-                  onClick={() => setEditorTab("tune")}
-                  className={`px-3 py-1.5 font-mono text-[10px] font-medium tracking-[0.08em] uppercase border-b-2 transition-colors flex items-center gap-1 ${editorTab === "tune" ? "text-ink border-vermillion-2" : "text-ink-4 border-transparent hover:text-ink"}`}
-                >
-                  <Wand2 className="w-3 h-3" />
-                  Tune
-                </button>
               </div>
               <button
                 onClick={() => setFocusPanel(focusPanel === "editor" ? "split" : "editor")}
@@ -821,20 +816,49 @@ export default function BuildPage() {
 
             {/* Agent tab */}
             {editorTab === "agent" && (
-              <AgentPanel
-                schemaSlug={schemaSlug}
-                tenantSlug={tenantSlug}
-                currentYaml={yaml}
-                selectedDocId={selectedDocId}
-                onYamlUpdate={(newYaml) => {
-                  setYaml(newYaml);
-                  // Auto-run extraction after agent updates YAML
-                  if (selectedDocId) {
-                    setTimeout(() => handleRun(), 200);
-                  }
-                }}
-                onRunExtraction={() => handleRun()}
-              />
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                {/* Chat vs. corpus auto-tune */}
+                <div className="flex items-center gap-1 px-2 py-1 border-b border-border/50 shrink-0">
+                  <button
+                    onClick={() => setAgentMode("chat")}
+                    className={`px-2 py-1 rounded-sm text-[10px] font-mono tracking-[0.06em] uppercase transition-colors ${agentMode === "chat" ? "bg-cream-2 text-ink" : "text-ink-4 hover:text-ink"}`}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    onClick={() => setAgentMode("tune")}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-sm text-[10px] font-mono tracking-[0.06em] uppercase transition-colors ${agentMode === "tune" ? "bg-cream-2 text-ink" : "text-ink-4 hover:text-ink"}`}
+                  >
+                    <Wand2 className="w-3 h-3" /> Auto-tune
+                  </button>
+                </div>
+                {agentMode === "chat" ? (
+                  <AgentPanel
+                    schemaSlug={schemaSlug}
+                    tenantSlug={tenantSlug}
+                    currentYaml={yaml}
+                    selectedDocId={selectedDocId}
+                    onYamlUpdate={(newYaml) => {
+                      setYaml(newYaml);
+                      // Auto-run extraction after agent updates YAML
+                      if (selectedDocId) {
+                        setTimeout(() => handleRun(), 200);
+                      }
+                    }}
+                    onRunExtraction={() => handleRun()}
+                  />
+                ) : (
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <CorpusTunePanel
+                      schemaSlug={schemaSlug}
+                      tenantSlug={tenantSlug}
+                      yaml={yaml}
+                      model={selectedModel || undefined}
+                      onApply={(next) => { setYaml(next); setEditorTab("schema"); }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Schema editor tab */}
@@ -1117,22 +1141,6 @@ export default function BuildPage() {
                     </div>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Tune tab — autonomous tuning loop */}
-            {editorTab === "tune" && (
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                <TuneLoopPanel
-                  schemaSlug={schemaSlug}
-                  tenantSlug={tenantSlug}
-                  entryId={selectedDocId}
-                  filename={selectedDoc?.filename}
-                  hasGroundTruth={selectedDoc?.hasGroundTruth}
-                  yaml={yaml}
-                  model={selectedModel || undefined}
-                  onApply={(next) => { setYaml(next); setEditorTab("schema"); }}
-                />
               </div>
             )}
           </div>

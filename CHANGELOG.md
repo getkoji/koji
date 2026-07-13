@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.90.0 — 2026-07-13
+
+**Changed: Auto-tune now lives in the Agent tab and optimizes the whole corpus.**
+The schema-building Agent tab gained a **Chat / Auto-tune** toggle; Auto-tune runs
+the corpus-optimizing loop (drive the schema across every labeled document,
+keeping only changes that raise overall accuracy without regressing others),
+streaming each round live — accuracy, which document guided it, what it fixed,
+any regressions — then apply the improved schema and validate + promote (promote
+stays server-gated on no regressions). The separate single-document Tune tab is
+removed; tuning now optimizes for the corpus, using a failing document only to
+guide the edit. This consolidates the iterative schema-tuning loop into one
+place, drivable end-to-end without the CLI.
+
 ## 0.89.0 — 2026-07-13
 
 **Added: a corpus-optimizing tune loop (`POST /api/schemas/{slug}/tune/corpus-loop`).**
