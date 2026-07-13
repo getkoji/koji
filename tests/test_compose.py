@@ -71,6 +71,9 @@ class TestServicesDefaults:
     def test_no_extract_service(self):
         compose = generate_compose(_make_config(), PROJECT_DIR)
         assert "koji-extract" not in compose["services"]
+        # Python extract is gone (extraction is in-process TS); the API must not
+        # be handed a dead KOJI_EXTRACT_URL pointing at a service that never runs.
+        assert "KOJI_EXTRACT_URL" not in compose["services"]["koji-api"]["environment"]
 
 
 class TestOllamaDisabled:

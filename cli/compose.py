@@ -135,7 +135,6 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "DATABASE_URL": db_url,
                 "PORT": "9401",
                 "KOJI_PARSE_URL": f"http://koji-{project}-parse:9410",
-                "KOJI_EXTRACT_URL": f"http://koji-{project}-extract:9420",
                 "KOJI_MASTER_KEY": _resolve_master_key(),
                 "KOJI_S3_ENDPOINT": f"http://koji-{project}-minio:9000",
                 "KOJI_S3_PUBLIC_ENDPOINT": f"http://localhost:{cluster.minio_port}",
