@@ -52,6 +52,7 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
   const [result, setResult] = useState<LoopResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [thinking, setThinking] = useState<string>("");
 
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
@@ -65,6 +66,7 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
     setResult(null);
     setError(null);
     setStatus(null);
+    setThinking("");
     setValidateResult(null);
     setPromoted(null);
     setGateError(null);
@@ -75,7 +77,12 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
         yaml,
         model,
         maxIterations: 5,
-        onStatus: (msg) => setStatus(msg),
+        onStatus: (msg) => {
+          setStatus(msg);
+          // A new proposal is starting — clear the previous round's reasoning.
+          if (msg.startsWith("Asking the model")) setThinking("");
+        },
+        onThinking: (delta) => setThinking((prev) => prev + delta),
         onRound: (r) => setRounds((prev) => [...prev, r]),
         onComplete: (r) => {
           setResult(r);
@@ -171,9 +178,17 @@ export function CorpusTunePanel({ schemaSlug, tenantSlug, yaml, model, onApply }
             </div>
           ))}
           {phase === "running" && (
-            <div className="px-3 py-2 flex items-center gap-1.5 text-[11px] text-ink-4">
-              <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-              <span className="italic">{status ?? "starting…"}</span>
+            <div className="px-3 py-2 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] text-ink-4">
+                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                <span className="italic">{status ?? "starting…"}</span>
+              </div>
+              {thinking.replace(/<\/?thinking>/gi, "").trim() && (
+                <div className="text-[11px] text-ink-3 leading-relaxed whitespace-pre-wrap border-l-2 border-vermillion-2/40 pl-2 max-h-40 overflow-y-auto">
+                  {thinking.replace(/<\/?thinking>/gi, "").trimStart()}
+                  <span className="inline-block w-1 h-3 -mb-0.5 bg-ink-4/60 animate-pulse ml-px" />
+                </div>
+              )}
             </div>
           )}
         </div>

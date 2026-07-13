@@ -80,6 +80,8 @@ export interface RunCorpusTuneLoopArgs extends LoopDeps {
   onEdit?: (n: number, yaml: string, explanation: string) => Promise<void> | void;
   /** Fine-grained "what I'm doing right now" narration between rounds. */
   onStatus?: (message: string) => Promise<void> | void;
+  /** The model's reasoning, streamed token-by-token as it proposes each edit. */
+  onThinking?: (delta: string) => void;
 }
 
 function stringify(v: unknown): string {
@@ -169,13 +171,41 @@ async function proposeEdit(
   currentYaml: string,
   accuracy: number,
   focus: { markdown: string; failing: TuneFieldReport[] },
+  onThinking?: (delta: string) => void,
 ): Promise<{ yaml: string; explanation: string } | null> {
   const prompt = buildTunePrompt(currentYaml, {
     accuracy,
     failing: focus.failing,
     markdown_head: focus.markdown.slice(0, 2000),
   });
-  const raw = await provider.generate(prompt, false);
+  // Stream the model's reasoning (the <thinking> block, everything before the
+  // <yaml>) live; fall back to a plain call when the provider can't stream.
+  let raw: string;
+  if (provider.generateStream && onThinking) {
+    let acc = "";
+    let stopped = false;
+    raw = await provider.generateStream(
+      prompt,
+      (delta) => {
+        if (stopped) return;
+        const before = acc;
+        acc += delta;
+        const yamlIdx = acc.indexOf("<yaml>");
+        if (yamlIdx >= 0) {
+          stopped = true;
+          const cut = Math.max(0, yamlIdx - before.length);
+          const tail = delta.slice(0, cut).replace(/<\/?thinking>/g, "");
+          if (tail.trim()) onThinking(tail);
+          return;
+        }
+        const clean = delta.replace(/<\/?thinking>/g, "");
+        if (clean) onThinking(clean);
+      },
+      false,
+    );
+  } else {
+    raw = await provider.generate(prompt, false);
+  }
   const parsed = parseAgentResponse(raw);
   if (!parsed.yaml) return null;
   if (compileSchema(parsed.yaml).ok) return { yaml: parsed.yaml, explanation: parsed.explanation };
@@ -195,7 +225,7 @@ const valuesOf = (m: Map<string, EntryExtraction>): Map<string, Record<string, u
   new Map([...m].map(([id, ex]) => [id, ex.extracted]));
 
 export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<CorpusTuneResult> {
-  const { entries, startYaml, model, onRound, onEdit, onStatus, ...deps } = args;
+  const { entries, startYaml, model, onRound, onEdit, onStatus, onThinking, ...deps } = args;
   const max = Math.max(1, Math.min(args.maxIterations ?? 5, 8));
   const entryById = new Map(entries.map((e) => [e.id, e]));
   const { provider } = await resolveTenantProvider(deps.db, deps.scope, model ? { preferModel: model } : undefined);
@@ -229,7 +259,7 @@ export async function runCorpusTuneLoop(args: RunCorpusTuneLoopArgs): Promise<Co
       `Round ${n}: focusing on ${focus.filename} — ${focus.failing.map((f) => f.name).join(", ")}${worstHint ? ` (${worstHint})` : ""}`,
     );
     await onStatus?.("Asking the model for a fix…");
-    const proposal = await proposeEdit(provider, bestYaml, bestAcc, focus);
+    const proposal = await proposeEdit(provider, bestYaml, bestAcc, focus, onThinking);
     if (!proposal) {
       noImprovement++;
       rounds.push({ n, accuracy: bestAcc, docsPassed: best.result.docsPassed, docsTotal: best.result.docsTotal, accepted: false, focusDoc: focus.filename, fixing: focus.failing.map((f) => f.name), regressions: [], explanation: "No valid proposal produced." });

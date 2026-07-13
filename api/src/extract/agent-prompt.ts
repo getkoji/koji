@@ -150,6 +150,9 @@ RULES:
 - Always return the COMPLETE updated YAML, never a diff.
 
 RESPONSE FORMAT (required):
+<thinking>
+Think out loud, briefly: which failing field you're tackling, what the document shows for it, why it's failing (routing vs. wording), and the specific change you'll make. A few sentences — this is shown to the user as you work.
+</thinking>
 <yaml>
 name: ...
 fields:
