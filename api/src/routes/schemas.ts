@@ -9,6 +9,10 @@ import { compileSchema } from "../schemas/compiler";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { compareValues } from "../extract/value-compare";
+import type { ProvenanceMap, FlatTextMapSegment } from "../extract/provenance";
+import { toProvenanceTextMap } from "../extract/provenance";
+import { locateWordsByRegion } from "../extract/region";
+import { parseResolveRegionBody } from "./jobs";
 import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
@@ -841,8 +845,17 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   const entryId = c.req.param("entryId")!;
   const principal = getPrincipal(c);
 
-  const body = await c.req.json<{ values: Record<string, unknown> }>();
+  const body = await c.req.json<{
+    values: Record<string, unknown>;
+    /**
+     * Optional per-field provenance (ProvenanceMap) captured by the
+     * ground-truth builder when the human confirmed/anchored a value. Additive:
+     * when absent the row is a value-only label, exactly as before.
+     */
+    provenance?: ProvenanceMap;
+  }>();
   if (!body.values) return c.json({ error: "values is required" }, 400);
+  const provenance = body.provenance ?? null;
 
   // Get the latest GT to set supersedes_id
   const [latest] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
@@ -858,6 +871,7 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
       tenantId,
       corpusEntryId: entryId,
       payloadJson: body.values,
+      provenanceJson: provenance,
       authoredBy: principal.userId,
       reviewStatus: "draft",
       supersedesId: latest?.id ?? null,
@@ -867,7 +881,11 @@ schemas.post("/:slug/corpus/:entryId/ground-truth", requires("corpus:write"), as
   // Also update the corpus entry's ground_truth_json for quick access
   await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.update(schema.corpusEntries)
-      .set({ groundTruthJson: body.values, updatedAt: new Date() })
+      .set({
+        groundTruthJson: body.values,
+        groundTruthProvenanceJson: provenance,
+        updatedAt: new Date(),
+      })
       .where(eq(schema.corpusEntries.id, entryId))
   );
 
@@ -886,6 +904,7 @@ schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), asyn
     tx.select({
       id: schema.corpusEntryGroundTruth.id,
       payloadJson: schema.corpusEntryGroundTruth.payloadJson,
+      provenanceJson: schema.corpusEntryGroundTruth.provenanceJson,
       reviewStatus: schema.corpusEntryGroundTruth.reviewStatus,
       authoredByName: schema.users.name,
       createdAt: schema.corpusEntryGroundTruth.createdAt,
@@ -896,6 +915,83 @@ schemas.get("/:slug/corpus/:entryId/ground-truth", requires("corpus:read"), asyn
   );
 
   return c.json({ data: rows });
+});
+
+/**
+ * POST /api/schemas/:slug/corpus/:entryId/resolve-region — resolve a page
+ * region to the text underneath it, for the ground-truth builder's
+ * draw-a-box-to-correct flow. The corpus-scoped twin of the job endpoint
+ * (jobs.ts `/:slug/documents/:docId/resolve-region`, oss-373): same body
+ * contract, same `locateWordsByRegion` against the cached parse text_map —
+ * only the entry lookup differs (corpus entry → contentHash rather than
+ * document → job).
+ *
+ * Body: { page: number, bbox: {x,y,w,h} } — normalized [0,1], top-left, page
+ * from 1. Returns { text, words, bbox } snapped to the matched words, or
+ * { text: null, words: [], bbox: null } when nothing resolves (no parse
+ * cache, no geometry, or a region over whitespace) so the caller falls back
+ * to typed input — a correction is never blocked on geometry. Stateless read.
+ */
+schemas.post("/:slug/corpus/:entryId/resolve-region", requires("corpus:read"), async (c) => {
+  const db = c.get("db");
+  const storage = c.get("storage");
+  const tenantId = getTenantId(c);
+  const entryId = c.req.param("entryId")!;
+
+  const parsed = parseResolveRegionBody(await c.req.json().catch(() => null));
+  if (!parsed) {
+    return c.json(
+      { error: "page (integer ≥ 1) and bbox {x,y,w,h} (normalized, w/h > 0) are required" },
+      400,
+    );
+  }
+
+  const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({ contentHash: schema.corpusEntries.contentHash })
+      .from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
+      .limit(1)
+  );
+  if (!entry) return c.json({ error: "Corpus entry not found" }, 404);
+
+  const empty = { text: null, words: [], bbox: null };
+  if (!entry.contentHash) return c.json(empty);
+
+  // Same parse_cache lookup as /markdown and the job resolve-region: by
+  // (tenant, content_hash), most recent row (one per parse-provider
+  // fingerprint since oss-298).
+  const [cached] = await db
+    .select({ storageKey: schema.parseCache.storageKey })
+    .from(schema.parseCache)
+    .where(
+      and(
+        eq(schema.parseCache.tenantId, tenantId),
+        eq(schema.parseCache.fileHash, entry.contentHash),
+      ),
+    )
+    .orderBy(desc(schema.parseCache.createdAt))
+    .limit(1);
+  if (!cached) return c.json(empty);
+
+  const blob = await storage.getBuffer(cached.storageKey);
+  if (!blob) return c.json(empty);
+
+  let textMapFlat: FlatTextMapSegment[];
+  try {
+    const payload = JSON.parse(blob.data.toString()) as { text_map?: unknown };
+    textMapFlat = Array.isArray(payload.text_map)
+      ? (payload.text_map as FlatTextMapSegment[])
+      : [];
+  } catch {
+    return c.json(empty);
+  }
+  if (textMapFlat.length === 0) return c.json(empty);
+
+  const match = locateWordsByRegion(toProvenanceTextMap(textMapFlat), parsed.page, parsed.rect);
+  if (!match) return c.json(empty);
+
+  c.header("Cache-Control", "no-store");
+  return c.json(match);
 });
 
 /**

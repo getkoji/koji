@@ -8,7 +8,7 @@ import { requires, getTenantId, getPrincipal, generatePreviewToken, getProjectId
 import { requireFeature } from "../billing/middleware";
 import { resolveMimeType } from "../ingestion/mime";
 import { formatSemverLabel } from "../schemas/semver";
-import type { BBox, ProvenanceSpan, WordBox } from "../extract/provenance";
+import type { BBox, ProvenanceMap, ProvenanceSpan, WordBox } from "../extract/provenance";
 
 export const review = new Hono<Env>();
 
@@ -142,6 +142,23 @@ export function resolvePromotion(input: {
   return input.provisional
     ? { ok: true, reviewStatus: "draft", authoredViaAgent: true, writeDenormalizedGt: false }
     : { ok: true, reviewStatus: "approved", authoredViaAgent: false, writeDenormalizedGt: true };
+}
+
+/**
+ * Geometry follows the same grade-your-own-homework gate as the values. The
+ * versioned ground-truth row always keeps whatever provenance was anchored
+ * (append-only history), but the *denormalized* copy that `validate` scores
+ * only carries geometry when the label is human-approved — mirroring how
+ * `writeDenormalizedGt` gates the denormalized values. A provisional
+ * (agent-authored) draft must not leak geometry into the scored copy any more
+ * than it leaks values. Pure and exported so the invariant is unit-tested
+ * without a database.
+ */
+export function denormalizedProvenance(
+  writeDenormalizedGt: boolean,
+  provenance: ProvenanceMap | null,
+): ProvenanceMap | null {
+  return writeDenormalizedGt ? provenance : null;
 }
 
 /**
@@ -506,6 +523,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
         mimeType: schema.documents.mimeType,
         schemaVersionId: schema.documents.schemaVersionId,
         extractionJson: schema.documents.extractionJson,
+        provenanceJson: schema.documents.provenanceJson,
       })
       .from(schema.reviewItems)
       .leftJoin(schema.documents, eq(schema.documents.id, schema.reviewItems.documentId))
@@ -536,6 +554,12 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
   if (!payload || Object.keys(payload).length === 0) {
     return c.json({ error: "Document has no extracted values to promote" }, 400);
   }
+
+  // Per-field geometry travels with the values. Anchored corrections (the
+  // human "draw a box to fix this" flow) already persist a ProvenanceMap on
+  // documents.provenanceJson; carry it into the corpus so the label keeps its
+  // page + bbox + source span. Additive — null when the document has none.
+  const provenance = (item.provenanceJson as ProvenanceMap | null) ?? null;
 
   // Read the source file so we can copy it into the corpus and hash it.
   const file = await storage.getBuffer(item.storageKey);
@@ -589,6 +613,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
       // Denormalized GT is what `validate` scores. Only populate it for
       // approved (human-gated) labels; provisional drafts stay excluded.
       groundTruthJson: decision.writeDenormalizedGt ? payload : {},
+      groundTruthProvenanceJson: denormalizedProvenance(decision.writeDenormalizedGt, provenance),
       tags,
       addedBy: principal.userId,
     };
@@ -617,6 +642,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
         corpusEntryId,
         schemaVersionId: item.schemaVersionId ?? null,
         payloadJson: payload,
+        provenanceJson: provenance,
         authoredBy: principal.userId,
         authoredViaAgent: decision.authoredViaAgent,
         reviewStatus,
@@ -635,7 +661,11 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
     await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx
         .update(schema.corpusEntries)
-        .set({ groundTruthJson: payload, updatedAt: new Date() })
+        .set({
+          groundTruthJson: payload,
+          groundTruthProvenanceJson: provenance,
+          updatedAt: new Date(),
+        })
         .where(eq(schema.corpusEntries.id, corpusEntryId)),
     );
   }
