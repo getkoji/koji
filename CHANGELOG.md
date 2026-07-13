@@ -2,6 +2,14 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.83.0 — 2026-07-13
+
+**Changed: the ground-truth builder now lives in its own "Ground truth" tab in
+the build workbench** instead of hanging off the bottom of the Results tab. The
+confirm-vs-correct funnel (confidence badges, inline edit, draw-a-box-to-correct)
+is unchanged — it's just its own surface now, alongside Agent / Schema / Results.
+The tab is enabled once an extraction has run.
+
 ## 0.82.0 — 2026-07-13
 
 **Added: ground-truth builder in the schema build workbench.** The build page's
