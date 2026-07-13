@@ -13,7 +13,7 @@
  * one implementation (build page convergence tracked as a follow-up).
  */
 
-import { getAuthTokenProvider } from "@/lib/api";
+import { getAuthTokenProvider, getCurrentProjectSlug } from "@/lib/api";
 
 export interface ExtractionProgress {
   pages: number;
@@ -85,6 +85,10 @@ export async function runExtraction(args: RunExtractionArgs): Promise<void> {
     "Content-Type": "application/json",
     "x-koji-tenant": tenantSlug,
   };
+  // Direct SSE fetch bypasses the shared client — attach the active project so
+  // project-scoped RLS resolves the schema/corpus (else 404 on project tenants).
+  const projectSlug = getCurrentProjectSlug(tenantSlug);
+  if (projectSlug) headers["x-koji-project"] = projectSlug;
   const tokenProvider = getAuthTokenProvider();
   if (tokenProvider) {
     const token = await tokenProvider();

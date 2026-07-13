@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.90.1 — 2026-07-13
+
+**Fixed: Auto-tune (and build extraction) failed with "Schema not found" on
+projects other than the default.** The SSE clients for the tuning loop and
+extraction post directly to the API (bypassing the shared client) and did not
+send the `x-koji-project` header. On a tenant with multiple projects the API
+falls back to the default project, so a schema living in another project was
+filtered out by project RLS. Both SSE clients now attach the active project
+header like every other request.
+
 ## 0.90.0 — 2026-07-13
 
 **Changed: Auto-tune now lives in the Agent tab and optimizes the whole corpus.**
