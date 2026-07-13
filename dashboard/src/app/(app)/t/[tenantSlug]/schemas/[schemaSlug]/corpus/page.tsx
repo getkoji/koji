@@ -22,6 +22,13 @@ interface CorpusEntry {
 /** Scalar (non-container) schema field types — the ones the funnel edits inline. */
 const CONTAINER_TYPES = new Set(["object", "array", "list", "table"]);
 
+// How a corpus entry entered the corpus, for the source filter. Matched
+// explicitly (not "!== upload") so the tabs mean something concrete. "review"
+// is the legacy value for pipeline-origin entries promoted before 0.85.x;
+// aliased here so those entries still show under "Pipeline".
+const UPLOAD_SOURCES = new Set(["upload"]);
+const PIPELINE_SOURCES = new Set(["pipeline", "review"]);
+
 interface SchemaField {
   name: string; type: string; required?: boolean; nullable?: boolean;
   values?: string[]; options?: string[]; validate?: Record<string, unknown>;
@@ -161,8 +168,8 @@ export default function CorpusPage() {
   const firstToLabel = labelQueue.find((e) => !e.hasGroundTruth) ?? labelQueue[0];
 
   const filtered = allEntries.filter((e) => {
-    if (srcFilter === "Upload" && e.source !== "upload") return false;
-    if (srcFilter === "Pipeline" && e.source === "upload") return false;
+    if (srcFilter === "Upload" && !UPLOAD_SOURCES.has(e.source)) return false;
+    if (srcFilter === "Pipeline" && !PIPELINE_SOURCES.has(e.source)) return false;
     if (gtFilter === "with_gt" && !e.hasGroundTruth) return false;
     if (gtFilter === "needs_gt" && e.hasGroundTruth) return false;
     if (search && !e.filename.toLowerCase().includes(search.toLowerCase())) return false;
