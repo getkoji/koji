@@ -42,6 +42,9 @@ interface RunState {
   bestAccuracy: number | null;
   currentRound: number;
   maxIterations: number;
+  phase: "baseline" | "proposal" | "proposing" | null;
+  docsScored: number;
+  docsTotal: number;
   bestYaml: string;
   error: string | null;
   rounds: Round[];
@@ -68,6 +71,21 @@ function accColor(a: number | null): string {
 }
 
 const isDone = (s: string) => s === "passed" || s === "stopped" || s === "failed";
+
+/** What the run is doing right now — scoring fans out per doc, so show N/M progress. */
+function progressLabel(run: {
+  status: string;
+  phase: "baseline" | "proposal" | "proposing" | null;
+  currentRound: number;
+  docsScored: number;
+  docsTotal: number;
+}): string {
+  const of = run.docsTotal > 0 ? ` — ${run.docsScored}/${run.docsTotal} documents` : "";
+  if (run.status === "queued" || !run.phase) return "Starting…";
+  if (run.phase === "baseline") return `Scoring the baseline across the corpus${of}`;
+  if (run.phase === "proposing") return `Round ${run.currentRound + 1}: asking the model for a fix…`;
+  return `Round ${run.currentRound}: re-checking the change across the corpus${of}`;
+}
 
 export function CorpusTunePanel({ schemaSlug, yaml, model, onApply }: Props) {
   const [run, setRun] = useState<RunState | null>(null);
@@ -223,7 +241,7 @@ export function CorpusTunePanel({ schemaSlug, yaml, model, onApply }: Props) {
       {running && (
         <div className="flex items-center gap-1.5 text-[11px] text-ink-4">
           <Loader2 className="w-3 h-3 animate-spin" />
-          {run!.status === "queued" ? "Starting…" : `Working on round ${run!.currentRound + 1}…`}
+          {progressLabel(run!)}
         </div>
       )}
 

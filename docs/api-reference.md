@@ -1421,13 +1421,13 @@ The loop stops early when the schema passes, when the model can't propose a fix 
 
 ### `POST /api/schemas/{slug}/tune/runs`
 
-Start a **durable** corpus-tuning run. The loop can't complete in one request (the API function is capped at 300s; a real corpus exceeds it), so this creates a persisted run and drives it with background jobs — one round per job — surviving disconnects and the time cap. Returns the run id immediately; poll for progress. Rejected proposals are persisted and fed back into later rounds (and future runs) so the model doesn't retread failed edits. Auth: `job:run`.
+Start a **durable** corpus-tuning run. The loop can't complete in one request (the API function is capped at 300s; a real corpus exceeds it), so this creates a persisted run and drives it with background jobs — surviving disconnects and the time cap. Every corpus scoring itself **fans out one job per document** (the baseline pass alone can approach the cap), so runs of any corpus size stay well under it and report live per-document progress. Returns the run id immediately; poll for progress. Rejected proposals are persisted and fed back into later rounds (and future runs) so the model doesn't retread failed edits. Auth: `job:run`.
 
 **Body**: `{ yaml, model?, max_iterations? (1–8, default 5) }`. **Response** `202`: `{ runId, status: "queued" }`. Requires ≥1 corpus doc with ground truth (`400`).
 
 ### `GET /api/schemas/{slug}/tune/runs/{runId}`
 
-Poll a run: `{ id, status (queued|running|passed|stopped|failed), stopReason, baselineAccuracy, bestAccuracy, currentRound, maxIterations, bestYaml, rounds: [{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation, thinking }] }`. Auth: `job:read`.
+Poll a run: `{ id, status (queued|running|passed|stopped|failed), stopReason, baselineAccuracy, bestAccuracy, currentRound, maxIterations, phase (baseline|proposal|proposing|null), docsScored, docsTotal, bestYaml, rounds: [{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation, thinking }] }`. `phase` + `docsScored`/`docsTotal` report the in-flight scoring pass so the UI can show live "N/M documents" progress. Auth: `job:read`.
 
 ### `GET /api/schemas/{slug}/tune/runs`
 
