@@ -34,6 +34,7 @@ import {
 } from "@/lib/api";
 import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useAuth } from "@/lib/auth-context";
 import { statusTone, statusLabel, formatRelativeTime, formatAbsoluteTime } from "../format";
 
@@ -61,6 +62,8 @@ export default function PipelineDetailPage() {
 
   const canWrite = hasPermission("pipeline:write");
   const canDeploy = hasPermission("schema:deploy");
+
+  usePageTitle(pipeline?.displayName ?? "Pipeline");
 
   async function togglePause() {
     if (!pipeline || submitting) return;

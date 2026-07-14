@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function CliAuthorizePage() {
   return (
@@ -28,6 +29,7 @@ interface TenantInfo {
 }
 
 function AuthorizeForm() {
+  usePageTitle("Authorize CLI");
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callback");
   const state = searchParams.get("state");

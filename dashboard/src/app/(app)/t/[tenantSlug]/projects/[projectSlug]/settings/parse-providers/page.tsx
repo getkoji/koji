@@ -13,6 +13,7 @@ import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { usePageTitle } from "@/lib/use-page-title";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -197,6 +198,7 @@ function configSummary(e: ParseEndpoint): string | null {
 // ── Page ──────────────────────────────────────────────────────────────────
 
 export default function ParseProvidersPage() {
+  usePageTitle("Parse Providers");
   const { hasPermission } = useAuth();
   const canWrite = hasPermission("endpoint:write");
   const [showAdd, setShowAdd] = useState(false);

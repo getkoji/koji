@@ -6,8 +6,10 @@ import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function SetupPage() {
+  usePageTitle("Setup");
   const router = useRouter();
   const { data: status, loading: checking } = useApi(
     useCallback(() => api.get<{ needed: boolean; reason?: string }>("/api/setup/status"), []),

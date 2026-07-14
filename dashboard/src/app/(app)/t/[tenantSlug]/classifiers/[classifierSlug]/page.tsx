@@ -12,6 +12,7 @@ import {
   type ClassifierVersion,
   type ClassifyResult,
 } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 const TIER_LABELS: Record<number, string> = {
   0: "metadata",
@@ -122,6 +123,8 @@ export default function ClassifierDetailPage() {
   }
 
   const hasCandidate = versions.some((v) => !v.released);
+
+  usePageTitle(detail?.displayName ?? "Classifier");
 
   if (loadError) {
     return (

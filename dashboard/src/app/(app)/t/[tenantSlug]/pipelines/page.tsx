@@ -12,6 +12,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
 import { statusTone, statusLabel, formatRelativeTime } from "./format";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface SchemaOption {
   id: string;
@@ -27,6 +28,7 @@ interface ParseProviderOption {
 }
 
 export default function PipelinesPage() {
+  usePageTitle("Pipelines");
   const { hasPermission } = useAuth();
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";

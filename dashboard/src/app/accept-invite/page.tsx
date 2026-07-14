@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function AcceptInvitePage() {
   return (
@@ -21,6 +22,7 @@ export default function AcceptInvitePage() {
 }
 
 function AcceptInviteForm() {
+  usePageTitle("Accept Invitation");
   const searchParams = useSearchParams();
   const router = useRouter();
   const token = searchParams.get("token") ?? "";

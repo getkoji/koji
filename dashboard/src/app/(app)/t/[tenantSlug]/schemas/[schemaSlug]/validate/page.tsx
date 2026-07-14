@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ShieldCheck, AlertTriangle, CheckCircle2, XCircle, ChevronDown, ExternalLink, Database, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { DiffView, type FailingDoc } from "./DiffView";
 
@@ -58,6 +59,8 @@ export default function ValidatePage() {
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
   const tenantSlug = (params.tenantSlug as string | undefined) ?? pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
+
+  usePageTitle(schemaSlug ? `${schemaSlug} — Validate` : "Validate");
 
   const [result, setResult] = useState<ValidateResult | null>(null);
   const [running, setRunning] = useState(false);

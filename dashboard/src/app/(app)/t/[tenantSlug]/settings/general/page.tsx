@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth-context";
 import { emit } from "@/lib/events";
 import { Pencil } from "lucide-react";
 import { SectionHeader } from "@/components/shared/SettingsComponents";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface TenantInfo {
   id: string;
@@ -36,6 +37,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function GeneralPage() {
+  usePageTitle("Settings");
   const pathname = usePathname();
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
   const { hasPermission } = useAuth();

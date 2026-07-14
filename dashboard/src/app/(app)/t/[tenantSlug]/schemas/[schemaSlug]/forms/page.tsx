@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ClipboardList, Plus, Upload, Trash2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface FormMapping {
   id: string;
@@ -25,6 +26,8 @@ export default function FormsListPage() {
   const router = useRouter();
   const schemaSlug = params.schemaSlug as string;
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
+
+  usePageTitle(schemaSlug ? `${schemaSlug} — Forms` : "Forms");
 
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);

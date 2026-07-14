@@ -6,8 +6,10 @@ import { PasswordInput } from "@/components/shared/PasswordInput";
 import { me as meApi } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { TableSkeleton } from "@/components/shared/TableSkeleton";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function AccountPage() {
+  usePageTitle("Account");
   const { data: user, loading, error } = useApi(useCallback(() => meApi.get(), []));
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");

@@ -24,6 +24,7 @@ import { DetailLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { jobs as jobsApi, type DocumentDetail, type TraceStageRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { prettyStageName } from "./format";
 import type { ResolutionRung } from "@/lib/provenance-resolution";
 
@@ -381,6 +382,8 @@ export default function TraceViewPage() {
     URL.revokeObjectURL(url);
   }, [data]);
   const clampedStage = Math.min(selectedStage, Math.max(0, stages.length - 1));
+
+  usePageTitle(data?.filename ?? "Document");
 
   if (loading && !data) {
     return (

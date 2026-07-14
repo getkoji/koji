@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { usePageTitle } from "@/lib/use-page-title";
 
 // Project-scoped roles (oss-372).
 const PROJECT_ROLES = [
@@ -45,6 +46,7 @@ function roleLabel(role: string): string {
 }
 
 export default function ProjectMembersPage() {
+  usePageTitle("Project Members");
   const params = useParams<{ projectSlug: string }>();
   const projectSlug = params?.projectSlug ?? "";
   const { hasPermission } = useAuth();

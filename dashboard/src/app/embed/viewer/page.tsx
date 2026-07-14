@@ -14,6 +14,7 @@ import {
   type ViewOverflow,
   type WordBox,
 } from "@/components/shared/PdfViewer";
+import { usePageTitle } from "@/lib/use-page-title";
 
 /**
  * Embeddable PDF viewer — a standalone page designed to be iframed by external
@@ -116,6 +117,7 @@ function asViewOverflow(v: string | null | undefined): ViewOverflow | undefined 
 }
 
 function EmbedViewerInner() {
+  usePageTitle("Document Viewer");
   const searchParams = useSearchParams();
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<BBoxHighlight[]>([]);

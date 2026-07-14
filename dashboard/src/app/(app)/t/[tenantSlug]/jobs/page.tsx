@@ -19,6 +19,7 @@ import {
   formatRelativeTime,
   successRate,
 } from "./format";
+import { usePageTitle } from "@/lib/use-page-title";
 
 type StatusFilter = "all" | UiJobStatus;
 type DateRange = "today" | "7d" | "30d" | "all";
@@ -45,6 +46,7 @@ const DATE_OPTIONS: { key: DateRange; label: string }[] = [
 ];
 
 export default function JobsPage() {
+  usePageTitle("Jobs");
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";
 

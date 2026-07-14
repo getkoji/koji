@@ -5,6 +5,7 @@ import { SectionHeader, SettingsTable, SettingsRow, Badge, Meta } from "@/compon
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface KeyScope {
   mode: "single" | "projects" | "all";
@@ -56,6 +57,7 @@ function timeAgo(dateStr: string | null): string {
 }
 
 export default function ApiKeysPage() {
+  usePageTitle("API Keys");
   const { hasPermission } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
   const [createdKey, setCreatedKey] = useState<string | null>(null);

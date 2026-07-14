@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function LoginPage() {
   return (
@@ -21,6 +22,7 @@ export default function LoginPage() {
 }
 
 function LoginForm() {
+  usePageTitle("Sign in");
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnUrl = searchParams.get("return");
