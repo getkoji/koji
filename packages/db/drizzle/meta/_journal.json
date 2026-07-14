@@ -246,6 +246,13 @@
       "when": 1783889546328,
       "tag": "0034_rapid_thing",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1783988056060,
+      "tag": "0035_bitter_rhodey",
+      "breakpoints": true
     }
   ]
 }

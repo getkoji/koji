@@ -1419,6 +1419,20 @@ Run the tuning iteration **autonomously**: extract → score → propose → app
 
 The loop stops early when the schema passes, when the model can't propose a fix (`stuck_no_proposal`), or when two consecutive iterations don't improve (`stuck_no_improvement`). Each applied proposal is recorded to `agent_proposed_edits` for audit. `422` for invalid input YAML, `404` for an unknown entry, `400` when the entry has no ground truth.
 
+### `POST /api/schemas/{slug}/tune/runs`
+
+Start a **durable** corpus-tuning run. The loop can't complete in one request (the API function is capped at 300s; a real corpus exceeds it), so this creates a persisted run and drives it with background jobs — one round per job — surviving disconnects and the time cap. Returns the run id immediately; poll for progress. Rejected proposals are persisted and fed back into later rounds (and future runs) so the model doesn't retread failed edits. Auth: `job:run`.
+
+**Body**: `{ yaml, model?, max_iterations? (1–8, default 5) }`. **Response** `202`: `{ runId, status: "queued" }`. Requires ≥1 corpus doc with ground truth (`400`).
+
+### `GET /api/schemas/{slug}/tune/runs/{runId}`
+
+Poll a run: `{ id, status (queued|running|passed|stopped|failed), stopReason, baselineAccuracy, bestAccuracy, currentRound, maxIterations, bestYaml, rounds: [{ n, accuracy, docsPassed, docsTotal, accepted, focusDoc, fixing, regressions, explanation, thinking }] }`. Auth: `job:read`.
+
+### `GET /api/schemas/{slug}/tune/runs`
+
+The latest run for the schema (`{ latest: { id, status, createdAt } | null }`) — used to resume the UI. Auth: `job:read`.
+
 ### `POST /api/schemas/{slug}/tune/corpus-loop`
 
 Run the tuning loop optimizing for **whole-corpus accuracy** (not one document). Each round scores the schema across every labeled corpus doc, focuses on a failing one to guide the edit, proposes a change, then **re-scores the whole corpus** — keeping the edit only if overall accuracy improved and nothing regressed. This is the corpus-optimizing counterpart to `tune/loop`: a failing document guides the schema's evolution while the objective stays the corpus. Auth: `job:run`.
