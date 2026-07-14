@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { api } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function ForgotPasswordPage() {
+  usePageTitle("Forgot Password");
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);

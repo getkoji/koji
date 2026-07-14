@@ -21,6 +21,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { inferModelCapabilities, type ModelCapability } from "@/lib/model-capabilities";
+import { usePageTitle } from "@/lib/use-page-title";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,7 @@ function providerConfigSummary(c: Credential): string | null {
 // ── Page ──────────────────────────────────────────────────────────────────
 
 export default function ModelProvidersPage() {
+  usePageTitle("Model Providers");
   const { hasPermission } = useAuth();
   const canWrite = hasPermission("endpoint:write");
   const [showAddCredential, setShowAddCredential] = useState(false);

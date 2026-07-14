@@ -7,6 +7,7 @@ import { ArrowLeftRight, CheckCircle, AlertTriangle, Plus, Minus, Upload, Loader
 import { api } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface CorpusEntry {
   id: string;
@@ -117,6 +118,8 @@ export default function ComparePage() {
   const params = useParams();
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
+
+  usePageTitle(schemaSlug ? `${schemaSlug} — Compare` : "Compare");
 
   const [entryA, setEntryA] = useState<string>("");
   const [entryB, setEntryB] = useState<string>("");

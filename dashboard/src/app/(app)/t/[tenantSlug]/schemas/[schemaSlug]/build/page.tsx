@@ -8,6 +8,7 @@ import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Mini
 import { api, getAuthTokenProvider } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useAuth } from "@/lib/auth-context";
 import { keepRawView } from "@/lib/keep-raw";
 import { toPickerOptions, type CredentialResponse } from "@/lib/model-picker";
@@ -371,6 +372,8 @@ export default function BuildPage() {
   const currentVersion = schemaDetail?.latestVersion?.versionNumber ?? 0;
   const currentVersionLabel = schemaDetail?.latestVersion?.version ?? (currentVersion > 0 ? `v${currentVersion}` : null);
   const { fields, error: parseError } = useMemo(() => parseFields(yaml), [yaml]);
+
+  usePageTitle(schemaDetail?.displayName ? `${schemaDetail.displayName} — Build` : "Build");
 
   // Actions
   // candidate=true snapshots a non-active release candidate (-rc) to backtest;

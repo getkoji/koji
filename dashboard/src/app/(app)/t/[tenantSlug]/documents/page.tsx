@@ -21,6 +21,7 @@ import { TableSkeleton } from "@/components/shared/TableSkeleton";
 import { documents as documentsApi, api, type DocumentListRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { formatRelativeTime } from "../jobs/format";
+import { usePageTitle } from "@/lib/use-page-title";
 
 type DateRange = "today" | "7d" | "30d" | "all";
 
@@ -49,6 +50,7 @@ interface PipelineOption {
 }
 
 export default function DocumentsPage() {
+  usePageTitle("Documents");
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";
 

@@ -57,7 +57,10 @@ test("moves a pipeline to another project via the UI", async ({ page }) => {
 
   // Redirected to the pipelines list; the pipeline is no longer in the default project.
   await expect(page).toHaveURL(/\/pipelines$/);
-  await expect(page.getByText("movable")).toHaveCount(0);
+  // Assert on the list row itself (a link to the pipeline), not bare page text:
+  // Next's route announcer keeps the last page title ("Movable Pipeline · …")
+  // in a body-level role=alert live region, which a text match would catch.
+  await expect(page.locator('a[href$="/pipelines/movable"]')).toHaveCount(0);
 
   // It IS in the destination project.
   const inArchive = await (

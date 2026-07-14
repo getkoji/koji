@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.93.1 — 2026-07-13
+
+**Fixed: every dashboard page now has its own browser tab / history title.**
+Previously every page shared one static title, so browser tabs and history
+entries all read the same thing with no indication of which page you were on.
+Each page now sets a descriptive title — "Documents", "Review", a specific
+job/pipeline/schema name on detail pages — rendered as "&lt;Page&gt; · Koji".
+Titles update on client-side navigation and Back/Forward too, so browser
+history is finally readable.
+
 ## 0.93.0 — 2026-07-13
 
 **Added: Auto-tune runs are now durable and resumable — they actually finish.**

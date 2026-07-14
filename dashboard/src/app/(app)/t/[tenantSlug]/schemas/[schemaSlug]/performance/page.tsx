@@ -6,6 +6,7 @@ import { Fragment, useCallback, useState } from "react";
 import { BarChart3, FileQuestion } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { EmptyState } from "@/components/shared/EmptyState";
 
 // ── Types ──
@@ -181,6 +182,8 @@ export default function PerformancePage() {
   const pathname = usePathname();
   const schemaSlug = params.schemaSlug as string;
   const tenantSlug = (params.tenantSlug as string | undefined) ?? pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
+
+  usePageTitle(schemaSlug ? `${schemaSlug} — Performance` : "Performance");
 
   const { data, loading, error } = useApi(
     useCallback(() => api.get<PerformanceData>(`/api/schemas/${schemaSlug}/performance`), [schemaSlug]),

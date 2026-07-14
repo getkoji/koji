@@ -5,6 +5,7 @@ import { SectionHeader, SettingsTable, SettingsRow, Badge, Meta } from "@/compon
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface WebhookTarget {
   id: string;
@@ -78,6 +79,7 @@ function timeAgo(dateStr: string | null): string {
 }
 
 export default function WebhooksPage() {
+  usePageTitle("Webhooks");
   const { hasPermission } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
   const [viewTarget, setViewTarget] = useState<WebhookTarget | null>(null);

@@ -8,6 +8,7 @@ import { Upload, Search, ExternalLink, Plus, X, PanelLeftClose, PanelLeftOpen, F
 import { api } from "@/lib/api";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useAuth } from "@/lib/auth-context";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
@@ -106,6 +107,8 @@ export default function CorpusPage() {
   const schemaSlug = params.schemaSlug as string;
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";
   const { hasPermission } = useAuth();
+
+  usePageTitle(schemaSlug ? `${schemaSlug} — Corpus` : "Corpus");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [srcFilter, setSrcFilter] = useState("All");

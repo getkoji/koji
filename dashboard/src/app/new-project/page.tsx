@@ -4,8 +4,10 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { api, projectsApi } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function NewProjectPage() {
+  usePageTitle("New Project");
   const router = useRouter();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");

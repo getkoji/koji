@@ -7,8 +7,10 @@ import { Tags, Plus, ChevronRight, Loader2 } from "lucide-react";
 import { classifiers as classifiersApi, type ClassifierRow } from "@/lib/api";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function ClassifiersPage() {
+  usePageTitle("Classifiers");
   const params = useParams();
   const tenantSlug = params.tenantSlug as string;
   const base = `/t/${tenantSlug}`;

@@ -6,6 +6,7 @@ import { Badge, Meta } from "@/components/shared/SettingsComponents";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface Source {
   id: string;
@@ -59,6 +60,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
 };
 
 export default function SourcesPage() {
+  usePageTitle("Sources");
   const { hasPermission } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
   const [viewSource, setViewSource] = useState<Source | null>(null);

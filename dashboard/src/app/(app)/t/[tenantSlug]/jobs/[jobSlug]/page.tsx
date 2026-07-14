@@ -13,6 +13,7 @@ import {
   type JobDocument,
 } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import {
   normalizeJobStatus,
   normalizeDocStatus,
@@ -67,6 +68,8 @@ export default function JobDetailPage() {
     () => (documents ? sortDocs(filterDocs(documents, docFilter), docSort) : []),
     [documents, docFilter, docSort],
   );
+
+  usePageTitle(job?.slug ?? "Job");
 
   if (jobError) {
     return (

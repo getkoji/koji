@@ -10,6 +10,7 @@ import { TableSkeleton } from "@/components/shared/TableSkeleton";
 import { review as reviewApi, type ReviewRow, type ReviewQueueStats } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { reasonLabel, reasonTone, formatRelativeTime, urgentThreshold } from "./format";
+import { usePageTitle } from "@/lib/use-page-title";
 
 type StatusFilter = "pending" | "completed" | "all";
 
@@ -20,6 +21,7 @@ const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
 ];
 
 export default function ReviewPage() {
+  usePageTitle("Review");
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";
   const [status, setStatus] = useState<StatusFilter>("pending");

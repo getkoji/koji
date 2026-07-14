@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { KojiLogo } from "@/components/shell/KojiLogo";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { api } from "@/lib/api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function ResetPasswordPage() {
   return (
@@ -19,6 +20,7 @@ export default function ResetPasswordPage() {
 }
 
 function ResetPasswordForm() {
+  usePageTitle("Reset Password");
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
   const [newPassword, setNewPassword] = useState("");

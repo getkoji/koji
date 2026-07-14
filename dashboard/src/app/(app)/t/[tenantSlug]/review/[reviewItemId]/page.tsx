@@ -12,6 +12,7 @@ import { DocumentViewer, pickDocumentRenderer } from "@/components/shared/Docume
 import type { RegionSelection } from "@/components/shared/PdfViewer";
 import { review as reviewApi, schemas as schemasApi, jobs as jobsApi, type ReviewDetail } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useAuth } from "@/lib/auth-context";
 import { reasonLabel, reasonTone, formatRelativeTime } from "../format";
 import { deriveFieldOptions } from "./fieldOptions";
@@ -315,6 +316,8 @@ export default function ReviewDetailPage() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [item, rejectOpen, submitAccept, submitOverride, submitSkip, goToPrev, canPoint, pointing]);
+
+  usePageTitle(item?.documentFilename ?? "Review");
 
   if (itemError) {
     return (

@@ -15,6 +15,7 @@ import {
   type ProjectRow,
 } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { emit } from "@/lib/events";
 
 function titleCase(slug: string): string {
@@ -86,6 +87,8 @@ export default function ProjectOverviewPage() {
   );
 
   const displayName = project?.displayName ?? titleCase(projectSlug);
+
+  usePageTitle(displayName);
 
   const subtitle = overview
     ? buildSubtitle(overview.metrics, overview.needsAttention.length)

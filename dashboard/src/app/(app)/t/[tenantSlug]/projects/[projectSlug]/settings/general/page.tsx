@@ -9,6 +9,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { emit, on } from "@/lib/events";
 import { SectionHeader } from "@/components/shared/SettingsComponents";
+import { usePageTitle } from "@/lib/use-page-title";
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -30,6 +31,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function ProjectGeneralPage() {
+  usePageTitle("Project Settings");
   const pathname = usePathname();
   const projectSlug = pathname.match(/\/projects\/([^/]+)/)?.[1] ?? "";
   const tenantSlug = pathname.match(/^\/t\/([^/]+)/)?.[1] ?? "";

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Save, Trash2, CheckCircle, Circle, MousePointer2, Play, Upload, Loader2, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 import { parse as parseYaml } from "yaml";
 
 type MappingType = "text" | "checkbox" | "checkbox_group" | "llm_interpret";
@@ -127,6 +128,8 @@ export default function FormAnnotationPage() {
   const { data: form, loading: formLoading } = useApi(
     useCallback(() => api.get<FormDetail>(`/api/forms/${formSlug}?schema=${schemaSlug}`), [formSlug, schemaSlug]),
   );
+
+  usePageTitle(form?.displayName ?? formSlug);
 
   // Load schema fields
   const { data: schemaDetail } = useApi(

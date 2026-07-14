@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/lib/auth-context";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { usePageTitle } from "@/lib/use-page-title";
 
 interface Member {
   id: string;
@@ -71,6 +72,7 @@ function isExpired(dateStr: string): boolean {
 }
 
 export default function MembersPage() {
+  usePageTitle("Members");
   const { hasPermission, user } = useAuth();
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [accessMember, setAccessMember] = useState<Member | null>(null);

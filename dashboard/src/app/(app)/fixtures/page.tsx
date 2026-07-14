@@ -49,8 +49,10 @@ import {
   TooltipContent,
   Toggle,
 } from "@koji/ui";
+import { usePageTitle } from "@/lib/use-page-title";
 
 export default function FixturesPage() {
+  usePageTitle("Fixtures");
   return (
     <TooltipProvider>
       <div className="max-w-4xl space-y-12">

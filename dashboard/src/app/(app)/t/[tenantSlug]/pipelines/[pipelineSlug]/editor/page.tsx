@@ -17,6 +17,7 @@ import { TestResultsPanel, type StepTestResult } from "@/components/pipeline-edi
 import { EdgeConditionPanel } from "@/components/pipeline-editor/EdgeConditionPanel";
 import { api, pipelines as pipelinesApi, schemas as schemasApi, type PipelineDetail, type SchemaRow } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { usePageTitle } from "@/lib/use-page-title";
 
 // ── YAML <-> editor state conversion ──
 
@@ -540,6 +541,10 @@ export default function PipelineEditorPage() {
     setTestPath([]);
     setDocumentInput({});
   }
+
+  usePageTitle(
+    pipeline?.displayName ? `${pipeline.displayName} — Editor` : "Pipeline Editor",
+  );
 
   // ── Render ──
 
