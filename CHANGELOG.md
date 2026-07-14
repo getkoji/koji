@@ -2,7 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
-## 0.93.1 — 2026-07-13
+## 0.94.0 — 2026-07-14
+
+**Auto-tune now fans scoring out per document — no more silent "Starting…", no
+corpus-size ceiling.** A durable tuning run has to score the whole corpus to set
+a baseline and to check each proposed edit. Previously each of those scorings ran
+in a single background job, which (a) showed nothing while it worked, so a
+multi-minute baseline pass looked hung, and (b) could exceed the 300s function
+cap on a large corpus, killing the job and stranding the run. Scoring now fans
+out **one job per document**; a finalizer aggregates the pass when the last
+document lands. Two consequences: the panel shows live "Scoring the baseline
+across the corpus — 12/40 documents" progress, and a run of any corpus size stays
+comfortably under the time cap (documents also score in parallel, so runs are
+faster). Rejected-proposal memory and resume-on-reopen are unchanged.
 
 **Fixed: every dashboard page now has its own browser tab / history title.**
 Previously every page shared one static title, so browser tabs and history

@@ -381,3 +381,10 @@ DROP POLICY IF EXISTS tune_run_rounds_tenant_isolation ON tune_run_rounds;
 CREATE POLICY tune_run_rounds_tenant_isolation ON tune_run_rounds FOR ALL
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+ALTER TABLE tune_score_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tune_score_docs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tune_score_docs_tenant_isolation ON tune_score_docs;
+CREATE POLICY tune_score_docs_tenant_isolation ON tune_score_docs FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

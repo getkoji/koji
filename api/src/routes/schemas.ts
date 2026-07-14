@@ -1369,6 +1369,9 @@ schemas.get("/:slug/tune/runs/:runId", requires("job:read"), async (c) => {
     id: run.id, status: run.status, stopReason: run.stopReason,
     baselineAccuracy: run.baselineAccuracy, bestAccuracy: run.bestAccuracy,
     currentRound: run.currentRound, maxIterations: run.maxIterations,
+    // Live scoring progress for the pass in flight (fan-out): what the run is
+    // doing right now, and how far through the corpus it is.
+    phase: run.phase, docsScored: run.docsScored, docsTotal: run.docsTotal,
     bestYaml: run.bestYaml, error: run.error, rounds,
   });
 });

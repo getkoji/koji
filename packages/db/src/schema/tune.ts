@@ -8,6 +8,7 @@ import {
   pgTable,
   real,
   text,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -46,6 +47,27 @@ export const tuneRuns = pgTable(
     bestSnapshotJson: jsonb("best_snapshot_json"),
     maxIterations: integer("max_iterations").notNull().default(5),
     currentRound: integer("current_round").notNull().default(0),
+    /**
+     * Fan-out state machine. A single corpus scoring is itself too big for one
+     * job (the baseline pass alone can approach the 300s cap), so scoring fans
+     * out one `tune.score.doc` job per document (see `tune_score_docs`). These
+     * columns track which pass is in flight, what YAML it's scoring, and how far
+     * along it is — so the UI can show live "N/M documents" progress and a
+     * finalizer knows what to do when the last doc lands.
+     *
+     * phase: baseline (scoring startYaml) | proposal (scoring a proposed edit) |
+     *        proposing (between passes — a propose job is about to run) | null
+     */
+    phase: varchar("phase", { length: 16 }),
+    /** Monotonic pass counter; keys `tune_score_docs` rows to the current pass. */
+    scoringPass: integer("scoring_pass").notNull().default(0),
+    /** The YAML being scored this pass (startYaml for baseline, the proposal otherwise). */
+    pendingYaml: text("pending_yaml"),
+    /** For a proposal pass: {n, explanation, thinking, focus} needed to record the round after scoring. */
+    pendingProposalJson: jsonb("pending_proposal_json"),
+    /** Progress for the in-flight pass. */
+    docsTotal: integer("docs_total").notNull().default(0),
+    docsScored: integer("docs_scored").notNull().default(0),
     /** passed | no_improvement | max_iterations | propose_failed | error */
     stopReason: varchar("stop_reason", { length: 32 }),
     model: varchar("model", { length: 128 }),
@@ -91,5 +113,36 @@ export const tuneRunRounds = pgTable(
   },
   (t) => ({
     runIdx: index("tune_run_rounds_run_idx").on(t.runId, t.n),
+  }),
+);
+
+/**
+ * One document's extraction within a single scoring pass. Scoring the whole
+ * corpus in one job risks the function time cap, so each pass fans out one
+ * `tune.score.doc` job per document; each writes its result here, and when every
+ * document for the pass has landed a finalizer aggregates them into the pass
+ * score. Rows are keyed by (runId, pass, entryId) so a retried job overwrites
+ * rather than double-counts. `extractionJson` carries the truncated
+ * EntryExtraction (extracted / confidence / routingPlan / markdown head) the
+ * aggregator needs to score, pick the next focus, and detect regressions.
+ */
+export const tuneScoreDocs = pgTable(
+  "tune_score_docs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => tuneRuns.id, { onDelete: "cascade" }),
+    pass: integer("pass").notNull(),
+    entryId: uuid("entry_id").notNull(),
+    /** ok | failed (parse/extract failure — dropped from scoring, like the in-request loop). */
+    status: varchar("status", { length: 8 }).notNull().default("ok"),
+    extractionJson: jsonb("extraction_json"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    passIdx: index("tune_score_docs_pass_idx").on(t.runId, t.pass),
+    entryUnique: uniqueIndex("tune_score_docs_entry_unique").on(t.runId, t.pass, t.entryId),
   }),
 );

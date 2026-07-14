@@ -84,7 +84,13 @@ import {
 } from "./ingestion/process";
 import { initDagRunner, setDagParseProvider, handleDagRun } from "./ingestion/dag-runner";
 import { initValidateRunner, handleSchemaValidateDoc } from "./schemas/validate-run";
-import { initTuneRunHandlers, handleTuneRunStart, handleTuneRunRound } from "./schemas/tune-run";
+import {
+  initTuneRunHandlers,
+  handleTuneRunStart,
+  handleTuneScoreDoc,
+  handleTuneRunPropose,
+  handleTuneRunRound,
+} from "./schemas/tune-run";
 
 import type { Env } from "./env";
 
@@ -270,7 +276,9 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     "pipeline.dag.run": handleDagRun,
     "schema.validate.doc": handleSchemaValidateDoc,
     "tune.run.start": handleTuneRunStart,
-    "tune.run.round": handleTuneRunRound,
+    "tune.score.doc": handleTuneScoreDoc,
+    "tune.run.propose": handleTuneRunPropose,
+    "tune.run.round": handleTuneRunRound, // legacy shim — stops pre-fanout in-flight runs
   };
 
   return { app, handlers };
