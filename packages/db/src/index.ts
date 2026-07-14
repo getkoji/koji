@@ -76,6 +76,8 @@ export const RLS_POLICIES: readonly string[] = [
   "form_mappings",
   "pipeline_step_runs",
   "pipeline_versions",
+  "tune_runs",
+  "tune_run_rounds",
 ].flatMap((table) => [
   `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
   `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,

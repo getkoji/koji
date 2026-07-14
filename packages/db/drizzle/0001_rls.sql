@@ -366,3 +366,18 @@ DROP POLICY IF EXISTS notifications_project_isolation ON notifications;
 CREATE POLICY notifications_project_isolation ON notifications AS RESTRICTIVE FOR ALL
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+-- Durable tuning runs (oss — durable Auto-tune). Tenant-scoped only; project
+-- boundary is enforced at the route via the (project-scoped) schema lookup.
+ALTER TABLE tune_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tune_runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tune_runs_tenant_isolation ON tune_runs;
+CREATE POLICY tune_runs_tenant_isolation ON tune_runs FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+ALTER TABLE tune_run_rounds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tune_run_rounds FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tune_run_rounds_tenant_isolation ON tune_run_rounds;
+CREATE POLICY tune_run_rounds_tenant_isolation ON tune_run_rounds FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

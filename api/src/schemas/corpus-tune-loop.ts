@@ -98,10 +98,18 @@ function routingHint(diag: { answerInRoutedChunks?: boolean | null } | null | un
     : "model never saw the answer — routing miss (add extraction_guidance / narrow the section)";
 }
 
-type ScoreResult = ReturnType<typeof computeValidateResult>;
+export type ScoreResult = ReturnType<typeof computeValidateResult>;
+
+/** The failing doc chosen to guide a round, with its per-field reports + excerpt. */
+export interface TuneFocus {
+  docId: string;
+  filename: string;
+  markdown: string;
+  failing: TuneFieldReport[];
+}
 
 /** Extract + score every labeled corpus doc — no schema_run persistence. */
-async function scoreCorpus(
+export async function scoreCorpus(
   deps: LoopDeps,
   entries: CorpusEntryWithGt[],
   schemaDef: Record<string, unknown>,
@@ -137,11 +145,11 @@ async function scoreCorpus(
 }
 
 /** From a corpus score, pick the failing doc to focus on + its failing-field report. */
-function pickFocus(
+export function pickFocus(
   result: ScoreResult,
   entryById: Map<string, CorpusEntryWithGt>,
   extractedByEntry: Map<string, EntryExtraction>,
-): { docId: string; filename: string; markdown: string; failing: TuneFieldReport[] } | null {
+): TuneFocus | null {
   const failingFields = result.fields.filter((f) => f.status !== "pass" && f.failingDocs.length > 0);
   if (failingFields.length === 0) return null;
   // Focus on the doc under the worst-scoring field.
@@ -166,17 +174,19 @@ function pickFocus(
 }
 
 /** Ask the model for an edit; validate it compiles (one retry). Returns null on failure. */
-async function proposeEdit(
+export async function proposeEdit(
   provider: ModelProvider,
   currentYaml: string,
   accuracy: number,
   focus: { markdown: string; failing: TuneFieldReport[] },
   onThinking?: (delta: string) => void,
+  rejected?: string[],
 ): Promise<{ yaml: string; explanation: string } | null> {
   const prompt = buildTunePrompt(currentYaml, {
     accuracy,
     failing: focus.failing,
     markdown_head: focus.markdown.slice(0, 2000),
+    rejected,
   });
   // Stream the model's reasoning (the <thinking> block, everything before the
   // <yaml>) live; fall back to a plain call when the provider can't stream.

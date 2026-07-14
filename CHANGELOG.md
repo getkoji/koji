@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.93.0 — 2026-07-13
+
+**Added: Auto-tune runs are now durable and resumable — they actually finish.**
+Auto-tune previously ran the whole loop inside one request, so on a real corpus
+it hit the 5-minute function cap and died mid-run (and vanished on a tab close).
+It now runs as a persisted background job, one round at a time (each round well
+under the cap), so it completes regardless of corpus size, survives disconnects,
+and you can close the tab and come back to it. Every round is saved — the model's
+reasoning, what it changed, whether it was kept, and any regressions — and
+rejected proposals are fed back into later rounds (and future runs) so it stops
+retreading edits that already failed. The panel starts a run and polls it,
+resuming an in-flight run automatically. New: `tune_runs`/`tune_run_rounds`
+tables and `POST/GET /api/schemas/{slug}/tune/runs`.
+
 ## 0.92.0 — 2026-07-13
 
 **Improved: Auto-tune streams the model's actual reasoning as it works.** Beyond

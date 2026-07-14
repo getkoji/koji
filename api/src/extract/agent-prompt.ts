@@ -132,6 +132,8 @@ export interface TuneContext {
   /** Document excerpt for grounding (first ~2000 chars). */
   markdown_head: string;
   doc_type?: string;
+  /** Summaries of edits already tried and rejected — do NOT repeat these. */
+  rejected?: string[];
 }
 
 const TUNE_SYSTEM_PROMPT = `You are Koji Schema Tuner. You are given an extraction schema, one document, and a MEASURED report of how the current schema scored against known-correct ground truth on that document. Your job is to propose a minimal edit to the schema YAML that fixes the failing fields.
@@ -192,17 +194,23 @@ ${ctx.doc_type ? `Document type: ${ctx.doc_type}\n` : ""}${ctx.markdown_head}
     ? `<current_schema>\n${currentYaml}\n</current_schema>`
     : "<current_schema>\n(empty)\n</current_schema>";
 
+  const rejectedBlock = ctx.rejected && ctx.rejected.length
+    ? `<already_tried_and_rejected>\nThese edits were already tried and did NOT help (no improvement or a regression). Do not repeat them — try a different approach:\n${ctx.rejected.map((r) => `- ${r}`).join("\n")}\n</already_tried_and_rejected>`
+    : "";
+
   return [
     TUNE_SYSTEM_PROMPT,
     "",
     reportBlock,
     "",
+    rejectedBlock,
+    rejectedBlock ? "" : null,
     docBlock,
     "",
     schemaBlock,
     "",
     "### Tuner",
-  ].join("\n");
+  ].filter((x) => x !== null).join("\n");
 }
 
 // ---------------------------------------------------------------------------

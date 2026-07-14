@@ -1297,6 +1297,98 @@ schemas.post("/:slug/tune/loop", requires("job:run"), async (c) => {
 });
 
 /**
+ * POST /api/schemas/:slug/tune/runs — start a DURABLE corpus-tuning run.
+ *
+ * Creates a persisted run and kicks off the background job chain (one round per
+ * job, so it survives the 300s function cap / disconnects). Returns the run id;
+ * poll GET .../tune/runs/:runId for progress. Auth: job:run.
+ */
+schemas.post("/:slug/tune/runs", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+  const projectId = getProjectId(c);
+
+  const [s] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1),
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+
+  const body = await c.req.json<{ yaml?: string; model?: string; max_iterations?: number }>();
+  if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
+  const compiled = compileSchema(body.yaml);
+  if (!compiled.ok) {
+    return c.json({ error: "Invalid schema YAML", detail: compiled.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join("; ") }, 422);
+  }
+
+  // Require at least one labeled corpus doc up front (fail fast).
+  const [gt] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select({ id: schema.corpusEntries.id }).from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt), isNotNull(schema.corpusEntries.groundTruthJson)))
+      .limit(1),
+  );
+  if (!gt) return c.json({ error: "No corpus documents with ground truth to tune against" }, 400);
+
+  const [run] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.insert(schema.tuneRuns).values({
+      tenantId, schemaId: s.id, status: "queued",
+      startYaml: body.yaml!, bestYaml: body.yaml!,
+      maxIterations: body.max_iterations ?? 5,
+      model: body.model ?? null,
+      createdBy: principal.userId,
+    }).returning({ id: schema.tuneRuns.id }),
+  );
+  if (!run) return c.json({ error: "Failed to create tune run" }, 500);
+  await c.get("queue").enqueue("tune.run.start", { runId: run.id }, { tenantId, maxRetries: 1 });
+  return c.json({ runId: run.id, status: "queued" }, 202);
+});
+
+/**
+ * GET /api/schemas/:slug/tune/runs/:runId — poll a run's progress (run + rounds).
+ * GET /api/schemas/:slug/tune/runs — the latest run for the schema.
+ */
+schemas.get("/:slug/tune/runs/:runId", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const runId = c.req.param("runId")!;
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select().from(schema.tuneRuns).where(eq(schema.tuneRuns.id, runId)).limit(1),
+  );
+  if (!run) return c.json({ error: "Run not found" }, 404);
+  const rounds = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({
+      n: schema.tuneRunRounds.n, accuracy: schema.tuneRunRounds.accuracy,
+      docsPassed: schema.tuneRunRounds.docsPassed, docsTotal: schema.tuneRunRounds.docsTotal,
+      accepted: schema.tuneRunRounds.accepted, focusDoc: schema.tuneRunRounds.focusDoc,
+      fixing: schema.tuneRunRounds.fixingJson, regressions: schema.tuneRunRounds.regressionsJson,
+      explanation: schema.tuneRunRounds.explanation, thinking: schema.tuneRunRounds.thinking,
+    }).from(schema.tuneRunRounds).where(eq(schema.tuneRunRounds.runId, runId)).orderBy(schema.tuneRunRounds.n),
+  );
+  return c.json({
+    id: run.id, status: run.status, stopReason: run.stopReason,
+    baselineAccuracy: run.baselineAccuracy, bestAccuracy: run.bestAccuracy,
+    currentRound: run.currentRound, maxIterations: run.maxIterations,
+    bestYaml: run.bestYaml, error: run.error, rounds,
+  });
+});
+
+schemas.get("/:slug/tune/runs", requires("job:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1),
+  );
+  if (!s) return c.json({ error: "Schema not found" }, 404);
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({ id: schema.tuneRuns.id, status: schema.tuneRuns.status, createdAt: schema.tuneRuns.createdAt })
+      .from(schema.tuneRuns).where(eq(schema.tuneRuns.schemaId, s.id)).orderBy(desc(schema.tuneRuns.createdAt)).limit(1),
+  );
+  return c.json({ latest: run ?? null });
+});
+
+/**
  * POST /api/schemas/:slug/tune/corpus-loop — corpus-optimizing tune loop.
  *
  * Optimizes for WHOLE-CORPUS accuracy (not one doc): each round scores the
