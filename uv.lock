@@ -390,7 +390,7 @@ wheels = [
 
 [[package]]
 name = "koji"
-version = "0.70.0"
+version = "0.95.0"
 source = { editable = "." }
 dependencies = [
     { name = "docker" },

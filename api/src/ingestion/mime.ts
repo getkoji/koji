@@ -39,7 +39,11 @@ export function mimeTypeFor(filename: string | null): string {
     case "webp":
       return "image/webp";
     case "txt":
+    case "text":
       return "text/plain";
+    case "md":
+    case "markdown":
+      return "text/markdown";
     case "html":
     case "htm":
       return "text/html";

@@ -142,7 +142,7 @@ export function TestModeControls({
             ref={fileInputRef}
             type="file"
             className="hidden"
-            accept=".pdf,.png,.jpg,.jpeg,.tiff,.doc,.docx,.txt,.csv,.json"
+            accept=".pdf,.png,.jpg,.jpeg,.tiff,.doc,.docx,.txt,.md,.markdown,.csv,.json"
             onChange={handleFileSelect}
           />
           <div style={{

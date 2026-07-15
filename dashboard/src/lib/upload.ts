@@ -13,6 +13,25 @@ interface PresignResponse {
   storageKey: string;
 }
 
+// Extensions browsers commonly leave with an empty `File.type` (notably
+// markdown). Resolve those from the filename so the S3 object and the stored
+// document row carry a real Content-Type instead of octet-stream — otherwise
+// `pickDocumentRenderer` can't tell a text file from a PDF. Keep in sync with
+// `mimeTypeFor` in api/src/ingestion/mime.ts.
+const EXTENSION_CONTENT_TYPES: Record<string, string> = {
+  md: "text/markdown",
+  markdown: "text/markdown",
+  txt: "text/plain",
+  text: "text/plain",
+};
+
+/** Best content type for a file: the browser's, else inferred from extension. */
+export function resolveUploadContentType(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.toLowerCase().split(".").pop() ?? "";
+  return EXTENSION_CONTENT_TYPES[ext] ?? "application/octet-stream";
+}
+
 export interface UploadOptions {
   file: File;
   context: "corpus" | "test";
@@ -37,16 +56,18 @@ export interface UploadResult<T = unknown> {
 export async function uploadFile<T = unknown>(options: UploadOptions): Promise<UploadResult<T>> {
   const { file, context, schemaSlug, onProgress, signal } = options;
 
+  const contentType = resolveUploadContentType(file);
+
   // Step 1: Get presigned URL
   const { uploadUrl, storageKey } = await api.post<PresignResponse>("/api/upload/presign", {
     filename: file.name,
-    contentType: file.type || "application/octet-stream",
+    contentType,
     context,
     schemaSlug,
   });
 
   // Step 2: PUT file directly to S3
-  await putFileToS3(uploadUrl, file, file.type || "application/octet-stream", onProgress, signal);
+  await putFileToS3(uploadUrl, file, contentType, onProgress, signal);
 
   // Step 3: Finalize
   if (context === "corpus") {

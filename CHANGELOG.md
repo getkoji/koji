@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.95.0 — 2026-07-15
+
+**Upload plain-text and markdown files in the dashboard.** `.txt`, `.md`, and
+`.markdown` files can now be dropped into every document-upload surface (schema
+build, corpus, compare, and pipeline runs) alongside PDFs and images. Text and
+markdown need no OCR or layout parsing — their bytes are already the markdown
+extraction reads — so the parse service returns them verbatim instead of routing
+them through the PDF engine. The document viewer renders their source inline as a
+new text preview. (The CLI already accepted these files; this brings the
+dashboard to parity.)
+
 ## 0.94.0 — 2026-07-14
 
 **Auto-tune now fans scoring out per document — no more silent "Starting…", no

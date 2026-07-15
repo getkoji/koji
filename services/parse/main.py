@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.94.0")
+app = FastAPI(title="Koji Parse Service", version="0.95.0")
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -266,6 +266,14 @@ def estimate_seconds(pages: int, scanned: bool) -> float:
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"}
 
+# Plain-text and markdown files are already markdown — their bytes ARE the
+# output. Route them around the docling PDF/OCR pipeline entirely: running text
+# through an ML document parser is wasteful and depends on docling's format
+# autodetection claiming the extension, which varies by docling version. See
+# oss-446.
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text"}
+TEXT_MIMETYPES = {"text/plain", "text/markdown", "text/x-markdown"}
+
 
 def _is_image(filename: str, content_type: str | None = None) -> bool:
     """Check if a file is an image based on extension or MIME type."""
@@ -273,10 +281,32 @@ def _is_image(filename: str, content_type: str | None = None) -> bool:
     return ext in IMAGE_EXTENSIONS or (content_type is not None and content_type in IMAGE_MIMETYPES)
 
 
+def _is_text(filename: str, content_type: str | None = None) -> bool:
+    """Check if a file is plain text / markdown based on extension or MIME type."""
+    ext = Path(filename).suffix.lower()
+    return ext in TEXT_EXTENSIONS or (content_type is not None and content_type in TEXT_MIMETYPES)
+
+
+def _read_text_document(file_path: str) -> dict:
+    """Read a plain-text / markdown file directly as markdown.
+
+    Plain text and markdown need no parsing — the file contents already are the
+    markdown. There is no visual page layout, so ``text_map`` is empty and
+    downstream provenance highlighting falls back to its no-bbox path, which is
+    the right behaviour for a format with no page geometry. Undecodable bytes
+    are replaced rather than raising, so a mislabelled binary degrades to
+    garbage text instead of a 422.
+    """
+    markdown = Path(file_path).read_bytes().decode("utf-8", errors="replace")
+    return {"markdown": markdown, "pages": 1, "text_map": []}
+
+
 def classify_input(file_path: str, content_type: str | None = None) -> str:
     ext = Path(file_path).suffix.lower()
     if ext in IMAGE_EXTENSIONS or (content_type and content_type in IMAGE_MIMETYPES):
         return "image"
+    if ext in TEXT_EXTENSIONS or (content_type and content_type in TEXT_MIMETYPES):
+        return "text"
     if ext == ".pdf":
         with open(file_path, "rb") as f:
             info = get_pdf_info(f.read())
@@ -387,6 +417,9 @@ def _annotate_md_offsets(markdown: str, text_map: list[dict]) -> None:
 
 def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
     """Run conversion synchronously — called from thread pool."""
+    if Path(file_path).suffix.lower() in TEXT_EXTENSIONS:
+        return _read_text_document(file_path)
+
     ocr = not skip_ocr
     result = get_converter(ocr=ocr).convert(file_path)
     markdown = result.document.export_to_markdown()
@@ -477,7 +510,7 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.94.0"}
+    return {"status": "healthy", "service": "koji-parse", "version": "0.95.0"}
 
 
 @app.post("/parse")
@@ -507,6 +540,9 @@ async def parse(file: UploadFile = File(...)):
         elif _is_image(file.filename or "doc", file.content_type):
             skip_ocr = False
             print(f"[koji-parse] {file.filename}: image, full OCR")
+        elif _is_text(file.filename or "doc", file.content_type):
+            skip_ocr = True
+            print(f"[koji-parse] {file.filename}: text/markdown, read directly")
         else:
             skip_ocr = True
             print(f"[koji-parse] {file.filename}: non-PDF/image, OCR skipped")
@@ -641,6 +677,9 @@ async def parse_stream(file: UploadFile = File(...)):
     elif _is_image(file.filename or "doc", file.content_type):
         skip_ocr = False
         print(f"[koji-parse] {file.filename}: image, full OCR")
+    elif _is_text(file.filename or "doc", file.content_type):
+        skip_ocr = True
+        print(f"[koji-parse] {file.filename}: text/markdown, read directly")
     else:
         skip_ocr = True
         print(f"[koji-parse] {file.filename}: non-PDF/image, OCR skipped")

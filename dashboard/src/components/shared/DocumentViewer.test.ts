@@ -60,11 +60,29 @@ describe("pickDocumentRenderer", () => {
     });
   });
 
-  describe("unsupported routing", () => {
-    it("renders text/plain as unsupported (the PDF viewer can't handle it)", () => {
-      expect(pickDocumentRenderer("text/plain", URL)).toBe("unsupported");
+  describe("text routing", () => {
+    it("renders text/plain as text", () => {
+      expect(pickDocumentRenderer("text/plain", URL)).toBe("text");
     });
 
+    it("renders text/markdown as text", () => {
+      expect(pickDocumentRenderer("text/markdown", URL)).toBe("text");
+      expect(pickDocumentRenderer("text/x-markdown", URL)).toBe("text");
+    });
+
+    it("infers text from a .txt / .md filename when MIME is garbage", () => {
+      expect(pickDocumentRenderer("garbage", URL, "notes.txt")).toBe("text");
+      expect(pickDocumentRenderer("garbage", URL, "README.md")).toBe("text");
+      expect(pickDocumentRenderer("garbage", URL, "doc.markdown")).toBe("text");
+    });
+
+    it("routes bare 'txt' / 'md' MIME strings to text", () => {
+      expect(pickDocumentRenderer("txt", URL)).toBe("text");
+      expect(pickDocumentRenderer("md", URL)).toBe("text");
+    });
+  });
+
+  describe("unsupported routing", () => {
     it("renders text/html as unsupported", () => {
       expect(pickDocumentRenderer("text/html", URL)).toBe("unsupported");
     });
