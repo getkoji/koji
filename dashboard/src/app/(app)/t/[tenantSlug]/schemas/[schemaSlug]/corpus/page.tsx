@@ -355,7 +355,7 @@ export default function CorpusPage() {
           {hasPermission("corpus:write") && (
             <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
               <Upload className="w-3.5 h-3.5" />{uploading ? "Uploading..." : "Add document"}
-              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif" onChange={(e) => { if (e.target.files?.[0]) handleUpload(e.target.files[0]); }} />
+              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.txt,.md,.markdown" onChange={(e) => { if (e.target.files?.[0]) handleUpload(e.target.files[0]); }} />
             </label>
           )}
         </div>

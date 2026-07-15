@@ -26,7 +26,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BBoxHighlight, SelectionConfig } from "./PdfViewer";
 import { ParsedMarkdownView } from "./ParsedMarkdownView";
 
-export type DocumentRenderer = "pdf" | "image" | "unsupported";
+export type DocumentRenderer = "pdf" | "image" | "text" | "unsupported";
 
 /**
  * Decide how to render a document given its MIME type.
@@ -57,6 +57,8 @@ export type DocumentRenderer = "pdf" | "image" | "unsupported";
  * the safety net that keeps the UI usable when bad data has already landed.
  */
 const PDF_EXTENSIONS = new Set(["pdf"]);
+const TEXT_EXTENSIONS = new Set(["txt", "text", "md", "markdown"]);
+const TEXT_MIMETYPES = new Set(["text/plain", "text/markdown", "text/x-markdown"]);
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "svg"]);
 
 function extensionFromFilename(filename: string | null | undefined): string | null {
@@ -72,6 +74,10 @@ export function pickDocumentRenderer(
 ): DocumentRenderer {
   if (!url) return "unsupported";
   if (mimeType?.startsWith("image/")) return "image";
+  // Explicit text/markdown MIME wins before the octet-stream→PDF optimism
+  // below — text files carry a real Content-Type once ingestion maps their
+  // extension (see api/src/ingestion/mime.ts).
+  if (mimeType && TEXT_MIMETYPES.has(mimeType.toLowerCase().trim())) return "text";
   if (
     mimeType === "application/pdf" ||
     mimeType === "application/x-pdf" ||
@@ -88,11 +94,13 @@ export function pickDocumentRenderer(
   const normalized = mimeType.toLowerCase().trim();
   if (PDF_EXTENSIONS.has(normalized)) return "pdf";
   if (IMAGE_EXTENSIONS.has(normalized)) return "image";
+  if (TEXT_EXTENSIONS.has(normalized)) return "text";
 
   const ext = extensionFromFilename(filename);
   if (ext) {
     if (PDF_EXTENSIONS.has(ext)) return "pdf";
     if (IMAGE_EXTENSIONS.has(ext)) return "image";
+    if (TEXT_EXTENSIONS.has(ext)) return "text";
   }
   return "unsupported";
 }
@@ -311,6 +319,18 @@ export function DocumentViewer({
       );
     }
 
+    if (renderer === "text") {
+      return (
+        <div
+          ref={containerRef}
+          className={wrapperClass}
+          data-testid="document-viewer-text"
+        >
+          <TextViewer url={url} onError={() => setErrored(true)} />
+        </div>
+      );
+    }
+
     // Unknown MIME type — render the unsupported fallback. We deliberately do
     // NOT fall through to an `<iframe>` here: iframes for unknown content
     // types frequently trigger downloads instead of inline rendering, which is
@@ -390,5 +410,57 @@ function Unavailable({
         <span className="font-mono text-[10px] text-ink-4 max-w-[36ch]">{detail}</span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Renders a plain-text / markdown source document. Fetches the bytes from the
+ * inline, signed preview URL and shows them verbatim as monospace text — the
+ * raw source, not a parsed rendering. Text files have no page geometry, so
+ * there are no bbox highlights to sync (unlike the PDF/parsed views).
+ */
+function TextViewer({ url, onError }: { url: string; onError: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  // The parent passes a fresh `onError` closure each render; keep it in a ref
+  // so it isn't a fetch dependency (which would refetch on every re-render).
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      })
+      .then((body) => {
+        if (cancelled) return;
+        setText(body);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoading(false);
+        onErrorRef.current();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <span className="animate-pulse font-mono text-[11px] text-ink-4">Loading preview…</span>
+      </div>
+    );
+  }
+
+  return (
+    <pre className="h-full overflow-auto p-4 font-mono text-[12px] leading-relaxed text-ink whitespace-pre-wrap break-words">
+      {text}
+    </pre>
   );
 }

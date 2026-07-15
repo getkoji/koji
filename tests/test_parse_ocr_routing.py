@@ -73,6 +73,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from services.parse.main import (  # noqa: E402
     _is_image,
+    _is_text,
+    _read_text_document,
     app,
     classify_input,
 )
@@ -124,7 +126,57 @@ def test_classify_input_non_pdf_non_image():
     assert classify_input("/tmp/page.html") == "digital"
     assert classify_input("/tmp/deck.pptx") == "digital"
     assert classify_input("/tmp/data.csv") == "digital"
-    assert classify_input("/tmp/notes.txt") == "digital"
+
+
+# ── _is_text / text classification (oss-446) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "filename, content_type, expected",
+    [
+        ("notes.txt", None, True),
+        ("README.md", None, True),
+        ("doc.markdown", None, True),
+        ("log.TEXT", None, True),
+        ("report.pdf", None, False),
+        ("scan.png", None, False),
+        ("data.csv", None, False),
+        # MIME type override
+        ("noext", "text/plain", True),
+        ("noext", "text/markdown", True),
+        ("noext", "text/x-markdown", True),
+        ("noext", "application/pdf", False),
+        ("noext", None, False),
+    ],
+)
+def test_is_text(filename: str, content_type: str | None, expected: bool):
+    assert _is_text(filename, content_type) == expected
+
+
+def test_classify_input_text():
+    assert classify_input("/tmp/notes.txt") == "text"
+    assert classify_input("/tmp/README.md") == "text"
+    assert classify_input("/tmp/doc.markdown") == "text"
+    assert classify_input("/tmp/noext", content_type="text/markdown") == "text"
+
+
+def test_read_text_document(tmp_path):
+    """Plain-text / markdown files come back verbatim with no page geometry."""
+    body = "# Title\n\nSome **markdown** content.\nLine two.\n"
+    f = tmp_path / "doc.md"
+    f.write_text(body, encoding="utf-8")
+    result = _read_text_document(str(f))
+    assert result["markdown"] == body
+    assert result["pages"] == 1
+    assert result["text_map"] == []
+
+
+def test_read_text_document_bad_bytes(tmp_path):
+    """Undecodable bytes degrade to replacement chars instead of raising."""
+    f = tmp_path / "doc.txt"
+    f.write_bytes(b"valid text \xff\xfe then garbage")
+    result = _read_text_document(str(f))
+    assert "valid text" in result["markdown"]
 
 
 # ── /parse endpoint OCR routing ─────────────────────────────────────────
@@ -170,6 +222,30 @@ def test_parse_pptx_skips_ocr(mock_convert):
     assert resp.json()["ocr_skipped"] is True
     _, kwargs = mock_convert.call_args
     assert kwargs["skip_ocr"] is True
+
+
+def test_parse_txt_returns_content_verbatim():
+    """A .txt upload skips docling entirely and returns its bytes as markdown.
+
+    _convert_sync is NOT patched here — the real text short-circuit runs, which
+    proves text files never reach the docling pipeline (no stubs exercised).
+    """
+    body = b"Plain text line one.\nLine two.\n"
+    resp = _upload("notes.txt", content=body, content_type="text/plain")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["markdown"] == body.decode("utf-8")
+    assert data["ocr_skipped"] is True
+    assert data["text_map"] == []
+
+
+def test_parse_md_returns_content_verbatim():
+    body = b"# Heading\n\nMarkdown **body**.\n"
+    resp = _upload("README.md", content=body, content_type="text/markdown")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["markdown"] == body.decode("utf-8")
+    assert data["ocr_skipped"] is True
 
 
 @patch("services.parse.main._convert_sync", return_value=MOCK_RESULT)

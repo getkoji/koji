@@ -1184,7 +1184,7 @@ export default function BuildPage() {
                 <label className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[12px] text-ink-3 border border-border hover:border-ink hover:text-ink transition-colors cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
                   {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
                   {uploading ? `Uploading${uploadProgress > 0 ? ` ${uploadProgress}%` : "..."}` : "Upload"}
-                  <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                  <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.txt,.md,.markdown"
                     onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                 </label>
                 <select
@@ -1226,9 +1226,9 @@ export default function BuildPage() {
                         : (corpusEntries ?? []).length === 0 ? "Upload a test document" : "Upload another document"}
                     </div>
                     <div className="text-[11px] text-ink-4">
-                      {uploading ? "Please wait" : "PDF, PNG, JPG, or TIFF — click or drag a file here"}
+                      {uploading ? "Please wait" : "PDF, PNG, JPG, TIFF, TXT, or MD — click or drag a file here"}
                     </div>
-                    <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                    <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.txt,.md,.markdown"
                       onChange={(e) => { if (e.target.files?.[0]) handleUploadDoc(e.target.files[0]); }} />
                   </label>
 

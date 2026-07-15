@@ -210,7 +210,9 @@ Send a document to the parse service and get markdown back. This calls the parse
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `file` | file | Yes | The document to parse (PDF, DOCX, image, etc.) |
+| `file` | file | Yes | The document to parse (PDF, DOCX, image, plain text, markdown, etc.) |
+
+Plain-text and markdown files (`.txt`, `.md`, `.markdown`) are returned verbatim as markdown — they need no OCR or layout parsing, so `text_map` is empty and `pages` is `1`.
 
 **Response** `200 OK`
 

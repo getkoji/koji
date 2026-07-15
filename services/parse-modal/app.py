@@ -377,6 +377,12 @@ IMAGE_MIMETYPES = {
     "image/webp",
 }
 
+# Plain-text and markdown files are already markdown — their bytes ARE the
+# output. Route them around the docling PDF/OCR pipeline entirely; mirrors
+# services/parse/main.py. See oss-446.
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text"}
+TEXT_MIMETYPES = {"text/plain", "text/markdown", "text/x-markdown"}
+
 
 def _get_pdf_info(file_bytes: bytes) -> dict:
     """Quick PDF metadata: page count + text-layer detection.
@@ -412,6 +418,17 @@ def _is_image(filename: str, mime_type: str | None) -> bool:
     if ext in IMAGE_EXTENSIONS:
         return True
     if mime_type and mime_type in IMAGE_MIMETYPES:
+        return True
+    return False
+
+
+def _is_text(filename: str, mime_type: str | None) -> bool:
+    from pathlib import Path
+
+    ext = Path(filename).suffix.lower()
+    if ext in TEXT_EXTENSIONS:
+        return True
+    if mime_type and mime_type in TEXT_MIMETYPES:
         return True
     return False
 
@@ -732,6 +749,13 @@ def _convert_bytes(
     from pathlib import Path
 
     suffix = _suffix_for(filename, mime_type)
+
+    # Plain text / markdown is already markdown — return it directly without
+    # touching docling. No page geometry, so text_map is empty. See oss-446.
+    if _is_text(filename, mime_type):
+        print(f"[koji-parse-modal] {filename}: text/markdown, read directly")
+        markdown = file_bytes.decode("utf-8", errors="replace")
+        return {"markdown": markdown, "pages": 1, "ocr_skipped": True, "text_map": []}
 
     skip_ocr = False
     if force_ocr:

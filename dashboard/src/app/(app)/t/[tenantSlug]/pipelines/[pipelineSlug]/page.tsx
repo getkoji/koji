@@ -1748,11 +1748,11 @@ function RunDialog({
                 type="file"
                 className="hidden"
                 multiple
-                accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.txt,.md,.markdown"
                 onChange={(e) => handleFiles(e.target.files)}
               />
             </label>
-            <span className="font-mono text-[10px] text-ink-4">PDF, PNG, JPG, TIFF</span>
+            <span className="font-mono text-[10px] text-ink-4">PDF, PNG, JPG, TIFF, TXT, MD</span>
           </div>
 
           {/* File list */}

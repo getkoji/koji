@@ -102,7 +102,7 @@ function DocumentPicker({
             ref={inputRef}
             type="file"
             className="hidden"
-            accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+            accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.txt,.md,.markdown"
             disabled={uploading}
             onChange={(e) => {
               if (e.target.files?.[0]) onUpload(e.target.files[0]);

@@ -98,6 +98,13 @@ describe("mimeTypeFor (regression — unchanged by this PR)", () => {
     expect(mimeTypeFor(null)).toBe("application/octet-stream");
     expect(mimeTypeFor("no-extension")).toBe("application/octet-stream");
   });
+  it("maps text and markdown extensions (oss-446)", () => {
+    expect(mimeTypeFor("notes.txt")).toBe("text/plain");
+    expect(mimeTypeFor("log.text")).toBe("text/plain");
+    expect(mimeTypeFor("README.md")).toBe("text/markdown");
+    expect(mimeTypeFor("doc.markdown")).toBe("text/markdown");
+    expect(mimeTypeFor("DOC.MD")).toBe("text/markdown");
+  });
 });
 
 describe("sniffMimeFromBytes", () => {
