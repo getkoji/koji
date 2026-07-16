@@ -11,9 +11,9 @@
  * the Jobs page).
  */
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Suspense } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, usePathname, useSearchParams } from "next/navigation";
 import { FileText, MessageSquare } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -49,21 +49,45 @@ interface PipelineOption {
   displayName: string;
 }
 
+// useSearchParams requires a Suspense boundary; the page component wraps the
+// real content so static prerender doesn't bail out on the whole route.
 export default function DocumentsPage() {
   usePageTitle("Documents");
+  return (
+    <Suspense fallback={null}>
+      <DocumentsPageContent />
+    </Suspense>
+  );
+}
+
+function DocumentsPageContent() {
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [pipelineFilter, setPipelineFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<DateRange>("30d");
-  const [search, setSearch] = useState("");
+  // Seed search from the URL (?q=) so it survives back-navigation and reloads.
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
 
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Seed the debounced value from the URL too, so the first fetch already
+  // reflects ?q= instead of firing empty and re-fetching 300ms later.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("q") ?? "");
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Mirror the (debounced) query into the URL so navigating away and pressing
+  // back restores the search. replace() keeps typing out of the history stack.
+  useEffect(() => {
+    const qs = debouncedSearch ? `?q=${encodeURIComponent(debouncedSearch)}` : "";
+    router.replace(`${pathname}${qs}`, { scroll: false });
+  }, [debouncedSearch, pathname, router]);
 
   // ── Infinite scroll state (same shape as the Jobs page) ─────────
   const [docs, setDocs] = useState<DocumentListRow[]>([]);

@@ -3,7 +3,7 @@ import { and, eq, desc, gte, lt, ilike, sql, type SQL } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getProjectId } from "../auth/middleware";
-import { resolveSince } from "./jobs";
+import { resolveSince, searchTokens } from "./jobs";
 
 export const documents = new Hono<Env>();
 
@@ -55,7 +55,11 @@ documents.get("/", requires("job:read"), async (c) => {
   const baseConditions: SQL[] = [];
   if (status) baseConditions.push(eq(schema.documents.status, status));
   if (pipelineSlug) baseConditions.push(eq(schema.pipelines.slug, pipelineSlug));
-  if (search) baseConditions.push(ilike(schema.documents.filename, `%${search}%`));
+  // Multi-word search: every whitespace-separated token must appear in the
+  // filename (AND), so "park walk" matches "walk-in-the-park.pdf".
+  for (const token of searchTokens(search)) {
+    baseConditions.push(ilike(schema.documents.filename, `%${token}%`));
+  }
   if (since.cutoff) baseConditions.push(gte(schema.documents.createdAt, since.cutoff));
 
   const conditions = [...baseConditions];
