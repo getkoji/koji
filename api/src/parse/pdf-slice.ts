@@ -60,6 +60,20 @@ export interface PdfProbeResult {
    * `pageCount` can be known while this is false.
    */
   pdfLibLoadable: boolean;
+  /**
+   * Whether the PDF declares a Standard security handler (`/Encrypt`). True even
+   * for the ubiquitous owner-password / empty-user-password pattern that
+   * carriers and law firms ship (readable without a password, but restricted).
+   *
+   * This matters independently of {@link pdfLibLoadable}: pdf-lib can *load* an
+   * encrypted PDF whose page tree is NOT in compressed object streams (so
+   * `pdfLibLoadable` is true), but {@link slicePdfPages} copies the still-
+   * encrypted content streams into an unencrypted output — RC4/AES ciphertext
+   * read as plaintext, i.e. garbage — so the sliced pages carry no extractable
+   * text. Callers must decrypt (re-save via the parse service, see
+   * `pdf-normalize.ts`) before slicing whenever this is true.
+   */
+  encrypted: boolean;
 }
 
 /**
@@ -74,15 +88,25 @@ export async function probePdf(
   fileBuffer: Buffer,
   mimeType: string,
 ): Promise<PdfProbeResult> {
-  if (!/pdf/i.test(mimeType)) return { pageCount: null, pdfLibLoadable: false };
+  if (!/pdf/i.test(mimeType))
+    return { pageCount: null, pdfLibLoadable: false, encrypted: false };
 
   try {
     const doc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-    return { pageCount: doc.getPageCount(), pdfLibLoadable: true };
+    return {
+      pageCount: doc.getPageCount(),
+      pdfLibLoadable: true,
+      encrypted: doc.isEncrypted,
+    };
   } catch {
     // fall through to pdfjs
   }
 
+  // pdf-lib couldn't load the bytes — the common cause is exactly encryption
+  // (an object-stream page tree that `ignoreEncryption` never inflates), so this
+  // path is treated as encrypted-until-proven-otherwise: callers already
+  // normalize when `pdfLibLoadable` is false, and marking it encrypted keeps
+  // the decrypt-before-slice contract consistent.
   try {
     const pdfjsLib = await loadPdfjs();
     const doc = await pdfjsLib.getDocument({
@@ -91,9 +115,12 @@ export async function probePdf(
     }).promise;
     const pageCount = doc.numPages;
     await doc.destroy();
-    return { pageCount, pdfLibLoadable: false };
+    return { pageCount, pdfLibLoadable: false, encrypted: true };
   } catch {
-    return { pageCount: null, pdfLibLoadable: false };
+    // Neither library could read the bytes (corrupt / not really a PDF). Not
+    // meaningfully "encrypted" — and unused anyway, since the decrypt-before-
+    // slice path only fires when a page count is known.
+    return { pageCount: null, pdfLibLoadable: false, encrypted: false };
   }
 }
 

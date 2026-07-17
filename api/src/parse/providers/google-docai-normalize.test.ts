@@ -25,6 +25,8 @@ import {
   ENCRYPTED_OBJSTM_PDF_40,
   ENCRYPTED_OBJSTM_PDF_20,
   ENCRYPTED_OBJSTM_PDF_40_NORMALIZED,
+  ENCRYPTED_LOADABLE_PDF_20,
+  ENCRYPTED_LOADABLE_PDF_20_NORMALIZED,
 } from "../encrypted-pdf.fixture";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -162,6 +164,64 @@ describe("GoogleDocAiProvider.parse — encrypted/object-stream PDFs (pdf-lib un
     expect(calls).toHaveLength(1);
     expect(calls[0]!.body.imagelessMode).toBe(true);
     expect(res.markdown).toContain("whole doc");
+  });
+
+  it("decrypts an encrypted-BUT-loadable PDF up front, then slices (oss-448)", async () => {
+    // The trap: pdf-lib CAN load this PDF (no object streams) so the pre-fix
+    // code skipped normalize and sliced encrypted content streams → blank pages
+    // → empty parse. The fix decrypts once up front, then slices as usual.
+    let slice = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes("/normalize-pdf")) {
+        return jsonResponse({
+          pdf_base64: ENCRYPTED_LOADABLE_PDF_20_NORMALIZED.toString("base64"),
+          pages: 20,
+          byte_size: ENCRYPTED_LOADABLE_PDF_20_NORMALIZED.length,
+        });
+      }
+      slice += 1;
+      return jsonResponse({ document: onlineDoc(`segment ${slice}`) });
+    });
+
+    const provider = new GoogleDocAiProvider(payload());
+    const res = await provider.parse({
+      filename: "encrypted-loadable-policy.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: ENCRYPTED_LOADABLE_PDF_20,
+    });
+
+    // Exactly one decrypt round trip, then 20pg → ceil(20/15) = 2 slices.
+    expect(normalizeCalls()).toHaveLength(1);
+    expect(processCalls()).toHaveLength(2);
+    expect(res.pages).toBe(20);
+    expect(res.markdown).toContain("segment 1");
+    expect(res.markdown).toContain("segment 2");
+  });
+
+  it("proceeds on original bytes when up-front decrypt of a loadable PDF fails", async () => {
+    // Parse service down / refuses. The doc is small enough that routing still
+    // attempts a single online call rather than throwing — the downstream
+    // empty-text guard (dag-runner) surfaces any resulting blank as a failure.
+    let normalizeAttempts = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes("/normalize-pdf")) {
+        normalizeAttempts += 1;
+        return jsonResponse({ error: "normalize failed: service down" }, 422);
+      }
+      return jsonResponse({ document: onlineDoc("whole doc fallback") });
+    });
+
+    const provider = new GoogleDocAiProvider(payload({ slice_pages: 30 }));
+    const res = await provider.parse({
+      filename: "encrypted-loadable-small.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: ENCRYPTED_LOADABLE_PDF_20,
+    });
+
+    expect(normalizeAttempts).toBe(1);
+    // 20pg ≤ slice_pages(30) → a single online call on the original bytes.
+    expect(processCalls()).toHaveLength(1);
+    expect(res.markdown).toContain("whole doc fallback");
   });
 
   it("still routes batch-configured tenants to :batchProcess without normalizing", async () => {

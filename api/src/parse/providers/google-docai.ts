@@ -775,6 +775,50 @@ export class GoogleDocAiProvider implements ParseProvider {
     const probe = await probePdf(input.fileBuffer, input.mimeType);
     let pageCount = probe.pageCount;
 
+    // Encrypted-but-loadable PDFs are the trap the sliced path silently fell
+    // into. pdf-lib CAN load an owner-password / empty-user-password PDF whose
+    // page tree is NOT in compressed object streams (so `pdfLibLoadable` is
+    // true), but `slicePdfPages` copies the still-encrypted content streams into
+    // an unencrypted output — ciphertext read as plaintext — so every slice Doc
+    // AI receives is blank and the merged parse comes back empty. Even a single
+    // whole-doc online call is unreliable on encrypted bytes. Decrypt ONCE up
+    // front via the parse service (`FPDF_REMOVE_SECURITY` / MuPDF re-save, both
+    // verified to strip empty-user-password encryption) so every route below —
+    // online, sliced, batch — runs on clean, text-bearing bytes. The object-
+    // stream case (`!pdfLibLoadable`) keeps its existing normalize handling in
+    // the sliced branch below; only add the loadable case here.
+    if (probe.encrypted && probe.pdfLibLoadable) {
+      try {
+        const decrypted = await normalizePdfViaService(input.fileBuffer, input.filename);
+        const recount = await countPdfPages(decrypted, input.mimeType);
+        if (recount !== null) {
+          console.log(
+            `[google-docai] ${input.filename}: decrypted owner-password-encrypted ` +
+              `PDF via parse service before routing (${pageCount ?? "?"} → ${recount}pg).`,
+          );
+          input = { ...input, fileBuffer: decrypted };
+          pageCount = recount;
+        } else {
+          // The re-save produced a PDF pdf-lib still can't read — don't trust it;
+          // fall through on the original bytes rather than slicing garbage.
+          console.warn(
+            `[google-docai] ${input.filename}: decrypt re-save yielded a PDF ` +
+              `pdf-lib still can't read; proceeding on original bytes.`,
+          );
+        }
+      } catch (err) {
+        // Parse service unreachable, or a genuine (non-empty) user password we
+        // can't strip. Proceed on the original bytes: a large doc still hits the
+        // sliced path, and the downstream empty-text guard (dag-runner) surfaces
+        // a hard failure rather than a silent blank if Doc AI returns nothing.
+        console.warn(
+          `[google-docai] ${input.filename}: decrypt-normalize failed ` +
+            `(${err instanceof Error ? err.message : String(err)}); ` +
+            `proceeding on original bytes.`,
+        );
+      }
+    }
+
     // Opt-in batch path for bulk / high-volume historical imports. Requires a
     // GCS bucket; gated behind config_json.parse_mode="batch" or use_batch=true.
     // Doc AI reads the original bytes from GCS — no local pdf-lib needed, so
