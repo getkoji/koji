@@ -314,6 +314,28 @@ export function evalCondition(condition: string, context: Record<string, unknown
   }
 }
 
+/**
+ * Explain why a configured `extract` step couldn't run, so the runner can fail
+ * loudly with an actionable reason instead of stamping the document `delivered`
+ * with a null extraction. The step body only proceeds when
+ * `schemaSlug && docText && endpoint` all hold and the schema version resolves;
+ * this maps the first missing precondition to a human-readable message. The most
+ * common cause in practice is `docText === ""` — a parse that produced no text
+ * (an encrypted or image-only PDF the parse provider couldn't read).
+ */
+export function extractSkipReason(
+  schemaSlug: string,
+  docText: string | undefined,
+  endpoint: unknown,
+): string {
+  if (!schemaSlug) return "Extract step has no schema configured.";
+  if (!docText)
+    return `Extraction for "${schemaSlug}" could not run: the document produced no extractable text (parse returned empty).`;
+  if (!endpoint)
+    return `Extraction for "${schemaSlug}" could not run: no model endpoint is configured for this pipeline.`;
+  return `Extraction for "${schemaSlug}" could not run: the schema version could not be resolved.`;
+}
+
 function resolveNextStep(edges: TestEdge[], output: Record<string, unknown>): string | null {
   const all = resolveNextSteps(edges, output);
   return all[0] ?? null;
@@ -612,7 +634,19 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               finalSchemaId = ver.schemaId;
             }
           }
-          if (!output.schema) output = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
+          if (!output.schema) {
+            // Extraction was configured but couldn't run. Diagnose why so the
+            // failure is actionable instead of a silent blank delivery — the
+            // most common cause is a parse that produced no text (an encrypted
+            // or image-only PDF the parse provider couldn't read).
+            const reason = extractSkipReason(schemaSlug, docText, endpoint);
+            output = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: reason };
+            // A configured extract that can't run is a hard failure, not a
+            // `delivered` blank — mark the step failed so the document is failed
+            // loudly (markDocFailed) rather than stamped delivered with null
+            // extraction. A schema-less extract step is a no-op, left as a note.
+            if (schemaSlug) { status = "failed"; error = reason; }
+          }
           break;
         }
 
@@ -979,7 +1013,14 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                     finalSchemaId = ver.schemaId;
                   }
                 }
-                if (!branchOutput.schema) branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: "Could not run extraction" };
+                if (!branchOutput.schema) {
+                  // Mirror the linear extract path: diagnose and hard-fail a
+                  // configured-but-unrunnable extraction instead of silently
+                  // delivering a blank (see extractSkipReason).
+                  const reason = extractSkipReason(schemaSlug, docText, endpoint);
+                  branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: reason };
+                  if (schemaSlug) { branchStatus = "failed"; branchError = reason; }
+                }
                 break;
               }
               case "tag":

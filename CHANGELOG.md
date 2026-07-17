@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.95.2 — 2026-07-16
+
+**Encrypted PDFs now extract instead of silently returning nothing.** Many
+carrier and law-firm PDFs ship with owner-password ("no-print") encryption and
+an empty user password — readable, but restricted. When such a PDF's page tree
+was stored in plain objects (not compressed object streams), the Document AI
+parse path loaded it, sliced it locally, and unknowingly copied the still-
+encrypted content streams into the slices it sent for OCR — so every page came
+back blank and the document produced an empty parse. These PDFs are now
+decrypted once (via the parse service's re-save) before slicing, so their text
+survives end to end.
+
+**Extraction now fails loudly when a document has no text.** Previously, if the
+parse step produced no extractable text (an encrypted or image-only PDF the
+parser couldn't read), a pipeline's extract step silently skipped extraction and
+delivered the document with an empty result. It now marks the document `failed`
+with an actionable reason ("the document produced no extractable text") instead
+of stamping it delivered with nothing — no more blank deliveries that look
+successful.
+
 ## 0.95.1 — 2026-07-16
 
 **Search fixes on the Jobs and Documents lists.** Two annoyances are gone:

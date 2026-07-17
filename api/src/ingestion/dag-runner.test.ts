@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildDagPlan, evalCondition, resolveNextSteps, type TestEdge } from "./dag-runner";
+import {
+  buildDagPlan,
+  evalCondition,
+  extractSkipReason,
+  resolveNextSteps,
+  type TestEdge,
+} from "./dag-runner";
 
 describe("evalCondition", () => {
   it("returns true for empty/unparseable conditions", () => {
@@ -278,5 +284,39 @@ describe("DAG runner status contracts", () => {
     const wasSplit = true;
     const status = wasSplit ? "split" : "delivered";
     expect(status).toBe("split");
+  });
+});
+
+describe("extractSkipReason — why a configured extract couldn't run (oss-448)", () => {
+  // A configured extract that can't run must fail the document loudly rather
+  // than stamp it `delivered` with null extraction. These pin the diagnosis
+  // the runner attaches when it hard-fails the step.
+
+  it("blames empty parse text first — the common encrypted/image-only PDF case", () => {
+    // The bug that started this: an encrypted PDF parsed to "" (falsy docText),
+    // so the extract guard was skipped and the doc silently delivered blank.
+    const reason = extractSkipReason("policy_generic", "", { model: "gpt-4o-mini" });
+    expect(reason).toMatch(/no extractable text/);
+    expect(reason).toContain("policy_generic");
+  });
+
+  it("treats undefined docText (parse threw) the same as empty", () => {
+    const reason = extractSkipReason("invoice", undefined, { model: "gpt-4o-mini" });
+    expect(reason).toMatch(/no extractable text/);
+  });
+
+  it("blames a missing model endpoint when text is present", () => {
+    const reason = extractSkipReason("invoice", "real text", null);
+    expect(reason).toMatch(/no model endpoint/);
+  });
+
+  it("blames schema resolution when text and endpoint are present", () => {
+    const reason = extractSkipReason("invoice", "real text", { model: "gpt-4o-mini" });
+    expect(reason).toMatch(/schema version could not be resolved/);
+  });
+
+  it("reports a schema-less extract step (a no-op, not hard-failed by the caller)", () => {
+    const reason = extractSkipReason("", "real text", { model: "gpt-4o-mini" });
+    expect(reason).toMatch(/no schema configured/);
   });
 });
