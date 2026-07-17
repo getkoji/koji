@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.95.1 — 2026-07-16
+
+**Search fixes on the Jobs and Documents lists.** Two annoyances are gone:
+multi-word queries now work — the text is split on spaces and every word must
+match (AND), so `park walk` finds `walk-in-the-park.pdf` instead of returning
+nothing (previously the whole phrase had to appear contiguously). And the
+search term is now mirrored into the URL (`?q=…`), so navigating into a job or
+document and pressing **Back** restores your search instead of dropping you on
+an empty box. The same tokenized matching now powers the command-palette
+document search.
+
 ## 0.95.0 — 2026-07-15
 
 **Upload plain-text and markdown files in the dashboard.** `.txt`, `.md`, and

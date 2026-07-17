@@ -701,7 +701,7 @@ documents are returned.
 
 | Param | Description |
 |-------|-------------|
-| `search` | Filename substring, case-insensitive. |
+| `search` | Filename match, case-insensitive. Multi-word queries are split on whitespace and every word must match (AND), so `park walk` matches `walk-in-the-park.pdf` even though the words aren't adjacent. |
 | `status` | Exact document status (`delivered`, `review`, `failed`, …). |
 | `pipeline` | Pipeline slug. |
 | `since` | Shorthand (`today` \| `7d` \| `30d` \| `all`) or ISO timestamp. |

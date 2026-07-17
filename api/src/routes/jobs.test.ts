@@ -6,7 +6,36 @@ import {
   resolvePreviewKey,
   parseResolveRegionBody,
   parseCorrectionsBody,
+  searchTokens,
 } from "./jobs";
+
+describe("searchTokens (multi-word search tokenization)", () => {
+  it("returns [] for empty / whitespace-only / undefined input", () => {
+    expect(searchTokens(undefined)).toEqual([]);
+    expect(searchTokens("")).toEqual([]);
+    expect(searchTokens("   ")).toEqual([]);
+  });
+
+  it("returns a single token for a single word", () => {
+    expect(searchTokens("park")).toEqual(["park"]);
+  });
+
+  it("splits a multi-word query into separate tokens (the space bug)", () => {
+    // "park walk" must become two AND'd tokens, not one contiguous ILIKE that
+    // would only match a literal "park walk" substring.
+    expect(searchTokens("park walk")).toEqual(["park", "walk"]);
+  });
+
+  it("collapses runs of whitespace and trims edges", () => {
+    expect(searchTokens("  park   walk  ")).toEqual(["park", "walk"]);
+    expect(searchTokens("a\tb\nc")).toEqual(["a", "b", "c"]);
+  });
+
+  it("caps the token count to avoid unbounded predicates", () => {
+    const many = Array.from({ length: 30 }, (_, i) => `t${i}`).join(" ");
+    expect(searchTokens(many)).toHaveLength(12);
+  });
+});
 
 describe("parseCorrectionsBody (manual corrections request validation)", () => {
   const bbox = { x: 0.1, y: 0.2, w: 0.3, h: 0.05 };

@@ -88,6 +88,22 @@ export function resolveSince(raw: string | undefined): { cutoff: Date | null } |
 }
 
 /**
+ * Split a free-text search query into whitespace-separated tokens.
+ *
+ * Multi-word searches use AND semantics: every token must match somewhere for
+ * a row to qualify. A single contiguous ILIKE would require the words to
+ * appear back-to-back, so "park walk" would miss "walk-in-the-park.pdf" — the
+ * caller instead builds one predicate per token and ANDs them together.
+ *
+ * Returns [] for empty/whitespace-only input. Capped at 12 tokens so a
+ * pathological query can't generate an unbounded number of predicates.
+ */
+export function searchTokens(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw.trim().split(/\s+/).filter(Boolean).slice(0, 12);
+}
+
+/**
  * GET /api/jobs — list jobs for the current tenant.
  * Joins pipelines + schemas + schema_versions so the dashboard row has
  * pipeline name, schema name, and deployed version number without extra fetches.
@@ -114,8 +130,10 @@ jobs.get("/", requires("job:read"), async (c) => {
   if (pipelineSlug) baseConditions.push(eq(schema.pipelines.slug, pipelineSlug));
   if (since.cutoff) baseConditions.push(gte(schema.jobs.createdAt, since.cutoff));
 
-  if (search) {
-    const pattern = `%${search}%`;
+  // Multi-word search: each token must match the slug or a top-level document
+  // filename (AND across tokens, OR across the two fields per token).
+  for (const token of searchTokens(search)) {
+    const pattern = `%${token}%`;
     baseConditions.push(
       sql`(${schema.jobs.slug} ILIKE ${pattern} OR ${schema.jobs.id} IN (
         SELECT ${schema.documents.jobId} FROM ${schema.documents}
@@ -218,6 +236,11 @@ jobs.get("/documents/search", requires("job:read"), async (c) => {
     return c.json({ data: [] });
   }
 
+  // Multi-word: every token must appear in the filename (AND semantics).
+  const filenameConditions = searchTokens(q).map((token) =>
+    ilike(schema.documents.filename, `%${token}%`),
+  );
+
   const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
@@ -231,7 +254,7 @@ jobs.get("/documents/search", requires("job:read"), async (c) => {
       .innerJoin(schema.jobs, eq(schema.jobs.id, schema.documents.jobId))
       .where(
         and(
-          ilike(schema.documents.filename, `%${q}%`),
+          ...filenameConditions,
           isNull(schema.documents.parentDocumentId),
         ),
       )

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Suspense } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Play, Copy, Check } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -45,22 +45,47 @@ const DATE_OPTIONS: { key: DateRange; label: string }[] = [
   { key: "all", label: "All" },
 ];
 
+// useSearchParams requires a Suspense boundary; the page component wraps the
+// real content so static prerender doesn't bail out on the whole route.
 export default function JobsPage() {
   usePageTitle("Jobs");
+  return (
+    <Suspense fallback={null}>
+      <JobsPageContent />
+    </Suspense>
+  );
+}
+
+function JobsPageContent() {
   const params = useParams<{ tenantSlug: string }>();
   const tenantSlug = params?.tenantSlug ?? "";
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [pipelineFilter, setPipelineFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<DateRange>("7d");
-  const [search, setSearch] = useState("");
+  // Seed search from the URL (?q=) so it survives back-navigation and reloads.
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
 
-  // Debounce search to avoid hammering the API on every keystroke
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Debounce search to avoid hammering the API on every keystroke. Seed the
+  // debounced value from the URL too, so the first fetch already reflects ?q=
+  // instead of firing empty and then re-fetching 300ms later.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("q") ?? "");
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Mirror the (debounced) query into the URL so navigating away and pressing
+  // back restores the search. replace() keeps typing out of the history stack;
+  // the entry pushed by navigating to a detail page is what back returns to.
+  useEffect(() => {
+    const qs = debouncedSearch ? `?q=${encodeURIComponent(debouncedSearch)}` : "";
+    router.replace(`${pathname}${qs}`, { scroll: false });
+  }, [debouncedSearch, pathname, router]);
 
   const apiStatus = statusFilter === "all" ? undefined : uiStatusToApi(statusFilter);
 
