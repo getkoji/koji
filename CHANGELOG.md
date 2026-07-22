@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.99.1 — 2026-07-22
+
+**Releasing content that matches an existing candidate no longer 500s when that
+version number is already released.** `releaseDirect` graduates a hash-matched
+candidate by clearing its prerelease, which makes it a *release* at that
+`x.y.z`. If a release already occupied that slot, the partial unique index
+rejected the update and nothing caught it, so the caller got a bare `500`.
+`graduateCandidate` had always checked for the clash; `releaseDirect` never did.
+It now refuses with the same `409` ("a release already occupies that version")
+instead of failing opaquely.
+
+Reproduced from a real schema that carried both a released `v1.0.2` and a
+`v1.0.2-rc.1` candidate holding the content being pushed — the exact shape that
+produced an unexplained `500` during a bulk `koji push`.
+
 ## 0.99.0 — 2026-07-22
 
 **`POST /release` no longer silently releases the stored draft when it cannot

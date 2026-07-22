@@ -181,3 +181,57 @@ describe("releaseDirect — live pointer guard", () => {
     expect(mock.updates).toContainEqual(expect.objectContaining({ currentVersionId: "fresh" }));
   });
 });
+
+/**
+ * The `insurance_quote` 500 (oss-462), reproduced from production state.
+ *
+ * A schema had BOTH a released v1.0.2 and a candidate v1.0.2-rc.1 whose content
+ * matched what `koji push` was posting. releaseDirect hash-matched the
+ * candidate and graduated it by clearing its prerelease — turning it into a
+ * second released v1.0.2, which the partial unique index
+ * `schema_versions_released_semver_idx` rejects. Nothing caught the rejection,
+ * so the caller got a 500 instead of a refusal.
+ */
+describe("releaseDirect — graduating onto an occupied release slot", () => {
+  const LIVE_ID = "00000000-0000-0000-0000-0000000002a9";
+  const CAND_ID = "00000000-0000-0000-0000-0000000002c1";
+
+  /** currentVersionId → active row → hash match (the candidate) → clash probe. */
+  function queues(clash: unknown[]) {
+    return [
+      [{ currentVersionId: LIVE_ID }],
+      [{ id: LIVE_ID, major: 2, minor: 0, patch: 9, prerelease: null, parsedJson: { fields: {} } }],
+      [{ id: CAND_ID, versionNumber: 7, major: 1, minor: 0, patch: 2, prerelease: "rc.1" }],
+      clash,
+    ];
+  }
+
+  it("refuses instead of 500ing when a release already occupies that x.y.z", async () => {
+    const mock = makeMockDb(queues([{ id: "released-1-0-2" }]));
+    const res: any = await releaseDirect(mock.db, TENANT_ID, {
+      schemaId: SCHEMA_ID,
+      yaml: "fields: {}\n",
+      parsed: { fields: {} },
+      userId: USER_ID,
+    } as any);
+
+    expect(res.error).toBe("already_released");
+    // Critically: the candidate was NOT mutated, so no constraint was hit.
+    expect(mock.updates).toEqual([]);
+  });
+
+  it("still graduates the candidate when the slot is free", async () => {
+    const mock = makeMockDb(queues([]));
+    const res: any = await releaseDirect(mock.db, TENANT_ID, {
+      schemaId: SCHEMA_ID,
+      yaml: "fields: {}\n",
+      parsed: { fields: {} },
+      userId: USER_ID,
+    } as any);
+
+    expect(res.action).toBe("graduated");
+    expect(res.label).toBe("v1.0.2");
+    expect(mock.updates).toContainEqual(expect.objectContaining({ prerelease: null }));
+    expect(mock.updates).toContainEqual(expect.objectContaining({ currentVersionId: CAND_ID }));
+  });
+});

@@ -305,6 +305,26 @@ export async function releaseDirect(
       }
 
       if (existing.prerelease !== null) {
+        // Graduating a candidate means clearing its prerelease, which makes it
+        // a RELEASE at that x.y.z. If a release already occupies that slot the
+        // partial unique index rejects the update — and nothing caught it, so
+        // the request surfaced as a 500. (graduateCandidate has always checked
+        // this; releaseDirect did not.) Refuse cleanly instead.
+        const [clash] = await tx
+          .select({ id: schema.schemaVersions.id })
+          .from(schema.schemaVersions)
+          .where(
+            and(
+              eq(schema.schemaVersions.schemaId, opts.schemaId),
+              eq(schema.schemaVersions.major, existing.major),
+              eq(schema.schemaVersions.minor, existing.minor),
+              eq(schema.schemaVersions.patch, existing.patch),
+              isNull(schema.schemaVersions.prerelease),
+            ),
+          )
+          .limit(1);
+        if (clash) return { error: "already_released" as const };
+
         await tx
           .update(schema.schemaVersions)
           .set({ prerelease: null })
