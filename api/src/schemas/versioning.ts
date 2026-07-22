@@ -11,6 +11,31 @@ import { createHash } from "node:crypto";
 import { schema, withRLS, type Db } from "@koji/db";
 import { deriveBump } from "./schema-diff";
 import { bumpTarget, formatSemver, nextRcNumber, type Bump, type Semver } from "./semver";
+import { classifyReleaseMatch, requiresReactivateOptIn } from "./release-policy";
+
+/** What `releaseDirect` did (or refused to do) to the live release pointer. */
+export type ReleaseAction = "created" | "unchanged" | "graduated" | "activated" | "reactivated";
+
+export type ReleaseDirectResult =
+  | {
+      id: string;
+      label: string;
+      action: ReleaseAction;
+      /** The release this displaced, when the live pointer moved off one. */
+      displaced: { id: string; label: string } | null;
+    }
+  | { error: "already_released" }
+  /**
+   * The content matches a different already-released version, so publishing it
+   * would move the live pointer to a version the caller did not name. Refused
+   * unless `allowReactivate` — see ./release-policy.ts.
+   */
+  | {
+      error: "requires_reactivate";
+      matched: { id: string; label: string };
+      current: { id: string; label: string };
+      direction: "forward" | "backward";
+    };
 
 export function hashYaml(yaml: string): string {
   return createHash("sha256").update(yaml).digest("hex");
@@ -175,9 +200,16 @@ export async function graduateCandidate(
 }
 
 /**
- * Release YAML directly (skip rc) — the early-stage / empty-corpus path. Dedups
- * by hash: an existing candidate with this content graduates; an existing
- * release re-activates; otherwise a new released version is created. Activates it.
+ * Release YAML directly (skip rc) — the early-stage / empty-corpus path.
+ *
+ * Dedups by content hash. What the match *means* for the live pointer is
+ * decided by `classifyReleaseMatch` (./release-policy.ts), not inline here:
+ * identical-to-live is a no-op, a candidate graduates, and moving the pointer
+ * to a **different already-released** version is gated behind
+ * `allowReactivate`. That gate is the fix for a P0 — this function used to
+ * repoint `currentVersionId` at any hash match, so publishing content that
+ * matched an older version silently rolled the live release backward and
+ * reported it as an ordinary update.
  */
 export async function releaseDirect(
   db: Db,
@@ -189,10 +221,42 @@ export async function releaseDirect(
     userId: string;
     bumpOverride?: Bump;
     commitMessage?: string;
+    /** Opt in to moving the live pointer to a different existing release. */
+    allowReactivate?: boolean;
   },
-): Promise<{ id: string; label: string } | { error: "already_released" }> {
+): Promise<ReleaseDirectResult> {
   const yamlHash = hashYaml(opts.yaml);
   return withRLS(db, tenantId, async (tx) => {
+    // The live release, loaded up front — both the dedup branch (to decide
+    // whether the pointer would move) and the new-version branch (to derive the
+    // bump) need it.
+    const [sch] = await tx
+      .select({ currentVersionId: schema.schemas.currentVersionId })
+      .from(schema.schemas)
+      .where(eq(schema.schemas.id, opts.schemaId))
+      .limit(1);
+    let active:
+      | { id: string; major: number; minor: number; patch: number; prerelease: string | null; parsedJson: unknown }
+      | null = null;
+    if (sch?.currentVersionId) {
+      const [v] = await tx
+        .select({
+          id: schema.schemaVersions.id,
+          major: schema.schemaVersions.major,
+          minor: schema.schemaVersions.minor,
+          patch: schema.schemaVersions.patch,
+          prerelease: schema.schemaVersions.prerelease,
+          parsedJson: schema.schemaVersions.parsedJson,
+        })
+        .from(schema.schemaVersions)
+        .where(eq(schema.schemaVersions.id, sch.currentVersionId))
+        .limit(1);
+      active = v ?? null;
+    }
+    const currentLabel = active
+      ? formatSemver({ major: active.major, minor: active.minor, patch: active.patch, prerelease: active.prerelease })
+      : null;
+
     const [existing] = await tx
       .select(SEMVER_COLS)
       .from(schema.schemaVersions)
@@ -200,7 +264,29 @@ export async function releaseDirect(
       .limit(1);
 
     if (existing) {
-      // Same content already a version. Graduate if candidate, else re-activate.
+      const matchedLabel = formatSemver({
+        major: existing.major,
+        minor: existing.minor,
+        patch: existing.patch,
+        prerelease: null,
+      });
+      const match = classifyReleaseMatch(existing, active);
+
+      // Already live: report it honestly and touch nothing. Bumping updatedAt
+      // here is what let a no-op push read as a real update.
+      if (match.action === "unchanged") {
+        return { id: existing.id, label: matchedLabel, action: "unchanged" as const, displaced: null };
+      }
+
+      if (requiresReactivateOptIn(match) && !opts.allowReactivate) {
+        return {
+          error: "requires_reactivate" as const,
+          matched: { id: existing.id, label: matchedLabel },
+          current: { id: active!.id, label: currentLabel! },
+          direction: match.action === "reactivate" ? match.direction : "forward",
+        };
+      }
+
       if (existing.prerelease !== null) {
         await tx
           .update(schema.schemaVersions)
@@ -213,28 +299,15 @@ export async function releaseDirect(
         .where(eq(schema.schemas.id, opts.schemaId));
       return {
         id: existing.id,
-        label: formatSemver({ major: existing.major, minor: existing.minor, patch: existing.patch, prerelease: null }),
+        label: matchedLabel,
+        action:
+          match.action === "graduate"
+            ? ("graduated" as const)
+            : match.action === "activate"
+              ? ("activated" as const)
+              : ("reactivated" as const),
+        displaced: active && active.id !== existing.id ? { id: active.id, label: currentLabel! } : null,
       };
-    }
-
-    const [sch] = await tx
-      .select({ currentVersionId: schema.schemas.currentVersionId })
-      .from(schema.schemas)
-      .where(eq(schema.schemas.id, opts.schemaId))
-      .limit(1);
-    let active: { major: number; minor: number; patch: number; parsedJson: unknown } | null = null;
-    if (sch?.currentVersionId) {
-      const [v] = await tx
-        .select({
-          major: schema.schemaVersions.major,
-          minor: schema.schemaVersions.minor,
-          patch: schema.schemaVersions.patch,
-          parsedJson: schema.schemaVersions.parsedJson,
-        })
-        .from(schema.schemaVersions)
-        .where(eq(schema.schemaVersions.id, sch.currentVersionId))
-        .limit(1);
-      active = v ?? null;
     }
     const bump: Bump = opts.bumpOverride ?? deriveBump((active?.parsedJson as Record<string, unknown>) ?? null, opts.parsed);
     const target = active ? bumpTarget(active, bump) : { major: 0, minor: 0, patch: 1 };
@@ -264,7 +337,12 @@ export async function releaseDirect(
       .update(schema.schemas)
       .set({ currentVersionId: row.id, updatedAt: new Date() })
       .where(eq(schema.schemas.id, opts.schemaId));
-    return { id: row.id, label: formatSemver({ major: row.major, minor: row.minor, patch: row.patch, prerelease: null }) };
+    return {
+      id: row.id,
+      label: formatSemver({ major: row.major, minor: row.minor, patch: row.patch, prerelease: null }),
+      action: "created" as const,
+      displaced: active ? { id: active.id, label: currentLabel! } : null,
+    };
   });
 }
 

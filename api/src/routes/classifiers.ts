@@ -7,6 +7,7 @@ import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } f
 import { loadClassifierConfig, ClassifierConfigError } from "../classify";
 import type { ClassifierConfig } from "../classify";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
+import { reactivateRefusalBody } from "../schemas/release-policy";
 import { formatSemver, type Bump } from "../schemas/semver";
 
 /**
@@ -327,6 +328,7 @@ classifiers.post("/:slug/versions", requires("schema:write"), async (c) => {
     commit_message?: string;
     candidate?: boolean;
     bump?: Bump;
+    allow_reactivate?: boolean;
   }>();
 
   // Accept `yaml_source` (the artifact-native field name) or `yaml` (schema-route parity).
@@ -371,16 +373,19 @@ classifiers.post("/:slug/versions", requires("schema:write"), async (c) => {
     userId: principal.userId,
     bumpOverride: body.bump,
     commitMessage: body.commit_message,
+    allowReactivate: body.allow_reactivate,
   });
   if ("error" in res) {
+    if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);
     return c.json(
       { error: "A release already occupies that version — commit a fresh candidate." },
       409,
     );
   }
   // Match the schema `release` route + the `koji classify release` CLI: 200 with
-  // `released` = the version label (not a boolean), plus versionId.
-  return c.json({ released: res.label, versionId: res.id });
+  // `released` = the version label (not a boolean), plus versionId. `action` and
+  // `displaced` tell a no-op apart from a real release or a pointer move.
+  return c.json({ released: res.label, versionId: res.id, action: res.action, displaced: res.displaced });
 });
 
 /**
@@ -447,8 +452,8 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
   const body = await c.req
-    .json<{ yaml_source?: string; yaml?: string }>()
-    .catch(() => ({}) as { yaml_source?: string; yaml?: string });
+    .json<{ yaml_source?: string; yaml?: string; allow_reactivate?: boolean }>()
+    .catch(() => ({}) as { yaml_source?: string; yaml?: string; allow_reactivate?: boolean });
 
   const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
@@ -474,12 +479,14 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
     yaml: yamlSource,
     parsed: compiled.parsed as unknown as Record<string, unknown>,
     userId: principal.userId,
+    allowReactivate: body.allow_reactivate,
   });
   if ("error" in res) {
+    if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);
     return c.json(
       { error: "A release already occupies that version — commit a fresh candidate." },
       409,
     );
   }
-  return c.json({ released: res.label, versionId: res.id });
+  return c.json({ released: res.label, versionId: res.id, action: res.action, displaced: res.displaced });
 });

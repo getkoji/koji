@@ -16,6 +16,7 @@ import { parseResolveRegionBody } from "./jobs";
 import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
+import { reactivateRefusalBody } from "../schemas/release-policy";
 import { resolveMimeType } from "../ingestion/mime";
 import { resolveParse } from "../ingestion/seam";
 import { mapWithConcurrency } from "../parse/pdf-slice";
@@ -356,7 +357,13 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
-  const body = await c.req.json<{ yaml: string; commit_message?: string; candidate?: boolean; bump?: Bump }>();
+  const body = await c.req.json<{
+    yaml: string;
+    commit_message?: string;
+    candidate?: boolean;
+    bump?: Bump;
+    allow_reactivate?: boolean;
+  }>();
 
   if (!body.yaml) return c.json({ error: "yaml is required" }, 400);
 
@@ -393,11 +400,18 @@ schemas.post("/:slug/versions", requires("schema:write"), async (c) => {
     userId: principal.userId,
     bumpOverride: body.bump,
     commitMessage: body.commit_message,
+    allowReactivate: body.allow_reactivate,
   });
   if ("error" in res) {
+    if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);
     return c.json({ error: "A release already occupies that version — re-validate for a fresh candidate." }, 409);
   }
-  return c.json({ id: res.id, version: res.label, released: true }, 201);
+  // `action` + `displaced` let a caller tell a new release from a no-op or a
+  // pointer move — `koji push` printed every outcome as "updated" without them.
+  return c.json(
+    { id: res.id, version: res.label, released: true, action: res.action, displaced: res.displaced },
+    201,
+  );
 });
 
 /**
@@ -465,7 +479,9 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
-  const body = await c.req.json<{ yaml?: string }>().catch(() => ({}) as { yaml?: string });
+  const body = await c.req
+    .json<{ yaml?: string; allow_reactivate?: boolean }>()
+    .catch(() => ({}) as { yaml?: string; allow_reactivate?: boolean });
 
   const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
@@ -484,11 +500,13 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
     yaml,
     parsed: compiled.parsed,
     userId: principal.userId,
+    allowReactivate: body.allow_reactivate,
   });
   if ("error" in res) {
+    if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);
     return c.json({ error: "A release already occupies that version — re-validate for a fresh candidate." }, 409);
   }
-  return c.json({ released: res.label, versionId: res.id });
+  return c.json({ released: res.label, versionId: res.id, action: res.action, displaced: res.displaced });
 });
 
 // ── Corpus (documents for testing/validation) ──

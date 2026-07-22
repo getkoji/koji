@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.95.3 — 2026-07-22
+
+**Publishing a schema or classifier can no longer silently roll the live release
+backward.** Versions are deduplicated by content hash, and until now publishing
+content that matched an *existing* version would repoint the live release at
+that version — so re-publishing the YAML of an older version silently made the
+older version live again, and the API reported it exactly like an ordinary new
+release. A bulk `koji push` could therefore swap the live extraction schema for
+an earlier one and print a success line. Publishing content that matches a
+different existing release is now refused with `409 requires_reactivate`, naming
+both versions and whether the move would be a rollback; pass
+`allow_reactivate: true` (or use `promote`) to move the pointer deliberately.
+
+**Release responses now say what actually happened.** `POST` to a schema or
+classifier `versions`/`release` endpoint returns `action` (`created`,
+`unchanged`, `graduated`, `activated`, `reactivated`) plus `displaced` — the
+release the live pointer moved off. Re-publishing the version that is already
+live now reports `unchanged` and writes nothing at all, instead of looking like
+a successful update.
+
 ## 0.95.2 — 2026-07-16
 
 **Encrypted PDFs now extract instead of silently returning nothing.** Many

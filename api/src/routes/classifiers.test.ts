@@ -313,3 +313,79 @@ describe("versions/promote/release — permission gating", () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * The live-pointer guard, exercised through the HTTP handler rather than
+ * `releaseDirect` directly — this covers the route wiring (status code, body
+ * shape, `allow_reactivate` passthrough) that the unit tests in
+ * ../schemas/versioning.release-direct.test.ts do not reach.
+ */
+describe("versions — live release pointer", () => {
+  const YAML = "classes:\n  a: {}";
+  const LIVE_ID = "00000000-0000-0000-0000-0000000002a9";
+  const OLDER_ID = "00000000-0000-0000-0000-0000000002a5";
+
+  /** Query order: classifier by slug → currentVersionId → active row → hash match. */
+  function queues(match: unknown) {
+    return [
+      [{ id: CLASSIFIER_ID }],
+      [{ currentVersionId: LIVE_ID }],
+      [{ id: LIVE_ID, major: 2, minor: 0, patch: 9, prerelease: null, parsedJson: { classes: [] } }],
+      [match],
+    ];
+  }
+
+  const olderRelease = {
+    id: OLDER_ID,
+    versionNumber: 5,
+    major: 2,
+    minor: 0,
+    patch: 5,
+    prerelease: null,
+  };
+
+  function post(db: any, body: Record<string, unknown>) {
+    const app = createApp({ db });
+    return app.request("/api/classifiers/docs/versions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ yaml_source: YAML, ...body }),
+    });
+  }
+
+  it("409s instead of silently rolling the live release back, and writes nothing", async () => {
+    const { db, updates } = makeMockDb({ selectResults: queues(olderRelease) });
+    const res = await post(db, {});
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.reason).toBe("requires_reactivate");
+    expect(body.matched_version).toBe("v2.0.5");
+    expect(body.current_version).toBe("v2.0.9");
+    expect(body.direction).toBe("backward");
+    expect(updates).toEqual([]);
+  });
+
+  it("moves the pointer when allow_reactivate is passed, and reports the displaced release", async () => {
+    const { db, updates } = makeMockDb({ selectResults: queues(olderRelease) });
+    const res = await post(db, { allow_reactivate: true });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.action).toBe("reactivated");
+    expect(body.released).toBe("v2.0.5");
+    expect(body.displaced).toEqual({ id: LIVE_ID, label: "v2.0.9" });
+    expect(updates).toContainEqual(expect.objectContaining({ currentVersionId: OLDER_ID }));
+  });
+
+  it("reports republishing the live version as unchanged without writing", async () => {
+    const live = { id: LIVE_ID, versionNumber: 9, major: 2, minor: 0, patch: 9, prerelease: null };
+    const { db, updates } = makeMockDb({ selectResults: queues(live) });
+    const res = await post(db, {});
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.action).toBe("unchanged");
+    expect(updates).toEqual([]);
+  });
+});
