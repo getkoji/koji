@@ -35,6 +35,10 @@ export type ReleaseDirectResult =
       matched: { id: string; label: string };
       current: { id: string; label: string };
       direction: "forward" | "backward";
+      /** Size + hash prefix of the content actually hashed, so a payload that
+       *  was substituted upstream is visible in the response. */
+      hashedBytes: number;
+      hashedSha256Prefix: string;
     };
 
 export function hashYaml(yaml: string): string {
@@ -81,12 +85,14 @@ export async function snapshotCandidate(
 ): Promise<SnapshotResult> {
   const yamlHash = hashYaml(opts.yaml);
   return withRLS(db, tenantId, async (tx) => {
-    // Dedup by content.
-    const [existing] = await tx
+    // Dedup by content. Deterministic pick: several versions may share a hash
+    // (nothing constrains it unique), and a candidate snapshot must not depend
+    // on scan order. Earliest wins — the original of that content.
+    const dupes = await tx
       .select(SEMVER_COLS)
       .from(schema.schemaVersions)
-      .where(and(eq(schema.schemaVersions.schemaId, opts.schemaId), eq(schema.schemaVersions.yamlHash, yamlHash)))
-      .limit(1);
+      .where(and(eq(schema.schemaVersions.schemaId, opts.schemaId), eq(schema.schemaVersions.yamlHash, yamlHash)));
+    const existing = [...dupes].sort((a, b) => a.versionNumber - b.versionNumber)[0];
     if (existing) return { ...existing, bump: null, deduped: true };
 
     // Active release (what currentVersionId points at), for bump derivation.
@@ -257,11 +263,17 @@ export async function releaseDirect(
       ? formatSemver({ major: active.major, minor: active.minor, patch: active.patch, prerelease: active.prerelease })
       : null;
 
-    const [existing] = await tx
+    // All rows sharing this content, not `.limit(1)` on an unordered scan:
+    // picking arbitrarily could report a duplicate while the LIVE release
+    // carries the same content — a spurious "reactivate" where the truth is
+    // "unchanged". Prefer the live release when it is among the matches.
+    const matches = await tx
       .select(SEMVER_COLS)
       .from(schema.schemaVersions)
-      .where(and(eq(schema.schemaVersions.schemaId, opts.schemaId), eq(schema.schemaVersions.yamlHash, yamlHash)))
-      .limit(1);
+      .where(and(eq(schema.schemaVersions.schemaId, opts.schemaId), eq(schema.schemaVersions.yamlHash, yamlHash)));
+    const existing =
+      matches.find((m) => active !== null && m.id === active.id) ??
+      [...matches].sort((a, b) => a.versionNumber - b.versionNumber)[0];
 
     if (existing) {
       const matchedLabel = formatSemver({
@@ -284,6 +296,11 @@ export async function releaseDirect(
           matched: { id: existing.id, label: matchedLabel },
           current: { id: active!.id, label: currentLabel! },
           direction: match.action === "reactivate" ? match.direction : "forward",
+          // What we actually hashed. If a caller's payload was substituted
+          // upstream, the size/prefix here won't be theirs — which is the only
+          // cheap way to notice from the response.
+          hashedBytes: Buffer.byteLength(opts.yaml, "utf8"),
+          hashedSha256Prefix: yamlHash.slice(0, 8),
         };
       }
 

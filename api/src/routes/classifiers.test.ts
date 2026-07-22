@@ -487,3 +487,66 @@ describe("GET /:slug — what is live", () => {
     expect(body.activeVersionLabel).toBeNull();
   });
 });
+
+/**
+ * The production incident (oss-468): a release body whose YAML arrived under an
+ * unrecognized key used to fall through to the STORED DRAFT and release it.
+ * The caller's payload was never seen, and the rollback guard then reported a
+ * content match against draft content they had not sent.
+ */
+describe("POST /:slug/release — never substitutes the stored draft", () => {
+  const DRAFT = "classes:\n  stub: {}";
+  const PAYLOAD = "classes:\n  invoice:\n    keywords: [invoice]";
+
+  function appWithDraft() {
+    // Query order: classifier row (with its draft) → releaseDirect's lookups.
+    const { db, updates } = makeMockDb({
+      selectResults: [[{ id: CLASSIFIER_ID, draftYaml: DRAFT }], [], [], []],
+      insertReturning: [{ id: "new", versionNumber: 2, major: 0, minor: 0, patch: 2, prerelease: null }],
+    });
+    return { app: createApp({ db }), updates };
+  }
+
+  function release(app: any, body: string) {
+    return app.request("/api/classifiers/docs/release", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+  }
+
+  it("400s when the YAML arrived under an unrecognized key", async () => {
+    const { app, updates } = appWithDraft();
+    const res = await release(app, JSON.stringify({ content: PAYLOAD }));
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain("content");
+    // The draft was NOT released.
+    expect(updates).toEqual([]);
+  });
+
+  it("400s on a malformed body instead of releasing the draft", async () => {
+    const { app, updates } = appWithDraft();
+    const res = await release(app, "{ not json");
+    expect(res.status).toBe(400);
+    expect(updates).toEqual([]);
+  });
+
+  it("accepts yaml_source, the field name that caused the incident", async () => {
+    const { app } = appWithDraft();
+    const res = await release(app, JSON.stringify({ yaml_source: PAYLOAD }));
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts yaml", async () => {
+    const { app } = appWithDraft();
+    const res = await release(app, JSON.stringify({ yaml: PAYLOAD }));
+    expect(res.status).toBe(200);
+  });
+
+  it("still releases the stored draft when no body is sent", async () => {
+    const { app } = appWithDraft();
+    const res = await app.request("/api/classifiers/docs/release", { method: "POST" });
+    expect(res.status).toBe(200);
+  });
+});

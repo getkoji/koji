@@ -289,7 +289,9 @@ export async function releaseDirect(
       ? formatSemver({ major: active.major, minor: active.minor, patch: active.patch, prerelease: active.prerelease })
       : null;
 
-    const [existing] = await tx
+    // Deterministic pick over every row sharing this content — see the schema
+    // twin. Prefer the live release so an unchanged republish reads as such.
+    const matches = await tx
       .select(SEMVER_COLS)
       .from(schema.classifierVersions)
       .where(
@@ -297,8 +299,10 @@ export async function releaseDirect(
           eq(schema.classifierVersions.classifierId, opts.classifierId),
           eq(schema.classifierVersions.yamlHash, yamlHash),
         ),
-      )
-      .limit(1);
+      );
+    const existing =
+      matches.find((m) => active !== null && m.id === active.id) ??
+      [...matches].sort((a, b) => a.versionNumber - b.versionNumber)[0];
 
     if (existing) {
       const matchedLabel = formatSemver({
@@ -319,6 +323,8 @@ export async function releaseDirect(
           matched: { id: existing.id, label: matchedLabel },
           current: { id: active!.id, label: currentLabel! },
           direction: match.action === "reactivate" ? match.direction : "forward",
+          hashedBytes: Buffer.byteLength(opts.yaml, "utf8"),
+          hashedSha256Prefix: yamlHash.slice(0, 8),
         };
       }
 

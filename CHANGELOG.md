@@ -2,6 +2,38 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.99.0 — 2026-07-22
+
+**`POST /release` no longer silently releases the stored draft when it cannot
+read your request.** The release routes did `body.yaml ?? storedDraft` over a
+body parsed with a `.catch(() => ({}))`, so three different situations collapsed
+into "use the draft": no body (intended), a body whose YAML arrived under a key
+the route doesn't read, and a body that wasn't valid JSON. The last two released
+**draft content the caller never sent**.
+
+This bit in production: a 52 KB schema posted under the wrong field name
+released a 3.8 KB stored draft, and the 0.95.3 rollback guard then reported a
+content match against that draft — advice that, if followed with
+`allow_reactivate: true`, would have activated the stub. A safety rail
+recommending a destructive action.
+
+Now: the stored draft is released **only when no body is sent at all**. An
+unrecognized field, malformed JSON, a non-object body, or a null/empty `yaml`
+are each a `400` naming the problem. `yaml_source` is accepted on the schema
+route (and `yaml` on the classifier route) so the two siblings stop diverging on
+field names.
+
+**`409 requires_reactivate` now reports what was actually hashed** —
+`hashed_bytes` and `hashed_sha256_prefix`. If those don't describe the payload
+you sent, your content never reached the matcher, which is otherwise invisible
+from the response.
+
+**Content-hash matching is now deterministic.** The lookup used `.limit(1)` on
+an unordered scan, and nothing constrains `yamlHash` unique; if several versions
+shared content, an arbitrary row was picked — which could report a spurious
+"reactivate" when the live release carried that same content. It now prefers the
+live release, else the earliest version.
+
 ## 0.98.1 — 2026-07-22
 
 **Docs: classifying a large document never required skipping it or slicing it.**

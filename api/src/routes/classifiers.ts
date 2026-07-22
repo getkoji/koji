@@ -9,6 +9,7 @@ import type { ClassifierConfig } from "../classify";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
 import { reactivateRefusalBody } from "../schemas/release-policy";
 import { parseVersionSelector } from "../schemas/version-selector";
+import { parseReleaseInput } from "../schemas/release-input";
 import { formatSemver, type Bump } from "../schemas/semver";
 
 /**
@@ -499,9 +500,10 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
-  const body = await c.req
-    .json<{ yaml_source?: string; yaml?: string; allow_reactivate?: boolean }>()
-    .catch(() => ({}) as { yaml_source?: string; yaml?: string; allow_reactivate?: boolean });
+  // Same rule as the schema route: an uninterpretable body is an error, not a
+  // silent fallback to stored draft content the caller never sent.
+  const input = parseReleaseInput(await c.req.text());
+  if (input.kind === "invalid") return c.json({ error: input.message }, 400);
 
   const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
@@ -512,7 +514,7 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
   );
   if (!cls) return c.json({ error: "Classifier not found" }, 404);
 
-  const yamlSource = body.yaml_source ?? body.yaml ?? cls.draftYaml;
+  const yamlSource = input.kind === "yaml" ? input.yaml : cls.draftYaml;
   if (!yamlSource) {
     return c.json({ error: "No YAML to release — provide yaml_source or save a draft first." }, 400);
   }
@@ -527,7 +529,7 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
     yaml: yamlSource,
     parsed: compiled.parsed as unknown as Record<string, unknown>,
     userId: principal.userId,
-    allowReactivate: body.allow_reactivate,
+    allowReactivate: input.allowReactivate,
   });
   if ("error" in res) {
     if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);
