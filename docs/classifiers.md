@@ -161,8 +161,22 @@ scores.
 koji classify run inbound_mail ./document.pdf
 ```
 
-**API.** `POST /api/classify` with the document and an inline config — see the
-[API Reference](api-reference.md#classify). The response:
+**API.** `POST /api/classify` with the document and **either** an inline config
+**or** the slug of a registered classifier — see the
+[API Reference](api-reference.md#classify).
+
+```json
+{ "storage_key": "docs/abc123", "classifier": "inbound_mail" }
+```
+
+Referencing by slug runs the classifier's **released** version (add
+`classifier_version` to pin one). Prefer it in production code: it is one round
+trip instead of fetching `yamlSource` and posting it back, and re-tuning ships
+via `koji classify release` with **no consumer redeploy** — which matters,
+because tuning a classifier normally takes several versions. The response echoes
+`classifier` and `classifier_version` so you can see exactly what ran.
+
+The response:
 
 ```json
 {
