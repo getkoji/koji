@@ -14,6 +14,8 @@ import { createHash } from "node:crypto";
 import { schema, withRLS, type Db } from "@koji/db";
 import { deriveClassifierBump } from "./classifier-diff";
 import { bumpTarget, formatSemver, nextRcNumber, type Bump, type Semver } from "../schemas/semver";
+import { classifyReleaseMatch, requiresReactivateOptIn } from "../schemas/release-policy";
+import type { ReleaseDirectResult } from "../schemas/versioning";
 
 export function hashYaml(yaml: string): string {
   return createHash("sha256").update(yaml).digest("hex");
@@ -251,10 +253,42 @@ export async function releaseDirect(
     userId: string;
     bumpOverride?: Bump;
     commitMessage?: string;
+    /** Opt in to moving the live pointer to a different existing release. */
+    allowReactivate?: boolean;
   },
-): Promise<{ id: string; label: string } | { error: "already_released" }> {
+): Promise<ReleaseDirectResult> {
   const yamlHash = hashYaml(opts.yaml);
   return withRLS(db, tenantId, async (tx) => {
+    // The live release, loaded up front — the dedup branch needs it to tell
+    // whether the pointer would move, and the new-version branch to derive the
+    // bump. See ../schemas/release-policy.ts for the P0 this guards.
+    const [cls] = await tx
+      .select({ currentVersionId: schema.classifiers.currentVersionId })
+      .from(schema.classifiers)
+      .where(eq(schema.classifiers.id, opts.classifierId))
+      .limit(1);
+    let active:
+      | { id: string; major: number; minor: number; patch: number; prerelease: string | null; parsedJson: unknown }
+      | null = null;
+    if (cls?.currentVersionId) {
+      const [v] = await tx
+        .select({
+          id: schema.classifierVersions.id,
+          major: schema.classifierVersions.major,
+          minor: schema.classifierVersions.minor,
+          patch: schema.classifierVersions.patch,
+          prerelease: schema.classifierVersions.prerelease,
+          parsedJson: schema.classifierVersions.parsedJson,
+        })
+        .from(schema.classifierVersions)
+        .where(eq(schema.classifierVersions.id, cls.currentVersionId))
+        .limit(1);
+      active = v ?? null;
+    }
+    const currentLabel = active
+      ? formatSemver({ major: active.major, minor: active.minor, patch: active.patch, prerelease: active.prerelease })
+      : null;
+
     const [existing] = await tx
       .select(SEMVER_COLS)
       .from(schema.classifierVersions)
@@ -267,7 +301,27 @@ export async function releaseDirect(
       .limit(1);
 
     if (existing) {
-      // Same content already a version. Graduate if candidate, else re-activate.
+      const matchedLabel = formatSemver({
+        major: existing.major,
+        minor: existing.minor,
+        patch: existing.patch,
+        prerelease: null,
+      });
+      const match = classifyReleaseMatch(existing, active);
+
+      if (match.action === "unchanged") {
+        return { id: existing.id, label: matchedLabel, action: "unchanged" as const, displaced: null };
+      }
+
+      if (requiresReactivateOptIn(match) && !opts.allowReactivate) {
+        return {
+          error: "requires_reactivate" as const,
+          matched: { id: existing.id, label: matchedLabel },
+          current: { id: active!.id, label: currentLabel! },
+          direction: match.action === "reactivate" ? match.direction : "forward",
+        };
+      }
+
       if (existing.prerelease !== null) {
         await tx
           .update(schema.classifierVersions)
@@ -280,33 +334,15 @@ export async function releaseDirect(
         .where(eq(schema.classifiers.id, opts.classifierId));
       return {
         id: existing.id,
-        label: formatSemver({
-          major: existing.major,
-          minor: existing.minor,
-          patch: existing.patch,
-          prerelease: null,
-        }),
+        label: matchedLabel,
+        action:
+          match.action === "graduate"
+            ? ("graduated" as const)
+            : match.action === "activate"
+              ? ("activated" as const)
+              : ("reactivated" as const),
+        displaced: active && active.id !== existing.id ? { id: active.id, label: currentLabel! } : null,
       };
-    }
-
-    const [cls] = await tx
-      .select({ currentVersionId: schema.classifiers.currentVersionId })
-      .from(schema.classifiers)
-      .where(eq(schema.classifiers.id, opts.classifierId))
-      .limit(1);
-    let active: { major: number; minor: number; patch: number; parsedJson: unknown } | null = null;
-    if (cls?.currentVersionId) {
-      const [v] = await tx
-        .select({
-          major: schema.classifierVersions.major,
-          minor: schema.classifierVersions.minor,
-          patch: schema.classifierVersions.patch,
-          parsedJson: schema.classifierVersions.parsedJson,
-        })
-        .from(schema.classifierVersions)
-        .where(eq(schema.classifierVersions.id, cls.currentVersionId))
-        .limit(1);
-      active = v ?? null;
     }
     const bump: Bump =
       opts.bumpOverride ??
@@ -342,6 +378,8 @@ export async function releaseDirect(
     return {
       id: row.id,
       label: formatSemver({ major: row.major, minor: row.minor, patch: row.patch, prerelease: null }),
+      action: "created" as const,
+      displaced: active ? { id: active.id, label: currentLabel! } : null,
     };
   });
 }

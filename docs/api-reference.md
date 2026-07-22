@@ -1507,7 +1507,35 @@ The released lineage + candidates, each with `version` (semver label), `released
 
 ### `POST /api/schemas/{slug}/versions`
 
-Create a version. `candidate: true` snapshots a non-active candidate; otherwise releases directly and activates. Auth: `schema:write`. Returns `{ id, version, released, ... }`.
+Create a version. `candidate: true` snapshots a non-active candidate; otherwise releases directly and activates. Auth: `schema:write`. Returns `{ id, version, released, action, displaced }`.
+
+<a id="release-actions"></a>
+**`action`** tells you what actually happened to the **live release pointer** — do not infer it from the `201`:
+
+| `action` | Meaning |
+|----------|---------|
+| `created` | New version created and made live. |
+| `unchanged` | This content is already the live release. **Nothing was written** — not even `updatedAt`. |
+| `graduated` | The content matched an existing candidate; it was released and made live. |
+| `activated` | The content matched an existing release and nothing was live yet. |
+| `reactivated` | The live pointer moved to a **different** existing release. Only possible with `allow_reactivate: true`. |
+
+`displaced` is the release the pointer moved off (`{ id, label }`), or `null`.
+
+**Publishing content that matches a different existing release is refused by default.** Versions are deduplicated by content hash, so re-publishing the exact YAML of an older version would otherwise silently roll the live release backward. That case returns `409` with `reason: "requires_reactivate"`:
+
+```json
+{
+  "error": "This content is already released as v2.0.5, so publishing it would roll the live release BACK from v2.0.9 to v2.0.5. ...",
+  "reason": "requires_reactivate",
+  "matched_version": "v2.0.5",
+  "current_version": "v2.0.9",
+  "direction": "backward",
+  "hint": "Retry with allow_reactivate: true to move the live pointer deliberately."
+}
+```
+
+Pass `allow_reactivate: true` to move the pointer on purpose, or use [`POST /api/schemas/{slug}/promote`](#post-apischemasslugpromote) to promote that version explicitly. The same rule and response shape apply to `POST /api/schemas/{slug}/release` and to both classifier equivalents.
 
 ### `POST /api/schemas/{slug}/promote`
 
@@ -1524,7 +1552,7 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 ### `POST /api/schemas/{slug}/release`
 
-Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Defaults to the schema's draft. Auth: `schema:deploy`. Body: `{ yaml? }`. Returns `{ released, versionId }`.
+Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Defaults to the schema's draft. Auth: `schema:deploy`. Body: `{ yaml?, allow_reactivate? }`. Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal.
 
 ### Per-pipeline version mode
 
@@ -1593,8 +1621,9 @@ Commit a version. Auth: `schema:write`.
 | `commit_message` | string? | Message for the version. |
 | `candidate` | boolean? | `true` snapshots a non-active candidate (dedup by content hash); otherwise releases directly and activates. |
 | `bump` | `"major"\|"minor"\|"patch"`? | Override the auto-derived bump. |
+| `allow_reactivate` | boolean? | Permit moving the live pointer to a **different existing release** when the content matches one. Default `false`. |
 
-Returns `{ id, version, released, ... }` (`201`). `400` on invalid YAML; `409` if a release already occupies that `x.y.z`.
+Returns `{ released, versionId, action, displaced }`. `400` on invalid YAML; `409` if a release already occupies that `x.y.z`, or with `reason: "requires_reactivate"` when publishing would move the live pointer to a different existing release — see [release actions](#release-actions) for `action`, `displaced`, and the refusal shape.
 
 ### `POST /api/classifiers/{slug}/promote`
 
@@ -1602,7 +1631,7 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 ### `POST /api/classifiers/{slug}/release`
 
-Release YAML directly (skip the rc loop) and make it live — the early-stage path. Defaults to the classifier's draft. Auth: `schema:deploy`. Body: `{ yaml_source? }` (`yaml` accepted as an alias). Returns `{ released, versionId }`.
+Release YAML directly (skip the rc loop) and make it live — the early-stage path. Defaults to the classifier's draft. Auth: `schema:deploy`. Body: `{ yaml_source?, allow_reactivate? }` (`yaml` accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal.
 
 ---
 
