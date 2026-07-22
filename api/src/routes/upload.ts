@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId } from "../auth/middleware";
+import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { normalizeMimeTypeWithWarning } from "../ingestion/process";
 
 export const upload = new Hono<Env>();
@@ -86,7 +87,7 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
 
   // Resolve schema
   const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ id: schema.schemas.id })
+    tx.select({ id: schema.schemas.id, projectId: schema.schemas.projectId })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, body.schemaSlug))
       .limit(1),
@@ -130,9 +131,26 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
     );
   }
 
-  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+  // Corpus lives in the schema's project (derived from the schema row, not the
+  // header) — matches the backfill and needs no x-koji-project.
+  const projectId = s.projectId;
+  const documentId = await upsertCorpusDocument(db, { tenantId, projectId }, {
+    tenantId,
+    projectId,
+    filename: body.filename,
+    storageKey: body.storageKey,
+    fileSize: fileResult.data.length,
+    mimeType: mimeResult.value,
+    contentHash,
+    source: "upload",
+    addedBy: principal.userId,
+  });
+
+  const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
+      projectId,
+      documentId,
       schemaId: s.id,
       filename: body.filename,
       storageKey: body.storageKey,

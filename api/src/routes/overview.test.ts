@@ -32,8 +32,10 @@ const HASH = "a".repeat(64);
 async function reseed() {
   await rootDb.execute(sql`SET client_min_messages = warning`);
   // schemas CASCADEs to schema_versions, schema_runs, corpus_entries,
-  // extraction_runs (all reference it ON DELETE CASCADE).
-  await rootDb.execute(sql`TRUNCATE schemas RESTART IDENTITY CASCADE`);
+  // extraction_runs (all reference it ON DELETE CASCADE). corpus_documents is
+  // owned by the PROJECT, not the schema (oss-449) — it deliberately survives
+  // schema deletion, so it is truncated explicitly here to reset between tests.
+  await rootDb.execute(sql`TRUNCATE schemas, corpus_documents RESTART IDENTITY CASCADE`);
 }
 
 /** Seed a schema + one released version in a project. Returns their ids. */
@@ -68,14 +70,24 @@ async function seedValidateRun(
 }
 
 /** Seed a corpus entry (with non-empty ground truth) + an extraction run. */
-async function seedCorpusAndExtraction(schemaId: string) {
+async function seedCorpusAndExtraction(schemaId: string, project: string) {
   const corpusId = randomUUID();
+  const docId = randomUUID();
+  // Pool document (oss-449) — the entry links to it and still carries the
+  // legacy file columns during expand/contract.
+  await rootDb.execute(sql`
+    INSERT INTO corpus_documents
+      (id, tenant_id, project_id, filename, storage_key, file_size, mime_type,
+       content_hash, source, added_by)
+    VALUES
+      (${docId}::uuid, ${tenant}::uuid, ${project}::uuid, 'doc.pdf', 'k/doc.pdf', 100,
+       'application/pdf', ${HASH}, 'upload', ${user}::uuid)`);
   await rootDb.execute(sql`
     INSERT INTO corpus_entries
-      (id, tenant_id, schema_id, filename, storage_key, file_size, mime_type,
+      (id, tenant_id, project_id, document_id, schema_id, filename, storage_key, file_size, mime_type,
        content_hash, ground_truth_json, source, added_by)
     VALUES
-      (${corpusId}::uuid, ${tenant}::uuid, ${schemaId}::uuid, 'doc.pdf', 'k/doc.pdf', 100,
+      (${corpusId}::uuid, ${tenant}::uuid, ${project}::uuid, ${docId}::uuid, ${schemaId}::uuid, 'doc.pdf', 'k/doc.pdf', 100,
        'application/pdf', ${HASH}, '{"field":"x"}'::jsonb, 'upload', ${user}::uuid)`);
   await rootDb.execute(sql`
     INSERT INTO extraction_runs
@@ -129,7 +141,7 @@ describe("overview project scoping", () => {
     // Project B is full of runs/corpus/extraction. None of it belongs to A.
     const b = await seedSchema(projB, "b-schema");
     await seedValidateRun(b.schemaId, b.versionId, "0.9000", 3, "2026-01-01T00:00:00Z");
-    await seedCorpusAndExtraction(b.schemaId);
+    await seedCorpusAndExtraction(b.schemaId, projB);
 
     const d = await fetchOverviewData(db, tenant, projA);
 
@@ -144,7 +156,7 @@ describe("overview project scoping", () => {
   test("reports the selected project's own activity", async () => {
     const b = await seedSchema(projB, "b-schema");
     await seedValidateRun(b.schemaId, b.versionId, "0.9000", 3, "2026-01-01T00:00:00Z");
-    await seedCorpusAndExtraction(b.schemaId);
+    await seedCorpusAndExtraction(b.schemaId, projB);
 
     const d = await fetchOverviewData(db, tenant, projB);
 

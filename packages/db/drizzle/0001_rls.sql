@@ -108,6 +108,15 @@ CREATE POLICY corpus_entries_tenant_isolation ON corpus_entries FOR ALL
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
+-- corpus_documents: the pool table (oss-449). Tenant policy here; project
+-- policy in the RESTRICTIVE section below.
+ALTER TABLE corpus_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE corpus_documents FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS corpus_documents_tenant_isolation ON corpus_documents;
+CREATE POLICY corpus_documents_tenant_isolation ON corpus_documents FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 ALTER TABLE corpus_entry_ground_truth ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corpus_entry_ground_truth FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS corpus_entry_ground_truth_tenant_isolation ON corpus_entry_ground_truth;
@@ -351,6 +360,20 @@ CREATE POLICY review_items_project_isolation ON review_items AS RESTRICTIVE FOR 
 
 DROP POLICY IF EXISTS agent_sessions_project_isolation ON agent_sessions;
 CREATE POLICY agent_sessions_project_isolation ON agent_sessions AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+-- The corpus pool split (oss-449). corpus_entries was tenant-isolated only —
+-- project scope was enforced implicitly by the API predicate eq(schemaId, s.id).
+-- Both the pool (corpus_documents) and the label (corpus_entries) now carry a
+-- NOT NULL project_id and a strict RESTRICTIVE policy, closing that gap.
+DROP POLICY IF EXISTS corpus_documents_project_isolation ON corpus_documents;
+CREATE POLICY corpus_documents_project_isolation ON corpus_documents AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS corpus_entries_project_isolation ON corpus_entries;
+CREATE POLICY corpus_entries_project_isolation ON corpus_entries AS RESTRICTIVE FOR ALL
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 

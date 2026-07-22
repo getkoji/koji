@@ -15,6 +15,7 @@ import { locateWordsByRegion } from "../extract/region";
 import { parseResolveRegionBody } from "./jobs";
 import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
+import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { reactivateRefusalBody } from "../schemas/release-policy";
 import { parseVersionSelector } from "../schemas/version-selector";
@@ -587,7 +588,11 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
   const principal = getPrincipal(c);
 
   const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
+    tx
+      .select({ id: schema.schemas.id, projectId: schema.schemas.projectId })
+      .from(schema.schemas)
+      .where(eq(schema.schemas.slug, slug))
+      .limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
@@ -634,9 +639,29 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
     return c.json(existing, 200);
   }
 
-  const [row] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+  // Resolve the file to a pooled document (oss-449). The corpus lives in the
+  // schema's project — derived from the schema row, not the request header, so
+  // this matches the backfill's project derivation and needs no x-koji-project.
+  // The entry still carries the legacy file columns during the expand/contract
+  // window, so every read path is unchanged; documentId is the new link.
+  const projectId = s.projectId;
+  const documentId = await upsertCorpusDocument(db, { tenantId, projectId }, {
+    tenantId,
+    projectId,
+    filename: file.name,
+    storageKey,
+    fileSize: file.size,
+    mimeType,
+    contentHash,
+    source: "upload",
+    addedBy: principal.userId,
+  });
+
+  const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
+      projectId,
+      documentId,
       schemaId: s.id,
       filename: file.name,
       storageKey,
