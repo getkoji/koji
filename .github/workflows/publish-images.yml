@@ -11,11 +11,22 @@ on:
         required: false
         default: "false"
 
-# Cancel in-progress publish runs for the same ref so we don't waste CI time
-# when multiple pushes land back-to-back.
+# Serialize publish runs per ref so two pushes never race to write the same
+# `latest` tag.
+#
+# On main we QUEUE rather than cancel. Cancelling looked like a CI-time saving
+# but silently dropped a commit's images: back-to-back merges killed the
+# in-flight run (the slow `parse` job every time), so that commit never got its
+# `sha-<sha>` tag — and if the interrupted run happened to be the last one,
+# `latest` was left pointing at an older commit with nothing surfacing it.
+# GitHub also reports a concurrency cancellation as a *failure*, so it reads as
+# a broken build and burns triage time.
+#
+# Queued runs still execute in push order, so `latest` ends up on the newest
+# commit. Elsewhere (tags, dispatch) cancelling is still the right trade.
 concurrency:
   group: publish-images-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
