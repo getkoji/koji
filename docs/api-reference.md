@@ -355,6 +355,19 @@ Or `application/json` with a stored document:
 
 \* Exactly one of `config` or `classifier` is required.
 
+**Large documents (over the 4.5 MB request-body cap)**
+
+Do not skip them, and do not slice them client-side — neither is necessary:
+
+1. **Send the config as a YAML string in the JSON form.** The `config` field accepts *either* a config object *or* a YAML string, on **both** the multipart and the JSON form. So a document already in Koji storage needs no multipart upload at all.
+2. **Reference the bytes with `storage_key` instead of uploading them.** Get one with the [presigned upload flow](#post-apiuploadpresign) — `presign` → `PUT` → `complete` — which is the same path extraction uses and is not subject to the request-body cap.
+
+```json
+{ "storage_key": "docs/abc123", "classifier": "document_type" }
+```
+
+**You do not need a PDF library to classify a masthead.** The cascade only ever reads the pages the config's `window` (and `scan`) select — `window: 1` reads one page regardless of how long the document is. Client-side page slicing buys nothing: the cost ceiling is already config, not payload size.
+
 **Running a registered classifier by slug**
 
 ```json
