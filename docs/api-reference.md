@@ -326,24 +326,50 @@ The `trace` object describes the pipeline run — its shape is locked and docume
 Classify a document into one of a user-defined set of classes. Runs a cost
 cascade — cheap deterministic signals first, paid model calls only for the hard
 tail — and stops at the first confident tier. Non-persisting, so it also serves
-as the test surface. Config is inline; classes, keywords, and windows are all
-yours (the engine ships no built-in classes).
+as the test surface. Classes, keywords, and windows are all yours (the engine
+ships no built-in classes).
+
+Supply the config **either** inline (`config`) **or** by referencing a
+registered classifier (`classifier`). Supplying both is a `400` — they could
+resolve to different configs, so the request is ambiguous rather than ranked.
 
 **Request** `multipart/form-data`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `file` | file | Yes | The document to classify. |
-| `config` | string | Yes | Classifier config as YAML or JSON (see below). |
+| `config` | string | * | Classifier config as YAML or JSON (see below). |
+| `classifier` | string | * | Slug of a registered classifier. Uses its **released** version. |
+| `classifier_version` | string | No | Pin a version (`v0.0.3`, `0.0.3`, or a version-id prefix). `version` is accepted as an alias. |
 
 Or `application/json` with a stored document:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `storage_key` | string | Yes | Key of a previously uploaded document. |
-| `config` | object | Yes | Classifier config. |
+| `config` | object \| string | * | Classifier config — an object, **or a YAML string**. |
+| `classifier` | string | * | Slug of a registered classifier. |
+| `classifier_version` | string | No | Pin a version; `version` is an alias. |
 | `filename` | string | No | Overrides the name inferred from `storage_key`. |
 | `mime_type` | string | No | Overrides the inferred content type. |
+
+\* Exactly one of `config` or `classifier` is required.
+
+**Running a registered classifier by slug**
+
+```json
+{ "storage_key": "docs/abc123", "classifier": "document_type" }
+```
+
+This resolves the classifier's released version through the same path the
+ingestion DAG's `classifier:` step uses, so a standalone classify and a pipeline
+route agree on the config *and* the version. The response echoes `classifier`
+and `classifier_version`, so a consumer can see what ran.
+
+Prefer it over fetching `yamlSource` and posting it back: it is one round trip
+instead of two, and re-tuning becomes a `koji classify release` with **no
+consumer redeploy**. An unknown slug, or a pin that matches no version, is a
+`404` — a bad pin never silently falls back to the live release.
 
 **Config**
 

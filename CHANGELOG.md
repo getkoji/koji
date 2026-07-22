@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.96.0 — 2026-07-22
+
+**`POST /api/classify` can now run a registered classifier by slug.** Pass
+`{ "classifier": "<slug>" }` instead of the full config, optionally with
+`classifier_version` to pin one; without a pin it runs the classifier's
+**released** version, resolved through the same path the ingestion DAG's
+`classifier:` step uses — so a standalone classify and a pipeline route agree on
+the config *and* the version. Previously every consumer had to
+`GET /api/classifiers/{slug}` for `yamlSource` and post it back: two round trips
+per document, and each caller reimplementing fetch, cache, and invalidation.
+Re-tuning a classifier is now a `koji classify release` with no consumer
+redeploy. The response echoes `classifier` and `classifier_version` so callers
+can see which version ran. An unknown slug — or a pin matching no version — is a
+`404`; a bad pin never silently falls back to the live release. Inline `config`
+keeps working, but supplying both is a `400` rather than a silent precedence
+rule.
+
 ## 0.95.3 — 2026-07-22
 
 **Publishing a schema or classifier can no longer silently roll the live release
