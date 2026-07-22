@@ -242,6 +242,47 @@ Every command below accepts `--json` to emit raw machine-readable output instead
 
 The inner loop is: edit the schema YAML → `koji validate` to backtest it (safely) against ground truth → drill into a failing doc with `koji corpus diff` → repeat → `koji schema promote` once it performs well.
 
+### `koji push`
+
+Push local YAML to the platform. Files are routed by their `kind:` field —
+schemas to `/api/schemas`, pipelines to `/api/pipelines`, classifiers to
+`/api/classifiers` — searching the directory root plus the `schemas/`,
+`pipelines/`, and `classifiers/` subdirectories.
+
+**Updating an artifact that already exists stages a candidate**; it does not go
+live until you promote it (or pass `--release`). Creating a brand-new artifact
+still releases `v0.0.1`, since there is no live version to displace. This keeps
+a push from silently swapping the schema your pipelines are running — the risk
+being that `push` takes *every* file it finds, so an unrelated edit sitting in
+the directory would otherwise ship too.
+
+```bash
+koji push --dry-run                          # show what would change; write nothing
+koji push --only insurance_policy            # scope to one slug (repeatable)
+koji push --kind classifier                  # scope to one kind
+koji push --only doc_type --release          # publish that one artifact live
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dir`, `-d` | Directory to scan. Default `.`. |
+| `--only` | Push only this slug. Repeatable. Default: every file found. |
+| `--kind` | Push only this kind: `schema` \| `pipeline` \| `classifier`. |
+| `--dry-run` | Print what would change and exit without writing. |
+| `--release` | Release updates to **existing** artifacts live instead of staging candidates. |
+| `--message`, `-m` | Commit message for the versions created. |
+| `--profile`, `-p` | CLI profile to use. |
+
+A file without a `kind:` field is treated as a **schema** at the root, but the
+subdirectory wins inside `classifiers/` and `pipelines/` — so an untagged
+classifier in `classifiers/` is pushed as a classifier, not silently created as
+a schema.
+
+Each line reports what actually happened: `unchanged`, a new `candidate vX.Y.Z-rc.N`,
+or a live release. If the content you are pushing matches a *different* existing
+release, the push is refused rather than moving the live pointer — promote that
+version deliberately instead.
+
 ### `koji validate`
 
 Backtest a schema against its corpus ground truth — **safely**. Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs. The run executes in the background on the server (each document as its own job) while the CLI shows a live progress bar — a large corpus or an expensive schema (e.g. `enumerate_rows` fields) never hits a request timeout. Array fields are scored by F1 and show a `P/R` (precision/recall) column so you can tell missed elements from spurious ones; `--json` includes `precision`/`recall` per array field. **The candidate is not made live**: iterating never touches the schema your pipelines run. The semver bump (`major`/`minor`/`patch`) is auto-derived from how the output shape changed.

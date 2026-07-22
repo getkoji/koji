@@ -873,6 +873,110 @@ def _derive_profile_name(url: str) -> str:
     return parts[0]
 
 
+def push_version_line(kind: str, slug: str, payload: dict, *, released: bool) -> str:
+    """One result line for a pushed version.
+
+    `koji push` used to print "updated to v?" for every outcome: it read a
+    `versionNumber` key neither endpoint returns, and "updated" covered a real
+    new version, a no-op, and a live-pointer move alike. This reports what the
+    API actually said — `action` (see the release-actions table in the API
+    reference) plus the semver label the endpoint returned.
+    """
+    label = payload.get("version") or payload.get("released") or "?"
+    if not isinstance(label, str):  # `released: true` on the release path
+        label = payload.get("version") or "?"
+    action = payload.get("action")
+
+    if action == "unchanged":
+        return f"  [dim]—[/dim] [{kind}] {slug} — unchanged ({label} already live)"
+    if action == "reactivated":
+        prev = (payload.get("displaced") or {}).get("label", "?")
+        return f"  [yellow]![/yellow] [{kind}] {slug} — live release moved {prev} → {label}"
+    if not released:
+        deduped = " (existing)" if payload.get("deduped") else ""
+        return (
+            f"  [green]✓[/green] [{kind}] {slug} — candidate {label}{deduped} "
+            f"[dim](not live — koji {kind} promote {slug})[/dim]"
+        )
+    if action == "created":
+        return f"  [green]✓[/green] [{kind}] {slug} — released {label} (live)"
+    return f"  [green]✓[/green] [{kind}] {slug} — {label} (live)"
+
+
+def push_error_line(kind: str, slug: str, status: int, payload: dict, text: str) -> str:
+    """One result line for a failed push, including the rollback refusal."""
+    if payload.get("reason") == "requires_reactivate":
+        matched = payload.get("matched_version", "?")
+        current = payload.get("current_version", "?")
+        direction = payload.get("direction", "")
+        arrow = "would ROLL BACK" if direction == "backward" else "would move"
+        return (
+            f"  [red]✗[/red] [{kind}] {slug} — this content is already {matched}; "
+            f"publishing it {arrow} the live release {current} → {matched}. "
+            f"[dim]Promote {matched} deliberately, or commit a change on top of {current}.[/dim]"
+        )
+    error = payload.get("error") or payload.get("details") or text[:200] or f"HTTP {status}"
+    return f"  [red]✗[/red] [{kind}] {slug} — {error}"
+
+
+def _report_push_version(console_, kind: str, slug: str, payload: dict, *, released: bool) -> None:
+    console_.print(push_version_line(kind, slug, payload, released=released))
+
+
+def _report_push_error(console_, kind: str, slug: str, resp) -> None:
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    console_.print(push_error_line(kind, slug, resp.status_code, payload, getattr(resp, "text", "") or ""))
+
+
+def _push_kind(parsed: dict, path: Path, root: Path) -> str | None:
+    """Which artifact kind a push file is.
+
+    An explicit `kind:` always wins. Otherwise the **subdirectory** decides —
+    `push` already searches `schemas/`, `pipelines/`, and `classifiers/`, so a
+    classifier sitting in `classifiers/` without a `kind:` field used to be
+    created as a *schema*, silently making the wrong artifact. Files at the
+    root with no `kind:` stay schemas (backward compat).
+
+    Returns None for an unrecognized explicit kind, which the caller skips.
+    """
+    kind = parsed.get("kind")
+    if kind is not None:
+        return str(kind) if kind in ("schema", "pipeline", "classifier") else None
+
+    try:
+        parent = path.parent.resolve().name if path.parent.resolve() != root.resolve() else ""
+    except OSError:  # pragma: no cover - resolve() on an odd path
+        parent = path.parent.name
+    if parent == "classifiers":
+        return "classifier"
+    if parent == "pipelines":
+        return "pipeline"
+    return "schema"
+
+
+def _push_slug(kind: str, parsed: dict, path: Path) -> str:
+    """The slug a push file targets — how `--only` matches, and what's shown."""
+    if kind == "schema":
+        return str(parsed.get("name") or path.stem)
+    if kind == "classifier":
+        return str(parsed.get("slug") or parsed.get("name") or path.stem)
+    return str(parsed.get("slug") or path.stem)
+
+
+def _push_selected(kind: str, slug: str, kind_filter: str | None, only: list[str] | None) -> bool:
+    """Does this file pass the --kind / --only scope filters?"""
+    if kind_filter and kind != kind_filter:
+        return False
+    if only and slug not in only:
+        return False
+    return True
+
+
 def _pipeline_yaml_body(parsed: dict, raw: str) -> str | None:
     """Build the YAML body `koji push` sends for a `kind: pipeline` file.
 
@@ -899,18 +1003,34 @@ def push(
     directory: str = typer.Option(".", "--dir", "-d", help="Directory containing YAML files (schemas/, pipelines/)"),
     message: str = typer.Option(None, "--message", "-m", help="Commit message for schema versions"),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use"),
+    only: list[str] = typer.Option(
+        None, "--only", help="Push only these slugs (repeatable). Default: every file found."
+    ),
+    kind_filter: str = typer.Option(None, "--kind", help="Push only this kind: schema | pipeline | classifier."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change; write nothing."),
+    release: bool = typer.Option(
+        False,
+        "--release",
+        help="Release updates to EXISTING artifacts live. Without it, updates are staged as candidates.",
+    ),
 ):
     """Push local YAML files to the Koji platform.
 
-    Reads all .yaml files from the directory and pushes them based on their
-    `kind` field: schemas go to /api/schemas, pipelines go to /api/pipelines,
-    classifiers go to /api/classifiers.
+    Reads .yaml files from the directory and pushes them based on their `kind`
+    field: schemas go to /api/schemas, pipelines go to /api/pipelines,
+    classifiers go to /api/classifiers. Searches the directory root and the
+    schemas/, pipelines/, and classifiers/ subdirectories.
 
-    Files without a `kind` field are assumed to be schemas (backward compat).
+    Files without a `kind` field are assumed to be schemas (backward compat),
+    EXCEPT under classifiers/ or pipelines/, where the subdirectory decides.
     Files with an unrecognized `kind` are skipped with a warning.
 
-    Searches for YAML files in the directory root and in schemas/, pipelines/,
-    and classifiers/ subdirectories if they exist.
+    Scope a push with --only <slug> (repeatable) and/or --kind, and preview it
+    with --dry-run.
+
+    Updating an artifact that already exists stages a CANDIDATE; it does not go
+    live until you promote it (or pass --release). Creating a brand-new artifact
+    still releases v0.0.1, since there is no live version to displace.
     """
     import os
 
@@ -980,6 +1100,13 @@ def push(
     classifiers: list[tuple[Path, dict, str]] = []
     skipped: list[tuple[Path, str]] = []  # (path, unrecognized kind)
 
+    if kind_filter and kind_filter not in ("schema", "pipeline", "classifier"):
+        console.print(f"[red]Unknown --kind '{kind_filter}' — use schema, pipeline, or classifier.[/red]")
+        raise SystemExit(1)
+
+    only_list = list(only) if only else []
+    deselected = 0
+
     for yaml_path in yaml_files:
         raw = yaml_path.read_text()
         try:
@@ -988,21 +1115,60 @@ def push(
             console.print(f"  [red]✗[/red] {yaml_path.name} — invalid YAML")
             continue
 
-        kind = parsed.get("kind")
+        kind = _push_kind(parsed, yaml_path, root)
+        if kind is None:
+            skipped.append((yaml_path, str(parsed.get("kind"))))
+            continue
+
+        slug = _push_slug(kind, parsed, yaml_path)
+        if not _push_selected(kind, slug, kind_filter, only_list):
+            deselected += 1
+            continue
+
         if kind == "pipeline":
             pipelines.append((yaml_path, parsed, raw))
         elif kind == "classifier":
             classifiers.append((yaml_path, parsed, raw))
-        elif kind in ("schema", None):
-            # Untagged files are schemas (backward compat, per this command's contract).
-            schemas.append((yaml_path, parsed, raw))
         else:
-            skipped.append((yaml_path, str(kind)))
+            schemas.append((yaml_path, parsed, raw))
+
+    scope_bits = []
+    if kind_filter:
+        scope_bits.append(f"--kind {kind_filter}")
+    if only_list:
+        scope_bits.append("--only " + ",".join(only_list))
+    scope = f" [{' '.join(scope_bits)}]" if scope_bits else ""
+    mode = " [yellow](dry run — nothing will be written)[/yellow]" if dry_run else ""
 
     console.print(
-        f"\n[bold]koji push[/bold] — {len(schemas)} schema(s), {len(pipelines)} pipeline(s), "
-        f"{len(classifiers)} classifier(s) → {base_url}\n"
+        f"\n[bold]koji push[/bold]{scope} — {len(schemas)} schema(s), {len(pipelines)} pipeline(s), "
+        f"{len(classifiers)} classifier(s) → {base_url}{mode}\n"
     )
+    if deselected:
+        console.print(f"  [dim]{deselected} file(s) not selected by the scope filters[/dim]\n")
+
+    if only_list:
+        found = {
+            _push_slug(k, pr, pa)
+            for k, group in (("schema", schemas), ("pipeline", pipelines), ("classifier", classifiers))
+            for pa, pr, _ in group
+        }
+        for wanted in only_list:
+            if wanted not in found:
+                console.print(f"  [yellow]![/yellow] --only {wanted} — no matching file found")
+
+    if dry_run:
+        for label, group in (("schema", schemas), ("classifier", classifiers), ("pipeline", pipelines)):
+            for yaml_path, parsed, _raw in group:
+                slug = _push_slug(label, parsed, yaml_path)
+                console.print(f"  [cyan]would push[/cyan] [{label}] {slug} [dim]({yaml_path.name})[/dim]")
+        if not (schemas or classifiers or pipelines):
+            console.print("  [dim]nothing selected[/dim]")
+        verb = "released live" if release else "staged as candidates"
+        console.print(f"\n[dim]Updates to existing artifacts would be {verb}.[/dim]")
+        for yaml_path, kind_str in skipped:
+            console.print(f"  [yellow]skipped[/yellow] {yaml_path.name} — unrecognized kind: {kind_str}")
+        raise SystemExit(0)
 
     with httpx.Client(timeout=30) as client:
         # ── Push schemas ──
@@ -1027,15 +1193,19 @@ def push(
 
                 resp = client.post(
                     f"{base_url}/api/schemas/{slug}/versions",
-                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
+                    json={
+                        "yaml": yaml_content,
+                        "commit_message": message or f"koji push from {yaml_path.name}",
+                        # Updating something already live stages a candidate unless
+                        # the user explicitly asked to release.
+                        "candidate": not release,
+                    },
                     headers=headers,
                 )
                 if resp.status_code == 201:
-                    ver = resp.json()
-                    console.print(f"  [green]✓[/green] [schema] {slug} — updated to v{ver.get('versionNumber', '?')}")
+                    _report_push_version(console, "schema", slug, resp.json(), released=release)
                 else:
-                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] [schema] {slug} — {error}")
+                    _report_push_error(console, "schema", slug, resp)
             elif resp.status_code == 404:
                 resp = client.post(
                     f"{base_url}/api/schemas",
@@ -1043,7 +1213,7 @@ def push(
                     headers=headers,
                 )
                 if resp.status_code == 201:
-                    console.print(f"  [green]✓[/green] [schema] {slug} — created (v1)")
+                    console.print(f"  [green]✓[/green] [schema] {slug} — created (v0.0.1, live)")
                 else:
                     error = resp.json().get("error", resp.text[:200])
                     console.print(f"  [red]✗[/red] [schema] {slug} — {error}")
@@ -1070,16 +1240,17 @@ def push(
                     continue
                 resp = client.post(
                     f"{base_url}/api/classifiers/{slug}/versions",
-                    json={"yaml": yaml_content, "commit_message": message or f"koji push from {yaml_path.name}"},
+                    json={
+                        "yaml": yaml_content,
+                        "commit_message": message or f"koji push from {yaml_path.name}",
+                        "candidate": not release,
+                    },
                     headers={**headers, "Content-Type": "application/json"},
                 )
                 if resp.status_code in (200, 201):
-                    console.print(
-                        f"  [green]✓[/green] [classifier] {slug} — updated to {resp.json().get('version', '?')}"
-                    )
+                    _report_push_version(console, "classifier", slug, resp.json(), released=release)
                 else:
-                    error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+                    _report_push_error(console, "classifier", slug, resp)
             elif resp.status_code == 404:
                 create_body: dict = {"slug": slug, "display_name": display_name, "initial_yaml": yaml_content}
                 if description:
