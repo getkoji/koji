@@ -7,9 +7,10 @@ import {
   type LegibilityVerdict,
 } from "./legibility";
 import type { ModelProvider } from "../extract/providers";
+import { DEFAULT_CONTEXT_TOKENS } from "../extract/context-budget";
 
 function mockProvider(response: string): ModelProvider {
-  return { generate: vi.fn().mockResolvedValue(response) };
+  return { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: vi.fn().mockResolvedValue(response) };
 }
 
 describe("parseLegibilityResponse", () => {
@@ -62,7 +63,10 @@ describe("checkLegibility", () => {
   });
 
   it("fails open when the provider throws", async () => {
-    const provider: ModelProvider = { generate: vi.fn().mockRejectedValue(new Error("boom")) };
+    const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
+      generate: vi.fn().mockRejectedValue(new Error("boom")),
+    };
     const v = await checkLegibility("some text", provider);
     expect(v.legible).toBe(true);
     expect(v.errored).toBe(true);

@@ -13,7 +13,12 @@
 
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
-import { isContextLengthError, isSystemicProviderError, type ModelProvider } from "./providers";
+import {
+  isContextLengthError,
+  isSystemicProviderError,
+  isTransportError,
+  type ModelProvider,
+} from "./providers";
 import { nullUnanchoredNumerics } from "./faithfulness";
 import { vocabHint } from "./schema-tree";
 import {
@@ -601,7 +606,10 @@ async function extractGroupCall(
   } catch (e) {
     // A systemic error (bad model name → 404, bad key → 401) hits every call
     // identically — surface it instead of silently returning empty extractions.
-    if (isSystemicProviderError(e)) throw e;
+    // Likewise an exhausted transport failure: after the provider's retries, a
+    // dead socket is a real failure, and `{}` here would be recorded as "the
+    // model found nothing" — silently wrong data is worse than a loud error.
+    if (isSystemicProviderError(e) || isTransportError(e)) throw e;
     console.log(`[koji-extract] Group ${JSON.stringify(group.fields)} error: ${e}`);
     return {};
   }
@@ -688,17 +696,30 @@ const MIN_CONTENT_BUDGET_CHARS = 20_000;
 /**
  * Resolve the per-call chunk-content character budget for a prompt whose
  * scaffolding (everything except the routed chunks' content) costs
- * `overheadChars`. Warns when even the floor can't honestly fit.
+ * `overheadChars`, against the model's own `contextTokens`. Warns when even the
+ * floor can't honestly fit.
+ *
+ * The floor is capped at half the window's total prompt budget: on a
+ * small-window model the absolute 20k-char floor exceeds everything the model
+ * can read, so returning it would hand back a budget larger than the window and
+ * silently re-create the overflow the floor exists to warn about.
  */
-function contentBudgetFor(overheadChars: number, label: string): number {
-  const budget = promptCharBudget() - overheadChars;
-  if (budget < MIN_CONTENT_BUDGET_CHARS) {
+function contentFloorFor(contextTokens: number): number {
+  return Math.max(1, Math.min(MIN_CONTENT_BUDGET_CHARS, Math.floor(promptCharBudget(contextTokens) / 2)));
+}
+
+function contentBudgetFor(overheadChars: number, label: string, contextTokens: number): number {
+  const total = promptCharBudget(contextTokens);
+  const budget = total - overheadChars;
+  const floor = contentFloorFor(contextTokens);
+  if (budget < floor) {
     console.warn(
       `[koji-extract] ${label}: prompt scaffolding is ${overheadChars} chars, ` +
-        `leaving under the ${MIN_CONTENT_BUDGET_CHARS}-char content floor per call — ` +
+        `leaving under the ${floor}-char content floor per call ` +
+        `(model context ${contextTokens} tokens) — ` +
         `calls may still exceed the model context window.`,
     );
-    return MIN_CONTENT_BUDGET_CHARS;
+    return floor;
   }
   return budget;
 }
@@ -760,8 +781,9 @@ async function runGroupChunks(
   depth: number,
 ): Promise<Record<string, unknown>[]> {
   const prompt = buildGroupPrompt({ ...group, chunks }, schemaName, ctx, schemaConfig);
+  const contextTokens = provider.contextTokens;
 
-  if (promptFits(prompt)) {
+  if (promptFits(prompt, contextTokens)) {
     try {
       return [await extractGroupCall(prompt, group, provider)];
     } catch (e) {
@@ -778,7 +800,11 @@ async function runGroupChunks(
 
   let effectiveCtx = ctx;
   let overhead = Math.max(0, prompt.length - totalContentChars(chunks));
-  if (effectiveCtx && effectiveCtx.length > 0 && promptCharBudget() - overhead < MIN_CONTENT_BUDGET_CHARS) {
+  if (
+    effectiveCtx &&
+    effectiveCtx.length > 0 &&
+    promptCharBudget(contextTokens) - overhead < contentFloorFor(contextTokens)
+  ) {
     // Context chunks are per-call constants — when they're what's eating the
     // budget, dropping them frees far more room than tighter packing would.
     effectiveCtx = null;
@@ -788,7 +814,7 @@ async function runGroupChunks(
 
   let bins = packChunksToBudget(
     chunks,
-    contentBudgetFor(overhead, `Group ${JSON.stringify(group.fields)}`),
+    contentBudgetFor(overhead, `Group ${JSON.stringify(group.fields)}`, contextTokens),
   );
   if (bins.length < 2) bins = forceSplit(chunks);
   if (bins.length < 2 || depth >= MAX_BUDGET_SPLIT_DEPTH) {
@@ -861,7 +887,7 @@ export async function fillGap(
   contextChunks?: Chunk[] | null,
 ): Promise<Record<string, unknown>> {
   const prompt = buildGapFillPrompt(fieldName, fieldSpec, chunks, schemaName, contextChunks);
-  const chunkSets = fitOrSplit(prompt, chunks, `Gap fill for ${fieldName}`);
+  const chunkSets = fitOrSplit(prompt, chunks, `Gap fill for ${fieldName}`, provider.contextTokens);
 
   // Over budget: one call per consecutive subset, first hit wins (sequential —
   // a gap-fill usually resolves in the first subset, so later calls are saved).
@@ -888,7 +914,9 @@ export async function fillGap(
     } catch (e) {
       // A context-length overflow on a single subset is recoverable: skip this
       // subset (the field stays null → routed to review) rather than failing
-      // the whole document. Other systemic errors still surface.
+      // the whole document. Other systemic errors still surface — as does an
+      // exhausted transport failure, which is "no answer", not "no value".
+      if (isTransportError(e)) throw e;
       if (isSystemicProviderError(e) && !isContextLengthError(e)) throw e;
       console.log(`[koji-extract] Gap fill for ${fieldName} error: ${e}`);
     }
@@ -901,10 +929,15 @@ export async function fillGap(
  * `prompt` fits, one call over the full chunk set; otherwise pack the chunks
  * into consecutive budget-fitting subsets and log the split.
  */
-function fitOrSplit(prompt: string, chunks: Chunk[], label: string): Chunk[][] {
-  if (promptFits(prompt)) return [chunks];
+function fitOrSplit(
+  prompt: string,
+  chunks: Chunk[],
+  label: string,
+  contextTokens: number,
+): Chunk[][] {
+  if (promptFits(prompt, contextTokens)) return [chunks];
   const overhead = Math.max(0, prompt.length - totalContentChars(chunks));
-  const bins = packChunksToBudget(chunks, contentBudgetFor(overhead, label));
+  const bins = packChunksToBudget(chunks, contentBudgetFor(overhead, label, contextTokens));
   console.log(
     `[koji-extract] ${label}: prompt ~${estimateTokens(prompt)} tokens exceeds the ` +
       `context budget — splitting ${chunks.length} chunks into ${bins.length} calls`,
@@ -974,7 +1007,7 @@ export async function enumerateRows(
   contextChunks?: Chunk[] | null,
 ): Promise<unknown[]> {
   const prompt = buildEnumerationPrompt(fieldName, fieldSpec, chunks, currentItems, contextChunks);
-  const chunkSets = fitOrSplit(prompt, chunks, `enumerate_rows for ${fieldName}`);
+  const chunkSets = fitOrSplit(prompt, chunks, `enumerate_rows for ${fieldName}`, provider.contextTokens);
 
   // Over budget: enumerate each consecutive subset and concatenate — the
   // caller unions the returned rows with the current items (content dedup),
@@ -995,7 +1028,10 @@ export async function enumerateRows(
         return Array.isArray(value) ? value : [];
       } catch (e) {
         // Context-length overflow on one subset is recoverable — skip it and
-        // keep the rows already found, rather than failing the document.
+        // keep the rows already found, rather than failing the document. An
+        // exhausted transport failure is not: returning [] would under-report
+        // the row set as if the document had fewer rows than it does.
+        if (isTransportError(e)) throw e;
         if (isSystemicProviderError(e) && !isContextLengthError(e)) throw e;
         console.log(`[koji-extract] enumerate_rows for ${fieldName} error: ${e}`);
         return [];

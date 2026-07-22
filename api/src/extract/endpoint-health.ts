@@ -170,6 +170,9 @@ export function wrapProviderWithHealthTracking(
   if (!endpointId) return provider;
 
   return {
+    // The wrapper must report the wrapped provider's window verbatim — the
+    // prompt budgeter reads it off whatever object it's handed.
+    contextTokens: provider.contextTokens,
     async generate(prompt: string, jsonMode?: boolean): Promise<string> {
       try {
         const out = await provider.generate(prompt, jsonMode);

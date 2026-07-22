@@ -3,12 +3,17 @@ import {
   OpenAIProvider,
   AnthropicProvider,
   OllamaProvider,
+  OLLAMA_DEFAULT_CONTEXT_TOKENS,
   AzureOpenAIProvider,
   createProvider,
   ProviderHttpError,
+  ProviderTransportError,
+  TRANSPORT_RETRY,
   isSystemicProviderError,
   isContextLengthError,
+  isTransportError,
 } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS, completionReserve } from "./context-budget";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,6 +34,16 @@ function mockFetchErr(status: number, text: string) {
     text: () => Promise.resolve(text),
   } as unknown as Response);
 }
+
+// Retryable statuses (429/5xx) now back off before giving up — collapse the
+// delay to zero so the suite doesn't sleep through it.
+const REAL_RETRY_DELAY = TRANSPORT_RETRY.baseDelayMs;
+beforeEach(() => {
+  TRANSPORT_RETRY.baseDelayMs = 0;
+});
+afterEach(() => {
+  TRANSPORT_RETRY.baseDelayMs = REAL_RETRY_DELAY;
+});
 
 // ---------------------------------------------------------------------------
 // OpenAIProvider
@@ -430,5 +445,219 @@ describe("isContextLengthError (oss-434)", () => {
     expect(isContextLengthError(new ProviderHttpError(413, "context_length_exceeded"))).toBe(false);
     expect(isContextLengthError(new ProviderHttpError(401, "bad key"))).toBe(false);
     expect(isContextLengthError(new Error("context length"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-model context window (oss-465)
+// ---------------------------------------------------------------------------
+
+describe("contextTokens (oss-465)", () => {
+  let original: typeof globalThis.fetch;
+  beforeEach(() => {
+    original = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+
+  it("hosted providers default to the mainstream window", () => {
+    expect(new OpenAIProvider("gpt-4o", "sk").contextTokens).toBe(DEFAULT_CONTEXT_TOKENS);
+    expect(new AnthropicProvider("claude", "sk").contextTokens).toBe(DEFAULT_CONTEXT_TOKENS);
+    expect(new AzureOpenAIProvider("m", "k", "https://x", "d", "v1").contextTokens).toBe(
+      DEFAULT_CONTEXT_TOKENS,
+    );
+  });
+
+  it("Ollama defaults to a small local window, not the hosted one", () => {
+    // The bug: assuming 128k for a local model meant the engine built prompts
+    // Ollama silently truncated to its own default.
+    expect(new OllamaProvider("llama3").contextTokens).toBe(OLLAMA_DEFAULT_CONTEXT_TOKENS);
+    expect(OLLAMA_DEFAULT_CONTEXT_TOKENS).toBeLessThan(DEFAULT_CONTEXT_TOKENS);
+  });
+
+  it("takes the window from endpoint config when declared", () => {
+    const p = createProvider("llama3", {
+      provider: "ollama",
+      model: "llama3",
+      base_url: "http://localhost:11434",
+      context_tokens: 32_768,
+    });
+    expect(p.contextTokens).toBe(32_768);
+
+    const openai = createProvider("gpt-4o", {
+      provider: "openai",
+      model: "gpt-4o",
+      api_key: "sk-test",
+      context_tokens: 1_000_000,
+    });
+    expect(openai.contextTokens).toBe(1_000_000);
+  });
+
+  it("ignores a nonsense configured window rather than collapsing the budget", () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      const p = createProvider("llama3", {
+        provider: "ollama",
+        model: "llama3",
+        context_tokens: bad,
+      });
+      expect(p.contextTokens).toBe(OLLAMA_DEFAULT_CONTEXT_TOKENS);
+    }
+  });
+
+  it("OllamaProvider sends num_ctx so the server allocates the window we budgeted for", async () => {
+    // Without num_ctx, Ollama falls back to its own small default and drops the
+    // rest of the prompt with no error (a 90k-token prompt came back with
+    // prompt_eval_count: 8192).
+    const fakeFetch = mockFetchOk({ response: "{}" });
+    globalThis.fetch = fakeFetch;
+
+    const provider = new OllamaProvider("llama3", "http://localhost:11434", 32_768);
+    await provider.generate("extract this", true);
+
+    const payload = JSON.parse(fakeFetch.mock.calls[0]![1].body);
+    expect(payload.options.num_ctx).toBe(32_768);
+    // num_predict must match the reserve the budgeter subtracted.
+    expect(payload.options.num_predict).toBe(completionReserve(32_768));
+  });
+
+  it("Ollama's num_ctx follows its default when nothing is configured", async () => {
+    const fakeFetch = mockFetchOk({ response: "{}" });
+    globalThis.fetch = fakeFetch;
+    await new OllamaProvider("llama3", "http://localhost:11434").generate("hi");
+    const payload = JSON.parse(fakeFetch.mock.calls[0]![1].body);
+    expect(payload.options.num_ctx).toBe(OLLAMA_DEFAULT_CONTEXT_TOKENS);
+  });
+
+  it("hosted providers send max_tokens equal to the budgeter's reserve", async () => {
+    const fakeFetch = mockFetchOk({ choices: [{ message: { content: "{}" } }] });
+    globalThis.fetch = fakeFetch;
+    await new OpenAIProvider("gpt-4o", "sk", "https://api.example.com/v1").generate("hi");
+    const payload = JSON.parse(fakeFetch.mock.calls[0]![1].body);
+    expect(payload.max_tokens).toBe(completionReserve(DEFAULT_CONTEXT_TOKENS));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transport retry (oss-472)
+// ---------------------------------------------------------------------------
+
+describe("transport retry (oss-472)", () => {
+  let original: typeof globalThis.fetch;
+  let originalRetry: typeof TRANSPORT_RETRY.baseDelayMs;
+
+  beforeEach(() => {
+    original = globalThis.fetch;
+    originalRetry = TRANSPORT_RETRY.baseDelayMs;
+    TRANSPORT_RETRY.baseDelayMs = 0; // don't actually sleep in tests
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    globalThis.fetch = original;
+    TRANSPORT_RETRY.baseDelayMs = originalRetry;
+    vi.restoreAllMocks();
+  });
+
+  /** A response whose body read blows up — a socket abort mid-download. */
+  function bodyAbortResponse(): Response {
+    return {
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new TypeError("terminated")),
+      text: () => Promise.reject(new TypeError("terminated")),
+    } as unknown as Response;
+  }
+
+  function okResponse(body: unknown): Response {
+    return {
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response;
+  }
+
+  it("retries a socket abort during the response-body read and succeeds", async () => {
+    // This is the whole point of the fix: the fetch resolved fine, the body
+    // read is where it died. Retrying the request alone would not have helped.
+    const fakeFetch = vi
+      .fn()
+      .mockResolvedValueOnce(bodyAbortResponse())
+      .mockResolvedValueOnce(okResponse({ choices: [{ message: { content: '{"a":1}' } }] }));
+    globalThis.fetch = fakeFetch;
+
+    const out = await new OpenAIProvider("gpt-4o", "sk", "https://api.example.com/v1").generate("hi");
+    expect(out).toBe('{"a":1}');
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a network-level fetch failure", async () => {
+    const fakeFetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(okResponse({ response: "ok" }));
+    globalThis.fetch = fakeFetch;
+
+    expect(await new OllamaProvider("llama3", "http://localhost:11434").generate("hi")).toBe("ok");
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a 429 and a 5xx", async () => {
+    const fakeFetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("slow down", { status: 429 }))
+      .mockResolvedValueOnce(new Response("boom", { status: 503 }))
+      .mockResolvedValueOnce(okResponse({ content: [{ type: "text", text: "hi" }] }));
+    globalThis.fetch = fakeFetch;
+
+    expect(await new AnthropicProvider("claude", "sk").generate("hi")).toBe("hi");
+    expect(fakeFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws a ProviderTransportError once retries are exhausted", async () => {
+    const fakeFetch = vi.fn().mockResolvedValue(bodyAbortResponse());
+    globalThis.fetch = fakeFetch;
+
+    const err = await new OpenAIProvider("gpt-4o", "sk", "https://api.example.com/v1")
+      .generate("hi")
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ProviderTransportError);
+    expect(isTransportError(err)).toBe(true);
+    // Not confusable with the classes callers swallow.
+    expect(isSystemicProviderError(err)).toBe(false);
+    expect(isContextLengthError(err)).toBe(false);
+    expect(fakeFetch).toHaveBeenCalledTimes(TRANSPORT_RETRY.attempts);
+  });
+
+  it("does not retry a 4xx — it is an answer about the request", async () => {
+    const fakeFetch = vi.fn().mockResolvedValue(new Response("no such model", { status: 404 }));
+    globalThis.fetch = fakeFetch;
+
+    await expect(
+      new OpenAIProvider("nope", "sk", "https://api.example.com/v1").generate("hi"),
+    ).rejects.toBeInstanceOf(ProviderHttpError);
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a malformed JSON body", async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError("Unexpected token < in JSON")),
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await expect(
+      new OpenAIProvider("gpt-4o", "sk", "https://api.example.com/v1").generate("hi"),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("isTransportError only matches exhausted transport failures", () => {
+    expect(isTransportError(new ProviderTransportError("x", 3))).toBe(true);
+    expect(isTransportError(new ProviderHttpError(500, "server error"))).toBe(false);
+    expect(isTransportError(new Error("boom"))).toBe(false);
+    expect(isTransportError(null)).toBe(false);
   });
 });

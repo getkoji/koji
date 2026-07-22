@@ -2,6 +2,45 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.99.2 — 2026-07-22
+
+**Prompts are now budgeted against the model's real context window instead of a
+hardcoded 128k.** `promptFits` / `promptCharBudget` accepted a context size but
+every call site took the default, so an 8k model was handed prompts sized for a
+128k one. Every provider now reports a `contextTokens` window and the extraction
+budgeter splits against that number. Declare a non-default window on a model
+endpoint with `context_tokens` in its config (see
+[Configuration](docs/configuration.md#model-endpoint-context-window)).
+
+**Ollama no longer silently discards most of the prompt.** The Ollama request
+omitted `num_ctx`, so the server fell back to its own small default and dropped
+everything past it — no error, no warning. A 90,125-token prompt came back with
+`prompt_eval_count: 8192`: 91% of the document read as if it weren't there, and
+the missing fields looked like the model finding nothing. Koji now sends
+`num_ctx` and defaults an Ollama endpoint to an 8,192-token window; raise it
+with `context_tokens` if your local model supports more. Expect a local model to
+split a large document into more calls than before — that is the fix.
+
+The completion reserve is now derived from the window rather than being a flat
+16,384: providers send exactly the number the budgeter subtracts, and a
+small-window model reserves proportionally less instead of producing a negative
+prompt budget.
+
+**A dropped connection no longer looks like an empty extraction.** Providers
+issued one `fetch`, checked the status, then read the body — and a socket abort
+*during the body read* threw a plain network error that matched neither the
+systemic-error nor the context-length classifier. Group extraction caught it and
+returned `{}`, so a transient blip was indistinguishable from "the model found
+nothing": fields landed in review as genuine nulls, and array fields
+under-reported their rows.
+
+Provider calls now retry the whole round trip — request *and* body read —
+through bounded exponential backoff, covering network errors, timeouts, `429`,
+and `5xx`. When the retries are exhausted the call raises a
+`ProviderTransportError`, and group extraction, gap-fill, and row enumeration
+surface it instead of swallowing it. A failed document now reports a failure.
+Genuine `4xx` responses and the context-length re-split path are unchanged.
+
 ## 0.99.1 — 2026-07-22
 
 **Releasing content that matches an existing candidate no longer 500s when that

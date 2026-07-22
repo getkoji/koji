@@ -36,6 +36,14 @@ export const modelProviders = new Hono<Env>();
  */
 type ConfigJson = {
   base_url?: string;
+  /**
+   * Context window, in tokens, the models on this credential honor. Optional —
+   * each provider adapter has its own default. The extraction budgeter splits
+   * prompts against this number, so declaring it matters most where the default
+   * is wrong: a local model whose window is smaller than the hosted default, or
+   * a large-window model you want used fully.
+   */
+  context_tokens?: number;
   // Azure OpenAI
   deployment_name?: string;
   api_version?: string;
@@ -76,6 +84,7 @@ type AuthJson = {
 export function validateCreatePayload(body: {
   provider: string;
   base_url?: string;
+  context_tokens?: number;
   deployment_name?: string;
   api_version?: string;
   aws_region?: string;
@@ -110,6 +119,18 @@ export function validateCreatePayload(body: {
 }
 
 /**
+ * Coerce a client-supplied `context_tokens` into a usable window, or undefined.
+ * Zero/negative/non-finite values are dropped rather than stored: a bad number
+ * here would silently shrink every prompt the engine builds for this endpoint.
+ *
+ * Exported for unit tests.
+ */
+export function normalizeContextTokens(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.floor(raw);
+}
+
+/**
  * Build configJson from the request body, keeping only the fields that
  * apply to the given provider.
  *
@@ -117,16 +138,20 @@ export function validateCreatePayload(body: {
  */
 export function buildConfigJson(provider: string, body: {
   base_url?: string;
+  context_tokens?: number;
   deployment_name?: string;
   api_version?: string;
   aws_region?: string;
 }): ConfigJson {
   const cfg: ConfigJson = {};
+  const ctx = normalizeContextTokens(body.context_tokens);
   if (provider === "bedrock") {
     if (body.aws_region) cfg.aws_region = body.aws_region;
+    if (ctx !== undefined) cfg.context_tokens = ctx;
     return cfg;
   }
   if (body.base_url) cfg.base_url = body.base_url;
+  if (ctx !== undefined) cfg.context_tokens = ctx;
   if (provider === "azure-openai") {
     if (body.deployment_name) cfg.deployment_name = body.deployment_name;
     if (body.api_version) cfg.api_version = body.api_version;
@@ -180,6 +205,7 @@ export function buildAuthJson(
  */
 function publicConfig(provider: string, cfg: ConfigJson | null | undefined): {
   baseUrl: string | null;
+  contextTokens: number | null;
   deploymentName: string | null;
   apiVersion: string | null;
   awsRegion: string | null;
@@ -187,6 +213,7 @@ function publicConfig(provider: string, cfg: ConfigJson | null | undefined): {
   const c = cfg ?? {};
   return {
     baseUrl: provider === "bedrock" ? null : c.base_url ?? null,
+    contextTokens: c.context_tokens ?? null,
     deploymentName: provider === "azure-openai" ? c.deployment_name ?? null : null,
     apiVersion: provider === "azure-openai" ? c.api_version ?? null : null,
     awsRegion: provider === "bedrock" ? c.aws_region ?? null : null,
@@ -289,6 +316,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     model: string;
     // Non-secret config
     base_url?: string;
+    context_tokens?: number;
     deployment_name?: string;
     api_version?: string;
     aws_region?: string;
@@ -449,6 +477,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     name?: string;
     model?: string;
     base_url?: string;
+    context_tokens?: number;
     deployment_name?: string;
     api_version?: string;
     aws_region?: string;
@@ -485,6 +514,12 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   if (body.base_url !== undefined) {
     if (body.base_url) cfg.base_url = body.base_url;
     else delete cfg.base_url;
+    configTouched = true;
+  }
+  if (body.context_tokens !== undefined) {
+    const ctx = normalizeContextTokens(body.context_tokens);
+    if (ctx !== undefined) cfg.context_tokens = ctx;
+    else delete cfg.context_tokens;
     configTouched = true;
   }
   if (body.deployment_name !== undefined) {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ModelProvider } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS } from "./context-budget";
 import type { Chunk } from "./chunker";
 import {
   classifyChunksToSections,
@@ -33,12 +34,14 @@ function makeChunks(n: number): Chunk[] {
 
 function mockProvider(response: string): ModelProvider {
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn().mockResolvedValue(response),
   };
 }
 
 function failingProvider(error: Error): ModelProvider {
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn().mockRejectedValue(error),
   };
 }

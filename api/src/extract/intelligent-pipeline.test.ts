@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { intelligentExtract } from "./intelligent-pipeline";
 import type { ModelProvider } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS } from "./context-budget";
 
 function mockProvider(responses: string | string[]): ModelProvider {
   const queue = Array.isArray(responses) ? [...responses] : [responses];
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn().mockImplementation(async () => {
       return queue.length > 1 ? queue.shift()! : queue[0]!;
     }),

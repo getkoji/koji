@@ -28,6 +28,7 @@ import {
   wrapProviderWithHealthTracking,
   _transitionAndEmit,
 } from "./endpoint-health";
+import { DEFAULT_CONTEXT_TOKENS } from "./context-budget";
 
 const TENANT = "00000000-0000-0000-0000-00000000000a";
 const ENDPOINT = "00000000-0000-0000-0000-0000000000e1";
@@ -191,7 +192,7 @@ describe("wrapProviderWithHealthTracking", () => {
   it("records success after a successful generate()", async () => {
     const db = makeDb({ ...baseEndpoint, consecutiveFailures: 2 });
     const wrapped = wrapProviderWithHealthTracking(
-      { generate: async () => "ok" },
+      { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: async () => "ok" },
       db,
       ENDPOINT,
     );
@@ -206,6 +207,7 @@ describe("wrapProviderWithHealthTracking", () => {
     const db = makeDb({ ...baseEndpoint });
     const wrapped = wrapProviderWithHealthTracking(
       {
+        contextTokens: DEFAULT_CONTEXT_TOKENS,
         generate: async () => {
           throw new Error("rate limited");
         },
@@ -219,7 +221,7 @@ describe("wrapProviderWithHealthTracking", () => {
   });
 
   it("returns the provider unwrapped when no endpointId is given", async () => {
-    const inner = { generate: vi.fn().mockResolvedValue("ok") };
+    const inner = { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: vi.fn().mockResolvedValue("ok") };
     const wrapped = wrapProviderWithHealthTracking(inner, makeDb(baseEndpoint), null);
     expect(wrapped).toBe(inner);
   });
@@ -228,6 +230,7 @@ describe("wrapProviderWithHealthTracking", () => {
     const db = makeDb({ ...baseEndpoint });
     const wrapped = wrapProviderWithHealthTracking(
       {
+        contextTokens: DEFAULT_CONTEXT_TOKENS,
         generate: async () => "txt",
         generateWithImage: async () => "vision-ok",
       },
@@ -246,7 +249,7 @@ describe("wrapProviderWithHealthTracking", () => {
       select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.reject(new Error("db down")) }) }) }),
     };
     const wrapped = wrapProviderWithHealthTracking(
-      { generate: async () => "ok" },
+      { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: async () => "ok" },
       badDb,
       ENDPOINT,
     );

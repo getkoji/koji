@@ -3,6 +3,7 @@ import type { Chunk } from "./chunker";
 import {
   COMPLETION_MAX_TOKENS,
   DEFAULT_CONTEXT_TOKENS,
+  completionReserve,
   estimateTokens,
   packChunksToBudget,
   promptCharBudget,
@@ -67,6 +68,44 @@ describe("promptFits", () => {
     const chars = promptCharBudget() + COMPLETION_MAX_TOKENS; // safely past the budget
     expect(estimateTokens("x".repeat(chars))).toBeLessThan(DEFAULT_CONTEXT_TOKENS);
     expect(promptFits("x".repeat(chars))).toBe(false);
+  });
+
+  // oss-465: the window is per-model. A prompt that a 128k model swallows whole
+  // must be rejected for an 8k one — otherwise the engine hands the small model
+  // more than it can read and the model silently truncates.
+  it("honors a per-model window smaller than the default", () => {
+    const prompt = "word ".repeat(20_000); // ~30k tokens
+    expect(promptFits(prompt, DEFAULT_CONTEXT_TOKENS)).toBe(true);
+    expect(promptFits(prompt, 8_192)).toBe(false);
+  });
+
+  it("accepts a prompt sized for the small window it was budgeted against", () => {
+    const budget = promptCharBudget(8_192);
+    expect(budget).toBeGreaterThan(0);
+    expect(promptFits("word ".repeat(Math.floor(budget / 10)), 8_192)).toBe(true);
+  });
+});
+
+describe("completionReserve (oss-465)", () => {
+  it("is the flat cap on a mainstream window (unchanged budgeting)", () => {
+    expect(completionReserve(DEFAULT_CONTEXT_TOKENS)).toBe(COMPLETION_MAX_TOKENS);
+    expect(completionReserve()).toBe(COMPLETION_MAX_TOKENS);
+  });
+
+  it("scales down on a small window so the prompt budget stays positive", () => {
+    // A flat 16k reserve against an 8k window is nonsense — it would make the
+    // char budget negative and every prompt "not fitting".
+    expect(completionReserve(8_192)).toBe(2_048);
+    expect(completionReserve(4_096)).toBe(1_024);
+    expect(promptCharBudget(8_192)).toBeGreaterThan(0);
+    expect(promptCharBudget(2_048)).toBeGreaterThan(0);
+  });
+
+  it("never returns a reserve at or above the window itself", () => {
+    for (const window of [512, 2_048, 4_096, 8_192, 32_768, 128_000, 1_000_000]) {
+      expect(completionReserve(window)).toBeLessThan(window);
+      expect(completionReserve(window)).toBeGreaterThan(0);
+    }
   });
 });
 
