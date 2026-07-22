@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.96.0"
+KOJI_VERSION = "0.97.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -888,19 +888,19 @@ def push_version_line(kind: str, slug: str, payload: dict, *, released: bool) ->
     action = payload.get("action")
 
     if action == "unchanged":
-        return f"  [dim]—[/dim] [{kind}] {slug} — unchanged ({label} already live)"
+        return f"  [dim]—[/dim] \\[{kind}] {slug} — unchanged ({label} already live)"
     if action == "reactivated":
         prev = (payload.get("displaced") or {}).get("label", "?")
-        return f"  [yellow]![/yellow] [{kind}] {slug} — live release moved {prev} → {label}"
+        return f"  [yellow]![/yellow] \\[{kind}] {slug} — live release moved {prev} → {label}"
     if not released:
         deduped = " (existing)" if payload.get("deduped") else ""
         return (
-            f"  [green]✓[/green] [{kind}] {slug} — candidate {label}{deduped} "
+            f"  [green]✓[/green] \\[{kind}] {slug} — candidate {label}{deduped} "
             f"[dim](not live — koji {kind} promote {slug})[/dim]"
         )
     if action == "created":
-        return f"  [green]✓[/green] [{kind}] {slug} — released {label} (live)"
-    return f"  [green]✓[/green] [{kind}] {slug} — {label} (live)"
+        return f"  [green]✓[/green] \\[{kind}] {slug} — released {label} (live)"
+    return f"  [green]✓[/green] \\[{kind}] {slug} — {label} (live)"
 
 
 def push_error_line(kind: str, slug: str, status: int, payload: dict, text: str) -> str:
@@ -911,12 +911,12 @@ def push_error_line(kind: str, slug: str, status: int, payload: dict, text: str)
         direction = payload.get("direction", "")
         arrow = "would ROLL BACK" if direction == "backward" else "would move"
         return (
-            f"  [red]✗[/red] [{kind}] {slug} — this content is already {matched}; "
+            f"  [red]✗[/red] \\[{kind}] {slug} — this content is already {matched}; "
             f"publishing it {arrow} the live release {current} → {matched}. "
             f"[dim]Promote {matched} deliberately, or commit a change on top of {current}.[/dim]"
         )
     error = payload.get("error") or payload.get("details") or text[:200] or f"HTTP {status}"
-    return f"  [red]✗[/red] [{kind}] {slug} — {error}"
+    return f"  [red]✗[/red] \\[{kind}] {slug} — {error}"
 
 
 def _report_push_version(console_, kind: str, slug: str, payload: dict, *, released: bool) -> None:
@@ -1161,7 +1161,7 @@ def push(
         for label, group in (("schema", schemas), ("classifier", classifiers), ("pipeline", pipelines)):
             for yaml_path, parsed, _raw in group:
                 slug = _push_slug(label, parsed, yaml_path)
-                console.print(f"  [cyan]would push[/cyan] [{label}] {slug} [dim]({yaml_path.name})[/dim]")
+                console.print(f"  [cyan]would push[/cyan] \\[{label}] {slug} [dim]({yaml_path.name})[/dim]")
         if not (schemas or classifiers or pipelines):
             console.print("  [dim]nothing selected[/dim]")
         verb = "released live" if release else "staged as candidates"
@@ -1187,7 +1187,7 @@ def push(
 
                 if existing_yaml.strip() == yaml_content.strip():
                     console.print(
-                        f"  [dim]—[/dim] [schema] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})"
+                        f"  [dim]—[/dim] \\[schema] {slug} — unchanged (v{existing.get('latestVersion', {}).get('versionNumber', '?')})"
                     )
                     continue
 
@@ -1213,12 +1213,12 @@ def push(
                     headers=headers,
                 )
                 if resp.status_code == 201:
-                    console.print(f"  [green]✓[/green] [schema] {slug} — created (v0.0.1, live)")
+                    console.print(f"  [green]✓[/green] \\[schema] {slug} — created (v0.0.1, live)")
                 else:
                     error = resp.json().get("error", resp.text[:200])
-                    console.print(f"  [red]✗[/red] [schema] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] \\[schema] {slug} — {error}")
             else:
-                console.print(f"  [red]✗[/red] [schema] {slug} — HTTP {resp.status_code}")
+                console.print(f"  [red]✗[/red] \\[schema] {slug} — HTTP {resp.status_code}")
 
         # ── Push classifiers ──
         # Before pipelines: a pipeline's `classifier: <slug>` step reference
@@ -1236,7 +1236,7 @@ def push(
                 existing_yaml = resp.json().get("latestVersion", {}).get("yamlSource", "") or ""
                 if existing_yaml.strip() == yaml_content.strip():
                     ver = resp.json().get("latestVersion", {}).get("version", "?")
-                    console.print(f"  [dim]—[/dim] [classifier] {slug} — unchanged ({ver})")
+                    console.print(f"  [dim]—[/dim] \\[classifier] {slug} — unchanged ({ver})")
                     continue
                 resp = client.post(
                     f"{base_url}/api/classifiers/{slug}/versions",
@@ -1261,12 +1261,12 @@ def push(
                     headers={**headers, "Content-Type": "application/json"},
                 )
                 if resp.status_code in (200, 201):
-                    console.print(f"  [green]✓[/green] [classifier] {slug} — created")
+                    console.print(f"  [green]✓[/green] \\[classifier] {slug} — created")
                 else:
                     error = resp.json().get("error", resp.json().get("details", resp.text[:200]))
-                    console.print(f"  [red]✗[/red] [classifier] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] \\[classifier] {slug} — {error}")
             else:
-                console.print(f"  [red]✗[/red] [classifier] {slug} — HTTP {resp.status_code}")
+                console.print(f"  [red]✗[/red] \\[classifier] {slug} — HTTP {resp.status_code}")
 
         # ── Resolve schema name → ID lookup (needed for pipeline.schema) ──
         schema_id_map: dict[str, str] = {}
@@ -1310,10 +1310,10 @@ def push(
                     headers={**headers, "Content-Type": "application/json"},
                 )
                 if resp.status_code == 200:
-                    console.print(f"  [green]✓[/green] [pipeline] {slug} — updated")
+                    console.print(f"  [green]✓[/green] \\[pipeline] {slug} — updated")
                 else:
                     error = resp.json().get("error", resp.text[:200])
-                    console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] \\[pipeline] {slug} — {error}")
             elif resp.status_code == 404:
                 # Create pipeline
                 create_body: dict = {"name": display_name, "slug": slug}
@@ -1331,12 +1331,12 @@ def push(
                 )
                 if resp.status_code == 201:
                     schema_note = f" → {schema_ref}" if schema_ref else ""
-                    console.print(f"  [green]✓[/green] [pipeline] {slug} — created{schema_note}")
+                    console.print(f"  [green]✓[/green] \\[pipeline] {slug} — created{schema_note}")
                 else:
                     error = resp.json().get("error", resp.text[:200])
-                    console.print(f"  [red]✗[/red] [pipeline] {slug} — {error}")
+                    console.print(f"  [red]✗[/red] \\[pipeline] {slug} — {error}")
             else:
-                console.print(f"  [red]✗[/red] [pipeline] {slug} — HTTP {resp.status_code}")
+                console.print(f"  [red]✗[/red] \\[pipeline] {slug} — HTTP {resp.status_code}")
 
     # Surface files that were seen but skipped for an unrecognized `kind` — a
     # silent "0 pushed" otherwise reads as "nothing to do" when the real cause
