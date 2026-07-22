@@ -8,6 +8,7 @@ import { loadClassifierConfig, ClassifierConfigError } from "../classify";
 import type { ClassifierConfig } from "../classify";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
 import { reactivateRefusalBody } from "../schemas/release-policy";
+import { parseVersionSelector } from "../schemas/version-selector";
 import { formatSemver, type Bump } from "../schemas/semver";
 
 /**
@@ -131,7 +132,45 @@ classifiers.get("/:slug", requires("schema:read"), async (c) => {
     latestVersion = { ...rest, version: formatSemver(cv) };
   }
 
-  return c.json({ ...cls, latestVersion });
+  // `latestVersion` is the HIGHEST committed version, which is not necessarily
+  // what routing runs: a candidate sitting on top of a release would be
+  // reported while the release is live. `activeVersion` is the released version
+  // `currentVersionId` points at — "what is live" in one call, without a
+  // follow-up trip to /versions to find the row flagged `active`.
+  let activeVersion: { versionNumber: number; version: string; versionId: string } | null = null;
+  const currentVersionId = cls.currentVersionId; // hoisted: narrowing doesn't reach the closure
+  if (currentVersionId) {
+    const [av] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+      tx
+        .select({
+          id: schema.classifierVersions.id,
+          versionNumber: schema.classifierVersions.versionNumber,
+          major: schema.classifierVersions.major,
+          minor: schema.classifierVersions.minor,
+          patch: schema.classifierVersions.patch,
+          prerelease: schema.classifierVersions.prerelease,
+        })
+        .from(schema.classifierVersions)
+        .where(eq(schema.classifierVersions.id, currentVersionId))
+        .limit(1),
+    );
+    if (av) {
+      activeVersion = {
+        versionId: av.id,
+        versionNumber: av.versionNumber,
+        version: formatSemver(av),
+      };
+    }
+  }
+
+  return c.json({
+    ...cls,
+    latestVersion,
+    // Mirrors the list endpoint's field so both surfaces agree.
+    latestVersionLabel: latestVersion?.version ?? null,
+    activeVersion,
+    activeVersionLabel: activeVersion?.version ?? null,
+  });
 });
 
 classifiers.post("/", requires("schema:write"), async (c) => {
@@ -290,7 +329,16 @@ classifiers.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
-  const versionNum = parseInt(c.req.param("v")!, 10);
+  // Accepts the numeric versionNumber, a semver label (`v0.0.1` / `0.0.1` /
+  // `v1.2.0-rc.7`), or a version-id prefix. This used to be parseInt(), so the
+  // label the sibling /versions list hands out parsed to NaN and errored.
+  const selector = parseVersionSelector(c.req.param("v")!);
+  if (!selector) {
+    return c.json(
+      { error: "Invalid version — use a version number, a semver label (v0.0.1), or a version id." },
+      400,
+    );
+  }
 
   const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
@@ -301,18 +349,18 @@ classifiers.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   );
   if (!cls) return c.json({ error: "Classifier not found" }, 404);
 
-  const [version] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select()
       .from(schema.classifierVersions)
-      .where(
-        and(
-          eq(schema.classifierVersions.classifierId, cls.id),
-          eq(schema.classifierVersions.versionNumber, versionNum),
-        ),
-      )
-      .limit(1),
+      .where(eq(schema.classifierVersions.classifierId, cls.id)),
   );
+  const version =
+    selector.by === "number"
+      ? rows.find((r) => r.versionNumber === selector.versionNumber)
+      : selector.by === "semver"
+        ? rows.find((r) => formatSemver(r) === selector.label)
+        : rows.find((r) => r.id.startsWith(selector.prefix));
   if (!version) return c.json({ error: "Version not found" }, 404);
   return c.json(version);
 });

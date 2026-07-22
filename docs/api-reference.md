@@ -1598,7 +1598,12 @@ List the tenant's classifiers. Each row carries `id`, `slug`, `displayName`, `de
 
 ### `GET /api/classifiers/{slug}`
 
-The classifier plus its `latestVersion` (`{ versionNumber, version, yamlSource, commitMessage, createdAt }` or `null`; `version` is the semver label). `404` for an unknown slug. Auth: `schema:read`.
+The classifier plus:
+
+- `latestVersion` — the **highest committed** version (`{ versionNumber, version, yamlSource, commitMessage, createdAt }` or `null`), and `latestVersionLabel`, its semver label. This may be a *candidate*.
+- `activeVersion` — the **live released** version `currentVersionId` points at (`{ versionId, versionNumber, version }` or `null`), and `activeVersionLabel`.
+
+`activeVersion` is what routing actually runs; `latestVersion` is not necessarily live. Checking "what is live" no longer needs a second call to `/versions` to find the row flagged `active`. `404` for an unknown slug. Auth: `schema:read`.
 
 ### `POST /api/classifiers`
 
@@ -1633,7 +1638,18 @@ The released lineage + candidates, each with `version` (semver label), `released
 
 ### `GET /api/classifiers/{slug}/versions/{v}`
 
-A single version by its `versionNumber`, including `yamlSource` and the normalized `parsedJson`. `404` if the version doesn't exist. Auth: `schema:read`.
+A single version, including `yamlSource` and the normalized `parsedJson`. Auth: `schema:read`.
+
+`{v}` accepts any of:
+
+| Form | Example |
+|------|---------|
+| version number | `2` |
+| semver label (with or without `v`) | `v0.0.1`, `0.0.1` |
+| candidate label | `v1.2.0-rc.7` |
+| version-id prefix | `bbbb2222` |
+
+These are the same identifiers a pipeline's `classifier_version:` pin accepts, and the labels [`GET /api/classifiers/{slug}/versions`](#get-apiclassifiersslugversions) returns in its `version` field. A segment that identifies nothing is `400`; a well-formed identifier matching no version is `404`.
 
 ### `POST /api/classifiers/{slug}/versions`
 

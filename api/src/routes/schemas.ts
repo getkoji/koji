@@ -17,6 +17,7 @@ import { and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/versioning";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { reactivateRefusalBody } from "../schemas/release-policy";
+import { parseVersionSelector } from "../schemas/version-selector";
 import { resolveMimeType } from "../ingestion/mime";
 import { resolveParse } from "../ingestion/seam";
 import { mapWithConcurrency } from "../parse/pdf-slice";
@@ -336,18 +337,31 @@ schemas.get("/:slug/versions/:v", requires("schema:read"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
-  const versionNum = parseInt(c.req.param("v")!, 10);
+  // Same identifiers the classifier route accepts: versionNumber, semver label,
+  // or version-id prefix. Was parseInt(), which NaN'd on a semver label.
+  const selector = parseVersionSelector(c.req.param("v")!);
+  if (!selector) {
+    return c.json(
+      { error: "Invalid version — use a version number, a semver label (v0.0.1), or a version id." },
+      400,
+    );
+  }
 
   const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id }).from(schema.schemas).where(eq(schema.schemas.slug, slug)).limit(1)
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const [version] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select().from(schema.schemaVersions)
-      .where(sql`${schema.schemaVersions.schemaId} = ${s.id} AND ${schema.schemaVersions.versionNumber} = ${versionNum}`)
-      .limit(1)
+      .where(eq(schema.schemaVersions.schemaId, s.id))
   );
+  const version =
+    selector.by === "number"
+      ? rows.find((r) => r.versionNumber === selector.versionNumber)
+      : selector.by === "semver"
+        ? rows.find((r) => formatSemver(r) === selector.label)
+        : rows.find((r) => r.id.startsWith(selector.prefix));
   if (!version) return c.json({ error: "Version not found" }, 404);
   return c.json(version);
 });
