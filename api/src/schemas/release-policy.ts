@@ -106,6 +106,8 @@ export function reactivateRefusalBody(r: {
   matched: { id: string; label: string };
   current: { id: string; label: string };
   direction: "forward" | "backward";
+  hashedBytes?: number;
+  hashedSha256Prefix?: string;
 }) {
   return {
     error: reactivateRefusalMessage(r),
@@ -115,6 +117,12 @@ export function reactivateRefusalBody(r: {
     current_version: r.current.label,
     current_version_id: r.current.id,
     direction: r.direction,
-    hint: "Retry with allow_reactivate: true to move the live pointer deliberately.",
+    // Echo what was hashed. If these don't describe the payload you sent, your
+    // content never reached the matcher — check the request body's field name
+    // before acting on `matched_version`.
+    hashed_bytes: r.hashedBytes,
+    hashed_sha256_prefix: r.hashedSha256Prefix,
+    hint:
+      "Verify hashed_bytes matches the payload you sent. If it does, retry with allow_reactivate: true to move the live pointer deliberately; if it does not, your YAML did not reach the server under a recognized field.",
   };
 }

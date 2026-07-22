@@ -18,6 +18,7 @@ import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/
 import { formatSemver, type Bump } from "../schemas/semver";
 import { reactivateRefusalBody } from "../schemas/release-policy";
 import { parseVersionSelector } from "../schemas/version-selector";
+import { parseReleaseInput } from "../schemas/release-input";
 import { resolveMimeType } from "../ingestion/mime";
 import { resolveParse } from "../ingestion/seam";
 import { mapWithConcurrency } from "../parse/pdf-slice";
@@ -493,9 +494,11 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
   const principal = getPrincipal(c);
-  const body = await c.req
-    .json<{ yaml?: string; allow_reactivate?: boolean }>()
-    .catch(() => ({}) as { yaml?: string; allow_reactivate?: boolean });
+  // Only a genuinely absent body means "release the stored draft" — anything
+  // the caller sent that we cannot interpret is an error, never a silent
+  // substitution of draft content they never supplied. See ../schemas/release-input.
+  const input = parseReleaseInput(await c.req.text());
+  if (input.kind === "invalid") return c.json({ error: input.message }, 400);
 
   const [s] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({ id: schema.schemas.id, draftYaml: schema.schemas.draftYaml })
@@ -503,7 +506,7 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
   );
   if (!s) return c.json({ error: "Schema not found" }, 404);
 
-  const yaml = body.yaml ?? s.draftYaml;
+  const yaml = input.kind === "yaml" ? input.yaml : s.draftYaml;
   if (!yaml) return c.json({ error: "No YAML to release — provide yaml or save a draft first." }, 400);
 
   const compiled = compileSchema(yaml);
@@ -514,7 +517,7 @@ schemas.post("/:slug/release", requires("schema:deploy"), async (c) => {
     yaml,
     parsed: compiled.parsed,
     userId: principal.userId,
-    allowReactivate: body.allow_reactivate,
+    allowReactivate: input.allowReactivate,
   });
   if ("error" in res) {
     if (res.error === "requires_reactivate") return c.json(reactivateRefusalBody(res), 409);

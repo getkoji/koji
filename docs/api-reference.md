@@ -1570,7 +1570,9 @@ Create a version. `candidate: true` snapshots a non-active candidate; otherwise 
   "matched_version": "v2.0.5",
   "current_version": "v2.0.9",
   "direction": "backward",
-  "hint": "Retry with allow_reactivate: true to move the live pointer deliberately."
+  "hashed_bytes": 52732,
+  "hashed_sha256_prefix": "d8ff0b04",
+  "hint": "Verify hashed_bytes matches the payload you sent. ..."
 }
 ```
 
@@ -1591,7 +1593,20 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 ### `POST /api/schemas/{slug}/release`
 
-Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Defaults to the schema's draft. Auth: `schema:deploy`. Body: `{ yaml?, allow_reactivate? }`. Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal.
+Release YAML directly (skip the rc loop) and make it live — the early-stage / empty-corpus path. Auth: `schema:deploy`. Body: `{ yaml?, allow_reactivate? }` (`yaml_source` is accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal.
+
+**The stored draft is released only when you send no body at all.** A body the endpoint cannot interpret is a `400`, never a fallback:
+
+| Request | Result |
+|---------|--------|
+| no body | releases the stored draft |
+| `{ "yaml": "..." }` | releases exactly that YAML |
+| `{ "allow_reactivate": true }` | releases the stored draft |
+| `{ "content": "..." }` — unrecognized field | **`400`**, naming the field |
+| malformed JSON | **`400`** |
+| `{ "yaml": null }` / `{ "yaml": "" }` | **`400`** |
+
+Earlier releases fell back to the draft in every one of those failure cases, so a payload sent under the wrong field name silently released stored draft content the caller never supplied.
 
 ### Per-pipeline version mode
 
@@ -1686,7 +1701,7 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 ### `POST /api/classifiers/{slug}/release`
 
-Release YAML directly (skip the rc loop) and make it live — the early-stage path. Defaults to the classifier's draft. Auth: `schema:deploy`. Body: `{ yaml_source?, allow_reactivate? }` (`yaml` accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal.
+Release YAML directly (skip the rc loop) and make it live — the early-stage path. Auth: `schema:deploy`. Body: `{ yaml_source?, allow_reactivate? }` (`yaml` accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal. The stored draft is released only when you send **no body at all**; the same body rules as [`POST /api/schemas/{slug}/release`](#post-apischemasslugrelease) apply.
 
 ---
 
