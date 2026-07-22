@@ -2,6 +2,25 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.98.1 — 2026-07-22
+
+**Docs: classifying a large document never required skipping it or slicing it.**
+Three capabilities already existed but were not connected in the reference, so
+an integration hit the 4.5 MB request-body cap and started skipping documents
+over it. Now documented together on `POST /api/classify`:
+
+- The `config` field accepts a **YAML string** as well as an object, on **both**
+  the multipart and the JSON form — the reference previously said "YAML or JSON
+  string" for multipart but "config object" for JSON, implying the JSON form
+  needed a parsed object.
+- A document already in storage is referenced by `storage_key`, obtained via the
+  presigned upload flow, which is not subject to the request-body cap.
+- The cascade only reads the pages `window`/`scan` select, so client-side page
+  slicing buys nothing — `window: 1` reads one page regardless of document
+  length. No PDF library needed in the consumer.
+
+No engine change; this is a documentation fix.
+
 ## 0.98.0 — 2026-07-22
 
 **Version endpoints accept the identifiers they hand out.**

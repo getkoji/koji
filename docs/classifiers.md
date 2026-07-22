@@ -176,6 +176,13 @@ via `koji classify release` with **no consumer redeploy** — which matters,
 because tuning a classifier normally takes several versions. The response echoes
 `classifier` and `classifier_version` so you can see exactly what ran.
 
+For a document over the 4.5 MB request-body cap, upload it with the presigned
+flow and pass `storage_key` instead of the bytes — and note the `config` field
+takes a **YAML string** as well as an object, on both the multipart and JSON
+forms. There is also no need to slice pages client-side: the cascade only reads
+the pages `window` selects, so `window: 1` reads one page no matter how long the
+document is.
+
 The response:
 
 ```json
