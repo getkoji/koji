@@ -2,6 +2,29 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.97.0 — 2026-07-22
+
+**`koji push` can be scoped and previewed, and no longer publishes updates live
+by default.** `push` takes every YAML file it finds, so adding one classifier
+could also re-release an unrelated extraction schema — live, immediately.
+
+- **Scope it.** `--only <slug>` (repeatable) and `--kind schema|pipeline|classifier`
+  limit what is pushed; `--dry-run` prints what would change and writes nothing.
+- **Updates stage a candidate.** Pushing a change to an artifact that already
+  exists commits a candidate, which is not live until promoted; pass `--release`
+  to publish. Creating a **new** artifact still releases `v0.0.1` — there is no
+  live version to displace, so a first push still leaves a usable project.
+- **The subdirectory decides an untagged file's kind.** A classifier in
+  `classifiers/` with no `kind:` field was previously created as a *schema*.
+  Root-level untagged files are still schemas.
+
+**`koji push` output now says what actually happened.** It read a `versionNumber`
+field neither endpoint returns, so every update printed `updated to v?` — and
+"updated" covered a real new version, a no-op, and a live-pointer move alike.
+Each line now reports `unchanged`, `candidate vX.Y.Z-rc.N (not live)`, or the
+released version, and a refused rollback (0.95.3) is rendered with both versions
+and what to do instead.
+
 ## 0.96.0 — 2026-07-22
 
 **`POST /api/classify` can now run a registered classifier by slug.** Pass
