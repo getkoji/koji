@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { collapseKeyedRows, extractFields, extractLlmConfidence, extractLlmReasoning, extractSourceTexts, isCaptionValue, recoverCaptionValues, rejectCaptionValues, skipMarkedRows, stripProvenanceKeys, validateFields, valueAfterLabel, type ExtractionResult } from "./pipeline";
 import type { ModelProvider } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS } from "./context-budget";
 
 // ---------------------------------------------------------------------------
 // Mock provider
@@ -8,6 +9,7 @@ import type { ModelProvider } from "./providers";
 
 function mockProvider(response: string): ModelProvider {
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn().mockResolvedValue(response),
   };
 }
@@ -372,6 +374,7 @@ describe("skipMarkedRows", () => {
       }),
     ];
     const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn().mockImplementation(async () => (queue.length > 1 ? queue.shift()! : queue[0]!)),
     };
     const schema = {

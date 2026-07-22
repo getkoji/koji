@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { visionOcrPages } from "./vision-ocr";
 import type { ModelProvider } from "../extract/providers";
+import { DEFAULT_CONTEXT_TOKENS } from "../extract/context-budget";
 
 function visionProvider(perPage: (img: string) => string): ModelProvider {
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn(),
     generateWithImage: vi.fn().mockImplementation(async (_prompt: string, img: string) => perPage(img)),
   };
@@ -35,12 +37,13 @@ describe("visionOcrPages", () => {
   });
 
   it("throws when the provider can't take images", async () => {
-    const noVision: ModelProvider = { generate: vi.fn() };
+    const noVision: ModelProvider = { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: vi.fn() };
     await expect(visionOcrPages(["A"], noVision)).rejects.toThrow(/does not support image/);
   });
 
   it("propagates a page failure (caller falls back to original parse)", async () => {
     const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn(),
       generateWithImage: vi.fn().mockRejectedValue(new Error("vision 500")),
     };

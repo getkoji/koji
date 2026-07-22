@@ -1,8 +1,11 @@
 /**
  * Context-window budgeting for extraction prompts.
  *
- * Every extraction call reserves `COMPLETION_MAX_TOKENS` for the response, so
- * the prompt itself must fit in the model's context window minus that reserve.
+ * Every extraction call reserves `completionReserve(contextTokens)` for the
+ * response, so the prompt itself must fit in the model's context window minus
+ * that reserve. The window is per-model: it comes from the provider
+ * (`ModelProvider.contextTokens`), not a global constant, because an 8k local
+ * model and a 128k hosted model need very different split points.
  * Nothing between the parser and the provider used to enforce this: chunks are
  * split by heading (unbounded size for heading-poor documents), the router caps
  * chunk *counts* but never characters, and prompt builders concatenate chunk
@@ -30,16 +33,55 @@
 
 import type { Chunk } from "./chunker";
 
-/** Assumed model context window. 128k is the floor across the mainstream
- * extraction models (gpt-4o, gpt-4o-mini, claude); larger-window models simply
- * split less often than they strictly need to. */
+/** Default context window for the hosted providers. 128k is the floor across
+ * the mainstream extraction models (gpt-4o, gpt-4o-mini, claude); larger-window
+ * models simply split less often than they strictly need to. Providers report
+ * their real window via `ModelProvider.contextTokens` — this is only the
+ * fallback when configuration doesn't say. */
 export const DEFAULT_CONTEXT_TOKENS = 128_000;
 
-/** Completion reserve — must match the `max_tokens` the providers send. */
+/** Upper bound on the completion reserve. The reserve itself is
+ * `completionReserve(contextTokens)`; providers send exactly that as their
+ * `max_tokens` / `num_predict`, so the budgeting reserve and the cap the model
+ * is actually given are one number rather than two constants that drift. */
 export const COMPLETION_MAX_TOKENS = 16_384;
 
-/** Headroom for estimation error and message scaffolding. */
+/** Headroom for estimation error and message scaffolding, for a mainstream
+ * window. Scaled down proportionally for small windows — see `safetyMargin`. */
 const SAFETY_MARGIN_TOKENS = 2_048;
+
+/** Fraction of the window a completion may claim. A small-window model cannot
+ * spend 16k tokens on the response and still have room for a prompt, so the
+ * reserve tracks the window instead of being a flat constant. */
+const COMPLETION_RESERVE_FRACTION = 4;
+
+/** Fraction of the window given to estimation headroom on small windows. */
+const SAFETY_MARGIN_FRACTION = 16;
+
+/**
+ * Tokens reserved for the model's response given a context window. Providers
+ * send this value as their `max_tokens` (`num_predict` on Ollama), so the
+ * amount the budget subtracts is exactly the amount the model may produce.
+ *
+ * Capped at `COMPLETION_MAX_TOKENS` (a mainstream 128k window resolves to
+ * 16,384, unchanged) and at a quarter of the window below that.
+ */
+export function completionReserve(contextTokens: number = DEFAULT_CONTEXT_TOKENS): number {
+  return Math.max(
+    1,
+    Math.min(COMPLETION_MAX_TOKENS, Math.floor(contextTokens / COMPLETION_RESERVE_FRACTION)),
+  );
+}
+
+/** Estimation headroom for a window: the flat margin on mainstream windows,
+ * proportional on small ones (a fixed 2k margin would eat a quarter of an 8k
+ * window on top of the completion reserve and leave almost nothing to read). */
+function safetyMargin(contextTokens: number): number {
+  return Math.max(
+    0,
+    Math.min(SAFETY_MARGIN_TOKENS, Math.floor(contextTokens / SAFETY_MARGIN_FRACTION)),
+  );
+}
 
 /** Chars per token for running prose / ASCII letters and spaces — the loosest
  * (most token-efficient) class, where BPE merges whole words. */
@@ -99,13 +141,15 @@ export function estimateTokens(text: string): number {
 }
 
 /** Whether a fully-built prompt fits the context window with the completion
- * reserve and safety margin. */
+ * reserve and safety margin. Pass the provider's `contextTokens` — the default
+ * is only for callers with no provider in hand. */
 export function promptFits(
   prompt: string,
   contextTokens: number = DEFAULT_CONTEXT_TOKENS,
 ): boolean {
   return (
-    estimateTokens(prompt) + COMPLETION_MAX_TOKENS + SAFETY_MARGIN_TOKENS <= contextTokens
+    estimateTokens(prompt) + completionReserve(contextTokens) + safetyMargin(contextTokens) <=
+    contextTokens
   );
 }
 
@@ -113,8 +157,12 @@ export function promptFits(
 export function promptCharBudget(
   contextTokens: number = DEFAULT_CONTEXT_TOKENS,
 ): number {
-  return Math.floor(
-    (contextTokens - COMPLETION_MAX_TOKENS - SAFETY_MARGIN_TOKENS) * CHARS_PER_TOKEN,
+  return Math.max(
+    0,
+    Math.floor(
+      (contextTokens - completionReserve(contextTokens) - safetyMargin(contextTokens)) *
+        CHARS_PER_TOKEN,
+    ),
   );
 }
 

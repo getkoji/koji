@@ -41,6 +41,15 @@ export interface ExtractEndpointPayload {
   model: string;
   base_url?: string;
   api_key?: string;
+  /**
+   * Context window, in tokens, this model will actually honor. Optional — each
+   * provider adapter falls back to its own default. Set it when the model's
+   * window differs from that default (a small local model, or a large-window
+   * one you want to use fully): the extraction budgeter splits prompts against
+   * this number, so an over-declared window means silent truncation and an
+   * under-declared one means unnecessary splitting.
+   */
+  context_tokens?: number;
   // Azure-specific
   deployment_name?: string;
   api_version?: string;
@@ -129,6 +138,7 @@ export async function resolveExtractEndpoint(
     deployment_name?: string;
     api_version?: string;
     aws_region?: string;
+    context_tokens?: number;
   };
 
   // authJson stores the encrypted secret alongside a plaintext key_hint
@@ -171,6 +181,7 @@ export async function resolveExtractEndpoint(
   if (cfg.deployment_name) payload.deployment_name = cfg.deployment_name;
   if (cfg.api_version) payload.api_version = cfg.api_version;
   if (cfg.aws_region) payload.aws_region = cfg.aws_region;
+  if (typeof cfg.context_tokens === "number") payload.context_tokens = cfg.context_tokens;
 
   try {
     if (endpoint.provider === "bedrock") {

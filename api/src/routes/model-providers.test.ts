@@ -8,6 +8,7 @@ import type { Env } from "../env";
 import {
   validateCreatePayload,
   buildConfigJson,
+  normalizeContextTokens,
   buildAuthJson,
 } from "./model-providers";
 
@@ -261,6 +262,28 @@ describe("buildConfigJson", () => {
       deployment_name: "prod-gpt4o",
       api_version: "2024-02-15-preview",
     });
+  });
+
+  // oss-465: an operator-declared context window rides in configJson so the
+  // extraction budgeter can split prompts against the real model window.
+  it("keeps a declared context_tokens for every provider shape", () => {
+    expect(
+      buildConfigJson("ollama", { base_url: "http://localhost:11434", context_tokens: 32_768 }),
+    ).toEqual({ base_url: "http://localhost:11434", context_tokens: 32_768 });
+    expect(buildConfigJson("bedrock", { aws_region: "us-east-1", context_tokens: 200_000 })).toEqual({
+      aws_region: "us-east-1",
+      context_tokens: 200_000,
+    });
+  });
+
+  it("drops a nonsense context_tokens rather than storing it", () => {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(buildConfigJson("openai", { base_url: "https://x", context_tokens: bad })).toEqual({
+        base_url: "https://x",
+      });
+    }
+    expect(normalizeContextTokens(8_192.7)).toBe(8_192);
+    expect(normalizeContextTokens("8192")).toBeUndefined();
   });
 
   it("bedrock keeps only aws_region and drops base_url", () => {

@@ -328,6 +328,46 @@ pipeline:
     model: local/llama3.2       # uses the local (ollama) provider
 ```
 
+### Model endpoint context window
+
+Extraction splits a document into as many model calls as the model's context
+window requires. That window comes from the endpoint, so Koji has to know what
+it is: budget for more than the model can read and the prompt is truncated;
+budget for less and the document is split more than necessary.
+
+Send `context_tokens` on `POST /api/model-providers` (or `PATCH
+/api/model-providers/{id}` to change it later) when the default is wrong for
+your model:
+
+```json
+{
+  "name": "Local llama",
+  "slug": "local-llama",
+  "provider": "ollama",
+  "model": "llama3.1",
+  "base_url": "http://localhost:11434",
+  "context_tokens": 32768
+}
+```
+
+| Provider | Default window | Notes |
+|----------|----------------|-------|
+| `openai`, `anthropic`, `azure-openai` | 128,000 | The floor across mainstream extraction models. Raise it for a larger-window model. |
+| `ollama` | 8,192 | Ollama allocates a small window per model unless told otherwise. |
+
+Values that aren't a positive number are ignored — the provider default applies.
+
+!!! warning "Ollama truncates silently"
+
+    Koji sends `num_ctx: <context_tokens>` on every Ollama request. Without it
+    the server falls back to its own default and **drops everything past that
+    window with no error** — the extraction simply comes back missing fields, as
+    if the model had found nothing. If your local model supports a larger
+    window, raise `context_tokens` to match; don't leave it to the default.
+
+    The reserve Koji keeps for the model's response scales with the window, so a
+    small-window model reserves proportionally less and still has room to read.
+
 ---
 
 ## `output`

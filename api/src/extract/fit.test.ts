@@ -11,10 +11,12 @@ import {
 import { intelligentExtract } from "./intelligent-pipeline";
 import { extractFields } from "./pipeline";
 import type { ModelProvider } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS } from "./context-budget";
 
 function mockProvider(responses: string | string[]): ModelProvider {
   const queue = Array.isArray(responses) ? [...responses] : [responses];
   return {
+    contextTokens: DEFAULT_CONTEXT_TOKENS,
     generate: vi.fn().mockImplementation(async () => (queue.length > 1 ? queue.shift()! : queue[0]!)),
   };
 }
@@ -158,6 +160,7 @@ describe("checkAssertion", () => {
   it("fails open when the provider throws", async () => {
     const cfg = parseFitConfig({ fit: { requires: "an insurance policy" } })!;
     const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn().mockRejectedValue(new Error("boom")),
     };
     const check = (await checkAssertion("...", cfg, provider))!;

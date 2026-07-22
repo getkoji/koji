@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Chunk } from "./document-map";
 import type { RouteGroup } from "./router";
 import type { ModelProvider } from "./providers";
-import { ProviderHttpError } from "./providers";
-import { promptFits } from "./context-budget";
+import { ProviderHttpError, ProviderTransportError } from "./providers";
+import { DEFAULT_CONTEXT_TOKENS, promptFits } from "./context-budget";
 import {
   describeArrayItem,
   describeProperty,
@@ -25,7 +25,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function mockProvider(response: string): ModelProvider {
-  return { generate: vi.fn().mockResolvedValue(response) };
+  return { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: vi.fn().mockResolvedValue(response) };
 }
 
 function makeChunk(overrides: Partial<Chunk> & { index: number; title: string; content: string }): Chunk {
@@ -741,6 +741,7 @@ describe("extractGroup", () => {
 
   it("returns empty dict on provider error", async () => {
     const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn().mockRejectedValue(new Error("API timeout")),
     };
     const group = makeGroup({
@@ -855,6 +856,7 @@ describe("fillGap", () => {
 
   it("returns empty dict on provider error", async () => {
     const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn().mockRejectedValue(new Error("timeout")),
     };
     const chunks = [makeChunk({ index: 0, title: "D", content: "text" })];
@@ -970,7 +972,10 @@ describe("enumerateRows", () => {
   });
 
   it("returns [] on error rather than throwing", async () => {
-    const provider: ModelProvider = { generate: vi.fn().mockRejectedValue(new Error("boom")) };
+    const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
+      generate: vi.fn().mockRejectedValue(new Error("boom")),
+    };
     const rows = await enumerateRows("coverages", spec, chunks, [{ code: "GL" }], provider);
     expect(rows).toEqual([]);
   });
@@ -1003,6 +1008,7 @@ describe("context-budget splitting", () => {
 
   function markerProvider(answers: Record<string, unknown>): ModelProvider {
     return {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
       generate: vi.fn().mockImplementation((prompt: string) => {
         for (const [marker, answer] of Object.entries(answers)) {
           if (prompt.includes(marker)) return Promise.resolve(JSON.stringify(answer));
@@ -1075,7 +1081,7 @@ describe("context-budget splitting", () => {
       }
       return Promise.resolve(JSON.stringify({ name: "Acme" }));
     });
-    const provider: ModelProvider = { generate };
+    const provider: ModelProvider = { contextTokens: DEFAULT_CONTEXT_TOKENS, generate };
 
     // One ~100k-char chunk: comfortably under the ~356k char budget (so
     // promptFits clears it and the first call is a single shot), but the mock
@@ -1103,7 +1109,9 @@ describe("context-budget splitting", () => {
       fieldSpecs: { name: { type: "string" } },
       chunks: [makeChunk({ index: 0, title: "D", content: "Acme" })],
     });
-    await expect(extractGroup(group, "test", { generate })).rejects.toThrow(/invalid_request_error/);
+    await expect(
+      extractGroup(group, "test", { contextTokens: DEFAULT_CONTEXT_TOKENS, generate }),
+    ).rejects.toThrow(/invalid_request_error/);
     // A genuine 400 is not retryable — one call, then surface.
     expect(generate).toHaveBeenCalledTimes(1);
   });
@@ -1149,5 +1157,151 @@ describe("context-budget splitting", () => {
 
     expect(provider.generate).toHaveBeenCalledTimes(3);
     expect(rows).toEqual([{ code: "GL" }, { code: "PROP" }, { code: "CRIME" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-model context window (oss-465) — the split point follows the provider's
+// declared window, not a hardcoded 128k.
+// ---------------------------------------------------------------------------
+
+describe("per-model context window", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  const SMALL_WINDOW = 8_192;
+
+  /** ~40k chars total — comfortably inside a 128k window, far past an 8k one. */
+  const chunks = Array.from({ length: 4 }, (_, i) =>
+    makeChunk({ index: i, title: `Part ${i}`, content: `MARKER_${i} value here\n` + "word ".repeat(2_000) }),
+  );
+
+  function windowedProvider(contextTokens: number): ModelProvider {
+    return {
+      contextTokens,
+      generate: vi.fn().mockResolvedValue(JSON.stringify({ name: "Acme" })),
+    };
+  }
+
+  const group = () =>
+    makeGroup({ fieldSpecs: { name: { type: "string" } }, chunks });
+
+  it("sends one call when the whole document fits the provider's window", async () => {
+    const provider = windowedProvider(DEFAULT_CONTEXT_TOKENS);
+    await extractGroup(group(), "test", provider);
+    expect(provider.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("splits the same document for a small-window provider instead of over-filling it", async () => {
+    // The bug: budgeting against a hardcoded 128k meant an 8k model was handed
+    // a prompt it could only read a fraction of — and truncated it silently.
+    const provider = windowedProvider(SMALL_WINDOW);
+    await extractGroup(group(), "test", provider);
+
+    const calls = (provider.generate as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBeGreaterThan(1);
+    for (const [prompt] of calls) {
+      expect(promptFits(prompt as string, SMALL_WINDOW)).toBe(true);
+    }
+  });
+
+  it("splits gap-fill and enumerate_rows against the same small window", async () => {
+    // Null answers so gap-fill walks every subset instead of stopping at the
+    // first hit — the point here is how many subsets there are.
+    const gapProvider: ModelProvider = {
+      contextTokens: SMALL_WINDOW,
+      generate: vi.fn().mockResolvedValue(JSON.stringify({ name: null })),
+    };
+    await fillGap("name", { type: "string" }, chunks, "test", gapProvider);
+    const gapCalls = (gapProvider.generate as ReturnType<typeof vi.fn>).mock.calls;
+    expect(gapCalls.length).toBeGreaterThan(1);
+    for (const [prompt] of gapCalls) {
+      expect(promptFits(prompt as string, SMALL_WINDOW)).toBe(true);
+    }
+
+    const enumProvider: ModelProvider = {
+      contextTokens: SMALL_WINDOW,
+      generate: vi.fn().mockResolvedValue(JSON.stringify({ rows: [] })),
+    };
+    await enumerateRows(
+      "rows",
+      { type: "array", items: { type: "object", properties: { code: { type: "string" } } } },
+      chunks,
+      [],
+      enumProvider,
+    );
+    const enumCalls = (enumProvider.generate as ReturnType<typeof vi.fn>).mock.calls;
+    expect(enumCalls.length).toBeGreaterThan(1);
+    for (const [prompt] of enumCalls) {
+      expect(promptFits(prompt as string, SMALL_WINDOW)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transport failures must surface, never become an empty extraction (oss-472)
+// ---------------------------------------------------------------------------
+
+describe("exhausted transport failures surface", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  function deadSocketProvider(): ModelProvider {
+    return {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
+      generate: vi
+        .fn()
+        .mockRejectedValue(
+          new ProviderTransportError("OpenAI: transport failure after 3 attempt(s) — terminated", 3),
+        ),
+    };
+  }
+
+  const chunks = [makeChunk({ index: 0, title: "D", content: "Acme" })];
+
+  it("extractGroup throws rather than reporting an empty extraction", async () => {
+    // Returning {} here would be recorded as "the model found nothing" — the
+    // fields would land in review as genuine nulls. After the provider has
+    // already retried, a dead socket is a real failure.
+    await expect(
+      extractGroup(makeGroup({ fieldSpecs: { name: { type: "string" } }, chunks }), "test", deadSocketProvider()),
+    ).rejects.toBeInstanceOf(ProviderTransportError);
+  });
+
+  it("fillGap throws rather than leaving the field null", async () => {
+    await expect(
+      fillGap("name", { type: "string" }, chunks, "test", deadSocketProvider()),
+    ).rejects.toBeInstanceOf(ProviderTransportError);
+  });
+
+  it("enumerateRows throws rather than under-reporting the row set", async () => {
+    await expect(
+      enumerateRows(
+        "rows",
+        { type: "array", items: { type: "object", properties: { code: { type: "string" } } } },
+        chunks,
+        [],
+        deadSocketProvider(),
+      ),
+    ).rejects.toBeInstanceOf(ProviderTransportError);
+  });
+
+  it("still swallows an ordinary model-side error into an empty result", async () => {
+    // Only the transport class changes — a one-off non-systemic error keeps the
+    // old "skip this call" behavior.
+    const provider: ModelProvider = {
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
+      generate: vi.fn().mockRejectedValue(new Error("model hiccup")),
+    };
+    const result = await extractGroup(
+      makeGroup({ fieldSpecs: { name: { type: "string" } }, chunks }),
+      "test",
+      provider,
+    );
+    expect(result).toEqual({});
   });
 });
