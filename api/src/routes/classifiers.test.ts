@@ -389,3 +389,101 @@ describe("versions — live release pointer", () => {
     expect(updates).toEqual([]);
   });
 });
+
+/**
+ * Version addressing + "what is live" — the reported read-endpoint gaps.
+ * `/versions/:v` used to parseInt() its segment, so the semver label the
+ * sibling /versions list hands out (`v0.0.1`) became NaN and errored.
+ */
+describe("GET /:slug/versions/:v — addressing", () => {
+  const VERSIONS = [
+    { id: "aaaa1111-0000-0000-0000-000000000001", versionNumber: 1, major: 0, minor: 0, patch: 1, prerelease: null, yamlSource: "classes:\n  a: {}", parsedJson: { classes: [] } },
+    { id: "bbbb2222-0000-0000-0000-000000000002", versionNumber: 2, major: 0, minor: 0, patch: 2, prerelease: "rc.1", yamlSource: "classes:\n  b: {}", parsedJson: { classes: [] } },
+  ];
+
+  function app(results: unknown[][]) {
+    const { db } = makeMockDb({ selectResults: results });
+    return createApp({ db });
+  }
+
+  it("resolves the semver label the /versions list hands out", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/v0.0.1",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.versionNumber).toBe(1);
+    // The endpoint that carries parsedJson — reachable by label at last.
+    expect(body.parsedJson).toBeDefined();
+  });
+
+  it("still resolves a bare version number", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/2",
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).versionNumber).toBe(2);
+  });
+
+  it("resolves a candidate label", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/v0.0.2-rc.1",
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).versionNumber).toBe(2);
+  });
+
+  it("resolves a version-id prefix", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/bbbb2222",
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).versionNumber).toBe(2);
+  });
+
+  it("400s on a segment that cannot identify a version", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/latest",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s for a label no version carries", async () => {
+    const res = await app([[{ id: CLASSIFIER_ID }], VERSIONS]).request(
+      "/api/classifiers/docs/versions/v9.9.9",
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /:slug — what is live", () => {
+  it("reports activeVersion separately from the highest committed version", async () => {
+    const ACTIVE_ID = "aaaa1111-0000-0000-0000-000000000001";
+    const { db } = makeMockDb({
+      selectResults: [
+        [{ id: CLASSIFIER_ID, slug: "docs", currentVersionId: ACTIVE_ID }],
+        // latest = a CANDIDATE sitting on top of the live release
+        [{ versionNumber: 2, major: 0, minor: 0, patch: 2, prerelease: "rc.1", yamlSource: "y", commitMessage: null, createdAt: new Date() }],
+        [{ id: ACTIVE_ID, versionNumber: 1, major: 0, minor: 0, patch: 1, prerelease: null }],
+      ],
+    });
+    const res = await createApp({ db }).request("/api/classifiers/docs");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+
+    // Routing runs v0.0.1; the highest committed version is a candidate.
+    expect(body.latestVersionLabel).toBe("v0.0.2-rc.1");
+    expect(body.activeVersionLabel).toBe("v0.0.1");
+    expect(body.activeVersion.versionId).toBe(ACTIVE_ID);
+  });
+
+  it("reports a null activeVersion when nothing is live", async () => {
+    const { db } = makeMockDb({
+      selectResults: [[{ id: CLASSIFIER_ID, slug: "docs", currentVersionId: null }], []],
+    });
+    const res = await createApp({ db }).request("/api/classifiers/docs");
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.activeVersion).toBeNull();
+    expect(body.activeVersionLabel).toBeNull();
+  });
+});

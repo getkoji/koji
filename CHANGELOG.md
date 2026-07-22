@@ -2,6 +2,28 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.98.0 — 2026-07-22
+
+**Version endpoints accept the identifiers they hand out.**
+`GET /api/classifiers/{slug}/versions/{v}` (and the schema equivalent) parsed
+`{v}` with `parseInt`, so a **semver label** — exactly what the sibling
+`/versions` list returns in its `version` field — became `NaN` and the request
+errored. One endpoint gave you `v0.0.1`; the other could not accept it. Both now
+take a version number, a semver label with or without the leading `v`, a
+candidate label (`v1.2.0-rc.7`), or a version-id prefix — the same forms a
+pipeline's `classifier_version:` pin accepts. A segment that identifies nothing
+is a `400`; a well-formed identifier matching no version is a `404`. This also
+makes `parsedJson` reachable: it is only carried by the single-version endpoint,
+which was previously unaddressable by the label callers had.
+
+**`GET /api/classifiers/{slug}` now reports what is actually live.** It returned
+only `latestVersion` — the *highest committed* version, which may be a candidate
+sitting on top of the live release, so the reported version could differ from
+the one routing runs. The response now also carries `activeVersion`
+(`{ versionId, versionNumber, version }`) and `activeVersionLabel` for the
+released version `currentVersionId` points at, plus `latestVersionLabel` to
+match the list endpoint. Checking "what is live" is one call again.
+
 ## 0.97.0 — 2026-07-22
 
 **`koji push` can be scoped and previewed, and no longer publishes updates live
