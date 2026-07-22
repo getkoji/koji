@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.99.3 — 2026-07-22
+
+**Scalar array fields now return scalars.** A field declared as an array of
+plain values (`type: array` with `items: { type: string }`, or with no `items`
+block at all — e.g. a list of names) was being returned as an array of
+single-key objects like `[{"medication": "Celebrex"}]` instead of
+`["Celebrex"]`. The cause was an extraction-prompt instruction that asked for
+per-item `__source_text` provenance on *every* array, which told the model that
+array elements were always objects — so it wrapped even bare values, and the
+declared scalar shape was impossible to satisfy. Per-item provenance is now
+emitted only for arrays whose items are objects; scalar arrays keep the
+top-level source-text mapping the prompt already produces. Measured effect on a
+medical-records schema with two scalar-list fields: field accuracy on those
+fields rose from 17% to 75%, and overall from 63.9% to 83.3% (+19.4pp), with no
+change to object-array behaviour.
+
 ## 0.99.2 — 2026-07-22
 
 **Prompts are now budgeted against the model's real context window instead of a
