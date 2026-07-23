@@ -2,6 +2,38 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.101.0 — 2026-07-23
+
+**Model and parse credentials can be shared across every project.** Until now a
+credential belonged to exactly one project, so a new project started with no way
+to reach a model and no parse engine — every key had to be re-entered per
+project, and a project created for a new workstream silently fell back to the
+built-in parse engine while its siblings used a configured OCR vendor.
+
+- **Add credential** and **Add parse endpoint** now take an **Available to**
+  choice: *This project only* (the default) or *All projects in this workspace*.
+  A shared credential has no owning project and is usable from every project,
+  including ones created later.
+- **A project-scoped credential overrides a shared one for that project**, and
+  only for that project. Resolution prefers a credential belonging to the
+  current project and falls back to the shared one; deleting the override falls
+  back to shared again. The same rule applies to parse endpoints.
+- The settings pages badge shared credentials with **all projects**, so it's
+  clear which ones reach beyond the project you're looking at.
+- Changing or deleting a shared credential requires a member who can reach every
+  project — a member confined to a subset of projects gets a 403 rather than
+  silently pulling a credential out from under the others.
+- Making a parse endpoint the default now demotes only the others **in the same
+  scope**. Promoting a project's endpoint no longer disables the workspace-wide
+  default that other projects resolve through, and a project's first endpoint is
+  no longer created disabled just because a shared one is already active.
+
+Under the hood, `model_endpoints`, `parse_endpoints`, and `provider_credentials`
+move to the null-aware project RLS policy already used by `api_keys` and
+`notifications`: `project_id IS NULL` means workspace-wide. Cross-project and
+cross-tenant isolation is unchanged and covered by new round-trip RLS tests —
+a credential scoped to one project is still invisible from every other.
+
 ## 0.100.1 — 2026-07-23
 
 **A deleted credential could still be the one extraction used.** Deleting a

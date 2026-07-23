@@ -923,3 +923,80 @@ describe("credential→model backfill", () => {
     expect(dupCreds.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Provider credentials — null-aware project policy (oss-478)
+// ---------------------------------------------------------------------------
+// A credential with a NULL project_id is shared by every project in the
+// workspace; one with a project_id belongs to that project and overrides the
+// shared default for it. The isolation that still has to hold: a credential
+// scoped to project A must never be visible from project B, and nothing at all
+// leaks across tenants.
+
+describe("provider credentials project scoping (null-aware)", () => {
+  const projA = randomUUID();
+  const projB = randomUUID();
+
+  beforeAll(async () => {
+    await rootDb.execute(sql.raw(`
+      INSERT INTO projects (id, tenant_id, slug, display_name, created_by)
+      VALUES ('${projA}', '${tenantA}', 'cred-a', 'Cred A', '${userA}'),
+             ('${projB}', '${tenantA}', 'cred-b', 'Cred B', '${userA}')
+    `));
+    for (const table of ["provider_credentials", "model_endpoints", "parse_endpoints"]) {
+      // model_endpoints / parse_endpoints carry a NOT NULL `model`;
+      // provider_credentials does not. Insert the common columns plus model
+      // where the table has one.
+      const modelCol = table === "provider_credentials" ? "" : ", model";
+      const modelVal = table === "provider_credentials" ? "" : ", 'm'";
+      await rootDb.execute(sql.raw(`
+        INSERT INTO ${table} (tenant_id, project_id, slug, display_name, provider, config_json, created_by${modelCol})
+        VALUES ('${tenantA}', '${projA}', 'in-a', 'in project A', 'openai', '{}', '${userA}'${modelVal}),
+               ('${tenantA}', '${projB}', 'in-b', 'in project B', 'openai', '{}', '${userA}'${modelVal}),
+               ('${tenantA}', NULL,       'shared', 'shared', 'openai', '{}', '${userA}'${modelVal})
+      `));
+    }
+  }, 30_000);
+
+  for (const table of ["provider_credentials", "model_endpoints", "parse_endpoints"]) {
+    test(`${table}: a project sees its own credentials AND the shared ones`, async () => {
+      const rows = await withRLS(db, { tenantId: tenantA, projectId: projA }, (tx) =>
+        tx.execute(sql.raw(`SELECT display_name FROM ${table} ORDER BY display_name`)),
+      );
+      expect(rows.map((r: any) => r.display_name)).toEqual(["in project A", "shared"]);
+    });
+
+    test(`${table}: another project cannot see project A's credentials`, async () => {
+      const rows = await withRLS(db, { tenantId: tenantA, projectId: projB }, (tx) =>
+        tx.execute(sql.raw(`SELECT display_name FROM ${table} ORDER BY display_name`)),
+      );
+      expect(rows.map((r: any) => r.display_name)).toEqual(["in project B", "shared"]);
+    });
+
+    test(`${table}: another tenant sees none of them, shared included`, async () => {
+      const rows = await withRLS(db, { tenantId: tenantB, projectId: projA }, (tx) =>
+        tx.execute(sql.raw(`SELECT display_name FROM ${table}`)),
+      );
+      expect(rows.length).toBe(0);
+    });
+
+    test(`${table}: a project scope cannot write a row into another project`, async () => {
+      // The RESTRICTIVE policy's WITH CHECK arm — project A must not be able to
+      // plant a credential in project B by naming it directly.
+      await expect(
+        withRLS(db, { tenantId: tenantA, projectId: projA }, (tx) =>
+          tx.execute(
+            sql.raw(`
+              INSERT INTO ${table} (tenant_id, project_id, slug, display_name, provider, config_json, created_by${
+                table === "provider_credentials" ? "" : ", model"
+              })
+              VALUES ('${tenantA}', '${projB}', 'planted', 'planted', 'openai', '{}', '${userA}'${
+                table === "provider_credentials" ? "" : ", 'm'"
+              })
+            `),
+          ),
+        ),
+      ).rejects.toThrow();
+    });
+  }
+});

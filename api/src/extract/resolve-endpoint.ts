@@ -21,7 +21,7 @@
  *     defaults instead of a hard 500).
  */
 
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Db, RlsScope } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
@@ -70,17 +70,22 @@ export interface ExtractEndpointPayload {
  * filter a deleted credential stayed resolvable forever — `status` is left at
  * `active` on delete, only `deleted_at` is stamped — so a project that had
  * ever thrown away a credential could resolve the dead one instead of the
- * live one and fall through to the env-var path with no visible cause. The
- * `created_at` ordering makes the pick deterministic; it used to be whatever
- * order the planner happened to emit.
+ * live one and fall through to the env-var path with no visible cause.
+ *
+ * Ordering is the override rule: a credential scoped to this project sorts
+ * ahead of one shared across the workspace (`project_id IS NULL`), so adding a
+ * project-scoped credential overrides the shared default for that project and
+ * nothing else. Within a scope, oldest wins, which makes the pick
+ * deterministic — it used to be whatever order the planner happened to emit.
  */
 export async function pickActiveTenantModel(
   db: Db,
   scope: RlsScope,
   preferModel: string | null,
 ): Promise<string | null> {
-  // provider_credentials is project-scoped: passing a project in the scope
-  // confines "first active model" to the request's project.
+  // provider_credentials is null-aware project-scoped: passing a project in
+  // the scope narrows the candidates to that project's own credentials plus
+  // the workspace-shared ones (project_id IS NULL).
   const rows = await withRLS(db, scope, (tx) =>
     tx
       .select({ id: schema.tenantModels.id, model: schema.tenantModels.model })
@@ -97,7 +102,14 @@ export async function pickActiveTenantModel(
           isNull(schema.providerCredentials.deletedAt),
         ),
       )
-      .orderBy(schema.tenantModels.createdAt, schema.tenantModels.id),
+      .orderBy(
+        // Project-scoped first (false < true), then oldest. `preferModel`
+        // filtering below runs over this same order, so a project-scoped
+        // override of a specific model also wins.
+        sql`${schema.providerCredentials.projectId} IS NULL`,
+        schema.tenantModels.createdAt,
+        schema.tenantModels.id,
+      ),
   );
   if (!preferModel) return rows[0]?.id ?? null;
 

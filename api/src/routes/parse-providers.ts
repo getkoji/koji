@@ -4,6 +4,7 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
+import { canManageShared, SHARED_MUTATION_DENIED } from "./model-providers";
 import { encrypt, decrypt, keyHint } from "../crypto/envelope";
 import { hasParseDriver } from "../parse/drivers";
 import { resolveWifIdentity } from "../parse/auth/wif-identity";
@@ -274,6 +275,10 @@ parseProviders.get("/", requires("endpoint:read"), async (c) => {
     tx
       .select({
         id: schema.parseEndpoints.id,
+        // The OWNING project (null = shared with every project). Distinct from
+        // the `projectId` in the response body, which is the vendor's GCP
+        // project id out of config_json.
+        ownerProjectId: schema.parseEndpoints.projectId,
         slug: schema.parseEndpoints.slug,
         displayName: schema.parseEndpoints.displayName,
         provider: schema.parseEndpoints.provider,
@@ -328,6 +333,7 @@ parseProviders.get("/", requires("endpoint:read"), async (c) => {
         keyHint: auth?.key_hint ?? null,
         hasKey: hasBlob,
         credentialStatus,
+        scope: r.ownerProjectId === null ? "all" : "project",
         status: r.status,
         isDefault: r.status === "active",
         // Whether a runtime driver is registered for this provider yet. The
@@ -392,10 +398,28 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
     // Secrets
     api_key?: string;
     aws_secret_access_key?: string;
+    /**
+     * Who can use this endpoint. `project` (default) confines it to the
+     * request's project; `all` stores a NULL project_id, sharing it with every
+     * project in the workspace. A project-scoped endpoint overrides a shared
+     * one for that project.
+     */
+    scope?: "project" | "all";
   }>();
 
   if (!body.name || !body.provider) {
     return c.json({ error: "name and provider are required" }, 400);
+  }
+
+  if (body.scope && body.scope !== "project" && body.scope !== "all") {
+    return c.json({ error: 'scope must be "project" or "all"' }, 400);
+  }
+  const shared = body.scope === "all";
+  if (shared && !canManageShared(c)) {
+    return c.json(
+      { error: "Only a member with access to every project can share a parse endpoint across projects." },
+      403,
+    );
   }
 
   const validationError = validateParseCreatePayload({
@@ -421,12 +445,24 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
   const configJson = buildParseConfigJson(body.provider, body);
   const authJson = buildParseAuthJson(body.provider, body, masterKey, tenantId);
 
-  // First active endpoint is the default; later ones are added disabled.
+  // First active endpoint IN THIS SCOPE is the default; later ones are added
+  // disabled. Scope-aware because an active shared endpoint would otherwise
+  // make a project's first endpoint land disabled — configured, listed, and
+  // doing nothing.
+  const targetProjectId = shared ? null : requireProjectId(c);
   const [activeRow] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
-      .where(and(eq(schema.parseEndpoints.status, "active"), sql`deleted_at IS NULL`))
+      .where(
+        and(
+          eq(schema.parseEndpoints.status, "active"),
+          targetProjectId === null
+            ? sql`project_id IS NULL`
+            : eq(schema.parseEndpoints.projectId, targetProjectId),
+          sql`deleted_at IS NULL`,
+        ),
+      )
       .limit(1),
   );
   const status = activeRow ? "disabled" : "active";
@@ -438,7 +474,7 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
         .insert(schema.parseEndpoints)
         .values({
           tenantId,
-          projectId: requireProjectId(c),
+          projectId: targetProjectId,
           slug,
           displayName: body.name!,
           provider: body.provider!,
@@ -485,6 +521,7 @@ parseProviders.post("/", requires("endpoint:write"), async (c) => {
       hasKey: !!authJson?.key_blob,
       status: row.status,
       isDefault: row.status === "active",
+      scope: targetProjectId === null ? "all" : "project",
       driverAvailable: hasParseDriver(row.provider),
       createdAt: row.createdAt,
     },
@@ -518,6 +555,7 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     tx
       .select({
         provider: schema.parseEndpoints.provider,
+        projectId: schema.parseEndpoints.projectId,
         configJson: schema.parseEndpoints.configJson,
       })
       .from(schema.parseEndpoints)
@@ -525,6 +563,9 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
       .limit(1),
   );
   if (!existing) return c.json({ error: "Parse provider not found" }, 404);
+  if (existing.projectId === null && !canManageShared(c)) {
+    return c.json({ error: SHARED_MUTATION_DENIED }, 403);
+  }
 
   const provider = existing.provider;
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -589,17 +630,29 @@ parseProviders.post("/:id/default", requires("endpoint:write"), async (c) => {
 
   const result = await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     const [target] = await tx
-      .select({ id: schema.parseEndpoints.id })
+      .select({ id: schema.parseEndpoints.id, projectId: schema.parseEndpoints.projectId })
       .from(schema.parseEndpoints)
       .where(and(eq(schema.parseEndpoints.id, endpointId), sql`deleted_at IS NULL`))
       .limit(1);
     if (!target) return null;
+    if (target.projectId === null && !canManageShared(c)) return "forbidden" as const;
 
-    // Demote every other endpoint, then promote this one.
+    // Demote the others IN THE SAME SCOPE only. A project and the workspace
+    // each get their own default: promoting a project endpoint must not
+    // disable the shared one that every other project is resolving through,
+    // and `pickActiveParseEndpoint` prefers the project-scoped row anyway.
     await tx
       .update(schema.parseEndpoints)
       .set({ status: "disabled", updatedAt: now })
-      .where(and(ne(schema.parseEndpoints.id, endpointId), sql`deleted_at IS NULL`));
+      .where(
+        and(
+          ne(schema.parseEndpoints.id, endpointId),
+          target.projectId === null
+            ? sql`project_id IS NULL`
+            : eq(schema.parseEndpoints.projectId, target.projectId),
+          sql`deleted_at IS NULL`,
+        ),
+      );
     await tx
       .update(schema.parseEndpoints)
       .set({ status: "active", updatedAt: now })
@@ -607,6 +660,7 @@ parseProviders.post("/:id/default", requires("endpoint:write"), async (c) => {
     return target;
   });
 
+  if (result === "forbidden") return c.json({ error: SHARED_MUTATION_DENIED }, 403);
   if (!result) return c.json({ error: "Parse provider not found" }, 404);
   return c.json({ ok: true, id: endpointId, isDefault: true });
 });
@@ -694,6 +748,18 @@ parseProviders.delete("/:id", requires("endpoint:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const endpointId = c.req.param("id")!;
+
+  const [target] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ projectId: schema.parseEndpoints.projectId })
+      .from(schema.parseEndpoints)
+      .where(and(eq(schema.parseEndpoints.id, endpointId), sql`deleted_at IS NULL`))
+      .limit(1),
+  );
+  if (!target) return c.json({ error: "Parse provider not found" }, 404);
+  if (target.projectId === null && !canManageShared(c)) {
+    return c.json({ error: SHARED_MUTATION_DENIED }, 403);
+  }
 
   const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx

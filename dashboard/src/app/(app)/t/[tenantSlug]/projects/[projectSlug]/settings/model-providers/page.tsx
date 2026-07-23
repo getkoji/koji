@@ -52,6 +52,11 @@ interface Credential {
    * so it has to be visible here rather than only in the trace.
    */
   credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
+  /**
+   * "all" = shared with every project in the workspace; "project" = belongs to
+   * this project only and overrides a shared credential of the same provider.
+   */
+  scope: "all" | "project";
   status: string;
   healthState: string;
   lastHealthCheckAt: string | null;
@@ -275,7 +280,8 @@ export default function ModelProvidersPage() {
           </div>
         ) : (
           <div className="border border-border rounded-sm py-6 text-center text-[12.5px] text-ink-3">
-            No credentials configured. Add one to start running extractions.
+            No credentials configured. Add one to start running extractions — share
+            it with all projects to make it the workspace default.
           </div>
         )}
       </section>
@@ -366,6 +372,14 @@ function CredentialCard({
           )}
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
+          {cred.scope === "all" && (
+            <span
+              className="font-mono text-[10px] text-ink-3 bg-ink/5 px-1.5 py-0.5 rounded"
+              title="Shared with every project in this workspace. A credential added to a single project overrides it there."
+            >
+              all projects
+            </span>
+          )}
           {cred.keyHint && <Meta>••••{cred.keyHint}</Meta>}
           {cred.credentialStatus !== "ok" && (
             <span
@@ -566,6 +580,9 @@ function AddCredentialDialog({
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [apiKey, setApiKey] = useState("");
+  // Default to project scope: sharing a key with every project is the wider
+  // blast radius, so it should be the deliberate choice, not the default.
+  const [scope, setScope] = useState<"project" | "all">("project");
 
   const { data: registryModels } = useApi(
     useCallback(
@@ -632,6 +649,7 @@ function AddCredentialDialog({
         provider: providerType,
         model,
         capabilities,
+        scope,
       };
       if (providerType === "bedrock") {
         payload.aws_region = awsRegion || undefined;
@@ -703,6 +721,23 @@ function AddCredentialDialog({
               autoFocus
               className="w-full h-[30px] rounded-sm border border-input bg-transparent px-2.5 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30 placeholder:text-ink-4"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[12.5px] font-medium text-ink">Available to</label>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as "project" | "all")}
+              className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
+            >
+              <option value="project">This project only</option>
+              <option value="all">All projects in this workspace</option>
+            </select>
+            <p className="text-[11px] text-ink-4">
+              {scope === "all"
+                ? "Every project can extract with this key, including projects created later. A credential added to a single project overrides it there."
+                : "Only this project can use this key. Other projects fall back to a shared credential, if there is one."}
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

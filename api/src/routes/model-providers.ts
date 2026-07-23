@@ -18,6 +18,22 @@ export function deriveCredentialId(endpointId: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
+/**
+ * Whether the caller may create, edit, or delete a workspace-shared credential
+ * (one with a NULL project_id). A shared credential is reachable from every
+ * project, so changing it reaches beyond whatever project the request is
+ * scoped to — restrict that to callers who aren't themselves confined to a
+ * subset of projects. `accessibleProjectIds` is null for an unrestricted
+ * member or an all-access API key, and a Set for anyone narrowed to specific
+ * projects (see auth/middleware.ts stage 2.5).
+ */
+export const SHARED_MUTATION_DENIED =
+  "This credential is shared with every project. Only a member with access to all projects can change it.";
+
+export function canManageShared(c: Context<Env>): boolean {
+  return c.get("accessibleProjectIds") === null;
+}
+
 function requireMasterKey(c: Context<Env>): string {
   const key = c.get("masterKey");
   if (!key) {
@@ -239,6 +255,7 @@ modelProviders.get("/", requires("endpoint:read"), async (c) => {
     tx
       .select({
         id: schema.modelEndpoints.id,
+        projectId: schema.modelEndpoints.projectId,
         slug: schema.modelEndpoints.slug,
         displayName: schema.modelEndpoints.displayName,
         provider: schema.modelEndpoints.provider,
@@ -290,6 +307,8 @@ modelProviders.get("/", requires("endpoint:read"), async (c) => {
         apiVersion: pub.apiVersion,
         awsRegion: pub.awsRegion,
         keyHint: auth?.key_hint ?? null,
+        // NULL project_id = shared with every project in the workspace.
+        scope: r.projectId === null ? "all" : "project",
         hasKey: hasBlob,
         credentialStatus,
         status: r.status,
@@ -335,10 +354,30 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     // Optional: which capabilities the first model should be registered
     // for. Defaults to ["chat"] when omitted (single-row dual-write).
     capabilities?: string[];
+    /**
+     * Who can use this credential. `project` (default) confines it to the
+     * request's project; `all` stores a NULL project_id, sharing it with every
+     * project in the workspace. A project-scoped credential of the same
+     * provider overrides a shared one for that project.
+     */
+    scope?: "project" | "all";
   }>();
 
   if (!body.name || !body.slug || !body.provider) {
     return c.json({ error: "name, slug, and provider are required" }, 400);
+  }
+
+  if (body.scope && body.scope !== "project" && body.scope !== "all") {
+    return c.json({ error: 'scope must be "project" or "all"' }, 400);
+  }
+  const shared = body.scope === "all";
+  // Sharing a credential hands it to projects the caller may not belong to,
+  // so only a member who can already reach every project may create one.
+  if (shared && !canManageShared(c)) {
+    return c.json(
+      { error: "Only a member with access to every project can share a credential across projects." },
+      403,
+    );
   }
 
   if (!body.model || body.model.trim() === "") {
@@ -371,19 +410,35 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   const authJson = buildAuthJson(body.provider, body, masterKey, tenantId);
 
   // The dashboard derives the slug from the display name, so "add a credential
-  // with a name this project already uses" hit the (project_id, slug) unique
-  // index and surfaced as a raw 500 with a SQL dump in it. Answer it as the
-  // conflict it is.
+  // with a name this scope already uses" hit the unique index and surfaced as a
+  // raw 500 with a SQL dump in it. Answer it as the conflict it is.
+  //
+  // Scope-aware on purpose: a shared `openai` and a project-scoped `openai` are
+  // allowed to coexist — that pair IS the override. Only a collision within the
+  // same scope is a conflict.
+  const targetProjectId = shared ? null : requireProjectId(c);
   const [clash] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.modelEndpoints.id })
       .from(schema.modelEndpoints)
-      .where(and(eq(schema.modelEndpoints.slug, body.slug), sql`deleted_at IS NULL`))
+      .where(
+        and(
+          eq(schema.modelEndpoints.slug, body.slug),
+          targetProjectId === null
+            ? sql`project_id IS NULL`
+            : eq(schema.modelEndpoints.projectId, targetProjectId),
+          sql`deleted_at IS NULL`,
+        ),
+      )
       .limit(1),
   );
   if (clash) {
     return c.json(
-      { error: `A credential named “${body.name}” already exists in this project.` },
+      {
+        error: shared
+          ? `A credential named “${body.name}” is already shared with all projects.`
+          : `A credential named “${body.name}” already exists in this project.`,
+      },
       409,
     );
   }
@@ -393,7 +448,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
       .insert(schema.modelEndpoints)
       .values({
         tenantId,
-        projectId: requireProjectId(c),
+        projectId: targetProjectId,
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
@@ -426,7 +481,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
       .values({
         id: credentialId,
         tenantId,
-        projectId: requireProjectId(c),
+        projectId: targetProjectId,
         slug: body.slug,
         displayName: body.name,
         provider: body.provider,
@@ -479,6 +534,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     apiVersion: pub.apiVersion,
     awsRegion: pub.awsRegion,
     keyHint: authJson?.key_hint ?? null,
+    scope: targetProjectId === null ? "all" : "project",
     hasKey: !!(authJson?.key_blob || authJson?.aws_secret_access_key_blob),
     status: row.status,
     createdAt: row.createdAt,
@@ -516,6 +572,7 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       provider: schema.modelEndpoints.provider,
+      projectId: schema.modelEndpoints.projectId,
       configJson: schema.modelEndpoints.configJson,
       authJson: schema.modelEndpoints.authJson,
     })
@@ -524,6 +581,9 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
       .limit(1)
   );
   if (!existing) return c.json({ error: "Model provider not found" }, 404);
+  if (existing.projectId === null && !canManageShared(c)) {
+    return c.json({ error: SHARED_MUTATION_DENIED }, 403);
+  }
 
   const provider = existing.provider;
   const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -636,6 +696,20 @@ modelProviders.delete("/:id", requires("endpoint:write"), async (c) => {
   const now = new Date();
   const credentialId = deriveCredentialId(endpointId);
 
+  const [target] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ projectId: schema.modelEndpoints.projectId })
+      .from(schema.modelEndpoints)
+      .where(eq(schema.modelEndpoints.id, endpointId))
+      .limit(1),
+  );
+  if (!target) return c.json({ error: "Model provider not found" }, 404);
+  // Deleting a shared credential takes it away from every project, so it needs
+  // the same reach the caller would need to have created it.
+  if (target.projectId === null && !canManageShared(c)) {
+    return c.json({ error: SHARED_MUTATION_DENIED }, 403);
+  }
+
   await withRLS(db, { tenantId, projectId: getProjectId(c) }, async (tx) => {
     await tx
       .update(schema.modelEndpoints)
@@ -677,12 +751,16 @@ modelProviders.post("/:id/rotate", requires("endpoint:write"), async (c) => {
   const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       provider: schema.modelEndpoints.provider,
+      projectId: schema.modelEndpoints.projectId,
     })
       .from(schema.modelEndpoints)
       .where(eq(schema.modelEndpoints.id, endpointId))
       .limit(1)
   );
   if (!existing) return c.json({ error: "Model provider not found" }, 404);
+  if (existing.projectId === null && !canManageShared(c)) {
+    return c.json({ error: SHARED_MUTATION_DENIED }, 403);
+  }
 
   const body = await c.req.json<{
     api_key?: string;

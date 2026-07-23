@@ -17,7 +17,7 @@
  * behavior is unchanged until both a driver and a configured endpoint exist.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { RlsScope } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -98,7 +98,13 @@ export async function pickActiveParseEndpoint(
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
       .where(and(...conditions))
-      .orderBy(schema.parseEndpoints.createdAt, schema.parseEndpoints.id)
+      .orderBy(
+        // A parse endpoint scoped to this project overrides one shared across
+        // the workspace; within a scope, oldest wins.
+        sql`${schema.parseEndpoints.projectId} IS NULL`,
+        schema.parseEndpoints.createdAt,
+        schema.parseEndpoints.id,
+      )
       .limit(1),
   );
   return row?.id ?? null;

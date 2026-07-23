@@ -34,6 +34,11 @@ interface ParseEndpoint {
   credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
   status: string;
   isDefault: boolean;
+  /**
+   * "all" = shared with every project in the workspace; "project" = this
+   * project only, overriding a shared endpoint here.
+   */
+  scope: "all" | "project";
   driverAvailable: boolean;
   healthState: string;
   lastHealthCheckAt: string | null;
@@ -386,6 +391,14 @@ function ParseEndpointCard({
           )}
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
+          {ep.scope === "all" && (
+            <span
+              className="font-mono text-[10px] text-ink-3 bg-ink/5 px-1.5 py-0.5 rounded"
+              title="Shared with every project in this workspace. An endpoint added to a single project overrides it there."
+            >
+              all projects
+            </span>
+          )}
           {ep.wifConfigured ? (
             <Badge>keyless · WIF</Badge>
           ) : (
@@ -707,6 +720,9 @@ function AddParseProviderDialog({
   const [externalAccount, setExternalAccount] = useState("");
   const [impersonateSa, setImpersonateSa] = useState("");
   const [creating, setCreating] = useState(false);
+  // Project scope by default — sharing an OCR vendor key with every project is
+  // the wider blast radius and should be chosen deliberately.
+  const [scope, setScope] = useState<"project" | "all">("project");
   const [error, setError] = useState<string | null>(null);
   // The dialog is mounted only while showAdd is true (see ParseProvidersPage),
   // so step state resets to 0 (Provider) every time the dialog reopens.
@@ -837,6 +853,7 @@ function AddParseProviderDialog({
         // rest (Google Doc AI, Textract) the model field is vestigial, so we
         // send the provider's default identifier and never a user value.
         model: def.usesModelField ? model.trim() || undefined : def.defaultModel,
+        scope,
       };
       if (def.fields.includes("base_url")) payload.base_url = baseUrl.trim() || undefined;
       if (def.fields.includes("region")) payload.region = region.trim() || undefined;
@@ -953,6 +970,23 @@ function AddParseProviderDialog({
                     placeholder={`e.g. ${def.label} (prod)`}
                     className={inputCls()}
                   />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[12.5px] font-medium text-ink">Available to</label>
+                  <select
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value as "project" | "all")}
+                    className={inputCls()}
+                  >
+                    <option value="project">This project only</option>
+                    <option value="all">All projects in this workspace</option>
+                  </select>
+                  <p className="text-[11px] text-ink-4">
+                    {scope === "all"
+                      ? "Every project parses through this endpoint, including projects created later. An endpoint added to a single project overrides it there."
+                      : "Only this project uses this endpoint. Other projects fall back to a shared endpoint, or the built-in default engine."}
+                  </p>
                 </div>
               </>
             )}

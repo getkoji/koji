@@ -108,9 +108,6 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
   "sources",
   "schemas",
   "classifiers",
-  "model_endpoints",
-  "parse_endpoints",
-  "provider_credentials",
   "webhook_targets",
   "jobs",
   "review_items",
@@ -138,8 +135,20 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
  *     single project) and must stay visible/manageable from every project view,
  *     exactly like a tenant-wide notification. Single/multi keys keep a
  *     non-null project_id and are narrowed normally.
+ *   - `model_endpoints` / `parse_endpoints` / `provider_credentials`: a
+ *     provider credential with a NULL project_id is shared by every project in
+ *     the workspace; one with a project_id belongs to (and overrides for) that
+ *     project. Under the strict policy these were per-project only, so a new
+ *     project started with no way to reach a model or a parse engine and every
+ *     key had to be re-entered per project.
  */
-export const PROJECT_NULLABLE_RLS_TABLES: readonly string[] = ["notifications", "api_keys"];
+export const PROJECT_NULLABLE_RLS_TABLES: readonly string[] = [
+  "notifications",
+  "api_keys",
+  "model_endpoints",
+  "parse_endpoints",
+  "provider_credentials",
+];
 
 /**
  * Tables intentionally global (not tenant-scoped). RLS is NOT enabled on
