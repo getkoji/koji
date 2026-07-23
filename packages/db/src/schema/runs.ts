@@ -12,11 +12,12 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, primaryKey, tenantId } from "./_shared";
+import { createdAt, primaryKey, projectId, tenantId } from "./_shared";
+import { classifierVersions, classifiers } from "./classifiers";
 import { corpusEntries } from "./corpus";
 import { modelEndpoints } from "./endpoints";
 import { schemaVersions, schemas } from "./schemas";
-import { tenants, users } from "./tenants";
+import { projects, tenants, users } from "./tenants";
 
 export const schemaRuns = pgTable(
   "schema_runs",
@@ -153,5 +154,104 @@ export const corpusVersionResults = pgTable(
     ),
     runIdx: index("corpus_results_run_idx").on(t.runId),
     tenantVersionIdx: index("corpus_results_tenant_version_idx").on(t.tenantId, t.schemaVersionId),
+  }),
+);
+
+/**
+ * Classifier validate runs (oss-451) — the schema-sibling of `schema_runs`,
+ * for backtesting a classifier config against its corpus. One run scores a
+ * classifier version against every labelled document; `classifier_run_docs`
+ * holds the per-document prediction.
+ *
+ * Unlike `schema_runs` (tenant-isolated only, project-scoped via a join to
+ * `schemas`), this carries a denormalized `project_id` with a RESTRICTIVE
+ * project-isolation policy from day one — the same defense-in-depth the corpus
+ * pool split added, rather than relying on an implicit predicate.
+ */
+export const classifierRuns = pgTable(
+  "classifier_runs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
+    classifierId: uuid("classifier_id")
+      .notNull()
+      .references(() => classifiers.id, { onDelete: "cascade" }),
+    classifierVersionId: uuid("classifier_version_id")
+      .notNull()
+      .references(() => classifierVersions.id),
+    /** Baseline this run diffs against (the previous released version), or null. */
+    baselineVersionId: uuid("baseline_version_id").references(() => classifierVersions.id),
+    triggeredBy: uuid("triggered_by").references(() => users.id),
+    status: varchar("status", { length: 16 }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true, mode: "date" }),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    docsTotal: integer("docs_total").notNull().default(0),
+    /** Documents whose predicted label matched the ground truth. */
+    docsCorrect: integer("docs_correct").notNull().default(0),
+    docsFailed: integer("docs_failed").notNull().default(0),
+    accuracy: decimal("accuracy", { precision: 6, scale: 4 }),
+    costUsd: decimal("cost_usd", { precision: 10, scale: 6 }),
+    durationMs: integer("duration_ms"),
+    errorMessage: text("error_message"),
+    /** Full ClassifyValidateResult (confusion matrix, per-class metrics, tier
+     *  histogram) persisted at finalize so pollers fetch without recomputing.
+     *  The rich scoring lands in oss-452; oss-451 stores accuracy + per-doc. */
+    resultJson: jsonb("result_json"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    classifierCreatedIdx: index("classifier_runs_classifier_created_idx").on(
+      t.classifierId,
+      sql`${t.createdAt} DESC`,
+    ),
+    tenantStatusIdx: index("classifier_runs_tenant_status_idx")
+      .on(t.tenantId, t.status)
+      .where(sql`status IN ('queued', 'running')`),
+    projectIdx: index("classifier_runs_project_idx").on(t.projectId),
+  }),
+);
+
+/**
+ * Per-document progress + prediction for a classifier validate run. One row per
+ * corpus entry, upserted as each classify finishes (a retried job overwrites,
+ * never double-counts). The prediction is inline — a classify result is a
+ * handful of scalars, so unlike extraction there is no sibling results table.
+ */
+export const classifierRunDocs = pgTable(
+  "classifier_run_docs",
+  {
+    id: primaryKey(),
+    tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
+    projectId: projectId().references(() => projects.id),
+    classifierRunId: uuid("classifier_run_id")
+      .notNull()
+      .references(() => classifierRuns.id, { onDelete: "cascade" }),
+    corpusEntryId: uuid("corpus_entry_id")
+      .notNull()
+      .references(() => corpusEntries.id, { onDelete: "cascade" }),
+    /** "ok" — classify ran; "failed" — the cascade errored (e.g. provider out). */
+    status: varchar("status", { length: 16 }).notNull(),
+    /** The class the corpus entry asserts (ground truth). */
+    expectedLabel: varchar("expected_label", { length: 128 }),
+    /** What the cascade returned (may be "unknown"). Null on a failed doc. */
+    predictedLabel: varchar("predicted_label", { length: 128 }),
+    confidence: decimal("confidence", { precision: 6, scale: 4 }),
+    /** Which tier decided: keyword | llm | vision | unknown. */
+    method: varchar("method", { length: 16 }),
+    /** Numeric cost tier that produced the label — powers the tier histogram. */
+    tierUsed: integer("tier_used"),
+    evidencePage: integer("evidence_page"),
+    errorMessage: text("error_message"),
+    durationMs: integer("duration_ms"),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    runEntryIdx: uniqueIndex("classifier_run_docs_run_entry_idx").on(
+      t.classifierRunId,
+      t.corpusEntryId,
+    ),
+    tenantIdx: index("classifier_run_docs_tenant_idx").on(t.tenantId),
+    projectIdx: index("classifier_run_docs_project_idx").on(t.projectId),
   }),
 );

@@ -328,12 +328,22 @@ describe("per-table isolation", () => {
       VALUES ('${classifierAId}', '${tenantA}', '${projectAId}', 'clf-a', 'Classifier A', '${userA}'),
              ('${classifierBId}', '${tenantB}', '${projectBId}', 'clf-b', 'Classifier B', '${userB}')
     `));
+    const clfVerAId = randomUUID();
+    const clfVerBId = randomUUID();
     await rootDb.execute(sql.raw(`
       INSERT INTO classifier_versions
-        (tenant_id, classifier_id, version_number, yaml_source, yaml_hash, parsed_json, committed_by)
+        (id, tenant_id, classifier_id, version_number, yaml_source, yaml_hash, parsed_json, committed_by)
       VALUES
-        ('${tenantA}', '${classifierAId}', 1, 'classes:\\n  a: {}', repeat('a', 64), '{"classes":[{"id":"a"}]}', '${userA}'),
-        ('${tenantB}', '${classifierBId}', 1, 'classes:\\n  b: {}', repeat('b', 64), '{"classes":[{"id":"b"}]}', '${userB}')
+        ('${clfVerAId}', '${tenantA}', '${classifierAId}', 1, 'classes:\\n  a: {}', repeat('a', 64), '{"classes":[{"id":"a"}]}', '${userA}'),
+        ('${clfVerBId}', '${tenantB}', '${classifierBId}', 1, 'classes:\\n  b: {}', repeat('b', 64), '{"classes":[{"id":"b"}]}', '${userB}')
+    `));
+
+    // Classifier validate runs (oss-451) — carry a denormalized project_id with
+    // a RESTRICTIVE policy from day one, so isolation must hold on the run itself.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO classifier_runs (id, tenant_id, project_id, classifier_id, classifier_version_id, status)
+      VALUES ('${randomUUID()}', '${tenantA}', '${projectAId}', '${classifierAId}', '${clfVerAId}', 'completed'),
+             ('${randomUUID()}', '${tenantB}', '${projectBId}', '${classifierBId}', '${clfVerBId}', 'completed')
     `));
 
     // Agent sessions (project-scoped, oss-368) — a schema-builder chat is
@@ -383,6 +393,7 @@ describe("per-table isolation", () => {
     "tenant_models",
     "classifiers",
     "classifier_versions",
+    "classifier_runs",
     "corpus_documents",
     "corpus_entries",
   ];

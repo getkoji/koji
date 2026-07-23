@@ -85,6 +85,7 @@ import {
 } from "./ingestion/process";
 import { initDagRunner, setDagParseProvider, handleDagRun } from "./ingestion/dag-runner";
 import { initValidateRunner, handleSchemaValidateDoc } from "./schemas/validate-run";
+import { initClassifierValidateRunner, handleClassifierValidateDoc } from "./classifiers/validate-run";
 import {
   initTuneRunHandlers,
   handleTuneRunStart,
@@ -177,6 +178,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   initIngestionHandler(deps.db, deps.storage);
   initParseProvider(deps.parseProvider, deps.parseConfig);
   initValidateRunner(deps.db, deps.storage, deps.parseProvider, deps.parseConfig);
+  initClassifierValidateRunner(deps.db, deps.storage, deps.parseProvider);
   initTuneRunHandlers(deps.db, deps.storage, deps.parseProvider, deps.queue, deps.parseConfig);
   initDagRunner(deps.db, deps.storage);
   setDagParseProvider(deps.parseProvider, deps.parseConfig);
@@ -277,6 +279,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     "ingestion.process": handleIngestionProcess,
     "pipeline.dag.run": handleDagRun,
     "schema.validate.doc": handleSchemaValidateDoc,
+    "classifier.validate.doc": handleClassifierValidateDoc,
     "tune.run.start": handleTuneRunStart,
     "tune.score.doc": handleTuneScoreDoc,
     "tune.run.propose": handleTuneRunPropose,
