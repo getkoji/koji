@@ -550,6 +550,72 @@ describe("project isolation", () => {
     );
     expect(rows.length).toBe(0);
   });
+
+});
+
+// ---------------------------------------------------------------------------
+// Corpus ownership relaxation (oss-475): schema_id nullable + one-owner CHECK
+// ---------------------------------------------------------------------------
+
+describe("corpus label ownership (oss-475)", () => {
+  // proj-a + iso-test-a schema were seeded by the per-table describe. Resolve
+  // ids by slug so this block is self-contained.
+  async function projA(): Promise<string> {
+    return (await rootDb.execute(sql`SELECT id FROM projects WHERE slug = 'proj-a'`))[0]!.id as string;
+  }
+  async function seedDoc(project: string, hashChar: string): Promise<string> {
+    const id = randomUUID();
+    await rootDb.execute(sql`
+      INSERT INTO corpus_documents (id, tenant_id, project_id, filename, storage_key, file_size, mime_type, content_hash, source, added_by)
+      VALUES (${id}::uuid, ${tenantA}::uuid, ${project}::uuid, 'c.pdf', 'k/c', 10, 'application/pdf', repeat(${hashChar}, 64), 'upload', ${userA}::uuid)`);
+    return id;
+  }
+
+  test("a classifier-owned label (schema_id NULL) is allowed", async () => {
+    const p = await projA();
+    const clfId = randomUUID();
+    await rootDb.execute(sql`
+      INSERT INTO classifiers (id, tenant_id, project_id, slug, display_name, created_by)
+      VALUES (${clfId}::uuid, ${tenantA}::uuid, ${p}::uuid, 'clf-owned', 'Clf Owned', ${userA}::uuid)`);
+    const docId = await seedDoc(p, "d");
+
+    // File columns stay NOT NULL in phase 2 (steps 1-2) — a classifier-owned
+    // entry copies them from the pool doc until the read migration relaxes them.
+    // The point of this test is schema_id NULL + classifier ownership.
+    const entryId = randomUUID();
+    await withRLS(db, { tenantId: tenantA, projectId: p }, (tx) =>
+      tx.execute(sql`
+        INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, classifier_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
+        VALUES (${entryId}::uuid, ${tenantA}::uuid, ${p}::uuid, ${docId}::uuid, ${clfId}::uuid, 'c.pdf', 'k/c', 10, 'application/pdf', repeat('d', 64), 'upload', '{"label":"invoice"}', ${userA}::uuid)`),
+    );
+    const rows = await rootDb.execute(sql`SELECT schema_id FROM corpus_entries WHERE id = ${entryId}::uuid`);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.schema_id).toBeNull();
+  });
+
+  test("the one-owner CHECK rejects both-null and both-set", async () => {
+    const p = await projA();
+    const docId = await seedDoc(p, "e");
+    const sch = (await rootDb.execute(sql`SELECT id FROM schemas WHERE slug = 'iso-test-a'`))[0]?.id;
+    const clf = (await rootDb.execute(sql`SELECT id FROM classifiers WHERE slug = 'clf-owned'`))[0]?.id;
+
+    const cols = "filename, storage_key, file_size, mime_type, content_hash";
+    const vals = "'c.pdf', 'k/c', 10, 'application/pdf', repeat('e', 64)";
+
+    // Neither owner set.
+    await expect(
+      rootDb.execute(sql.raw(`
+        INSERT INTO corpus_entries (tenant_id, project_id, document_id, ${cols}, source, ground_truth_json, added_by)
+        VALUES ('${tenantA}', '${p}', '${docId}', ${vals}, 'upload', '{}', '${userA}')`)),
+    ).rejects.toThrow();
+
+    // Both owners set.
+    await expect(
+      rootDb.execute(sql.raw(`
+        INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, classifier_id, ${cols}, source, ground_truth_json, added_by)
+        VALUES ('${tenantA}', '${p}', '${docId}', '${sch}', '${clf}', ${vals}, 'upload', '{}', '${userA}')`)),
+    ).rejects.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

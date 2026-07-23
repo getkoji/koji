@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   char,
+  check,
   index,
   jsonb,
   pgTable,
@@ -81,16 +82,14 @@ export const corpusEntries = pgTable(
     documentId: uuid("document_id")
       .notNull()
       .references(() => corpusDocuments.id, { onDelete: "cascade" }),
-    schemaId: uuid("schema_id")
-      .notNull()
-      .references(() => schemas.id, { onDelete: "cascade" }),
     /**
-     * Optional owning classifier — reserved in 0027, populated once
-     * classifier-owned labels arrive (oss-450). Until then every entry is
-     * schema-owned and this is NULL. `schemaId` stays NOT NULL in this PR; the
-     * nullable-schemaId + owner CHECK relaxations land with oss-450, the PR that
-     * actually creates classifier-owned entries.
+     * The owning artifact. EXACTLY ONE of `schemaId` / `classifierId` is set,
+     * enforced by `corpus_entries_one_owner` (CHECK num_nonnulls = 1). `schemaId`
+     * became nullable in phase 2 (oss-475) so a classifier-owned label can
+     * exist; every pre-existing row is schema-owned, so the CHECK holds on
+     * backfilled data.
      */
+    schemaId: uuid("schema_id").references(() => schemas.id, { onDelete: "cascade" }),
     classifierId: uuid("classifier_id").references(() => classifiers.id, {
       onDelete: "cascade",
     }),
@@ -138,16 +137,23 @@ export const corpusEntries = pgTable(
     deletedAt: deletedAt(),
   },
   (t) => ({
-    // Unchanged: dedup stays keyed on (schema, contentHash) during the
-    // expand/contract window (contentHash is still written). The owner-scoped
-    // document uniques land with oss-450.
-    schemaContentIdx: uniqueIndex("corpus_entries_schema_content_idx")
-      .on(t.schemaId, t.contentHash)
-      .where(sql`deleted_at IS NULL`),
+    // One label per (owner, document). Two owner-scoped partial uniques replace
+    // the old (schemaId, contentHash) unique, so a document can be labelled once
+    // for a schema AND once for a classifier without colliding (oss-475). Keyed
+    // on documentId rather than contentHash — the pool document is the identity
+    // now, and content_hash is on its way out.
+    schemaDocIdx: uniqueIndex("corpus_entries_schema_doc_idx")
+      .on(t.schemaId, t.documentId)
+      .where(sql`schema_id IS NOT NULL AND deleted_at IS NULL`),
+    classifierDocIdx: uniqueIndex("corpus_entries_classifier_doc_idx")
+      .on(t.classifierId, t.documentId)
+      .where(sql`classifier_id IS NOT NULL AND deleted_at IS NULL`),
     schemaIdx: index("corpus_entries_schema_idx")
       .on(t.schemaId)
       .where(sql`deleted_at IS NULL`),
-    // New: the pool link, so the follow-up's document-scoped reads are indexed.
+    classifierIdx: index("corpus_entries_classifier_idx")
+      .on(t.classifierId)
+      .where(sql`deleted_at IS NULL`),
     documentIdx: index("corpus_entries_document_idx")
       .on(t.documentId)
       .where(sql`deleted_at IS NULL`),
@@ -157,6 +163,9 @@ export const corpusEntries = pgTable(
     sourceIdx: index("corpus_entries_source_idx")
       .on(t.source, t.sourceRef)
       .where(sql`deleted_at IS NULL`),
+    // Exactly one owner. A schema-owned label has classifier_id NULL; a
+    // classifier-owned label has schema_id NULL. Never both, never neither.
+    oneOwner: check("corpus_entries_one_owner", sql`num_nonnulls(${t.schemaId}, ${t.classifierId}) = 1`),
   }),
 );
 
