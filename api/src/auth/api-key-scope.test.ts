@@ -140,9 +140,20 @@ describe("API-key project scoping (oss-433)", () => {
       expect(await resolvedProject(res)).toBe(P1);
     });
 
-    it("404s when the header names a different project (no oracle)", async () => {
+    it("403s with an actionable message when the header names a project it isn't scoped to", async () => {
+      // The project exists inside the key's OWN tenant, which the key is
+      // already authenticated for, so 404 bought no secrecy — it just made a
+      // too-narrow key indistinguishable from a typo'd slug. Cross-tenant
+      // slugs still 404 (they never resolve to a project at all).
       const app = createApp({ ...base, projectsBySlug: new Map([["p2", P2]]) });
       const res = await app.request("/api/schemas", { headers: hdrs("p2") });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/not scoped to that project/i);
+    });
+
+    it("still 404s for a slug that does not exist in the tenant", async () => {
+      const app = createApp({ ...base, projectsBySlug: new Map() });
+      const res = await app.request("/api/schemas", { headers: hdrs("nope") });
       expect(res.status).toBe(404);
     });
 
@@ -172,9 +183,10 @@ describe("API-key project scoping (oss-433)", () => {
       expect(await resolvedProject(res)).toBe(P2);
     });
 
-    it("404s for a project outside its grant set", async () => {
+    it("403s for a project outside its grant set", async () => {
       const res = await createApp(base).request("/api/schemas", { headers: hdrs("p3") });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/not scoped to that project/i);
     });
 
     it("defaults to its bound project with no header", async () => {

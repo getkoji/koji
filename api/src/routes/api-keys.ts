@@ -1,3 +1,4 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { eq, and, isNull, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
@@ -6,6 +7,9 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
 
 export const apiKeys = new Hono<Env>();
+
+const WIDEN_DENIED =
+  "Only a member with access to every project can give a key workspace-wide access.";
 
 /**
  * A key's project scope (oss-433), mirroring the member `projectRestricted`
@@ -79,6 +83,79 @@ async function loadVisibleKeys<T extends { id: string; projectId: string | null 
 }
 
 /**
+ * Resolve a `project_scope` request block into the pair the table stores:
+ * a default `project_id` and a set of grant rows. Shared by create and the
+ * scope edit so the two can't drift.
+ *
+ * Returns an error string instead of throwing so the caller controls status.
+ *
+ * `currentProjectId` is the request's resolved project — used as the "single"
+ * target and as the preferred default for a multi-project key.
+ */
+export async function resolveProjectScope(
+  db: Env["Variables"]["db"],
+  tenantId: string,
+  body: { mode?: "single" | "all" | "projects"; project_ids?: string[] } | undefined,
+  currentProjectId: string | null,
+): Promise<{ keyProjectId: string | null; grantProjectIds: string[] } | { error: string }> {
+  const mode = body?.mode ?? "single";
+
+  if (mode === "single") {
+    if (!currentProjectId) {
+      return { error: "No project in scope for a single-project key" };
+    }
+    return { keyProjectId: currentProjectId, grantProjectIds: [] };
+  }
+
+  if (mode === "all") {
+    // NULL project_id is what makes a key genuinely tenant-wide: it matches
+    // every project, including ones created after the key. A "projects" list
+    // cannot do that — it is a snapshot, and a project added later is not in
+    // it. That difference is the whole reason both modes exist.
+    return { keyProjectId: null, grantProjectIds: [] };
+  }
+
+  if (mode === "projects") {
+    const ids = [...new Set(body?.project_ids ?? [])];
+    if (ids.length === 0) {
+      return { error: "project_scope.project_ids must be a non-empty array" };
+    }
+    // Every named project must be a live project in this tenant.
+    const valid = await db
+      .select({ id: schema.projects.id })
+      .from(schema.projects)
+      .where(
+        and(
+          eq(schema.projects.tenantId, tenantId),
+          inArray(schema.projects.id, ids),
+          isNull(schema.projects.deletedAt),
+        ),
+      );
+    const validIds = new Set(valid.map((v) => v.id));
+    const unknown = ids.filter((i) => !validIds.has(i));
+    if (unknown.length > 0) {
+      return { error: `Unknown project(s): ${unknown.join(", ")}` };
+    }
+    // Default project when no x-koji-project header: prefer the request's
+    // current project if it's in the set, else the first named project.
+    const keyProjectId = currentProjectId && ids.includes(currentProjectId) ? currentProjectId : ids[0]!;
+    return { keyProjectId, grantProjectIds: ids };
+  }
+
+  return { error: `Invalid project_scope.mode: ${mode}` };
+}
+
+/**
+ * Whether the caller may give a key workspace-wide reach. Mirrors the provider
+ * credential rule: widening a key past the caller's own reach is not something
+ * a project-restricted member gets to do. `accessibleProjectIds` is null for an
+ * unrestricted member / all-access key.
+ */
+function canWidenToWorkspace(c: Context<Env>): boolean {
+  return c.get("accessibleProjectIds") === null;
+}
+
+/**
  * GET /api/api-keys — list active (non-revoked) API keys visible from the
  * request's project scope.
  */
@@ -86,7 +163,16 @@ apiKeys.get("/", requires("api_key:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   // This route uses raw db (not withRLS), so the scope filter is explicit.
-  const projectId = getProjectId(c);
+  //
+  // `?scope=workspace` lists every key in the workspace instead of only those
+  // reachable from the current project — what the workspace-level API Keys
+  // page renders. A key can span projects, so "which keys exist" is a
+  // workspace question; narrowing by project made a multi-project key show up
+  // once per project and gave no single place to see them all. Callers who are
+  // themselves confined to a subset of projects keep the narrowed view.
+  const wantsWorkspace =
+    c.req.query("scope") === "workspace" && c.get("accessibleProjectIds") === null;
+  const projectId = wantsWorkspace ? null : getProjectId(c);
 
   const rows = await db
     .select({
@@ -152,42 +238,17 @@ apiKeys.post("/", requires("api_key:write"), async (c) => {
 
   // Resolve the key's project scope into a default project_id + grant set.
   const mode = body.project_scope?.mode ?? "single";
-  let keyProjectId: string | null;
-  let grantProjectIds: string[] = [];
-
-  if (mode === "single") {
-    keyProjectId = requireProjectId(c);
-  } else if (mode === "all") {
-    keyProjectId = null;
-  } else if (mode === "projects") {
-    const ids = [...new Set(body.project_scope?.project_ids ?? [])];
-    if (ids.length === 0) {
-      return c.json({ error: "project_scope.project_ids must be a non-empty array" }, 400);
-    }
-    // Every named project must be a live project in this tenant.
-    const valid = await db
-      .select({ id: schema.projects.id })
-      .from(schema.projects)
-      .where(
-        and(
-          eq(schema.projects.tenantId, tenantId),
-          inArray(schema.projects.id, ids),
-          isNull(schema.projects.deletedAt),
-        ),
-      );
-    const validIds = new Set(valid.map((v) => v.id));
-    const unknown = ids.filter((i) => !validIds.has(i));
-    if (unknown.length > 0) {
-      return c.json({ error: `Unknown project(s): ${unknown.join(", ")}` }, 400);
-    }
-    grantProjectIds = ids;
-    // Default project when no x-koji-project header: prefer the request's
-    // current project if it's in the set, else the first named project.
-    const current = getProjectId(c);
-    keyProjectId = current && ids.includes(current) ? current : ids[0]!;
-  } else {
-    return c.json({ error: `Invalid project_scope.mode: ${mode}` }, 400);
+  if (mode === "all" && !canWidenToWorkspace(c)) {
+    return c.json({ error: WIDEN_DENIED }, 403);
   }
+  const resolved = await resolveProjectScope(
+    db,
+    tenantId,
+    body.project_scope,
+    mode === "single" ? requireProjectId(c) : getProjectId(c),
+  );
+  if ("error" in resolved) return c.json({ error: resolved.error }, 400);
+  const { keyProjectId, grantProjectIds } = resolved;
 
   // Generate the key: koji_<32 random hex chars>
   const rawKey = `koji_${randomBytes(32).toString("hex")}`;
@@ -233,6 +294,93 @@ apiKeys.post("/", requires("api_key:write"), async (c) => {
     expiresAt,
     createdAt: row!.createdAt,
   }, 201);
+});
+
+/**
+ * PATCH /api/api-keys/:id — rename a key and/or change which projects it can
+ * act in.
+ *
+ * Scope used to be fixed at creation, so widening a key meant revoking and
+ * reissuing it — every consumer of that key had to be updated to rotate a
+ * value that didn't need to change. The secret is never touched here; only the
+ * key's reach.
+ *
+ * Body: { name?, project_scope?: { mode, project_ids? } } — the same
+ * `project_scope` shape POST takes.
+ */
+apiKeys.patch("/:id", requires("api_key:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const currentProjectId = getProjectId(c);
+  const keyId = c.req.param("id")!;
+
+  const body = await c.req.json<{
+    name?: string;
+    project_scope?: { mode?: "single" | "all" | "projects"; project_ids?: string[] };
+  }>();
+
+  const [existing] = await db
+    .select({
+      id: schema.apiKeys.id,
+      projectId: schema.apiKeys.projectId,
+      revokedAt: schema.apiKeys.revokedAt,
+    })
+    .from(schema.apiKeys)
+    .where(and(eq(schema.apiKeys.id, keyId), eq(schema.apiKeys.tenantId, tenantId)))
+    .limit(1);
+  if (!existing) return c.json({ error: "API key not found" }, 404);
+  if (existing.revokedAt) {
+    return c.json({ error: "This key has been revoked and can no longer be changed." }, 409);
+  }
+
+  // Same visibility rule as list/revoke: you can only edit a key that can act
+  // in a project you can reach.
+  const [visible] = await loadVisibleKeys(db, tenantId, currentProjectId, [existing]);
+  if (!visible) return c.json({ error: "API key not found" }, 404);
+
+  const updates: Record<string, unknown> = {};
+  if (body.name !== undefined) {
+    if (!body.name.trim()) return c.json({ error: "Name cannot be empty" }, 400);
+    updates.name = body.name.trim();
+  }
+
+  let newScope = visible.scope;
+  if (body.project_scope) {
+    const mode = body.project_scope.mode ?? "single";
+    if (mode === "all" && !canWidenToWorkspace(c)) {
+      return c.json({ error: WIDEN_DENIED }, 403);
+    }
+    const resolved = await resolveProjectScope(db, tenantId, body.project_scope, currentProjectId);
+    if ("error" in resolved) return c.json({ error: resolved.error }, 400);
+    updates.projectId = resolved.keyProjectId;
+    newScope = deriveScope(resolved.keyProjectId, resolved.grantProjectIds);
+
+    // Grants are replaced wholesale: the request states the key's project set,
+    // it doesn't append to it. Delete-then-insert so dropping a project takes
+    // effect rather than lingering as a stale grant.
+    await db
+      .delete(schema.apiKeyProjectAccess)
+      .where(
+        and(
+          eq(schema.apiKeyProjectAccess.tenantId, tenantId),
+          eq(schema.apiKeyProjectAccess.apiKeyId, keyId),
+        ),
+      );
+    if (resolved.grantProjectIds.length > 0) {
+      await db.insert(schema.apiKeyProjectAccess).values(
+        resolved.grantProjectIds.map((projectId) => ({ tenantId, apiKeyId: keyId, projectId })),
+      );
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await db
+      .update(schema.apiKeys)
+      .set(updates)
+      .where(and(eq(schema.apiKeys.id, keyId), eq(schema.apiKeys.tenantId, tenantId)));
+  }
+
+  return c.json({ id: keyId, scope: newScope });
 });
 
 /**

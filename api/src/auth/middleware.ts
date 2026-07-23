@@ -347,12 +347,16 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       if (!project) {
         projectNotFound = true;
       } else if (!canAccessProject(project.id)) {
-        // The caller can't reach this project. An API key must not even learn
-        // the project exists (it could otherwise probe which slugs a tenant
-        // has), so it gets the same 404 as a missing project; a member — who
-        // legitimately belongs to the tenant — gets a plain 403.
-        if (isApiKey) projectNotFound = true;
-        else projectForbidden = true;
+        // The caller can't reach this project, but the project DOES exist and
+        // belongs to the caller's own tenant — a tenant the caller is already
+        // authenticated for. Answering 404 here (the old behavior for API keys)
+        // was indistinguishable from a typo'd slug, and the most common way to
+        // hit it is your own key being narrower than you remember. Say so.
+        //
+        // The anti-probing concern this replaces was intra-tenant only: cross
+        // tenants are still answered by the `!project` branch above, which
+        // never reveals another tenant's slugs.
+        projectForbidden = true;
       } else {
         c.set("projectId", project.id);
       }
@@ -466,12 +470,20 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       return c.json({ error: "You are not a member of this workspace" }, 403);
     }
 
-    // Deferred from Stage 2.5 — only members learn whether a project exists.
+    // Deferred from Stage 2.5 — answered only after the membership check, so
+    // a non-member can't use the response to discover a tenant's projects.
     if (projectNotFound) {
       return c.json({ error: "Project not found" }, 404);
     }
     if (projectForbidden) {
-      return c.json({ error: "You do not have access to this project" }, 403);
+      return c.json(
+        {
+          error: isApiKey
+            ? "This API key is not scoped to that project. Update the key's project access, or use a key with workspace-wide access."
+            : "You do not have access to this project",
+        },
+        403,
+      );
     }
 
     // --- Grants ---

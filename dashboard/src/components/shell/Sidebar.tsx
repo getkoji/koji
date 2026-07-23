@@ -386,11 +386,6 @@ export function AppSidebar({
                         label="General"
                       />
                       <SubNavItemLink
-                        href={`${projectSettingsBase}/api-keys`}
-                        icon={<Key className={SUBICON} />}
-                        label="API Keys"
-                      />
-                      <SubNavItemLink
                         href={`${projectSettingsBase}/model-providers`}
                         icon={<Radio className={SUBICON} />}
                         label="Model Endpoints"
@@ -604,6 +599,11 @@ export function AppSidebar({
                           href={`${base}/settings/members`}
                           icon={<Users className={SUBICON} />}
                           label="Members"
+                        />
+                        <SubNavItemLink
+                          href={`${base}/settings/api-keys`}
+                          icon={<Key className={SUBICON} />}
+                          label="API Keys"
                         />
                       </>
                     )}

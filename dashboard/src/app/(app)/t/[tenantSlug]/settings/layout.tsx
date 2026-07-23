@@ -7,6 +7,7 @@ import { useSettingsExtensions } from "@/components/shell/SettingsExtensions";
 const TITLES: Record<string, string> = {
   general: "General",
   members: "Members",
+  "api-keys": "API Keys",
 };
 
 export default function TenantSettingsLayout({ children }: { children: React.ReactNode }) {
