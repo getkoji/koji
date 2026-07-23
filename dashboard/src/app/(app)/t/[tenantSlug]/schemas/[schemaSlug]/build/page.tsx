@@ -5,7 +5,8 @@ import { parse as parseYaml } from "yaml";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { FileQuestion, Pencil, History, RotateCcw, Play, Upload, Maximize2, Minimize2, MapPin, Sparkles, ChevronRight, Loader2, Trash2, Wand2 } from "lucide-react";
-import { api, getAuthTokenProvider } from "@/lib/api";
+import { api } from "@/lib/api";
+import { runExtraction, type ExtractionResult } from "@/lib/extraction-run";
 import { uploadFile } from "@/lib/upload";
 import { useApi } from "@/lib/use-api";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -59,6 +60,62 @@ interface CorpusEntry {
   source: string;
   createdAt: string;
   hasGroundTruth?: boolean;
+}
+
+interface Bbox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface ProvenanceWord {
+  text: string;
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Where one extracted value came from in the parsed document. */
+interface ProvenanceSpan {
+  offset: number;
+  length: number;
+  chunk?: string;
+  page?: number;
+  bbox?: Bbox;
+  words?: ProvenanceWord[];
+  reasoning?: string;
+}
+
+/** One element of an array field, with spans for its own properties. */
+interface ProvenanceItem extends ProvenanceSpan {
+  properties?: Record<string, ProvenanceSpan | null>;
+}
+
+interface FieldProvenance extends ProvenanceSpan {
+  items?: ProvenanceItem[];
+}
+
+/**
+ * The build workbench's view of an extraction result: the shared runner's
+ * payload with `provenance` narrowed to the span shape the PDF highlighting
+ * walks, plus the build-only fields the run surfaces.
+ */
+interface BuildExtractionResult extends ExtractionResult {
+  provenance?: Record<string, FieldProvenance | null> | null;
+  parse_seconds?: number;
+  ocr_skipped?: boolean;
+  fit?: {
+    ok: boolean;
+    action: "warn" | "reject";
+    reason: string | null;
+    message: string | null;
+    score: number | null;
+    extraction_skipped: boolean;
+    checks: Array<{ name: string; ok: boolean; detail?: Record<string, unknown> }>;
+  };
 }
 
 interface ParsedField {
@@ -183,29 +240,7 @@ export default function BuildPage() {
     return "";
   });
   const [extracting, setExtracting] = useState(false);
-  const [extractionResult, setExtractionResult] = useState<{
-    extracted: Record<string, unknown>;
-    confidence: number;
-    confidence_scores?: Record<string, number>;
-    provenance?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; items?: Array<{ offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }>; reasoning?: string; properties?: Record<string, { offset: number; length: number; chunk?: string; page?: number; bbox?: { x: number; y: number; w: number; h: number }; words?: Array<{ text: string; page: number; x: number; y: number; w: number; h: number }> } | null> }> } | null>;
-    markdown?: string;
-    model?: string;
-    engine?: string;
-    elapsed_ms?: number;
-    parse_seconds?: number;
-    ocr_skipped?: boolean;
-    fit?: {
-      ok: boolean;
-      action: "warn" | "reject";
-      reason: string | null;
-      message: string | null;
-      score: number | null;
-      extraction_skipped: boolean;
-      checks: Array<{ name: string; ok: boolean; detail?: Record<string, unknown> }>;
-    };
-    error?: string;
-    detail?: string;
-  } | null>(null);
+  const [extractionResult, setExtractionResult] = useState<BuildExtractionResult | null>(null);
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [expandedBuildArrays, setExpandedBuildArrays] = useState<Set<string>>(new Set());
   const bboxHighlights = useMemo(() => {
@@ -416,6 +451,11 @@ export default function BuildPage() {
   // `forceReparse` sends skip_cache so the run bypasses + refreshes the parse
   // cache — for iterative testing after editing/switching a parse provider
   // (oss-298), without hunting for an uncached document.
+  //
+  // The request itself goes through the shared runner in @/lib/extraction-run:
+  // SSE can't traverse the Next.js proxy, but hand-rolling the fetch here is
+  // how this page lost the `x-koji-project` header and 404'd every corpus entry
+  // outside the tenant's default project (oss-481).
   async function handleRun(forceReparse = false) {
     const currentYaml = yamlRef.current;
     if (!selectedDocId || !currentYaml || !hasModelEndpoint) return;
@@ -423,121 +463,24 @@ export default function BuildPage() {
     setExtractionResult(null);
     setParseProgress({ pages: 0, scanned: false, ocr_skipped: false, estimated_seconds: 0, percent: 0, estimated_remaining_seconds: 0, phase: "detecting" });
 
-    // SSE streaming can't go through the Next.js middleware proxy (socket
-    // hang up on long connections). Discover the direct API URL at runtime.
-    let API_BASE = "";
     try {
-      const disco = await fetch("/_koji/api-url");
-      if (disco.ok) {
-        const { url } = await disco.json();
-        // Only use direct URL if it's not localhost inside a container
-        if (url && !url.includes("koji-")) API_BASE = url;
-      }
-    } catch {}
-    // In Docker, the internal URL (koji-*-api:9401) isn't reachable from
-    // the browser. Fall back to the host-mapped port via window.location.
-    if (!API_BASE) {
-      // Guess: API is on the next port from the dashboard
-      const dashPort = parseInt(window.location.port, 10);
-      if (dashPort) API_BASE = `http://localhost:${dashPort + 1}`;
-    }
-    try {
-      // Raw fetch needed for SSE streaming — can't use api.post which parses JSON.
-      // Build auth headers through the same path as api.post.
-      const fetchHeaders: Record<string, string> = {
-        "Content-Type": "application/json",
-        "x-koji-tenant": tenantSlug,
-      };
-      const tokenProvider = getAuthTokenProvider();
-      if (tokenProvider) {
-        const token = await tokenProvider();
-        if (token) fetchHeaders["Authorization"] = `Bearer ${token}`;
-      }
-
-      const resp = await fetch(`${API_BASE}/api/extract/run`, {
-        method: "POST",
-        headers: fetchHeaders,
-        body: JSON.stringify({ corpus_entry_id: selectedDocId, schema_yaml: currentYaml, ...(selectedModel ? { model: selectedModel } : {}), ...(forceReparse ? { skip_cache: true } : {}) }),
-        ...(tokenProvider ? {} : { credentials: "include" as RequestCredentials }),
-      });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        const errBody = err as { error?: string; detail?: string };
-        setExtractionResult({ extracted: {}, confidence: 0, error: errBody.error ?? `HTTP ${resp.status}`, detail: errBody.detail });
-        setExtracting(false);
-        setParseProgress(null);
-        return;
-      }
-
-      const contentType = resp.headers.get("content-type") ?? "";
-
-      if (contentType.includes("text/event-stream")) {
-        // SSE streaming path
-        const reader = resp.body?.getReader();
-        if (!reader) throw new Error("No response body");
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          let currentEvent = "message";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              currentEvent = line.slice(7).trim();
-            } else if (line.startsWith("data: ")) {
-              let data: any;
-              try { data = JSON.parse(line.slice(6)); } catch { continue; }
-
-              if (currentEvent === "parse_started") {
-                setParseProgress((p) => ({
-                  ...p!,
-                  pages: data.pages,
-                  scanned: data.scanned,
-                  ocr_skipped: data.ocr_skipped,
-                  estimated_seconds: data.estimated_seconds,
-                  phase: "parsing",
-                }));
-              } else if (currentEvent === "parse_progress") {
-                setParseProgress((p) => ({
-                  ...p!,
-                  percent: data.percent,
-                  estimated_remaining_seconds: data.estimated_remaining_seconds,
-                  phase: "parsing",
-                }));
-              } else if (currentEvent === "parse_complete") {
-                setParseProgress((p) => ({ ...p!, percent: 100, phase: "extracting" }));
-              } else if (currentEvent === "extracting") {
-                setParseProgress((p) => ({ ...p!, phase: "extracting" }));
-              } else if (currentEvent === "complete") {
-                setExtractionResult(data);
-                setEditorTab("results");
-                setParseProgress((p) => ({ ...p!, phase: "done" }));
-              } else if (currentEvent === "error") {
-                setExtractionResult({ extracted: {}, confidence: 0, error: data.error ?? "Unknown error" });
-              }
-              currentEvent = "message";
-            }
-          }
-        }
-      } else {
-        // JSON fallback path
-        const result = await resp.json();
-        if (result.error) {
-          setExtractionResult({ extracted: {}, confidence: 0, error: result.error, detail: result.detail });
-        } else {
+      await runExtraction<BuildExtractionResult>({
+        corpusEntryId: selectedDocId,
+        schemaYaml: currentYaml,
+        tenantSlug,
+        ...(selectedModel ? { model: selectedModel } : {}),
+        ...(forceReparse ? { skipCache: true } : {}),
+        onProgress: (patch) => setParseProgress((p) => (p ? { ...p, ...patch } : p)),
+        onComplete: (result) => {
           setExtractionResult(result);
           setEditorTab("results");
-        }
-        setParseProgress(null);
-      }
+          setParseProgress((p) => (p ? { ...p, phase: "done" } : p));
+        },
+        onError: (error, detail) => {
+          setExtractionResult({ extracted: {}, confidence: 0, error, detail });
+          setParseProgress(null);
+        },
+      });
     } catch (err: unknown) {
       setExtractionResult({
         extracted: {},

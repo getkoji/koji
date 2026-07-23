@@ -9,8 +9,10 @@
  * output is delivered through callbacks so callers own their own state; nothing
  * here touches React.
  *
- * Extracted verbatim from the build page's inline runner so both surfaces share
- * one implementation (build page convergence tracked as a follow-up).
+ * Every caller goes through here. The build page used to keep its own copy of
+ * this fetch and forgot the `x-koji-project` header, so a Run in any project
+ * other than the tenant default resolved the corpus entry under the default
+ * project and 404'd (oss-481). One runner, one place to get the headers right.
  */
 
 import { getAuthTokenProvider, getCurrentProjectSlug } from "@/lib/api";
@@ -40,14 +42,20 @@ export interface ExtractionResult {
   [k: string]: unknown;
 }
 
-export interface RunExtractionArgs {
+/**
+ * `R` lets a caller narrow the result it receives — the build workbench types
+ * `provenance` down to the span shape its bbox highlighting needs. The runner
+ * itself never inspects the payload beyond `error`, so the narrowing is the
+ * caller's claim about its own endpoint response, not a runtime guarantee.
+ */
+export interface RunExtractionArgs<R extends ExtractionResult = ExtractionResult> {
   corpusEntryId: string;
   schemaYaml: string;
   tenantSlug: string;
   model?: string;
   skipCache?: boolean;
   onProgress?: (patch: Partial<ExtractionProgress>) => void;
-  onComplete: (result: ExtractionResult) => void;
+  onComplete: (result: R) => void;
   onError: (error: string, detail?: string) => void;
 }
 
@@ -77,7 +85,9 @@ async function discoverApiBase(): Promise<string> {
  * Run an extraction and stream results to the callbacks. Resolves when the
  * stream (or JSON response) is fully consumed.
  */
-export async function runExtraction(args: RunExtractionArgs): Promise<void> {
+export async function runExtraction<R extends ExtractionResult = ExtractionResult>(
+  args: RunExtractionArgs<R>,
+): Promise<void> {
   const { corpusEntryId, schemaYaml, tenantSlug, model, skipCache, onProgress, onComplete, onError } = args;
   const apiBase = await discoverApiBase();
 
@@ -116,7 +126,7 @@ export async function runExtraction(args: RunExtractionArgs): Promise<void> {
   const contentType = resp.headers.get("content-type") ?? "";
 
   if (!contentType.includes("text/event-stream")) {
-    const result = (await resp.json()) as ExtractionResult;
+    const result = (await resp.json()) as R;
     if (result.error) onError(result.error, result.detail);
     else onComplete(result);
     return;
@@ -165,7 +175,7 @@ export async function runExtraction(args: RunExtractionArgs): Promise<void> {
           onProgress?.({ phase: "extracting" });
         } else if (currentEvent === "complete") {
           onProgress?.({ phase: "done" });
-          onComplete(data as ExtractionResult);
+          onComplete(data as R);
         } else if (currentEvent === "error") {
           onError(data.error ?? "Unknown error");
         }

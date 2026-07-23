@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.101.2 — 2026-07-23
+
+**Build mode works in every project, not just the default one.** Clicking **Run**
+on a schema's Build page failed with *Corpus entry not found* for every document
+in the schema — but only in projects other than the workspace's default one. The
+Build page sent its extraction request without the project header, so the server
+resolved the document under the default project, where it doesn't exist. The
+document list, validate runs, and the corpus labeling queue were unaffected,
+which made the failure look like missing data rather than a mis-scoped request.
+
+The page now runs extractions through the same shared runner the corpus labeling
+queue uses, so there is one place that assembles these headers. A test keeps
+tenant-scoped pages from hand-rolling their own API calls again.
+
 ## 0.101.1 — 2026-07-23
 
 **An existing credential's scope can be changed in place.** 0.101.0 let you
