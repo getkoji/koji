@@ -13,7 +13,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-import { createdAt, deletedAt, primaryKey, projectId, tenantId, updatedAt } from "./_shared";
+import { createdAt, deletedAt, primaryKey, sharedProjectId, tenantId, updatedAt } from "./_shared";
 import { projects, tenants, users } from "./tenants";
 
 export const modelCatalog = pgTable(
@@ -42,7 +42,7 @@ export const modelEndpoints = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
-    projectId: projectId().references(() => projects.id),
+    projectId: sharedProjectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -69,6 +69,12 @@ export const modelEndpoints = pgTable(
     projectSlugIdx: uniqueIndex("model_endpoints_project_slug_idx")
       .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    // Postgres treats NULLs as distinct in a unique index, so the index above
+    // does not constrain workspace-shared rows (project_id IS NULL) at all.
+    // This one gives them the same one-slug-per-scope guarantee.
+    sharedSlugIdx: uniqueIndex("model_endpoints_shared_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`project_id IS NULL AND deleted_at IS NULL`),
     projectIdx: index("model_endpoints_project_idx")
       .on(t.projectId)
       .where(sql`deleted_at IS NULL`),
@@ -101,7 +107,7 @@ export const parseEndpoints = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
-    projectId: projectId().references(() => projects.id),
+    projectId: sharedProjectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -128,6 +134,12 @@ export const parseEndpoints = pgTable(
     projectSlugIdx: uniqueIndex("parse_endpoints_project_slug_idx")
       .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    // Postgres treats NULLs as distinct in a unique index, so the index above
+    // does not constrain workspace-shared rows (project_id IS NULL) at all.
+    // This one gives them the same one-slug-per-scope guarantee.
+    sharedSlugIdx: uniqueIndex("parse_endpoints_shared_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`project_id IS NULL AND deleted_at IS NULL`),
     projectIdx: index("parse_endpoints_project_idx")
       .on(t.projectId)
       .where(sql`deleted_at IS NULL`),
@@ -151,7 +163,7 @@ export const providerCredentials = pgTable(
   {
     id: primaryKey(),
     tenantId: tenantId().references(() => tenants.id, { onDelete: "cascade" }),
-    projectId: projectId().references(() => projects.id),
+    projectId: sharedProjectId().references(() => projects.id),
     slug: varchar("slug", { length: 64 }).notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 32 }).notNull(),
@@ -176,6 +188,12 @@ export const providerCredentials = pgTable(
     projectSlugIdx: uniqueIndex("provider_credentials_project_slug_idx")
       .on(t.projectId, t.slug)
       .where(sql`deleted_at IS NULL`),
+    // Postgres treats NULLs as distinct in a unique index, so the index above
+    // does not constrain workspace-shared rows (project_id IS NULL) at all.
+    // This one gives them the same one-slug-per-scope guarantee.
+    sharedSlugIdx: uniqueIndex("provider_credentials_shared_slug_idx")
+      .on(t.tenantId, t.slug)
+      .where(sql`project_id IS NULL AND deleted_at IS NULL`),
     projectIdx: index("provider_credentials_project_idx")
       .on(t.projectId)
       .where(sql`deleted_at IS NULL`),

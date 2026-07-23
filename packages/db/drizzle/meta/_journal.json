@@ -281,6 +281,13 @@
       "when": 1784841985162,
       "tag": "0039_lethal_excalibur",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784843196333,
+      "tag": "0040_rich_mother_askani",
+      "breakpoints": true
     }
   ]
 }

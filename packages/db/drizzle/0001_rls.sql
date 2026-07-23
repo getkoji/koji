@@ -330,20 +330,24 @@ CREATE POLICY classifiers_project_isolation ON classifiers AS RESTRICTIVE FOR AL
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
+-- The provider tables (model_endpoints, parse_endpoints, provider_credentials)
+-- are null-aware: a credential with a NULL project_id is shared by every
+-- project in the workspace, and a project-scoped credential overrides it. A
+-- strict policy would have hidden shared credentials from every project view.
 DROP POLICY IF EXISTS model_endpoints_project_isolation ON model_endpoints;
 CREATE POLICY model_endpoints_project_isolation ON model_endpoints AS RESTRICTIVE FOR ALL
-  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
-  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
 DROP POLICY IF EXISTS parse_endpoints_project_isolation ON parse_endpoints;
 CREATE POLICY parse_endpoints_project_isolation ON parse_endpoints AS RESTRICTIVE FOR ALL
-  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
-  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
 DROP POLICY IF EXISTS provider_credentials_project_isolation ON provider_credentials;
 CREATE POLICY provider_credentials_project_isolation ON provider_credentials AS RESTRICTIVE FOR ALL
-  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
-  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
 DROP POLICY IF EXISTS webhook_targets_project_isolation ON webhook_targets;
 CREATE POLICY webhook_targets_project_isolation ON webhook_targets AS RESTRICTIVE FOR ALL

@@ -92,11 +92,14 @@ async function mkCredential(opts: {
   createdAt: string;
   deleted?: boolean;
   withKey?: boolean;
-  projectId?: string;
+  projectId?: string | null;
 }) {
   const credId = randomUUID();
   const modelId = randomUUID();
   const del = opts.deleted ? opts.createdAt : null;
+  // `projectId: null` means shared with every project; omitted means the
+  // default test project.
+  const proj = opts.projectId === undefined ? project : opts.projectId;
   const auth =
     opts.withKey === false
       ? null
@@ -104,7 +107,7 @@ async function mkCredential(opts: {
   await rootDb.execute(sql`
     INSERT INTO provider_credentials
       (id, tenant_id, project_id, slug, display_name, provider, config_json, auth_json, created_by, created_at, deleted_at)
-    VALUES (${credId}::uuid, ${tenant}::uuid, ${opts.projectId ?? project}::uuid, ${credId.slice(0, 8)},
+    VALUES (${credId}::uuid, ${tenant}::uuid, ${proj}::uuid, ${credId.slice(0, 8)},
             'OpenAI', 'openai', '{}'::jsonb, ${auth}::jsonb, ${user}::uuid,
             ${opts.createdAt}::timestamptz, ${del}::timestamptz)
   `);
@@ -212,5 +215,48 @@ describe("pickActiveParseEndpoint — soft-deleted endpoints", () => {
   test("returns null when the only endpoint is deleted", async () => {
     await mkParseEndpoint({ createdAt: "2026-07-23T20:10:00Z", deleted: true });
     expect(await pickActiveParseEndpoint(db, scope(), null)).toBeNull();
+  });
+});
+
+describe("scope precedence — project overrides workspace-shared", () => {
+  /** A credential shared with every project (project_id IS NULL). */
+  async function mkShared(createdAt: string) {
+    return mkCredential({ createdAt, projectId: null as unknown as string });
+  }
+
+  test("a shared credential is resolvable from a project that has none of its own", async () => {
+    const shared = await mkShared("2026-07-23T10:00:00Z");
+    expect(await pickActiveTenantModel(db, scope(), null)).toBe(shared.modelId);
+  });
+
+  test("a project-scoped credential wins over a shared one, even when newer", async () => {
+    await mkShared("2026-07-23T10:00:00Z");
+    const own = await mkCredential({ createdAt: "2026-07-23T20:00:00Z" });
+    expect(await pickActiveTenantModel(db, scope(), null)).toBe(own.modelId);
+  });
+
+  test("the override is per project — the other project still gets the shared one", async () => {
+    const shared = await mkShared("2026-07-23T10:00:00Z");
+    await mkCredential({ createdAt: "2026-07-23T20:00:00Z" });
+    const other = await pickActiveTenantModel(
+      db,
+      { tenantId: tenant, projectId: otherProject },
+      null,
+    );
+    expect(other).toBe(shared.modelId);
+  });
+
+  test("deleting the project override falls back to the shared credential", async () => {
+    const shared = await mkShared("2026-07-23T10:00:00Z");
+    const own = await mkCredential({ createdAt: "2026-07-23T20:00:00Z" });
+    expect(await pickActiveTenantModel(db, scope(), null)).toBe(own.modelId);
+
+    await rootDb.execute(
+      sql`UPDATE provider_credentials SET deleted_at = now() WHERE id = ${own.credId}::uuid`,
+    );
+    await rootDb.execute(
+      sql`UPDATE tenant_models SET deleted_at = now() WHERE credential_id = ${own.credId}::uuid`,
+    );
+    expect(await pickActiveTenantModel(db, scope(), null)).toBe(shared.modelId);
   });
 });

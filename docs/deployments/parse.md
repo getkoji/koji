@@ -21,6 +21,14 @@ is entirely opt-in.
 Credentials are encrypted at rest (envelope encryption, same as model
 endpoints) and can never be retrieved — only rotated.
 
+**Available to** decides the endpoint's reach: *This project only* (the default)
+or *All projects in this workspace*. Share it when every project should parse
+through the same OCR vendor — including projects created later — and add a
+project-scoped endpoint when one project needs a different engine. The
+project-scoped one wins for that project; everything else keeps using the shared
+endpoint. Each scope keeps its own default, so promoting a project's endpoint
+never disables the workspace-wide one.
+
 | Provider | Best for | What you need |
 |----------|----------|---------------|
 | **Mistral OCR** | SMB / cost-sensitive — markdown-native, self-serve, cheap per page | API key |

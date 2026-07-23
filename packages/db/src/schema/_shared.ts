@@ -63,6 +63,18 @@ export const tenantId = () => uuid("tenant_id").notNull();
 export const projectId = () => uuid("project_id").notNull();
 
 /**
+ * A NULLABLE `project_id`, for tables where NULL carries meaning: "this row
+ * belongs to the whole workspace, not to one project." Those tables get the
+ * null-AWARE variant of the project policy (`project_id IS NULL` always
+ * passes) — see PROJECT_NULLABLE_RLS_TABLES in ../index.ts.
+ *
+ * Used by the provider tables: a model or parse credential can be shared
+ * across every project in the workspace (NULL) or scoped to one project (an
+ * id), and a project-scoped credential overrides the shared one.
+ */
+export const sharedProjectId = () => uuid("project_id");
+
+/**
  * The RLS policy body used on every tenant-scoped table. Read at migration
  * time via `GET_TENANT_ISOLATION_POLICY(tableName)`.
  *

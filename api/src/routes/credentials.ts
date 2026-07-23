@@ -47,6 +47,7 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
     tx
       .select({
         id: schema.providerCredentials.id,
+        projectId: schema.providerCredentials.projectId,
         slug: schema.providerCredentials.slug,
         displayName: schema.providerCredentials.displayName,
         provider: schema.providerCredentials.provider,
@@ -121,6 +122,8 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
         apiVersion: (cfg.api_version as string | undefined) ?? null,
         awsRegion: (cfg.aws_region as string | undefined) ?? null,
         keyHint: auth?.key_hint ?? null,
+        // NULL project_id = shared with every project in the workspace.
+        scope: cred.projectId === null ? "all" : "project",
         hasKey,
         credentialStatus,
         status: cred.status,
