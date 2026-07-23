@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.101.1 — 2026-07-23
+
+**An existing credential's scope can be changed in place.** 0.101.0 let you
+*create* a credential shared across projects, but gave no way to share one you
+already had — and since a stored key can never be read back, "delete it and
+re-add it as shared" would have meant re-typing a secret you may not have. Both
+settings pages now offer **share with all** / **unshare** on each credential,
+backed by `scope` on `PATCH /api/model-providers/:id` and
+`PATCH /api/parse-providers/:id`. The key is never touched; only its reach
+changes. Sharing still requires a member who can reach every project, and a name
+collision in the target scope is reported as a conflict rather than a constraint
+violation.
+
 ## 0.101.0 — 2026-07-23
 
 **Model and parse credentials can be shared across every project.** Until now a

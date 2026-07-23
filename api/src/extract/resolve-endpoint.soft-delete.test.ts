@@ -260,3 +260,50 @@ describe("scope precedence — project overrides workspace-shared", () => {
     expect(await pickActiveTenantModel(db, scope(), null)).toBe(shared.modelId);
   });
 });
+
+describe("re-scoping an existing credential", () => {
+  /**
+   * What PATCH /api/model-providers/:id with `scope` does: move the project_id
+   * on both the endpoint row and the credential row that resolution reads.
+   * The credential's key is never touched — that's the whole point, since it
+   * can't be read back to re-enter.
+   */
+  async function reScope(credId: string, to: string | null) {
+    await rootDb.execute(
+      sql`UPDATE provider_credentials SET project_id = ${to}::uuid WHERE id = ${credId}::uuid`,
+    );
+  }
+
+  test("sharing a project credential makes it resolvable from another project", async () => {
+    const own = await mkCredential({ createdAt: "2026-07-23T20:00:00Z" });
+    expect(
+      await pickActiveTenantModel(db, { tenantId: tenant, projectId: otherProject }, null),
+    ).toBeNull();
+
+    await reScope(own.credId, null);
+
+    expect(
+      await pickActiveTenantModel(db, { tenantId: tenant, projectId: otherProject }, null),
+    ).toBe(own.modelId);
+    // Still resolvable from its original project, and still holding its key.
+    const payload = await resolveExtractEndpoint(db, scope(), own.modelId);
+    expect(payload?.api_key).toBe("sk-live");
+  });
+
+  test("un-sharing pulls it back to a single project", async () => {
+    const shared = await mkCredential({
+      createdAt: "2026-07-23T20:00:00Z",
+      projectId: null as unknown as string,
+    });
+    expect(
+      await pickActiveTenantModel(db, { tenantId: tenant, projectId: otherProject }, null),
+    ).toBe(shared.modelId);
+
+    await reScope(shared.credId, project);
+
+    expect(
+      await pickActiveTenantModel(db, { tenantId: tenant, projectId: otherProject }, null),
+    ).toBeNull();
+    expect(await pickActiveTenantModel(db, scope(), null)).toBe(shared.modelId);
+  });
+});

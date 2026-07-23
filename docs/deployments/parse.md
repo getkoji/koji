@@ -27,7 +27,8 @@ through the same OCR vendor — including projects created later — and add a
 project-scoped endpoint when one project needs a different engine. The
 project-scoped one wins for that project; everything else keeps using the shared
 endpoint. Each scope keeps its own default, so promoting a project's endpoint
-never disables the workspace-wide one.
+never disables the workspace-wide one. An endpoint's scope can be changed later
+with **share with all** / **unshare** on its card.
 
 | Provider | Best for | What you need |
 |----------|----------|---------------|
