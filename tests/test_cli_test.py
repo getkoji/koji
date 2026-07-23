@@ -655,6 +655,27 @@ class TestProvenanceKeysExcludedFromScoring:
         assert r.passed
 
 
+class TestObjectValuedFieldComparison:
+    """A top-level object-valued field (not inside an array) is compared
+    structurally — order-insensitive and provenance-stripped — not via a
+    brittle str(expected) == str(actual). Conforms to the canonical scorer."""
+
+    def test_object_field_ignores_provenance_key(self):
+        expected = {"street": "100 Main St", "city": "Charlotte"}
+        actual = {"street": "100 Main St", "city": "Charlotte", "__source_text": "100 Main St, Charlotte"}
+        assert compare_field("address", expected, actual).passed
+
+    def test_object_field_key_order_insensitive(self):
+        expected = {"street": "100 Main St", "city": "Charlotte"}
+        actual = {"city": "Charlotte", "street": "100 Main St"}
+        assert compare_field("address", expected, actual).passed
+
+    def test_object_field_real_difference_still_fails(self):
+        expected = {"street": "100 Main St", "city": "Charlotte"}
+        actual = {"street": "200 Main St", "city": "Charlotte"}
+        assert not compare_field("address", expected, actual).passed
+
+
 # ── Element-wise array F1 (partial credit) ────────────────────────────
 
 

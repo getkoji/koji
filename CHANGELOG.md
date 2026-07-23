@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.107.1 — 2026-07-24
+
+**Fix: object-valued fields are scored structurally in `koji test`/`bench`.** The
+comparator's fallback for object-valued fields used a brittle
+`str(expected) == str(actual)`, which failed on differing key order or an inline
+`__source_text` provenance key even when the data was identical. It now compares
+via the same normalization used for arrays — order-insensitive and
+provenance-stripped — so object fields score correctly.
+
 ## 0.107.0 — 2026-07-24
 
 **Classifier Corpus + Validate tabs in the dashboard.** The classifier detail
