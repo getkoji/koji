@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, generatePreviewToken, getProjectId, getRlsScope } from "../auth/middleware";
+import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { requireFeature } from "../billing/middleware";
 import { resolveMimeType } from "../ingestion/mime";
 import { formatSemverLabel } from "../schemas/semver";
@@ -517,6 +518,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
         status: schema.reviewItems.status,
         resolution: schema.reviewItems.resolution,
         schemaId: schema.reviewItems.schemaId,
+        projectId: schema.reviewItems.projectId,
         documentId: schema.documents.id,
         filename: schema.documents.filename,
         storageKey: schema.documents.storageKey,
@@ -600,8 +602,27 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
     const safeName = item.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const corpusKey = `corpus/${tenantId}/${item.schemaId}/${Date.now()}-${safeName}`;
     await storage.put(corpusKey, file.data, { contentType: corpusMime });
+    // Resolve the file to a pooled document (oss-449); the corpus lives in the
+    // review item's project (= the schema's project). The entry keeps the
+    // legacy file columns during expand/contract, so read paths are unchanged.
+    // `item.documentId` is the SOURCE document — distinct from this pool doc.
+    const corpusProjectId = item.projectId;
+    const corpusDocumentId = await upsertCorpusDocument(db, { tenantId, projectId: corpusProjectId }, {
+      tenantId,
+      projectId: corpusProjectId,
+      filename: item.filename,
+      storageKey: corpusKey,
+      fileSize: file.data.length,
+      mimeType: corpusMime,
+      contentHash,
+      source: "pipeline",
+      sourceRef: item.reviewId,
+      addedBy: principal.userId,
+    });
     const entryValues: typeof schema.corpusEntries.$inferInsert = {
       tenantId,
+      projectId: corpusProjectId,
+      documentId: corpusDocumentId,
       schemaId: item.schemaId,
       filename: item.filename,
       storageKey: corpusKey,

@@ -256,6 +256,10 @@ describe("per-table isolation", () => {
   const jobBId = randomUUID();
   const classifierAId = randomUUID();
   const classifierBId = randomUUID();
+  const corpusDocAId = randomUUID();
+  const corpusDocBId = randomUUID();
+  const corpusEntryAId = randomUUID();
+  const corpusEntryBId = randomUUID();
 
   beforeAll(async () => {
     // Seed dependency chain via superuser: project → schema → pipeline → job
@@ -340,6 +344,22 @@ describe("per-table isolation", () => {
              ('${randomUUID()}', '${tenantB}', '${projectBId}', '${userB}', 'schema_builder', '${schemaBId}')
     `));
 
+    // Corpus pool (oss-449): a pooled document + a schema-owned label per tenant.
+    // Both carry project_id and are RESTRICTIVE-isolated — the split that closed
+    // the old tenant-only gap, so cross-tenant isolation must hold on both.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO corpus_documents (id, tenant_id, project_id, filename, storage_key, file_size, mime_type, content_hash, source, added_by)
+      VALUES ('${corpusDocAId}', '${tenantA}', '${projectAId}', 'a.pdf', 'k/a', 10, 'application/pdf', repeat('a', 64), 'upload', '${userA}'),
+             ('${corpusDocBId}', '${tenantB}', '${projectBId}', 'b.pdf', 'k/b', 10, 'application/pdf', repeat('b', 64), 'upload', '${userB}')
+    `));
+    // Entries still carry the legacy file columns in this phase (writers
+    // populate both), so the seed provides them just like a real write does.
+    await rootDb.execute(sql.raw(`
+      INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, schema_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
+      VALUES ('${corpusEntryAId}', '${tenantA}', '${projectAId}', '${corpusDocAId}', '${schemaAId}', 'a.pdf', 'k/a', 10, 'application/pdf', repeat('a', 64), 'upload', '{"label":"x"}', '${userA}'),
+             ('${corpusEntryBId}', '${tenantB}', '${projectBId}', '${corpusDocBId}', '${schemaBId}', 'b.pdf', 'k/b', 10, 'application/pdf', repeat('b', 64), 'upload', '{"label":"y"}', '${userB}')
+    `));
+
     // NOTE: Additional tables (webhook_targets, api_keys, extraction_runs, etc.)
     // are not seeded here due to complex NOT NULL constraints. Their RLS policies
     // are verified by the "every table with tenant_id has a policy" meta-test below.
@@ -363,6 +383,8 @@ describe("per-table isolation", () => {
     "tenant_models",
     "classifiers",
     "classifier_versions",
+    "corpus_documents",
+    "corpus_entries",
   ];
 
   for (const table of tablesToTest) {
@@ -484,6 +506,49 @@ describe("project isolation", () => {
       tx.execute(sql`SELECT slug FROM jobs`),
     );
     expect(jobsTenantWide.map((r: any) => r.slug)).toEqual(["job-a"]);
+  });
+
+  test("corpus pool tables are project-scoped (oss-449)", async () => {
+    // The corpus rows live in per-table proj-a. Before the split corpus_entries
+    // was tenant-isolated only, so a project-scoped query would have leaked
+    // every project's corpus. Both the document and the label must now be
+    // invisible to a different project of the same tenant.
+    for (const table of ["corpus_documents", "corpus_entries"]) {
+      const inDefault = await withRLS(
+        db,
+        { tenantId: tenantA, projectId: defaultProjectA },
+        (tx) => tx.execute(sql.raw(`SELECT id FROM "${table}"`)),
+      );
+      expect(inDefault.length).toBe(0);
+      const tenantWide = await withRLS(db, tenantA, (tx) =>
+        tx.execute(sql.raw(`SELECT id FROM "${table}"`)),
+      );
+      expect(tenantWide.length).toBe(1);
+    }
+  });
+
+  test("WITH CHECK blocks writing a corpus label into a different project than the scope", async () => {
+    // A mislabeled project_id on a corpus_entries insert must be rejected, not
+    // silently accepted into another project's corpus.
+    await expect(
+      withRLS(db, { tenantId: tenantA, projectId: defaultProjectA }, async (tx) => {
+        await tx.execute(sql`
+          INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
+          VALUES (
+            ${tenantA}::uuid,
+            (SELECT id FROM projects WHERE slug = 'proj-a'),
+            (SELECT id FROM corpus_documents LIMIT 1),
+            (SELECT id FROM schemas WHERE slug = 'iso-test-a'),
+            'x.pdf', 'k/x', 10, 'application/pdf', repeat('c', 64), 'upload',
+            '{"label":"sneaky"}', ${userA}::uuid
+          )
+        `);
+      }),
+    ).rejects.toThrow();
+    const rows = await rootDb.execute(
+      sql`SELECT id FROM corpus_entries WHERE ground_truth_json->>'label' = 'sneaky'`,
+    );
+    expect(rows.length).toBe(0);
   });
 });
 

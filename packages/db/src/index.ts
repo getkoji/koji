@@ -48,6 +48,7 @@ export const RLS_POLICIES: readonly string[] = [
   "schema_samples",
   "classifiers",
   "classifier_versions",
+  "corpus_documents",
   "corpus_entries",
   "corpus_entry_ground_truth",
   "corpus_entry_tags",
@@ -112,6 +113,11 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
   "jobs",
   "review_items",
   "agent_sessions",
+  // The corpus pool split (oss-449): both the file (corpus_documents) and the
+  // label (corpus_entries) carry a NOT NULL project_id. corpus_entries was
+  // tenant-isolated only before this — the gap the split closes.
+  "corpus_documents",
+  "corpus_entries",
 ];
 
 /**
