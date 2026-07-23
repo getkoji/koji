@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -567,11 +567,24 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     aws_access_key_id?: string;
     aws_secret_access_key?: string;
     aws_session_token?: string;
+    /**
+     * Re-scope an existing credential: "all" shares it with every project,
+     * "project" pulls it back to the current one. Omitted leaves scope alone.
+     * This is the only way to share a credential that already holds a key —
+     * the key can't be read back, so recreating it in the other scope would
+     * mean the user re-typing a secret they may no longer have.
+     */
+    scope?: "project" | "all";
   }>();
+
+  if (body.scope && body.scope !== "project" && body.scope !== "all") {
+    return c.json({ error: 'scope must be "project" or "all"' }, 400);
+  }
 
   const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       provider: schema.modelEndpoints.provider,
+      slug: schema.modelEndpoints.slug,
       projectId: schema.modelEndpoints.projectId,
       configJson: schema.modelEndpoints.configJson,
       authJson: schema.modelEndpoints.authJson,
@@ -589,6 +602,53 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name) updates.displayName = body.name;
   if (body.model) updates.model = body.model;
+
+  // Scope change. Sharing reaches every project, so it needs the same
+  // authority creating a shared credential does; un-sharing pins the
+  // credential to the project the request is scoped to.
+  let newProjectId: string | null | undefined;
+  if (body.scope) {
+    const wantShared = body.scope === "all";
+    const isShared = existing.projectId === null;
+    if (wantShared !== isShared) {
+      if (wantShared && !canManageShared(c)) {
+        return c.json(
+          { error: "Only a member with access to every project can share a credential across projects." },
+          403,
+        );
+      }
+      newProjectId = wantShared ? null : requireProjectId(c);
+      // The target scope has its own one-slug-per-scope index; a collision
+      // there would otherwise surface as a raw constraint violation.
+      const [clash] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+        tx
+          .select({ id: schema.modelEndpoints.id })
+          .from(schema.modelEndpoints)
+          .where(
+            and(
+              eq(schema.modelEndpoints.slug, existing.slug),
+              ne(schema.modelEndpoints.id, endpointId),
+              newProjectId === null
+                ? sql`project_id IS NULL`
+                : eq(schema.modelEndpoints.projectId, newProjectId),
+              sql`deleted_at IS NULL`,
+            ),
+          )
+          .limit(1),
+      );
+      if (clash) {
+        return c.json(
+          {
+            error: wantShared
+              ? `A credential named “${existing.slug}” is already shared with all projects.`
+              : `A credential named “${existing.slug}” already exists in this project.`,
+          },
+          409,
+        );
+      }
+      updates.projectId = newProjectId;
+    }
+  }
 
   // Merge configJson. We only touch the keys the client sent; missing
   // keys retain their existing values. Passing an empty string clears.
@@ -662,6 +722,9 @@ modelProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   const credentialId = deriveCredentialId(endpointId);
   const credentialUpdates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name) credentialUpdates.displayName = body.name;
+  // The credential row is what resolution actually reads, so its project_id
+  // is the one that decides reach — keep the two in lock-step.
+  if (newProjectId !== undefined) credentialUpdates.projectId = newProjectId;
   if (configTouched) credentialUpdates.configJson = cfg;
   if (updates.authJson) credentialUpdates.authJson = updates.authJson;
   const modelUpdates: Record<string, unknown> = { updatedAt: new Date() };

@@ -549,13 +549,23 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
     aws_access_key_id?: string;
     api_key?: string;
     aws_secret_access_key?: string;
+    /**
+     * Re-scope an existing endpoint: "all" shares it with every project,
+     * "project" pulls it back to the current one. Omitted leaves scope alone.
+     */
+    scope?: "project" | "all";
   }>();
+
+  if (body.scope && body.scope !== "project" && body.scope !== "all") {
+    return c.json({ error: 'scope must be "project" or "all"' }, 400);
+  }
 
   const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
         provider: schema.parseEndpoints.provider,
         projectId: schema.parseEndpoints.projectId,
+        slug: schema.parseEndpoints.slug,
         configJson: schema.parseEndpoints.configJson,
       })
       .from(schema.parseEndpoints)
@@ -571,6 +581,43 @@ parseProviders.patch("/:id", requires("endpoint:write"), async (c) => {
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (body.name) updates.displayName = body.name;
   if (body.model) updates.model = body.model;
+
+  if (body.scope) {
+    const wantShared = body.scope === "all";
+    const isShared = existing.projectId === null;
+    if (wantShared !== isShared) {
+      if (wantShared && !canManageShared(c)) {
+        return c.json(
+          { error: "Only a member with access to every project can share a parse endpoint across projects." },
+          403,
+        );
+      }
+      const newProjectId = wantShared ? null : requireProjectId(c);
+      const [clash] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+        tx
+          .select({ id: schema.parseEndpoints.id })
+          .from(schema.parseEndpoints)
+          .where(
+            and(
+              eq(schema.parseEndpoints.slug, existing.slug),
+              ne(schema.parseEndpoints.id, endpointId),
+              newProjectId === null
+                ? sql`project_id IS NULL`
+                : eq(schema.parseEndpoints.projectId, newProjectId),
+              sql`deleted_at IS NULL`,
+            ),
+          )
+          .limit(1),
+      );
+      if (clash) {
+        return c.json(
+          { error: `A parse endpoint named “${existing.slug}” already exists in the target scope.` },
+          409,
+        );
+      }
+      updates.projectId = newProjectId;
+    }
+  }
 
   // Merge config — only touch keys the client sent; empty string clears.
   const cfg: ParseConfigJson = { ...((existing.configJson as ParseConfigJson | null) ?? {}) };

@@ -338,10 +338,31 @@ function ParseEndpointCard({
   onDelete: () => void;
   onMessage: (m: string) => void;
 }) {
-  const [busy, setBusy] = useState<null | "default" | "test">(null);
+  const [busy, setBusy] = useState<null | "default" | "test" | "scope">(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const summary = configSummary(ep);
+
+  async function handleToggleScope() {
+    const nowShared = ep.scope !== "all";
+    setBusy("scope");
+    setError(null);
+    try {
+      await api.patch(`/api/parse-providers/${ep.id}`, {
+        scope: nowShared ? "all" : "project",
+      });
+      onMessage(
+        nowShared
+          ? "Endpoint shared. Every project in this workspace parses through it unless it has its own."
+          : "Endpoint restricted to this project.",
+      );
+      onChanged();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to change scope");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function handleSetDefault() {
     setBusy("default");
@@ -455,6 +476,22 @@ function ParseEndpointCard({
                 {busy === "default" ? "setting..." : "set as default"}
               </button>
             )}
+            <button
+              onClick={handleToggleScope}
+              disabled={busy !== null}
+              className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors disabled:opacity-50"
+              title={
+                ep.scope === "all"
+                  ? "Stop sharing: only this project will parse through this endpoint."
+                  : "Share this endpoint with every project in the workspace."
+              }
+            >
+              {busy === "scope"
+                ? "saving..."
+                : ep.scope === "all"
+                  ? "unshare"
+                  : "share with all"}
+            </button>
             {!ep.wifConfigured && (
               <button
                 onClick={onRotate}

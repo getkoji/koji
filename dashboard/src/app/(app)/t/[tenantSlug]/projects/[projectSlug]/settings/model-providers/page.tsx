@@ -215,6 +215,7 @@ export default function ModelProvidersPage() {
   const [showAddCredential, setShowAddCredential] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<Credential | null>(null);
   const [deleteCredTarget, setDeleteCredTarget] = useState<Credential | null>(null);
+  const [scopeTarget, setScopeTarget] = useState<Credential | null>(null);
   const [addModelTarget, setAddModelTarget] = useState<Credential | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
@@ -274,6 +275,7 @@ export default function ModelProvidersPage() {
                 onAddModel={() => setAddModelTarget(cred)}
                 onRotate={() => setRotateTarget(cred)}
                 onDelete={() => setDeleteCredTarget(cred)}
+                onToggleScope={() => setScopeTarget(cred)}
                 onModelChanged={refetch}
               />
             ))}
@@ -323,6 +325,22 @@ export default function ModelProvidersPage() {
         />
       )}
 
+      {scopeTarget && (
+        <ChangeScopeDialog
+          credential={scopeTarget}
+          onClose={() => setScopeTarget(null)}
+          onChanged={(nowShared) => {
+            setScopeTarget(null);
+            setSuccessMessage(
+              nowShared
+                ? "Credential shared. Every project in this workspace can now use it."
+                : "Credential restricted to this project. Other projects fall back to a shared credential, if there is one.",
+            );
+            refetch();
+          }}
+        />
+      )}
+
       {deleteCredTarget && (
         <DeleteCredentialDialog
           credential={deleteCredTarget}
@@ -346,6 +364,7 @@ function CredentialCard({
   onAddModel,
   onRotate,
   onDelete,
+  onToggleScope,
   onModelChanged,
 }: {
   cred: Credential;
@@ -353,6 +372,7 @@ function CredentialCard({
   onAddModel: () => void;
   onRotate: () => void;
   onDelete: () => void;
+  onToggleScope: () => void;
   onModelChanged: () => void;
 }) {
   const configSummary = providerConfigSummary(cred);
@@ -397,6 +417,17 @@ function CredentialCard({
           <Badge variant={cred.status === "active" ? "active" : "neutral"}>{cred.status}</Badge>
           {canWrite && (
             <>
+              <button
+                onClick={onToggleScope}
+                className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
+                title={
+                  cred.scope === "all"
+                    ? "Stop sharing: only this project will be able to use this credential."
+                    : "Share this credential with every project in the workspace."
+                }
+              >
+                {cred.scope === "all" ? "unshare" : "share with all"}
+              </button>
               <button
                 onClick={onRotate}
                 className="font-mono text-[10px] text-ink-3 hover:text-ink transition-colors"
@@ -1380,6 +1411,92 @@ function DeleteCredentialDialog({
             className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-vermillion-2 text-cream hover:bg-vermillion transition-colors disabled:opacity-50"
           >
             {deleting ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Change scope dialog ───────────────────────────────────────────────────
+
+function ChangeScopeDialog({
+  credential,
+  onClose,
+  onChanged,
+}: {
+  credential: Credential;
+  onClose: () => void;
+  onChanged: (nowShared: boolean) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nowShared = credential.scope !== "all";
+
+  async function handleChange() {
+    setSaving(true);
+    try {
+      // Same id-sharing rationale as the rotate/delete dialogs: the first
+      // model's id doubles as the legacy endpoint id, and PATCHing it moves
+      // both the endpoint and its credential row.
+      const firstModelId = credential.models[0]?.id;
+      if (!firstModelId) {
+        throw new Error("Cannot change scope: credential has no models yet.");
+      }
+      await api.patch(`/api/model-providers/${firstModelId}`, {
+        scope: nowShared ? "all" : "project",
+      });
+      onChanged(nowShared);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to change scope");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent className="bg-cream max-w-[420px] sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle>{nowShared ? "Share with all projects" : "Restrict to this project"}</DialogTitle>
+          <DialogDescription>
+            {nowShared ? (
+              <>
+                Make <strong className="text-ink">{credential.displayName}</strong> available to every
+                project in this workspace, including projects created later. A project that has its own
+                credential keeps using that one.
+              </>
+            ) : (
+              <>
+                Stop sharing <strong className="text-ink">{credential.displayName}</strong>. Only this
+                project will be able to use it — other projects fall back to a shared credential, or to
+                no model provider at all if there isn't one.
+              </>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        {error && (
+          <div className="text-[12px] text-vermillion-2 bg-vermillion-3/50 px-3 py-1.5 rounded-sm mb-4">
+            {error}
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] text-ink-3 hover:text-ink transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleChange}
+            disabled={saving}
+            className="inline-flex items-center px-3.5 py-2 rounded-sm text-[12.5px] font-medium bg-ink text-cream hover:bg-vermillion-2 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : nowShared ? "Share" : "Restrict"}
           </button>
         </div>
       </DialogContent>
