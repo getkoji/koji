@@ -21,7 +21,7 @@
  *     defaults instead of a hard 500).
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Db, RlsScope } from "@koji/db";
 import { decrypt, getMasterKey } from "../crypto/envelope";
@@ -65,6 +65,14 @@ export interface ExtractEndpointPayload {
  * Optional `preferModel` narrows by model name (e.g. "gpt-4o-mini"). Returns
  * the `tenant_models.id` or null when nothing matches. Used by extract.ts
  * fallback paths that need an endpoint id without a pipeline context.
+ *
+ * Soft-deleted rows are excluded on BOTH sides of the join. Without that
+ * filter a deleted credential stayed resolvable forever — `status` is left at
+ * `active` on delete, only `deleted_at` is stamped — so a project that had
+ * ever thrown away a credential could resolve the dead one instead of the
+ * live one and fall through to the env-var path with no visible cause. The
+ * `created_at` ordering makes the pick deterministic; it used to be whatever
+ * order the planner happened to emit.
  */
 export async function pickActiveTenantModel(
   db: Db,
@@ -85,8 +93,11 @@ export async function pickActiveTenantModel(
         and(
           eq(schema.tenantModels.status, "active"),
           eq(schema.providerCredentials.status, "active"),
+          isNull(schema.tenantModels.deletedAt),
+          isNull(schema.providerCredentials.deletedAt),
         ),
-      ),
+      )
+      .orderBy(schema.tenantModels.createdAt, schema.tenantModels.id),
   );
   if (!preferModel) return rows[0]?.id ?? null;
 
@@ -124,10 +135,20 @@ export async function resolveExtractEndpoint(
         schema.providerCredentials,
         eq(schema.providerCredentials.id, schema.tenantModels.credentialId),
       )
-      .where(eq(schema.tenantModels.id, modelProviderId))
+      .where(
+        and(
+          eq(schema.tenantModels.id, modelProviderId),
+          isNull(schema.tenantModels.deletedAt),
+          isNull(schema.providerCredentials.deletedAt),
+        ),
+      )
       .limit(1),
   );
 
+  // A pin to a deleted credential resolves to nothing on purpose: deleting a
+  // credential has to actually stop Koji using that key, including from a
+  // pipeline that still references it. The caller surfaces "no model provider
+  // configured", which is the honest state.
   if (!endpoint) return null;
 
   // configJson is the plaintext shape (base_url, deployment_name,

@@ -3,6 +3,7 @@ import { eq, and, sql } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getProjectId } from "../auth/middleware";
+import { decrypt } from "../crypto/envelope";
 
 /**
  * Routes for the credential→model split. Exposes the credentials a tenant
@@ -31,6 +32,12 @@ export const credentials = new Hono<Env>();
  *
  * Returns one entry per provider_credentials row, with `models` populated
  * from tenant_models. Soft-deleted rows are filtered out.
+ *
+ * `hasKey` / `credentialStatus` mirror what GET /api/model-providers reports.
+ * This is the list the settings page renders, and without them a credential
+ * holding no key at all — or one encrypted under a rotated master key — drew
+ * exactly like a working one, so "it's right there in the list" and "the
+ * engine can use it" could quietly disagree.
  */
 credentials.get("/", requires("endpoint:read"), async (c) => {
   const db = c.get("db");
@@ -76,10 +83,34 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
     modelsByCred.set(m.credentialId, list);
   }
 
+  const masterKey = c.get("masterKey") as string | null;
+
   return c.json({
     data: credRows.map((cred) => {
-      const auth = (cred.authJson as { key_hint?: string | null } | null) ?? null;
+      const auth =
+        (cred.authJson as {
+          key_hint?: string | null;
+          key_blob?: string;
+          aws_secret_access_key_blob?: string;
+        } | null) ?? null;
       const cfg = (cred.configJson as Record<string, unknown> | null) ?? {};
+
+      // Same probe as GET /api/model-providers: a stored blob that no longer
+      // decrypts (rotated master key, corrupt ciphertext) is reported as
+      // `invalid` rather than passing for configured.
+      const hasKey = !!(auth?.key_blob || auth?.aws_secret_access_key_blob);
+      let credentialStatus: "ok" | "invalid" | "none" | "no_master_key" = "none";
+      if (hasKey && !masterKey) {
+        credentialStatus = "no_master_key";
+      } else if (hasKey && masterKey) {
+        try {
+          decrypt(auth!.key_blob ?? auth!.aws_secret_access_key_blob!, masterKey, tenantId);
+          credentialStatus = "ok";
+        } catch {
+          credentialStatus = "invalid";
+        }
+      }
+
       return {
         id: cred.id,
         slug: cred.slug,
@@ -90,6 +121,8 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
         apiVersion: (cfg.api_version as string | undefined) ?? null,
         awsRegion: (cfg.aws_region as string | undefined) ?? null,
         keyHint: auth?.key_hint ?? null,
+        hasKey,
+        credentialStatus,
         status: cred.status,
         healthState: cred.healthState,
         lastHealthCheckAt: cred.lastHealthCheckAt,

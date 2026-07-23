@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -93,17 +93,24 @@ export function validateCreatePayload(body: {
   api_key?: string;
 }): string | null {
   const { provider } = body;
+  const hasApiKey = !!body.api_key?.trim();
   switch (provider) {
     case "openai":
     case "anthropic":
+      // base_url is optional (both providers have defaults), but the key is
+      // not: a hosted provider without one stores a credential that lists
+      // fine and fails at call time with an upstream 401. Rejecting here is
+      // what keeps "configured" and "usable" the same thing.
+      if (!hasApiKey) return `api_key is required for ${provider}`;
+      return null;
     case "custom":
-      // base_url is optional for openai/anthropic (providers have defaults);
       // custom can run without credentials in rare self-hosted setups.
       return null;
     case "azure-openai":
       if (!body.base_url) return "base_url is required for azure-openai (e.g. https://{resource}.openai.azure.com)";
       if (!body.deployment_name) return "deployment_name is required for azure-openai";
       if (!body.api_version) return "api_version is required for azure-openai (e.g. 2024-02-15-preview)";
+      if (!hasApiKey) return "api_key is required for azure-openai";
       return null;
     case "ollama":
       if (!body.base_url) return "base_url is required for ollama (e.g. http://localhost:11434)";
@@ -363,6 +370,24 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   const configJson = buildConfigJson(body.provider, body);
   const authJson = buildAuthJson(body.provider, body, masterKey, tenantId);
 
+  // The dashboard derives the slug from the display name, so "add a credential
+  // with a name this project already uses" hit the (project_id, slug) unique
+  // index and surfaced as a raw 500 with a SQL dump in it. Answer it as the
+  // conflict it is.
+  const [clash] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.modelEndpoints.id })
+      .from(schema.modelEndpoints)
+      .where(and(eq(schema.modelEndpoints.slug, body.slug), sql`deleted_at IS NULL`))
+      .limit(1),
+  );
+  if (clash) {
+    return c.json(
+      { error: `A credential named “${body.name}” already exists in this project.` },
+      409,
+    );
+  }
+
   const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .insert(schema.modelEndpoints)
@@ -616,10 +641,14 @@ modelProviders.delete("/:id", requires("endpoint:write"), async (c) => {
       .update(schema.modelEndpoints)
       .set({ deletedAt: now })
       .where(eq(schema.modelEndpoints.id, endpointId));
+    // Every model on the credential, not just the one that reuses the legacy
+    // endpoint id. A credential created with capabilities ["chat","vision"]
+    // has a second row with a fresh id; keying the delete on `id = endpointId`
+    // left that row alive and pointing at a deleted credential.
     await tx
       .update(schema.tenantModels)
       .set({ deletedAt: now })
-      .where(eq(schema.tenantModels.id, endpointId));
+      .where(eq(schema.tenantModels.credentialId, credentialId));
     await tx
       .update(schema.providerCredentials)
       .set({ deletedAt: now })

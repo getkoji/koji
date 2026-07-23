@@ -44,6 +44,14 @@ interface Credential {
   apiVersion: string | null;
   awsRegion: string | null;
   keyHint: string | null;
+  hasKey: boolean;
+  /**
+   * Whether the stored key is actually usable: `ok` decrypts, `invalid` is
+   * present but undecryptable (rotated master key / corrupt blob), `none`
+   * means no key was ever stored. Anything but `ok` fails at extraction time,
+   * so it has to be visible here rather than only in the trace.
+   */
+  credentialStatus: "ok" | "invalid" | "none" | "no_master_key";
   status: string;
   healthState: string;
   lastHealthCheckAt: string | null;
@@ -59,6 +67,14 @@ const PROVIDER_TYPES = [
   { value: "ollama", label: "Ollama", defaultUrl: "http://localhost:11434" },
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
+
+const CREDENTIAL_STATUS_HELP: Record<string, string> = {
+  none: "No API key is stored on this credential. Extractions using it will fail — use “rotate key” to add one.",
+  invalid:
+    "The stored key can't be decrypted (the master key may have changed). Rotate the key to store it again.",
+  no_master_key:
+    "The server has no KOJI_MASTER_KEY set, so stored keys can't be decrypted.",
+};
 
 const FALLBACK_SUGGESTIONS: Record<string, string[]> = {
   openai: ["gpt-4o", "gpt-4o-mini"],
@@ -351,6 +367,14 @@ function CredentialCard({
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           {cred.keyHint && <Meta>••••{cred.keyHint}</Meta>}
+          {cred.credentialStatus !== "ok" && (
+            <span
+              className="font-mono text-[10px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded"
+              title={CREDENTIAL_STATUS_HELP[cred.credentialStatus]}
+            >
+              {cred.credentialStatus === "none" ? "no key" : "key unusable"}
+            </span>
+          )}
           {cred.healthState === "unhealthy" && (
             <span className="font-mono text-[10px] text-vermillion-2 bg-vermillion-3 px-1.5 py-0.5 rounded">
               unhealthy
