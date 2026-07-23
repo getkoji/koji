@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.100.0 — 2026-07-23
+
+**Classifiers can hold a corpus and be backtested — the schema-sibling of schema
+ground truth.** New endpoints label documents with the class they *should* be
+assigned, so a classifier config can be tuned against known-correct answers
+instead of guessing:
+
+- `GET/POST/DELETE /api/classifiers/{slug}/corpus` — list, label, and remove
+  labelled documents. A label must be one of the classifier's released class
+  ids, or `unknown` ("this document should fall through"). `POST` takes either a
+  multipart `file` upload or a JSON `{ document_id, label }` referencing a
+  document already in the pool.
+- `GET /api/corpus/documents` — the project's shared document pool. Corpus
+  documents (schema and classifier alike) now live in one project-level pool, so
+  a file uploaded once can be labelled for a schema *and* a classifier without
+  re-uploading. Attach it by `document_id`.
+
+This is the API layer of the classifier backtest surface; the validate run that
+scores a config against these labels (with a per-class confusion matrix) follows.
+
 ## 0.99.3 — 2026-07-22
 
 **Scalar array fields now return scalars.** A field declared as an array of

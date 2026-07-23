@@ -1,11 +1,14 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
-import { loadClassifierConfig, ClassifierConfigError } from "../classify";
+import { loadClassifierConfig, ClassifierConfigError, resolveClassifierConfig } from "../classify";
 import type { ClassifierConfig } from "../classify";
+import { upsertCorpusDocument } from "../schemas/corpus-pool";
+import { validateCorpusLabel } from "../classifiers/corpus-label";
+import { resolveMimeType } from "../ingestion/mime";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
 import { reactivateRefusalBody } from "../schemas/release-policy";
 import { parseVersionSelector } from "../schemas/version-selector";
@@ -539,4 +542,260 @@ classifiers.post("/:slug/release", requires("schema:deploy"), async (c) => {
     );
   }
   return c.json({ released: res.label, versionId: res.id, action: res.action, displaced: res.displaced });
+});
+
+// ── Classifier corpus (oss-450) ─────────────────────────────────────────────
+//
+// The schema-sibling of the schema corpus surface (routes/schemas.ts), against
+// the shared project document pool (oss-449). A classifier corpus entry is a
+// LABEL — `groundTruthJson = { label: "<class id>" }` — owned by the classifier
+// (schema_id NULL, classifier_id set). It backs `koji classify validate`
+// (oss-453). Ground-truth labels are validated against the classifier's
+// released class ids; UNKNOWN_LABEL is legitimate ("should fall through").
+
+/** Resolve the classifier row + its released class ids, or an error response. */
+async function loadClassifierForCorpus(c: Context<Env>, slug: string) {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id, projectId: schema.classifiers.projectId })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return { error: c.json({ error: "Classifier not found" }, 404) } as const;
+
+  const resolved = await resolveClassifierConfig(db, { tenantId, projectId: cls.projectId }, slug);
+  if ("error" in resolved) {
+    // No released version → no class vocabulary to validate a label against.
+    return {
+      error: c.json(
+        { error: "Classifier has no released version to validate corpus labels against — release it first." },
+        409,
+      ),
+    } as const;
+  }
+  const classIds = resolved.config.classes.map((cl) => cl.id);
+  return { cls, classIds } as const;
+}
+
+/** GET /api/classifiers/:slug/corpus — list the classifier's labelled documents. */
+classifiers.get("/:slug/corpus", requires("corpus:read"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+
+  const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusEntries.id,
+        documentId: schema.corpusEntries.documentId,
+        filename: schema.corpusEntries.filename,
+        fileSize: schema.corpusEntries.fileSize,
+        mimeType: schema.corpusEntries.mimeType,
+        source: schema.corpusEntries.source,
+        groundTruthJson: schema.corpusEntries.groundTruthJson,
+        createdAt: schema.corpusEntries.createdAt,
+      })
+      .from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.classifierId, cls.id), isNull(schema.corpusEntries.deletedAt)))
+      .orderBy(desc(schema.corpusEntries.createdAt)),
+  );
+
+  const data = rows.map((r) => {
+    const gt = r.groundTruthJson as { label?: unknown } | null;
+    const label = gt && typeof gt.label === "string" ? gt.label : null;
+    return {
+      id: r.id,
+      documentId: r.documentId,
+      filename: r.filename,
+      fileSize: r.fileSize,
+      mimeType: r.mimeType,
+      source: r.source,
+      label,
+      createdAt: r.createdAt,
+    };
+  });
+  return c.json({ data });
+});
+
+/**
+ * POST /api/classifiers/:slug/corpus — label a document for this classifier.
+ *
+ * Two input modes:
+ *   - multipart `file` (+ `label`): upload a new document, pool it, label it.
+ *   - JSON `{ document_id, label }`: attach a document already in the project
+ *     pool (uploaded by a schema corpus or another classifier) — no re-upload.
+ *
+ * `label` must be a released class id or UNKNOWN_LABEL. The entry is owned by
+ * the classifier (schema_id NULL). File columns are still copied onto the entry
+ * (they stay NOT NULL until oss-476).
+ */
+classifiers.post("/:slug/corpus", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const storage = c.get("storage");
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+
+  const loaded = await loadClassifierForCorpus(c, slug);
+  if ("error" in loaded) return loaded.error;
+  const { cls, classIds } = loaded;
+  const projectId = cls.projectId;
+
+  const contentType = c.req.header("content-type") ?? "";
+
+  // Resolve the (documentId, file fields, label) from whichever input mode.
+  let documentId: string;
+  let file: { filename: string; storageKey: string; fileSize: number; mimeType: string; contentHash: string };
+  let source: string;
+  let rawLabel: unknown;
+
+  if (contentType.includes("multipart/form-data")) {
+    const body = await c.req.parseBody();
+    const upload = body.file;
+    if (!(upload instanceof File)) return c.json({ error: "file is required (multipart 'file' field)" }, 400);
+    rawLabel = typeof body.label === "string" ? body.label : undefined;
+
+    const check = validateCorpusLabel(rawLabel, classIds);
+    if (!check.ok) return c.json({ error: check.message }, 400);
+
+    const fileBuffer = Buffer.from(await upload.arrayBuffer());
+    const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
+    const mimeType = resolveMimeType(upload.type, upload.name, fileBuffer);
+    const storageKey = `corpus/${tenantId}/clf-${cls.id}/${Date.now()}-${upload.name}`;
+    await storage.put(storageKey, fileBuffer, { contentType: mimeType });
+
+    documentId = await upsertCorpusDocument(db, { tenantId, projectId }, {
+      tenantId,
+      projectId,
+      filename: upload.name,
+      storageKey,
+      fileSize: upload.size,
+      mimeType,
+      contentHash,
+      source: "upload",
+      addedBy: principal.userId,
+    });
+    file = { filename: upload.name, storageKey, fileSize: upload.size, mimeType, contentHash };
+    source = "upload";
+    rawLabel = check.label;
+  } else {
+    const json = (await c.req.json().catch(() => null)) as { document_id?: unknown; label?: unknown } | null;
+    if (!json || typeof json !== "object") return c.json({ error: "Invalid JSON body" }, 400);
+    if (typeof json.document_id !== "string") {
+      return c.json({ error: "Provide a multipart `file`, or JSON `{ document_id, label }`." }, 400);
+    }
+    const requestedDocumentId = json.document_id;
+    const check = validateCorpusLabel(json.label, classIds);
+    if (!check.ok) return c.json({ error: check.message }, 400);
+
+    // The document must already be in THIS project's pool.
+    const [doc] = await withRLS(db, { tenantId, projectId }, (tx) =>
+      tx
+        .select({
+          id: schema.corpusDocuments.id,
+          filename: schema.corpusDocuments.filename,
+          storageKey: schema.corpusDocuments.storageKey,
+          fileSize: schema.corpusDocuments.fileSize,
+          mimeType: schema.corpusDocuments.mimeType,
+          contentHash: schema.corpusDocuments.contentHash,
+        })
+        .from(schema.corpusDocuments)
+        .where(
+          and(
+            eq(schema.corpusDocuments.id, requestedDocumentId),
+            isNull(schema.corpusDocuments.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
+    if (!doc) return c.json({ error: "Document not found in this project's corpus pool" }, 404);
+    documentId = doc.id;
+    file = doc;
+    source = "pool";
+    rawLabel = check.label;
+  }
+
+  // One label per (classifier, document): dedup on the owner-scoped partial
+  // unique. A re-label of the same document returns the existing entry rather
+  // than colliding.
+  const [existing] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .select()
+      .from(schema.corpusEntries)
+      .where(
+        and(
+          eq(schema.corpusEntries.classifierId, cls.id),
+          eq(schema.corpusEntries.documentId, documentId),
+          isNull(schema.corpusEntries.deletedAt),
+        ),
+      )
+      .limit(1),
+  );
+  if (existing) return c.json(existing, 200);
+
+  const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .insert(schema.corpusEntries)
+      .values({
+        tenantId,
+        projectId,
+        documentId,
+        classifierId: cls.id,
+        filename: file.filename,
+        storageKey: file.storageKey,
+        fileSize: file.fileSize,
+        mimeType: file.mimeType,
+        contentHash: file.contentHash,
+        source,
+        groundTruthJson: { label: rawLabel },
+        addedBy: principal.userId,
+      })
+      .returning(),
+  );
+  return c.json(row, 201);
+});
+
+/** DELETE /api/classifiers/:slug/corpus/:entryId — soft-delete a label. */
+classifiers.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const entryId = c.req.param("entryId")!;
+
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+
+  const deleted = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .update(schema.corpusEntries)
+      .set({ deletedAt: new Date() })
+      .where(
+        and(
+          eq(schema.corpusEntries.id, entryId),
+          eq(schema.corpusEntries.classifierId, cls.id),
+          isNull(schema.corpusEntries.deletedAt),
+        ),
+      )
+      .returning({ id: schema.corpusEntries.id }),
+  );
+  if (deleted.length === 0) return c.json({ error: "Corpus entry not found" }, 404);
+  return c.body(null, 204);
 });

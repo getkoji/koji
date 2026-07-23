@@ -1703,6 +1703,33 @@ Graduate a candidate to a release and make it live — **manual, gated by `schem
 
 Release YAML directly (skip the rc loop) and make it live — the early-stage path. Auth: `schema:deploy`. Body: `{ yaml_source?, allow_reactivate? }` (`yaml` accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal. The stored draft is released only when you send **no body at all**; the same body rules as [`POST /api/schemas/{slug}/release`](#post-apischemasslugrelease) apply.
 
+## Classifier corpus
+
+A classifier can hold a **corpus** — documents labelled with the class they *should* be assigned — exactly as a schema holds ground-truth documents. It backs `koji classify validate` (backtesting a classifier config against known-correct labels). Corpus documents live in a **project-level pool** shared with schema corpora, so a document uploaded once can be labelled for a schema *and* for a classifier without re-uploading.
+
+### `GET /api/classifiers/{slug}/corpus`
+
+List the classifier's labelled documents: `id`, `documentId` (the pooled file), `filename`, `fileSize`, `mimeType`, `source`, `label` (the ground-truth class id, or `null` if unlabeled), `createdAt`. Auth: `corpus:read`.
+
+### `POST /api/classifiers/{slug}/corpus`
+
+Label a document for this classifier. **Two input modes:**
+
+- **multipart** `file` + `label` — upload a new document, pool it, and label it.
+- **JSON** `{ "document_id": "...", "label": "..." }` — label a document already in the project pool (see [`GET /api/corpus/documents`](#get-apicorpusdocuments)), with no re-upload.
+
+`label` must be one of the classifier's **released** class ids, or `unknown` (a legitimate ground truth — "this document should fall through", which is what an `on_unknown: reject` config needs to backtest). An unknown label is a `400` that lists the valid ids. If the classifier has no released version, labels can't be validated → `409` (release it first). Re-labelling a document already in the corpus returns the existing entry (`200`). Auth: `corpus:write`. Returns the created entry (`201`).
+
+### `DELETE /api/classifiers/{slug}/corpus/{entryId}`
+
+Soft-delete a label. `204` on success, `404` if the entry isn't in this classifier's corpus. Auth: `corpus:write`.
+
+## Corpus pool
+
+### `GET /api/corpus/documents`
+
+List the current **project's** pooled documents — every file any corpus surface (schema or classifier) has uploaded, so a picker can attach one to a new label by `document_id` instead of re-uploading. Project-scoped (needs the `x-koji-project` header). Optional `?content_hash=` filters to a specific file. Each row: `id`, `filename`, `fileSize`, `mimeType`, `contentHash`, `source`, `createdAt` — never the storage key. Auth: `corpus:read`.
+
 ---
 
 ## Provenance
