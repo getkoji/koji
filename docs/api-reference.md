@@ -22,8 +22,8 @@ each belong to exactly one project, and requests only see the resources of the
 project they resolve to. Resolution order:
 
 1. `x-koji-project: <project-slug>` header, when present (`404` if the slug
-   doesn't exist in the tenant — or, for an API key, if it's outside the key's
-   scope; see below).
+   doesn't exist in the tenant; `403` if it exists but is outside the caller's
+   scope — see below).
 2. The API key's default project (the project it was created in, for a
    single-project key).
 3. The tenant's default project (the one whose slug matches the tenant slug,
@@ -38,14 +38,23 @@ x-koji-project: your-project-slug   # optional with session auth
 **An API key's project scope.** A key is scoped to one of:
 
 - **single project** (the default; every legacy key) — the project it was
-  created in. An `x-koji-project` header naming any other project answers `404`
-  (a key never learns which other projects exist), and a key whose only project
-  is deleted stops working (`403`).
+  created in. An `x-koji-project` header naming another project in the same
+  tenant answers `403` ("not scoped to that project"), and a key whose only
+  project is deleted stops working (`403`).
 - **specific projects** — a chosen set. The `x-koji-project` header may name any
-  project in the set; anything else answers `404`. With no header the key
-  defaults to its bound project (or the first in the set).
+  project in the set; anything else answers `403`. With no header the key
+  defaults to its bound project (or the first in the set). **This set is a
+  fixed list: a project created after the key is _not_ in it.** Only *all
+  projects* keeps up with new projects automatically.
 - **all projects** (tenant-wide) — the header may name any live project in the
-  tenant; with no header it resolves the tenant default.
+  tenant, including projects created after the key; with no header it resolves
+  the tenant default.
+
+A key's scope is **not fixed at creation** — `PATCH /api/api-keys/{id}` takes
+the same `project_scope` block as create and moves an existing key between
+these modes without changing the secret, so widening a key never means
+reissuing it to every consumer. Granting *all projects* requires a caller who
+can themselves reach every project.
 
 A key still cannot cross tenants — it is rejected (`403`) for any tenant other
 than its own. A key acts with its creator's role permissions; its project scope

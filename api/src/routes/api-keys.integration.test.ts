@@ -32,6 +32,10 @@ function appAt(projectId: string | null) {
     c.set("principal", { userId: user, email: "o@x.com", name: "Owner" } as any);
     c.set("roles", ["owner"]);
     c.set("grants", new Set(["api_key:write"]) as any);
+    // The real auth middleware always sets this; null = unrestricted, which is
+    // what an owner resolves to. The workspace-wide guards read it, and they
+    // fail closed when it's absent — so the stub has to mirror reality.
+    c.set("accessibleProjectIds", null as any);
     if (projectId) c.set("projectId", projectId);
     await next();
   });
@@ -165,5 +169,153 @@ describe("API-keys route — project scope (oss-433)", () => {
     expect(denied.status).toBe(404);
     const [still] = await db.execute<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM api_keys WHERE id = ${singleB.id}::uuid`);
     expect(still!.revoked_at).toBeNull();
+  });
+
+  // ── PATCH: editing a key's project scope (oss-482) ──────────────────────
+  // Scope used to be fixed at creation, so widening a key meant revoking and
+  // reissuing it. These cover the move between all three modes, and the trap
+  // that motivated it: a "specific projects" key is a frozen list, so a
+  // project created later is NOT in it — only mode "all" keeps up.
+
+  async function patchKey(app: Hono<Env>, id: string, body: unknown) {
+    const res = await app.request(`/api/api-keys/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { res, body: (await res.json()) as any };
+  }
+
+  const grantsFor = async (id: string) =>
+    (
+      await db.execute<{ project_id: string }>(
+        sql`SELECT project_id FROM api_key_project_access WHERE api_key_id = ${id}::uuid`,
+      )
+    ).map((r) => r.project_id);
+
+  test("widens a single-project key to all-access", async () => {
+    const { body: key } = await createKey(appAt(projA), { name: "widen-me" });
+    const { res, body } = await patchKey(appAt(projA), key.id, {
+      project_scope: { mode: "all" },
+    });
+    expect(res.status).toBe(200);
+    expect(body.scope.mode).toBe("all");
+
+    const [row] = await db.execute<{ project_id: string | null }>(
+      sql`SELECT project_id FROM api_keys WHERE id = ${key.id}::uuid`,
+    );
+    expect(row!.project_id).toBeNull();
+    expect(await grantsFor(key.id)).toEqual([]);
+  });
+
+  test("narrows an all-access key to a specific project set, replacing grants", async () => {
+    const { body: key } = await createKey(appAt(projA), {
+      name: "narrow-me",
+      project_scope: { mode: "all" },
+    });
+    await patchKey(appAt(projA), key.id, {
+      project_scope: { mode: "projects", project_ids: [projA, projB] },
+    });
+    expect(new Set(await grantsFor(key.id))).toEqual(new Set([projA, projB]));
+
+    // Replaced wholesale, not appended — dropping projB must drop the grant.
+    const { body } = await patchKey(appAt(projA), key.id, {
+      project_scope: { mode: "projects", project_ids: [projA] },
+    });
+    expect(body.scope.mode).toBe("projects");
+    expect(await grantsFor(key.id)).toEqual([projA]);
+  });
+
+  test("a 'specific projects' key does not cover a project created later; 'all' does", async () => {
+    const { body: listKey } = await createKey(appAt(projA), {
+      name: "frozen-list",
+      project_scope: { mode: "projects", project_ids: [projA, projB] },
+    });
+    const { body: allKey } = await createKey(appAt(projA), {
+      name: "standing-rule",
+      project_scope: { mode: "all" },
+    });
+
+    const projLater = randomUUID();
+    await db.execute(
+      sql`INSERT INTO projects (id, tenant_id, slug, display_name, created_by)
+          VALUES (${projLater}::uuid, ${tenant}::uuid, 'proj-later', 'Later', ${user}::uuid)`,
+    );
+
+    // The list key's reach is exactly what was named when it was written.
+    expect(new Set(await grantsFor(listKey.id))).toEqual(new Set([projA, projB]));
+    const [allRow] = await db.execute<{ project_id: string | null }>(
+      sql`SELECT project_id FROM api_keys WHERE id = ${allKey.id}::uuid`,
+    );
+    // NULL project_id is the standing rule that matches the new project too.
+    expect(allRow!.project_id).toBeNull();
+
+    // And the fix for the frozen list is now a PATCH, not a reissue.
+    await patchKey(appAt(projA), listKey.id, { project_scope: { mode: "all" } });
+    const [fixed] = await db.execute<{ project_id: string | null }>(
+      sql`SELECT project_id FROM api_keys WHERE id = ${listKey.id}::uuid`,
+    );
+    expect(fixed!.project_id).toBeNull();
+    expect(await grantsFor(listKey.id)).toEqual([]);
+  });
+
+  test("renames without touching scope", async () => {
+    const { body: key } = await createKey(appAt(projA), {
+      name: "old-name",
+      project_scope: { mode: "projects", project_ids: [projA, projB] },
+    });
+    const { res } = await patchKey(appAt(projA), key.id, { name: "new-name" });
+    expect(res.status).toBe(200);
+    const [row] = await db.execute<{ name: string }>(
+      sql`SELECT name FROM api_keys WHERE id = ${key.id}::uuid`,
+    );
+    expect(row!.name).toBe("new-name");
+    expect(new Set(await grantsFor(key.id))).toEqual(new Set([projA, projB]));
+  });
+
+  test("cannot edit a key that is not reachable from the caller's project", async () => {
+    const { body: singleB } = await createKey(appAt(projB), { name: "b-only" });
+    const { res } = await patchKey(appAt(projA), singleB.id, {
+      project_scope: { mode: "all" },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test("rejects an unknown project id", async () => {
+    const { body: key } = await createKey(appAt(projA), { name: "bad-target" });
+    const { res, body } = await patchKey(appAt(projA), key.id, {
+      project_scope: { mode: "projects", project_ids: [randomUUID()] },
+    });
+    expect(res.status).toBe(400);
+    expect(body.error).toMatch(/Unknown project/i);
+  });
+
+  test("a revoked key cannot be re-scoped", async () => {
+    const { body: key } = await createKey(appAt(projA), { name: "gone" });
+    await appAt(projA).request(`/api/api-keys/${key.id}`, { method: "DELETE" });
+    const { res } = await patchKey(appAt(projA), key.id, { project_scope: { mode: "all" } });
+    expect(res.status).toBe(409);
+  });
+
+  test("a project-restricted caller cannot widen a key to the whole workspace", async () => {
+    const { body: key } = await createKey(appAt(projA), { name: "escalate" });
+    // Same app, but the caller is confined to projA (a Set, not null) — the
+    // shape the real middleware produces for a restricted member or a
+    // project-bound API key.
+    const restricted = new Hono<Env>();
+    restricted.use("*", async (c, next) => {
+      c.set("db", db as any);
+      c.set("tenantId", tenant);
+      c.set("principal", { userId: user, email: "o@x.com", name: "Owner" } as any);
+      c.set("roles", ["owner"]);
+      c.set("grants", new Set(["api_key:write"]) as any);
+      c.set("accessibleProjectIds", new Set([projA]) as any);
+      c.set("projectId", projA);
+      await next();
+    });
+    restricted.route("/api/api-keys", apiKeys);
+
+    const { res } = await patchKey(restricted, key.id, { project_scope: { mode: "all" } });
+    expect(res.status).toBe(403);
   });
 });

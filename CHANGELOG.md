@@ -2,6 +2,36 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.102.0 — 2026-07-23
+
+**API keys are managed at the workspace level, and their project access is
+editable.** A key can span projects — an all-access key belongs to no project at
+all — so managing them from inside a project was the wrong shape: a
+multi-project key appeared once per project it touched, and there was no single
+place to see every key in the workspace.
+
+- **API Keys moved to Organization → Settings → API Keys.** The old
+  per-project path redirects, so existing links keep working. The list is now
+  workspace-wide and every key shows its project access, not just the
+  non-default ones.
+- **`PATCH /api/api-keys/{id}`** changes a key's name and/or `project_scope`
+  using the same block create takes. Scope used to be fixed at creation, so
+  widening a key meant revoking and reissuing it — forcing every consumer to
+  rotate a secret that didn't need to change. The secret is never touched;
+  only the key's reach. Granting *all projects* requires a caller who can
+  already reach every project.
+- **A too-narrow key now says so.** Naming a project outside a key's scope
+  returned `404 Project not found` — indistinguishable from a typo, and the
+  usual cause is your own key being narrower than you remember. It now returns
+  `403` naming the actual problem. A slug that doesn't exist in the tenant
+  still returns `404`, so no key can enumerate another tenant's projects.
+
+Worth knowing, because it is the trap this release exists to fix: **"specific
+projects" is a fixed list, not a standing rule.** A key scoped to a chosen set
+does *not* pick up a project created later — only *all projects* does. The
+scope editor now says this in the dialog, and you can move a key between the
+two modes without reissuing it.
+
 ## 0.101.2 — 2026-07-23
 
 **Build mode works in every project, not just the default one.** Clicking **Run**
@@ -15,6 +45,7 @@ which made the failure look like missing data rather than a mis-scoped request.
 The page now runs extractions through the same shared runner the corpus labeling
 queue uses, so there is one place that assembles these headers. A test keeps
 tenant-scoped pages from hand-rolling their own API calls again.
+
 
 ## 0.101.1 — 2026-07-23
 
