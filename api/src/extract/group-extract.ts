@@ -65,6 +65,32 @@ export function describeArrayItem(spec: Record<string, unknown>): string {
 }
 
 /**
+ * Whether an array field's elements are objects (vs bare scalars).
+ *
+ * Object array:  `items: { type: object, properties: {...} }` — e.g. a policies
+ *                or line-items table, where each element carries sub-fields.
+ * Scalar array:  `items: { type: string }`, or no `items` at all — e.g. a list
+ *                of names. A bare `type: array` with no item spec is treated as
+ *                scalar: that is how the corpus declares scalar lists (parties,
+ *                medications), and an object array with no declared properties
+ *                would be unextractable anyway.
+ *
+ * This drives whether the extraction prompt asks for per-item `__source_text`.
+ * Emitting that instruction for a scalar array told the model every element had
+ * to be an object, so it wrapped bare values as `{ "<field>": value }` and the
+ * schema-declared scalar shape was impossible to satisfy.
+ */
+export function arrayItemsAreObjects(spec: Record<string, unknown>): boolean {
+  const itemSpec = spec.items;
+  if (!itemSpec || typeof itemSpec !== "object") return false;
+  const item = itemSpec as Record<string, unknown>;
+  if (item.type === "object") return true;
+  // Some schemas describe object items purely by their properties, no `type`.
+  const props = (item.properties ?? item.fields) as Record<string, unknown> | undefined;
+  return !!props && typeof props === "object" && Object.keys(props).length > 0;
+}
+
+/**
  * Render a single property name + type for use inside a nested object description.
  * Walks into nested arrays/objects via describeArrayItem.
  */
@@ -263,12 +289,24 @@ export function buildGroupPrompt(
   // rows of a co-located table (emit 2 of a 4-row coverage table). Generic: it
   // only asks for completeness when the data is a repeated structure, so it's
   // safe for arrays that aren't tables.
-  const hasArrayField = Object.values(fields).some((s) => (s.type as string) === "array");
+  const arrayFields = Object.values(fields).filter((s) => (s.type as string) === "array");
+  const hasArrayField = arrayFields.length > 0;
+  const hasObjectArray = arrayFields.some((s) => arrayItemsAreObjects(s));
+  const hasScalarArray = arrayFields.some((s) => !arrayItemsAreObjects(s));
   if (hasArrayField) {
     extraInstructions.push(
       "For array fields, enumerate EVERY matching row/item as a separate element — " +
         "if a table or repeated block has N rows, return N items. Do not summarize, " +
         "group, deduplicate, or stop early; list them all, even when they look similar.",
+    );
+  }
+  // A scalar array (e.g. a list of names) must return bare values, one per
+  // element. Without this, the per-item provenance instruction below pushes the
+  // model to wrap every element as an object, breaking the declared shape.
+  if (hasScalarArray) {
+    extraInstructions.push(
+      "Fields declared as an array of plain values (a simple list, e.g. names) must " +
+        "return bare strings or numbers as elements — one value per element, NOT objects.",
     );
   }
 
@@ -302,6 +340,13 @@ export function buildGroupPrompt(
   if (dateLocale) {
     dateInstruction = `Dates as YYYY-MM-DD (input uses ${dateLocale}).`;
   }
+  // Per-item provenance only applies when an array actually holds objects.
+  // Emitted for a scalar array, it silently coerces bare values into objects
+  // (see arrayItemsAreObjects). Scalar arrays are covered by the top-level
+  // __source_text map that every prompt already asks for.
+  const perItemProvenance = hasObjectArray
+    ? ` For each object in an array-of-objects field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear — do not paraphrase or reformat. Also include a "__field_source_text" property on that object: an OBJECT mapping each of the object's OWN field names to the EXACT verbatim text for THAT specific field's value (the characters as printed, before normalization) — include a field ONLY if its value is actually printed in the document, and copy just the snippet for that one value, not the whole row. Example: {"amount": "$1,234.00", "rate": "4.5%"} (include a field only if its value is actually printed for that item).`
+    : "";
   let extraBlock = extraInstructions.join("\n");
   if (extraBlock) {
     extraBlock = "\n\n" + extraBlock;
@@ -319,7 +364,7 @@ ${content}
 
 ## Instructions
 
-Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text. For each object in an array field, include a "__source_text" property with the EXACT verbatim text from the document where you found that item. Copy 1-3 consecutive lines exactly as they appear \u2014 do not paraphrase or reformat. Also include a "__field_source_text" property on that object: an OBJECT mapping each of the object's OWN field names to the EXACT verbatim text for THAT specific field's value (the characters as printed, before normalization) \u2014 include a field ONLY if its value is actually printed in the document, and copy just the snippet for that one value, not the whole row. Example: {"amount": "$1,234.00", "rate": "4.5%"} (include a field only if its value is actually printed for that item). Also include a top-level "__source_text" object mapping each field name to the EXACT verbatim text from the document for that field's value \u2014 the characters as they appear, before any formatting or normalization. And include a "__source_context" object mapping each field name to the full line or sentence where the value appears, for disambiguation. Example: if extracting effective_date from "Policy Period: From 12-04-17 To 12-04-18", return {"effective_date": "2017-12-04", "__source_text": {"effective_date": "12-04-17"}, "__source_context": {"effective_date": "Policy Period: From 12-04-17 To 12-04-18"}}.${extraBlock}
+Return a FLAT JSON object with the listed field NAMES as top-level keys \u2014 do NOT nest the result under a schema name or a wrapper object. Example: return \`{"field_a": ..., "field_b": ...}\`, not \`{"${schemaName}": {"field_a": ..., "field_b": ...}}\`. ${dateInstruction} Numbers as numbers (not strings). For enum/pick fields, choose the closest match from the allowed values. Do not invent data \u2014 only extract what is explicitly in the text.${perItemProvenance} Also include a top-level "__source_text" object mapping each field name to the EXACT verbatim text from the document for that field's value \u2014 the characters as they appear, before any formatting or normalization. And include a "__source_context" object mapping each field name to the full line or sentence where the value appears, for disambiguation. Example: if extracting effective_date from "Policy Period: From 12-04-17 To 12-04-18", return {"effective_date": "2017-12-04", "__source_text": {"effective_date": "12-04-17"}, "__source_context": {"effective_date": "Policy Period: From 12-04-17 To 12-04-18"}}.${extraBlock}
 
 JSON:`;
 }

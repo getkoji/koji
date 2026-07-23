@@ -6,6 +6,7 @@ import { ProviderHttpError, ProviderTransportError } from "./providers";
 import { DEFAULT_CONTEXT_TOKENS, promptFits } from "./context-budget";
 import {
   describeArrayItem,
+  arrayItemsAreObjects,
   describeProperty,
   collectExtractionNotes,
   renderContextChunks,
@@ -488,6 +489,94 @@ describe("buildGroupPrompt", () => {
     expect(prompt).toContain("---");
     expect(prompt).toContain("### Page 2");
     expect(prompt).toContain("Second page");
+  });
+
+  // Regression (oss-471): the per-item "__source_text on each array object"
+  // instruction was emitted unconditionally, coercing scalar arrays into
+  // arrays of single-key objects. It must appear only for object arrays.
+  const OBJECT_ARRAY_INSTRUCTION = "array-of-objects field";
+
+  it("omits per-item provenance for a scalar array (no items spec)", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        medications: { type: "array", description: "List of medication names" },
+      },
+      chunks: [makeChunk({ index: 0, title: "Meds", content: "Aspirin, Lipitor" })],
+    });
+    const prompt = buildGroupPrompt(group, "discharge");
+    expect(prompt).not.toContain(OBJECT_ARRAY_INSTRUCTION);
+    expect(prompt).toContain("bare strings or numbers");
+    // Top-level scalar provenance is still requested.
+    expect(prompt).toContain('top-level "__source_text" object');
+  });
+
+  it("omits per-item provenance for an explicit scalar array (items: string)", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        tags: { type: "array", items: { type: "string" } },
+      },
+      chunks: [makeChunk({ index: 0, title: "Tags", content: "a b c" })],
+    });
+    const prompt = buildGroupPrompt(group, "test");
+    expect(prompt).not.toContain(OBJECT_ARRAY_INSTRUCTION);
+    expect(prompt).toContain("bare strings or numbers");
+  });
+
+  it("keeps per-item provenance for an object array", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        policies: {
+          type: "array",
+          items: { type: "object", properties: { number: { type: "string" } } },
+        },
+      },
+      chunks: [makeChunk({ index: 0, title: "Policies", content: "P1" })],
+    });
+    const prompt = buildGroupPrompt(group, "coi");
+    expect(prompt).toContain(OBJECT_ARRAY_INSTRUCTION);
+    expect(prompt).toContain("__field_source_text");
+    // A pure object-array group has no scalar array, so no scalar instruction.
+    expect(prompt).not.toContain("bare strings or numbers");
+  });
+
+  it("emits BOTH instructions when a group mixes object and scalar arrays", () => {
+    const group = makeGroup({
+      fieldSpecs: {
+        policies: {
+          type: "array",
+          items: { type: "object", properties: { number: { type: "string" } } },
+        },
+        medications: { type: "array", description: "List of names" },
+      },
+      chunks: [makeChunk({ index: 0, title: "Doc", content: "..." })],
+    });
+    const prompt = buildGroupPrompt(group, "mixed");
+    expect(prompt).toContain(OBJECT_ARRAY_INSTRUCTION);
+    expect(prompt).toContain("bare strings or numbers");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// arrayItemsAreObjects
+// ---------------------------------------------------------------------------
+
+describe("arrayItemsAreObjects", () => {
+  it("is false for a bare array with no items spec", () => {
+    expect(arrayItemsAreObjects({ type: "array" })).toBe(false);
+  });
+  it("is false for a scalar item type", () => {
+    expect(arrayItemsAreObjects({ type: "array", items: { type: "string" } })).toBe(false);
+  });
+  it("is true for items.type === object", () => {
+    expect(
+      arrayItemsAreObjects({ type: "array", items: { type: "object", properties: { a: {} } } }),
+    ).toBe(true);
+  });
+  it("is true for items described by properties without an explicit type", () => {
+    expect(arrayItemsAreObjects({ type: "array", items: { properties: { a: {} } } })).toBe(true);
+  });
+  it("is false for an empty items object", () => {
+    expect(arrayItemsAreObjects({ type: "array", items: {} })).toBe(false);
   });
 });
 

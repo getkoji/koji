@@ -192,6 +192,11 @@ tags:
 
 Output: `"tags": ["urgent", "reviewed", "approved"]`
 
+Elements are bare values, not objects. A `type: array` with no `items` block is
+also treated as a scalar list — declare `items: { type: string }` when you want
+to be explicit. Use `items: { type: object }` (above) only when each element
+genuinely carries sub-fields.
+
 ### boolean
 
 True/false values. Koji normalizes common representations automatically:
