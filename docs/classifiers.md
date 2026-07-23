@@ -217,6 +217,33 @@ candidate**, **Release**, **Promote**) and the
 [API](api-reference.md#classifiers). See the
 [CLI Reference](cli.md) for the full command set.
 
+## Corpus & backtesting
+
+A classifier can hold a **corpus** — documents labelled with the class they
+*should* be assigned — the same way a schema holds ground-truth documents. This
+is what lets you tune a classifier against real numbers instead of guessing:
+widen a class's keywords, re-run the corpus, and see whether recall on another
+class dropped.
+
+A label is `{ label: "<class id>" }`, where the id is one of the classifier's
+**released** classes (or `unknown` — asserting a document *should* fall through,
+which is exactly what an `on_unknown: reject` config needs to test).
+
+Corpus documents live in a **project-level pool** shared with schema corpora, so
+a PDF uploaded once can be labelled for a schema *and* for a classifier without
+re-uploading — attach it by `document_id`:
+
+```bash
+# via the API
+curl -X POST .../api/classifiers/inbound_mail/corpus \
+  -H 'content-type: application/json' \
+  -d '{ "document_id": "<pool doc id>", "label": "invoice" }'
+```
+
+See the [API Reference](api-reference.md#classifier-corpus) for the full corpus
+endpoints and [`GET /api/corpus/documents`](api-reference.md#get-apicorpusdocuments)
+to list the pool.
+
 ## Managing classifiers
 
 Create, edit, and version classifiers from the dashboard (**Classifiers** in the

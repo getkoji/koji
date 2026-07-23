@@ -68,6 +68,7 @@ import { billing as billingRoutes } from "./routes/billing";
 import { forms as formsRouter } from "./routes/forms";
 import { classify } from "./routes/classify";
 import { classifiers } from "./routes/classifiers";
+import { corpus } from "./routes/corpus";
 import { upload } from "./routes/upload";
 import { logs } from "./routes/logs";
 import { notifications as notificationsRouter } from "./routes/notifications";
@@ -243,6 +244,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
   app.route("/api/schemas", schemas);
   app.route("/api/schemas", agentRouter);
   app.route("/api/classifiers", classifiers);
+  app.route("/api/corpus", corpus);
   app.route("/api/jobs", jobs);
   app.route("/api/documents", documents);
   app.route("/api", extractRoutes);
