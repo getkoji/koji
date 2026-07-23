@@ -267,6 +267,13 @@
       "when": 1784761443943,
       "tag": "0037_bent_the_captain",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1784807452339,
+      "tag": "0038_glorious_paper_doll",
+      "breakpoints": true
     }
   ]
 }

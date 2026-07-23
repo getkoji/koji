@@ -233,6 +233,14 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
     return c.json({ error: "Corpus entry not found" }, 404);
   }
 
+  // This build-page endpoint extracts against a SCHEMA. A classifier-owned
+  // corpus entry (schema_id NULL, oss-475) has no schema to extract with, so
+  // reject it here rather than downstream. Narrows schemaId to a string.
+  if (!entry.schemaId) {
+    return c.json({ error: "Corpus entry is not schema-owned" }, 400);
+  }
+  const schemaEntry = { ...entry, schemaId: entry.schemaId };
+
   const principal = getPrincipal(c);
 
   // Existence check — a corpus row whose file was removed from storage 404s
@@ -267,7 +275,7 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   const accept = c.req.header("accept") ?? "";
   if (!accept.includes("text/event-stream")) {
     // Non-streaming JSON path
-    return handleExtractRunJSON(c, entry, body.schema_yaml, body.model, tenantId, db, storage, body.corpus_entry_id, principal.userId, parseProvider, parseFingerprint, skipCache, body.schema_run_id);
+    return handleExtractRunJSON(c, schemaEntry, body.schema_yaml, body.model, tenantId, db, storage, body.corpus_entry_id, principal.userId, parseProvider, parseFingerprint, skipCache, body.schema_run_id);
   }
 
   // ── SSE streaming path ──
