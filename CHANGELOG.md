@@ -2,6 +2,33 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.100.1 — 2026-07-23
+
+**A deleted credential could still be the one extraction used.** Deleting a
+model or parse credential stamps `deleted_at` and leaves `status` at `active`,
+but resolution filtered only on `status` — so every credential a project had
+ever deleted stayed in the candidate set, and which one won was left to the
+query planner. A project that had added and removed a credential or two could
+resolve a dead one (or one that never had a key) while its settings page, which
+does filter deleted rows, showed the working credential the whole time.
+
+- Model and parse resolution now exclude soft-deleted rows, on both the
+  "first active credential" path and the pipeline-pinned path, and order
+  candidates by `created_at` so the pick is deterministic. A pipeline pinned to
+  a credential you deleted no longer keeps using that key.
+- Deleting a credential now soft-deletes **every** model attached to it. A
+  credential added with both chat and vision capabilities left its vision row
+  alive, pointing at a deleted credential.
+- `POST /api/model-providers` rejects an `openai`, `anthropic`, or
+  `azure-openai` credential with no `api_key` (`custom` and `ollama` are
+  unchanged — they can legitimately have none). Previously it stored one that
+  listed like any other and failed at call time with an upstream 401.
+- A credential whose name collides with an existing one in the project returns
+  409 with a readable message instead of a 500 with a SQL dump in it.
+- `GET /api/credentials` returns `hasKey` and `credentialStatus`, and the Model
+  Endpoints page badges a credential that holds no key (or one that no longer
+  decrypts) instead of drawing it identically to a working one.
+
 ## 0.100.0 — 2026-07-23
 
 **Classifiers can hold a corpus and be backtested — the schema-sibling of schema

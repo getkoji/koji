@@ -18,6 +18,7 @@ import type { ParseProvider } from "./provider";
 vi.mock("drizzle-orm", () => ({
   eq: (col: unknown, val: unknown) => ({ op: "eq", col, val }),
   and: (...conds: unknown[]) => ({ op: "and", conds }),
+  isNull: (col: unknown) => ({ op: "isNull", col }),
 }));
 
 // ── Mock @koji/db: withRLS just runs the callback against a fake query tx ────
@@ -30,6 +31,7 @@ const tx = {
     capturedWheres.push(cond);
     return tx;
   },
+  orderBy: () => tx,
   limit: () => Promise.resolve(resultQueue.shift() ?? []),
 };
 vi.mock("@koji/db", () => ({
@@ -137,9 +139,13 @@ describe("resolveTenantParse — pin + kind", () => {
     });
 
     expect(resolved).toMatchObject({ provider: stubProvider, kind: "structured" });
-    // The id captured in the WHERE clause is the pin we passed.
-    const idWhere = capturedWheres.find((w) => w?.op === "eq" && w?.col === "id");
+    // The id captured in the WHERE clause is the pin we passed. The lookup is
+    // `and(eq(id, pin), isNull(deleted_at))`, so flatten one level of `and`.
+    const conds = capturedWheres.flatMap((w) => (w?.op === "and" ? w.conds : [w]));
+    const idWhere = conds.find((w: any) => w?.op === "eq" && w?.col === "id");
     expect(idWhere?.val).toBe("pe_pinned");
+    // Deleted endpoints must be excluded even on the pinned path.
+    expect(conds.some((w: any) => w?.op === "isNull")).toBe(true);
   });
 
   it("returns kind=markdown for a markdown-output driver", async () => {

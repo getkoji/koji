@@ -204,7 +204,7 @@ describe("validateCreatePayload", () => {
         deployment_name: "gpt4",
         api_version: "2024-02-15-preview",
       }),
-    ).toBeNull();
+    ).toMatch(/api_key/);
   });
 
   it("ollama requires base_url", () => {
@@ -232,9 +232,30 @@ describe("validateCreatePayload", () => {
     ).toBeNull();
   });
 
-  it("openai/anthropic/custom have no strict required fields", () => {
-    expect(validateCreatePayload({ provider: "openai" })).toBeNull();
-    expect(validateCreatePayload({ provider: "anthropic" })).toBeNull();
+  it("openai/anthropic require an api_key", () => {
+    // A hosted provider with no key stores a credential that lists like any
+    // other and then 401s at extraction time. It has to be rejected at the
+    // door, not discovered from a failed run.
+    expect(validateCreatePayload({ provider: "openai" })).toMatch(/api_key/);
+    expect(validateCreatePayload({ provider: "anthropic" })).toMatch(/api_key/);
+    expect(validateCreatePayload({ provider: "openai", api_key: "   " })).toMatch(/api_key/);
+    expect(validateCreatePayload({ provider: "openai", api_key: "sk-x" })).toBeNull();
+    expect(validateCreatePayload({ provider: "anthropic", api_key: "sk-ant-x" })).toBeNull();
+  });
+
+  it("azure-openai requires an api_key alongside its config fields", () => {
+    expect(
+      validateCreatePayload({
+        provider: "azure-openai",
+        base_url: "https://x.openai.azure.com",
+        deployment_name: "gpt4",
+        api_version: "2024-02-15-preview",
+        api_key: "sk-x",
+      }),
+    ).toBeNull();
+  });
+
+  it("custom stays key-optional — self-hosted endpoints may take no auth", () => {
     expect(validateCreatePayload({ provider: "custom" })).toBeNull();
   });
 });

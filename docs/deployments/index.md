@@ -17,6 +17,12 @@ Koji doesn't ship its own model. It extracts against whatever endpoint you confi
 
 All five use the same stored-endpoint flow: credentials are entered once in the UI, encrypted at rest, and referenced by pipeline steps via an endpoint ID. Per-pipeline model overrides still work — see [Configuration](../configuration.md).
 
+Three things worth knowing before you set one up:
+
+- **Credentials belong to a project, not to the workspace.** A key added under one project is not visible or usable from another — a newly created project starts with no model endpoint and no parse endpoint until you configure them.
+- **A hosted provider needs its key up front.** OpenAI, Anthropic, and Azure OpenAI credentials are rejected without an `api_key`, so a credential can't sit in the list looking configured and then fail with a 401 on the first document. (`custom` and `ollama` may legitimately have no key.)
+- **Deleting a credential takes it out of service immediately**, including for pipelines still pinned to it — those fall back to the default (or fail with "no model provider configured") rather than quietly continuing on a deleted key.
+
 ## Which one should I pick?
 
 - **Just starting out?** Use [OpenAI](openai.md) with `gpt-4o-mini`. Cheapest, fastest to set up, good-enough accuracy for most schemas.

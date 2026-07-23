@@ -17,7 +17,7 @@
  * behavior is unchanged until both a driver and a configured endpoint exist.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { RlsScope } from "@koji/db";
 import type { Db } from "@koji/db";
@@ -75,13 +75,21 @@ type ParseAuthBlob = {
  * Pick the first active, non-deleted parse endpoint for a tenant. Optional
  * `preferProvider` narrows by provider slug. Returns the `parse_endpoints.id`
  * or null when nothing matches.
+ *
+ * Delete stamps `deleted_at` and leaves `status` alone, so the `deleted_at IS
+ * NULL` arm is what makes a deleted endpoint actually stop being picked —
+ * without it the first row the planner returned could be one the user had
+ * thrown away. Ordering by `created_at` makes the pick deterministic.
  */
 export async function pickActiveParseEndpoint(
   db: Db,
   scope: RlsScope,
   preferProvider: string | null,
 ): Promise<string | null> {
-  const conditions = [eq(schema.parseEndpoints.status, "active")];
+  const conditions = [
+    eq(schema.parseEndpoints.status, "active"),
+    isNull(schema.parseEndpoints.deletedAt),
+  ];
   if (preferProvider) {
     conditions.push(eq(schema.parseEndpoints.provider, preferProvider));
   }
@@ -90,6 +98,7 @@ export async function pickActiveParseEndpoint(
       .select({ id: schema.parseEndpoints.id })
       .from(schema.parseEndpoints)
       .where(and(...conditions))
+      .orderBy(schema.parseEndpoints.createdAt, schema.parseEndpoints.id)
       .limit(1),
   );
   return row?.id ?? null;
@@ -132,10 +141,18 @@ export async function resolveParseEndpoint(
         updatedAt: schema.parseEndpoints.updatedAt,
       })
       .from(schema.parseEndpoints)
-      .where(eq(schema.parseEndpoints.id, parseProviderId))
+      .where(
+        and(
+          eq(schema.parseEndpoints.id, parseProviderId),
+          isNull(schema.parseEndpoints.deletedAt),
+        ),
+      )
       .limit(1),
   );
 
+  // A pipeline pinned to a deleted parse endpoint resolves to nothing, so the
+  // factory falls back to the default heavy provider rather than keeping a
+  // deleted vendor credential in service.
   if (!endpoint) return null;
 
   const cfg = (endpoint.configJson ?? {}) as ParseConfigBlob;
