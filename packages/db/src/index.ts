@@ -55,6 +55,8 @@ export const RLS_POLICIES: readonly string[] = [
   "corpus_version_results",
   "schema_runs",
   "schema_run_models",
+  "classifier_runs",
+  "classifier_run_docs",
   "pipelines",
   "sources",
   "ingestions",
@@ -118,6 +120,9 @@ export const PROJECT_RLS_TABLES: readonly string[] = [
   // tenant-isolated only before this — the gap the split closes.
   "corpus_documents",
   "corpus_entries",
+  // Classifier validate runs (oss-451) — denormalized project_id from day one.
+  "classifier_runs",
+  "classifier_run_docs",
 ];
 
 /**

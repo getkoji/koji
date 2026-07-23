@@ -117,6 +117,22 @@ CREATE POLICY corpus_documents_tenant_isolation ON corpus_documents FOR ALL
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
+-- classifier validate runs (oss-451). Tenant policies here; project policies in
+-- the RESTRICTIVE section below (denormalized project_id from day one).
+ALTER TABLE classifier_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE classifier_runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS classifier_runs_tenant_isolation ON classifier_runs;
+CREATE POLICY classifier_runs_tenant_isolation ON classifier_runs FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+ALTER TABLE classifier_run_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE classifier_run_docs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS classifier_run_docs_tenant_isolation ON classifier_run_docs;
+CREATE POLICY classifier_run_docs_tenant_isolation ON classifier_run_docs FOR ALL
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
 ALTER TABLE corpus_entry_ground_truth ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corpus_entry_ground_truth FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS corpus_entry_ground_truth_tenant_isolation ON corpus_entry_ground_truth;
@@ -374,6 +390,17 @@ CREATE POLICY corpus_documents_project_isolation ON corpus_documents AS RESTRICT
 
 DROP POLICY IF EXISTS corpus_entries_project_isolation ON corpus_entries;
 CREATE POLICY corpus_entries_project_isolation ON corpus_entries AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+-- Classifier validate runs (oss-451) — project-isolated from day one.
+DROP POLICY IF EXISTS classifier_runs_project_isolation ON classifier_runs;
+CREATE POLICY classifier_runs_project_isolation ON classifier_runs AS RESTRICTIVE FOR ALL
+  USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
+  WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS classifier_run_docs_project_isolation ON classifier_run_docs;
+CREATE POLICY classifier_run_docs_project_isolation ON classifier_run_docs AS RESTRICTIVE FOR ALL
   USING (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid)
   WITH CHECK (NULLIF(current_setting('app.current_project_id', true), '') IS NULL OR project_id = NULLIF(current_setting('app.current_project_id', true), '')::uuid);
 
