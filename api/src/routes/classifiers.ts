@@ -8,6 +8,13 @@ import { loadClassifierConfig, ClassifierConfigError, resolveClassifierConfig } 
 import type { ClassifierConfig } from "../classify";
 import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { validateCorpusLabel } from "../classifiers/corpus-label";
+import {
+  runClassifyDoc,
+  maybeFinalizeClassifierRun,
+  type ClassifierRunContext,
+  type ClassifierValidateDocJobPayload,
+} from "../classifiers/validate-run";
+import { mapWithConcurrency } from "../parse/pdf-slice";
 import { resolveMimeType } from "../ingestion/mime";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
 import { reactivateRefusalBody } from "../schemas/release-policy";
@@ -798,4 +805,271 @@ classifiers.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c)
   );
   if (deleted.length === 0) return c.json({ error: "Corpus entry not found" }, 404);
   return c.body(null, 204);
+});
+
+// ── Validate (backtest) ───────────────────────────────────────────────────
+//
+// The schema-sibling of the schema validate surface (routes/schemas.ts). A run
+// backtests a classifier version against its labelled corpus: classify each
+// document through the SAME cascade production uses (`classifyWithConfig`) and
+// score predicted vs ground-truth. Both drivers reuse the exact per-document
+// units the async queue jobs use (validate-run.ts), so sync and async can never
+// drift. No single invocation carries more than one document of classify work
+// (the oss-348 lesson) — the sync driver runs them with bounded parallelism,
+// the async driver enqueues one `classifier.validate.doc` job each.
+
+/** Bounded parallelism for the sync validate driver. Matches the schema path. */
+const CLASSIFIER_VALIDATE_SYNC_CONCURRENCY = 3;
+
+/** The ground-truth label a corpus entry asserts, or null if unlabeled. */
+function corpusEntryLabel(groundTruthJson: unknown): string | null {
+  const gt = groundTruthJson as { label?: unknown } | null;
+  return gt && typeof gt.label === "string" && gt.label.length > 0 ? gt.label : null;
+}
+
+/**
+ * POST /api/classifiers/:slug/validate — backtest a classifier against its corpus.
+ *
+ * Runs the RELEASED version by default; `{ version }` pins an explicit one
+ * (semver label or version-id prefix), matching classify-run semantics (oss-415)
+ * so a backtest and a pipeline route agree on the same config.
+ *
+ * Two modes, mirroring the schema surface (oss-348):
+ *   - default (sync): docs run in-request with bounded parallelism; the full
+ *     ClassifierValidateResult is the response.
+ *   - `{ async: true }`: one `classifier.validate.doc` job per labelled entry is
+ *     enqueued and a 202 `{ runId, ... }` returns immediately. Poll
+ *     GET /:slug/validate/runs/:runId for progress + the final result.
+ */
+classifiers.post("/:slug/validate", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+
+  type ValidateBody = { version?: string; async?: boolean };
+  const body = await c.req.json<ValidateBody>().catch((): ValidateBody => ({}));
+
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id, projectId: schema.classifiers.projectId })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+  const projectId = cls.projectId;
+
+  // Resolve the version to backtest: released by default, or the explicit pin.
+  // A bad pin fails loud — never a surprise different version.
+  const resolved = await resolveClassifierConfig(
+    db,
+    { tenantId, projectId },
+    slug,
+    body.version ?? null,
+  );
+  if ("error" in resolved) {
+    if (resolved.error === "no_version") {
+      return c.json({ error: `Classifier '${slug}' has no version '${resolved.requested}'.` }, 404);
+    }
+    return c.json(
+      { error: `Classifier '${slug}' has no released version to backtest — release it first.` },
+      409,
+    );
+  }
+
+  // Labelled corpus entries owned by THIS classifier gate the run: an entry with
+  // no ground-truth label can't be scored, so it never enters the run.
+  const entries = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusEntries.id,
+        groundTruthJson: schema.corpusEntries.groundTruthJson,
+      })
+      .from(schema.corpusEntries)
+      .where(and(eq(schema.corpusEntries.classifierId, cls.id), isNull(schema.corpusEntries.deletedAt))),
+  );
+  const labelled = entries.filter((e) => corpusEntryLabel(e.groundTruthJson) !== null);
+  if (labelled.length === 0) {
+    return c.json(
+      { error: "No corpus entries have a ground-truth label. Label documents in the Corpus tab first." },
+      400,
+    );
+  }
+
+  const isAsync = body.async === true;
+
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .insert(schema.classifierRuns)
+      .values({
+        tenantId,
+        projectId,
+        classifierId: cls.id,
+        classifierVersionId: resolved.versionId,
+        triggeredBy: principal.userId,
+        status: isAsync ? "queued" : "running",
+        startedAt: new Date(),
+        docsTotal: labelled.length,
+      })
+      .returning({ id: schema.classifierRuns.id }),
+  );
+  if (!run) return c.json({ error: "Failed to create classifier run" }, 500);
+
+  // ── Async driver ──────────────────────────────────────────────
+  // One job per labelled entry; the last doc to finish finalizes the run
+  // (validate-run.ts). The client polls GET /:slug/validate/runs/:runId.
+  if (isAsync) {
+    const queue = c.get("queue");
+    for (const entry of labelled) {
+      const payload: ClassifierValidateDocJobPayload = {
+        classifierRunId: run.id,
+        corpusEntryId: entry.id,
+      };
+      await queue.enqueue("classifier.validate.doc", payload, { tenantId, maxRetries: 2 });
+    }
+    return c.json(
+      { runId: run.id, status: "queued", docsTotal: labelled.length, version: resolved.version },
+      202,
+    );
+  }
+
+  // ── Sync driver ───────────────────────────────────────────────
+  // Same per-doc unit as the async jobs, run in-request with bounded
+  // parallelism. The default parse provider drives the vision tier — the exact
+  // provider the standalone classify route and the async handler use, so all
+  // three surfaces render page images identically.
+  const storage = c.get("storage");
+  const parseProvider = c.get("parseProvider");
+  const ctx: ClassifierRunContext = {
+    tenantId,
+    projectId,
+    classifierRunId: run.id,
+    config: resolved.config,
+  };
+
+  await mapWithConcurrency(labelled, CLASSIFIER_VALIDATE_SYNC_CONCURRENCY, (entry) =>
+    runClassifyDoc(db, storage, parseProvider ?? undefined, ctx, entry.id),
+  );
+
+  const outcome = await maybeFinalizeClassifierRun(db, tenantId, run.id);
+  if (!outcome.finalized) {
+    // Every doc ran in-request, so the finalize claim can only have been lost to
+    // a concurrent caller — surface it rather than serving a half-read.
+    return c.json({ error: "Validate run was finalized elsewhere" }, 409);
+  }
+  return c.json({ runId: run.id, version: resolved.version, ...outcome.result });
+});
+
+/**
+ * GET /api/classifiers/:slug/validate/runs/:runId — poll an async validate run.
+ *
+ * Cheap DB reads only: run status, per-doc progress (classifier_run_docs vs
+ * docs_total), and — once completed — the persisted ClassifierValidateResult.
+ */
+classifiers.get("/:slug/validate/runs/:runId", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+  const runId = c.req.param("runId")!;
+
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        id: schema.classifierRuns.id,
+        classifierId: schema.classifierRuns.classifierId,
+        status: schema.classifierRuns.status,
+        docsTotal: schema.classifierRuns.docsTotal,
+        errorMessage: schema.classifierRuns.errorMessage,
+        resultJson: schema.classifierRuns.resultJson,
+      })
+      .from(schema.classifierRuns)
+      .where(eq(schema.classifierRuns.id, runId))
+      .limit(1),
+  );
+  if (!run || run.classifierId !== cls.id) return c.json({ error: "Run not found" }, 404);
+
+  const [progress] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.classifierRunDocs)
+      .where(eq(schema.classifierRunDocs.classifierRunId, run.id)),
+  );
+
+  const failed = run.status === "failed";
+  return c.json({
+    runId: run.id,
+    status: run.status,
+    docsTotal: run.docsTotal,
+    docsProcessed: progress?.count ?? 0,
+    result: run.status === "completed" ? run.resultJson : null,
+    error: failed ? (run.errorMessage ?? "Validate run failed") : null,
+  });
+});
+
+/**
+ * GET /api/classifiers/:slug/validate — read the latest backtest result.
+ *
+ * Returns the most recent COMPLETED run's persisted result (fast — one DB read,
+ * no classify). Null when the classifier has never been backtested. This is
+ * what the Validate tab loads on open, before any re-run.
+ */
+classifiers.get("/:slug/validate", requires("job:run"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const slug = c.req.param("slug")!;
+
+  const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+
+  const [latest] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        id: schema.classifierRuns.id,
+        resultJson: schema.classifierRuns.resultJson,
+        classifierVersionId: schema.classifierRuns.classifierVersionId,
+        completedAt: schema.classifierRuns.completedAt,
+      })
+      .from(schema.classifierRuns)
+      .where(and(eq(schema.classifierRuns.classifierId, cls.id), eq(schema.classifierRuns.status, "completed")))
+      .orderBy(desc(schema.classifierRuns.createdAt))
+      .limit(1),
+  );
+  if (!latest?.resultJson) return c.json(null);
+
+  // Attach the semver label of the version that run scored, for the tab header.
+  const [version] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({
+        major: schema.classifierVersions.major,
+        minor: schema.classifierVersions.minor,
+        patch: schema.classifierVersions.patch,
+        prerelease: schema.classifierVersions.prerelease,
+      })
+      .from(schema.classifierVersions)
+      .where(eq(schema.classifierVersions.id, latest.classifierVersionId))
+      .limit(1),
+  );
+
+  return c.json({
+    runId: latest.id,
+    version: version ? formatSemver(version) : null,
+    completedAt: latest.completedAt,
+    ...(latest.resultJson as Record<string, unknown>),
+  });
 });

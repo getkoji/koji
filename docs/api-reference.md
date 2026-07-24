@@ -1733,6 +1733,50 @@ Label a document for this classifier. **Two input modes:**
 
 Soft-delete a label. `204` on success, `404` if the entry isn't in this classifier's corpus. Auth: `corpus:write`.
 
+## Classifier validate
+
+Backtest a classifier version against its labelled corpus: classify every labelled document through the **same cascade production uses** and score predicted vs. ground truth. The mirror of the [schema validate surface](#post-apischemasslugvalidate). Auth: `job:run`.
+
+### `POST /api/classifiers/{slug}/validate`
+
+Run a backtest. Body (all optional):
+
+- `version` — the version to backtest (a semver label like `"v1.2.0"`, or a version-id prefix). Defaults to the **released** version. A pin that doesn't resolve to exactly one version is a `404` (never a silent fall back to the release), matching classify-run semantics.
+- `async` — when `true`, enqueue one job per labelled document and return `202` immediately (see below). Defaults to `false` (synchronous).
+
+Only corpus entries that carry a ground-truth label enter the run. If none do, `400`. If the classifier has no released version to resolve, `409` (release it first).
+
+**Synchronous** (default): documents run in-request with bounded parallelism and the full result is returned (`200`):
+
+```json
+{
+  "runId": "…",
+  "version": "v1.2.0",
+  "docsTotal": 40,
+  "docsCorrect": 37,
+  "docsFailed": 1,
+  "accuracy": 94.87,
+  "byClass": [ { "label": "invoice", "support": 12, "predicted": 13, "tp": 12, "fp": 1, "fn": 0, "precision": 0.923, "recall": 1.0, "f1": 0.96 } ],
+  "confusion": [ { "expected": "receipt", "predicted": "invoice", "count": 1 } ],
+  "tierHistogram": { "2": 30, "3": 9 },
+  "escalationRate": 0.23,
+  "flips": { "fixed": 2, "regressed": 0, "churned": 1, "items": [ … ] },
+  "costUsd": null
+}
+```
+
+`docsFailed` (the cascade errored — e.g. provider outage) are excluded from the accuracy denominator. `escalationRate` is the share of scored documents that needed tier ≥ 3 (the paid model tail). `flips` compares each document against the classifier's previous completed run. `costUsd` is `null` until per-tier cost is wired in.
+
+**Asynchronous** (`{ "async": true }`): one `classifier.validate.doc` job is enqueued per labelled document — no single request carries more than one document of classify work — and the call returns `202 { "runId", "status": "queued", "docsTotal", "version" }`. Poll the run endpoint below.
+
+### `GET /api/classifiers/{slug}/validate/runs/{runId}`
+
+Poll an async run. Returns `{ "runId", "status", "docsTotal", "docsProcessed", "result", "error" }`. `result` is the full scored object above once `status` is `"completed"`, otherwise `null`. Auth: `job:run`.
+
+### `GET /api/classifiers/{slug}/validate`
+
+Return the classifier's **most recent completed** backtest — the scored object above plus `runId`, `version` (the semver label that run scored), and `completedAt`. `null` if the classifier has never been backtested. A cheap single read; does not re-run classification. Auth: `job:run`.
+
 ## Corpus pool
 
 ### `GET /api/corpus/documents`
