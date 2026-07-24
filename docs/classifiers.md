@@ -356,3 +356,13 @@ Create, edit, and version classifiers from the dashboard (**Classifiers** in the
 sidebar), the `koji classify` CLI, or the `/api/classifiers` endpoints — whichever
 fits your workflow. The config artifact is the single source of truth across all
 three.
+
+The classifier detail page carries three tabs, mirroring a schema:
+
+- **Config** — edit the YAML, save drafts/candidates, release, promote.
+- **Corpus** — label documents by picking a class from a dropdown: upload, attach
+  one from the shared project pool, or **auto-label** the unlabeled pool (draft
+  proposals to approve). See [Corpus & backtesting](#corpus--backtesting).
+- **Validate** — run a backtest and read the confusion matrix, per-class
+  precision/recall, tier histogram + escalation rate, cost, and flips vs. the
+  previous run.
