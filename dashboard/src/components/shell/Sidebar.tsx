@@ -600,11 +600,6 @@ export function AppSidebar({
                           icon={<Users className={SUBICON} />}
                           label="Members"
                         />
-                        <SubNavItemLink
-                          href={`${base}/settings/api-keys`}
-                          icon={<Key className={SUBICON} />}
-                          label="API Keys"
-                        />
                       </>
                     )}
                     {settingsExtensions.navItems.map((item) => (
@@ -615,6 +610,19 @@ export function AppSidebar({
                         label={item.label}
                       />
                     ))}
+                    {/*
+                      Always rendered, including when a host sets
+                      `hideDefaultNav`. That flag means "the host replaces
+                      General/Members" — on the hosted console those are Clerk's
+                      OrganizationProfile. API keys are a Koji resource with no
+                      Clerk equivalent, so hiding them alongside left the page
+                      reachable only by typing its URL.
+                    */}
+                    <SubNavItemLink
+                      href={`${base}/settings/api-keys`}
+                      icon={<Key className={SUBICON} />}
+                      label="API Keys"
+                    />
                   </SidebarMenuSub>
                 </CollapsibleContent>
               </SidebarMenuItem>

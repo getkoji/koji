@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.102.1 — 2026-07-23
+
+**Fixes API Keys being unreachable in the hosted console.** 0.102.0 moved API
+key management to workspace settings, but put the nav link inside the block
+that a host suppresses with `hideDefaultNav` — which the hosted console sets,
+because Clerk's OrganizationProfile replaces General/Members there. The page,
+its route, and its re-export all existed; nothing linked to it. The link now
+renders regardless of that flag, since API keys are a Koji resource with no
+Clerk equivalent, and a test pins it outside the block.
+
 ## 0.102.0 — 2026-07-23
 
 **API keys are managed at the workspace level, and their project access is
