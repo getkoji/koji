@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.102.2 — 2026-07-23
+
+**Fixes "API key not found" when editing a key from workspace settings.** The
+workspace API Keys page lists every key in the workspace, but editing and
+revoking still filtered by whichever project the session happened to have
+selected — so a key bound to a *different* project was listed, and saving it
+answered `API key not found`.
+
+Management now follows reach rather than the selected project: an unrestricted
+member manages any key in the workspace, and a member confined to a subset of
+projects may manage a key only when every project that key reaches is inside
+that subset. That also closes a hole in the old rule, where a project-restricted
+member could revoke an all-access key other projects depended on, because such a
+key is "visible from" every project.
+
 ## 0.102.1 — 2026-07-23
 
 **Fixes API Keys being unreachable in the hosted console.** 0.102.0 moved API

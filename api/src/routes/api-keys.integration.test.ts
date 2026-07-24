@@ -154,21 +154,24 @@ describe("API-keys route — project scope (oss-433)", () => {
     expect(new Set(body.data.map((k: any) => k.name))).toEqual(new Set(["single-a", "single-b", "all"]));
   });
 
-  test("revoke: allowed for a key reachable from the project, 404 otherwise", async () => {
+  test("revoke: an unrestricted caller can revoke any key in the workspace", async () => {
+    // Management follows reach, not the session's currently-selected project.
+    // Keys are managed from a workspace-level page that lists every key, so
+    // narrowing by the selected project made listed keys 404 on action
+    // (oss-484).
     const { body: allKey } = await createKey(appAt(projA), { name: "all", project_scope: { mode: "all" } });
     const { body: singleB } = await createKey(appAt(projB), { name: "single-b" });
 
-    // From project A: the all-access key is reachable → revoked.
     const ok = await appAt(projA).request(`/api/api-keys/${allKey.id}`, { method: "DELETE" });
     expect(ok.status).toBe(200);
     const [revoked] = await db.execute<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM api_keys WHERE id = ${allKey.id}::uuid`);
     expect(revoked!.revoked_at).not.toBeNull();
 
-    // From project A: a project-B-only key is NOT reachable → 404, still active.
-    const denied = await appAt(projA).request(`/api/api-keys/${singleB.id}`, { method: "DELETE" });
-    expect(denied.status).toBe(404);
-    const [still] = await db.execute<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM api_keys WHERE id = ${singleB.id}::uuid`);
-    expect(still!.revoked_at).toBeNull();
+    // A project-B key, acted on while "in" project A — allowed for an owner.
+    const other = await appAt(projA).request(`/api/api-keys/${singleB.id}`, { method: "DELETE" });
+    expect(other.status).toBe(200);
+    const [alsoRevoked] = await db.execute<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM api_keys WHERE id = ${singleB.id}::uuid`);
+    expect(alsoRevoked!.revoked_at).not.toBeNull();
   });
 
   // ── PATCH: editing a key's project scope (oss-482) ──────────────────────
@@ -273,12 +276,55 @@ describe("API-keys route — project scope (oss-433)", () => {
     expect(new Set(await grantsFor(key.id))).toEqual(new Set([projA, projB]));
   });
 
-  test("cannot edit a key that is not reachable from the caller's project", async () => {
+  test("an unrestricted caller can edit a key bound to another project", async () => {
+    // The exact shape of the reported bug: the workspace list showed a key
+    // bound to a different project than the one the session had selected, and
+    // saving answered "API key not found".
     const { body: singleB } = await createKey(appAt(projB), { name: "b-only" });
-    const { res } = await patchKey(appAt(projA), singleB.id, {
+    const { res, body } = await patchKey(appAt(projA), singleB.id, {
       project_scope: { mode: "all" },
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(body.scope.mode).toBe("all");
+  });
+
+  test("a restricted caller cannot manage a key that reaches outside its projects", async () => {
+    const { body: singleB } = await createKey(appAt(projB), { name: "b-only-2" });
+    const { body: allKey } = await createKey(appAt(projA), {
+      name: "all-2",
+      project_scope: { mode: "all" },
+    });
+
+    // Confined to projA — the shape the middleware produces for a restricted
+    // member or a project-bound API key.
+    const restricted = new Hono<Env>();
+    restricted.use("*", async (c, next) => {
+      c.set("db", db as any);
+      c.set("tenantId", tenant);
+      c.set("principal", { userId: user, email: "o@x.com", name: "Owner" } as any);
+      c.set("roles", ["owner"]);
+      c.set("grants", new Set(["api_key:write"]) as any);
+      c.set("accessibleProjectIds", new Set([projA]) as any);
+      c.set("projectId", projA);
+      await next();
+    });
+    restricted.route("/api/api-keys", apiKeys);
+
+    // A key bound to a project it can't reach.
+    expect((await patchKey(restricted, singleB.id, { name: "nope" })).res.status).toBe(404);
+    // An all-access key other projects depend on — visible from projA under the
+    // old visibility rule, and revocable. Not any more.
+    expect(
+      (await restricted.request(`/api/api-keys/${allKey.id}`, { method: "DELETE" })).status,
+    ).toBe(404);
+    const [still] = await db.execute<{ revoked_at: string | null }>(
+      sql`SELECT revoked_at FROM api_keys WHERE id = ${allKey.id}::uuid`,
+    );
+    expect(still!.revoked_at).toBeNull();
+
+    // But a key wholly inside its own project is fine.
+    const { body: mine } = await createKey(appAt(projA), { name: "a-only" });
+    expect((await patchKey(restricted, mine.id, { name: "renamed" })).res.status).toBe(200);
   });
 
   test("rejects an unknown project id", async () => {
