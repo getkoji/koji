@@ -589,8 +589,13 @@ def compare_field(
             detail=f"expected {expected!r}, got {actual!r}",
         )
 
-    # Other types: exact equality via string conversion
-    ok = str(expected) == str(actual)
+    # Other types (e.g. object-valued fields): structural comparison via the same
+    # normalization used for arrays — order-insensitive and strips `__` provenance
+    # keys — instead of a brittle str(expected) == str(actual) that fails on key
+    # ordering or an inline `__source_text`. Matches the canonical scorer.
+    ne = _normalize_value_for_compare(expected)
+    na = _normalize_value_for_compare(actual)
+    ok = json.dumps(ne, sort_keys=True, default=str) == json.dumps(na, sort_keys=True, default=str)
     return FieldResult(
         field_name=field_name,
         passed=ok,
