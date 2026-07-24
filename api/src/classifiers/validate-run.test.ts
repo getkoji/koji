@@ -37,7 +37,7 @@ function makeDb(selects: unknown[][]) {
   const chain = (): any => {
     const result = q.shift() ?? [];
     const c: any = {
-      from: () => c, where: () => c, orderBy: () => c,
+      from: () => c, innerJoin: () => c, where: () => c, orderBy: () => c,
       limit: () => Promise.resolve(result),
       then: (r: any, j: any) => Promise.resolve(result).then(r, j),
     };

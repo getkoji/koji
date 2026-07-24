@@ -545,10 +545,11 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
   const rows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
-      filename: schema.corpusEntries.filename,
-      fileSize: schema.corpusEntries.fileSize,
-      mimeType: schema.corpusEntries.mimeType,
-      source: schema.corpusEntries.source,
+      // File metadata lives on the pooled document (oss-476).
+      filename: schema.corpusDocuments.filename,
+      fileSize: schema.corpusDocuments.fileSize,
+      mimeType: schema.corpusDocuments.mimeType,
+      source: schema.corpusDocuments.source,
       tags: schema.corpusEntries.tags,
       groundTruthJson: schema.corpusEntries.groundTruthJson,
       createdAt: schema.corpusEntries.createdAt,
@@ -562,6 +563,7 @@ schemas.get("/:slug/corpus", requires("corpus:read"), async (c) => {
         ORDER BY created_at DESC LIMIT 1
       )`,
     }).from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
       .orderBy(desc(schema.corpusEntries.createdAt))
   );
@@ -620,30 +622,11 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
     contentType: mimeType,
   });
 
-  // Check if this file already exists in the corpus for this schema
-  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select()
-      .from(schema.corpusEntries)
-      .where(and(
-        eq(schema.corpusEntries.schemaId, s.id),
-        eq(schema.corpusEntries.contentHash, contentHash),
-        isNull(schema.corpusEntries.deletedAt),
-      ))
-      .limit(1)
-  );
-
-  if (existing) {
-    // Document already in corpus — return the existing entry.
-    // A previously soft-deleted entry with the same hash is ignored here,
-    // so re-uploading a deleted document creates a fresh entry.
-    return c.json(existing, 200);
-  }
-
   // Resolve the file to a pooled document (oss-449). The corpus lives in the
   // schema's project — derived from the schema row, not the request header, so
   // this matches the backfill's project derivation and needs no x-koji-project.
-  // The entry still carries the legacy file columns during the expand/contract
-  // window, so every read path is unchanged; documentId is the new link.
+  // documentId is the canonical link; the file columns on the entry are no
+  // longer written (oss-476) — the pool document owns the file.
   const projectId = s.projectId;
   const documentId = await upsertCorpusDocument(db, { tenantId, projectId }, {
     tenantId,
@@ -657,24 +640,40 @@ schemas.post("/:slug/corpus", requires("corpus:write"), async (c) => {
     addedBy: principal.userId,
   });
 
+  // Dedup on the pooled document, not the raw hash: one label per
+  // (schema, document). A previously soft-deleted entry is ignored, so
+  // re-uploading a deleted document creates a fresh entry.
+  const [existing] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select()
+      .from(schema.corpusEntries)
+      .where(and(
+        eq(schema.corpusEntries.schemaId, s.id),
+        eq(schema.corpusEntries.documentId, documentId),
+        isNull(schema.corpusEntries.deletedAt),
+      ))
+      .limit(1)
+  );
+
+  // Response file fields come from the pooled document (canonical), so the
+  // shape is unchanged even though the entry no longer stores them.
+  const fileFields = { filename: file.name, storageKey, fileSize: file.size, mimeType, contentHash, source: "upload" };
+
+  if (existing) {
+    return c.json({ ...existing, ...fileFields }, 200);
+  }
+
   const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
       projectId,
       documentId,
       schemaId: s.id,
-      filename: file.name,
-      storageKey,
-      fileSize: file.size,
-      mimeType,
-      contentHash,
-      source: "upload",
       groundTruthJson: {}, // empty until promoted
       addedBy: principal.userId,
     }).returning()
   );
 
-  return c.json(row, 201);
+  return c.json({ ...row, ...fileFields }, 201);
 });
 
 /**
@@ -688,8 +687,9 @@ schemas.get("/:slug/corpus/:entryId/url", requires("corpus:read"), async (c) => 
   const entryId = c.req.param("entryId")!;
 
   const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ storageKey: schema.corpusEntries.storageKey })
+    tx.select({ storageKey: schema.corpusDocuments.storageKey })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
       .limit(1)
   );
@@ -799,11 +799,12 @@ schemas.get("/:slug/performance", requires("schema:read"), async (c) => {
     tx.select({
       schemaRunId: schema.schemaRunDocs.schemaRunId,
       entryId: schema.schemaRunDocs.corpusEntryId,
-      filename: schema.corpusEntries.filename,
+      filename: schema.corpusDocuments.filename,
       error: schema.schemaRunDocs.errorMessage,
     })
       .from(schema.schemaRunDocs)
       .innerJoin(schema.corpusEntries, eq(schema.corpusEntries.id, schema.schemaRunDocs.corpusEntryId))
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(
         inArray(schema.schemaRunDocs.schemaRunId, runIds),
         eq(schema.schemaRunDocs.status, "failed"),
@@ -1020,8 +1021,9 @@ schemas.post("/:slug/corpus/:entryId/resolve-region", requires("corpus:read"), a
   }
 
   const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ contentHash: schema.corpusEntries.contentHash })
+    tx.select({ contentHash: schema.corpusDocuments.contentHash })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
       .limit(1)
   );
@@ -1172,13 +1174,14 @@ schemas.post("/:slug/tune", requires("job:run"), async (c) => {
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(
         and(
           eq(schema.corpusEntries.id, corpusEntryId),
@@ -1264,13 +1267,14 @@ schemas.post("/:slug/tune/loop", requires("job:run"), async (c) => {
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.id, corpusEntryId), eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt)))
       .limit(1),
   );
@@ -1489,13 +1493,14 @@ schemas.post("/:slug/tune/corpus-loop", requires("job:run"), async (c) => {
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.schemaId, s.id), isNull(schema.corpusEntries.deletedAt))),
   );
   const entries: CorpusEntryWithGt[] = rows
@@ -1619,13 +1624,14 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
   const entries = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx.select({
       id: schema.corpusEntries.id,
-      filename: schema.corpusEntries.filename,
-      storageKey: schema.corpusEntries.storageKey,
-      mimeType: schema.corpusEntries.mimeType,
-      contentHash: schema.corpusEntries.contentHash,
+      filename: schema.corpusDocuments.filename,
+      storageKey: schema.corpusDocuments.storageKey,
+      mimeType: schema.corpusDocuments.mimeType,
+      contentHash: schema.corpusDocuments.contentHash,
       groundTruthJson: schema.corpusEntries.groundTruthJson,
     })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
@@ -1907,8 +1913,10 @@ schemas.get("/:slug/validate", requires("job:run"), async (c) => {
   }
 
   const entries = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
-      .from(schema.corpusEntries).where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
+    tx.select({ id: schema.corpusEntries.id, filename: schema.corpusDocuments.filename, groundTruthJson: schema.corpusEntries.groundTruthJson })
+      .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
+      .where(and(eq(schema.corpusEntries.schemaId, schemaRow.id), isNull(schema.corpusEntries.deletedAt)))
   );
 
   const entriesWithGT = entries.filter((e: any) =>

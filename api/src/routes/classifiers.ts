@@ -685,14 +685,16 @@ classifiers.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       .select({
         id: schema.corpusEntries.id,
         documentId: schema.corpusEntries.documentId,
-        filename: schema.corpusEntries.filename,
-        fileSize: schema.corpusEntries.fileSize,
-        mimeType: schema.corpusEntries.mimeType,
-        source: schema.corpusEntries.source,
+        // File metadata lives on the pooled document (oss-476).
+        filename: schema.corpusDocuments.filename,
+        fileSize: schema.corpusDocuments.fileSize,
+        mimeType: schema.corpusDocuments.mimeType,
+        source: schema.corpusDocuments.source,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
         createdAt: schema.corpusEntries.createdAt,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.classifierId, cls.id), isNull(schema.corpusEntries.deletedAt)))
       .orderBy(desc(schema.corpusEntries.createdAt)),
   );
@@ -828,7 +830,18 @@ classifiers.post("/:slug/corpus", requires("corpus:write"), async (c) => {
       )
       .limit(1),
   );
-  if (existing) return c.json(existing, 200);
+  // Response file fields come from the pooled document (canonical); the entry
+  // no longer stores them (oss-476), so the response shape is unchanged. Listed
+  // explicitly so the pool document's `id` never clobbers the entry's.
+  const fileFields = {
+    filename: file.filename,
+    storageKey: file.storageKey,
+    fileSize: file.fileSize,
+    mimeType: file.mimeType,
+    contentHash: file.contentHash,
+    source,
+  };
+  if (existing) return c.json({ ...existing, ...fileFields }, 200);
 
   const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx
@@ -838,18 +851,12 @@ classifiers.post("/:slug/corpus", requires("corpus:write"), async (c) => {
         projectId,
         documentId,
         classifierId: cls.id,
-        filename: file.filename,
-        storageKey: file.storageKey,
-        fileSize: file.fileSize,
-        mimeType: file.mimeType,
-        contentHash: file.contentHash,
-        source,
         groundTruthJson: { label: rawLabel },
         addedBy: principal.userId,
       })
       .returning(),
   );
-  return c.json(row, 201);
+  return c.json({ ...row, ...fileFields }, 201);
 });
 
 /** DELETE /api/classifiers/:slug/corpus/:entryId — soft-delete a label. */

@@ -174,12 +174,14 @@ export async function runClassifyDoc(
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
+        // The file lives on the pooled document (oss-476); join for it.
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(eq(schema.corpusEntries.id, corpusEntryId))
       .limit(1),
   );
