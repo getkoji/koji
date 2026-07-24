@@ -17,7 +17,7 @@
  * to finish wins the finalize claim. The sync driver (oss-453) will reuse these
  * same units so sync and async can't drift.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { StorageProvider } from "../storage/provider";
@@ -25,7 +25,7 @@ import type { ParseProvider } from "../parse/provider";
 import type { QueuedJob } from "../queue/provider";
 import { classifyWithConfig, loadClassifierConfig, UNKNOWN_LABEL } from "../classify";
 import type { ClassifierConfig } from "../classify";
-import { computeClassifierResult, type ClassifyDocResult } from "./classify-scoring";
+import { computeClassifierResult, type BaselinePrediction, type ClassifyDocResult } from "./classify-scoring";
 
 /** The `classifier.validate.doc` job payload — one corpus entry of one run. */
 export interface ClassifierValidateDocJobPayload {
@@ -240,6 +240,51 @@ export type ClassifierFinalizeOutcome =
  * `queued|running → finalizing` flip is atomic, so two docs finishing at once
  * can't both score the run.
  */
+/**
+ * The per-document predictions of the classifier's most recent PRIOR completed
+ * run, keyed by corpus entry — the baseline `flips` compares against. Returns
+ * an empty map when there is no earlier completed run (the first backtest).
+ */
+async function loadBaselinePredictions(
+  db: Db,
+  tenantId: string,
+  classifierId: string,
+  before: Date,
+): Promise<Map<string, BaselinePrediction>> {
+  const [prevRun] = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({ id: schema.classifierRuns.id })
+      .from(schema.classifierRuns)
+      .where(
+        and(
+          eq(schema.classifierRuns.classifierId, classifierId),
+          eq(schema.classifierRuns.status, "completed"),
+          lt(schema.classifierRuns.createdAt, before),
+        ),
+      )
+      .orderBy(desc(schema.classifierRuns.createdAt))
+      .limit(1),
+  );
+  if (!prevRun) return new Map();
+
+  const rows = await withRLS(db, tenantId, (tx) =>
+    tx
+      .select({
+        corpusEntryId: schema.classifierRunDocs.corpusEntryId,
+        predictedLabel: schema.classifierRunDocs.predictedLabel,
+        status: schema.classifierRunDocs.status,
+      })
+      .from(schema.classifierRunDocs)
+      .where(eq(schema.classifierRunDocs.classifierRunId, prevRun.id)),
+  );
+  return new Map(
+    rows.map((r) => [
+      r.corpusEntryId,
+      { predictedLabel: r.predictedLabel, status: r.status === "ok" ? "ok" : "failed" } as BaselinePrediction,
+    ]),
+  );
+}
+
 export async function maybeFinalizeClassifierRun(
   db: Db,
   tenantId: string,
@@ -248,6 +293,7 @@ export async function maybeFinalizeClassifierRun(
   const [run] = await withRLS(db, tenantId, (tx) =>
     tx
       .select({
+        classifierId: schema.classifierRuns.classifierId,
         status: schema.classifierRuns.status,
         docsTotal: schema.classifierRuns.docsTotal,
         startedAt: schema.classifierRuns.startedAt,
@@ -297,7 +343,12 @@ export async function maybeFinalizeClassifierRun(
     tierUsed: d.tierUsed,
     errorMessage: d.errorMessage,
   }));
-  const result = computeClassifierResult(scored);
+  // Baseline = the most recent PRIOR completed run of this classifier, so
+  // `flips` shows which documents this run fixed / regressed / churned relative
+  // to it. Compared per corpus entry, on prediction (not correctness), so a
+  // churn (wrong → differently wrong) is distinguishable from a real fix.
+  const prevByEntry = await loadBaselinePredictions(db, tenantId, run.classifierId, run.createdAt);
+  const result = computeClassifierResult(scored, prevByEntry);
   const startTime = (run.startedAt ?? run.createdAt).getTime();
 
   await withRLS(db, tenantId, (tx) =>
