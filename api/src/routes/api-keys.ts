@@ -47,6 +47,39 @@ export function visibleFromProject(scope: KeyScope, projectId: string | null): b
   return scope.projectIds.includes(projectId);
 }
 
+/**
+ * Whether `caller` may edit or revoke a key with the given scope.
+ *
+ * Visibility (`visibleFromProject`) answers "can this key act here?", which is
+ * the right question for a project-scoped LIST but the wrong one for managing
+ * a key from the workspace-level API Keys page: the list there is unscoped, so
+ * narrowing management by whichever project the session happened to have
+ * selected made keys that were plainly listed 404 on save (oss-484).
+ *
+ * The rule instead follows reach: you may manage a key only if the key cannot
+ * reach further than you can. An unrestricted caller (`accessible === null`)
+ * manages any key in the workspace. A caller confined to a subset of projects
+ * may manage a key only when every project that key reaches is inside that
+ * subset — so a project-restricted member can't revoke or re-scope an
+ * all-access key that other projects depend on.
+ */
+export function canManageKey(scope: KeyScope, accessible: Set<string> | null): boolean {
+  if (accessible === null) return true;
+  if (scope.mode === "all") return false;
+  return scope.projectIds.every((id) => accessible.has(id));
+}
+
+/**
+ * The caller's accessible-project set for management decisions. `null` from the
+ * middleware means unrestricted; `undefined` means the middleware never ran, in
+ * which case fail closed with an empty set rather than silently granting
+ * workspace-wide reach.
+ */
+function accessibleForManagement(c: Context<Env>): Set<string> | null {
+  const accessible = c.get("accessibleProjectIds") as Set<string> | null | undefined;
+  return accessible === undefined ? new Set<string>() : accessible;
+}
+
 type ScopedKey<T> = T & { scope: KeyScope };
 
 /**
@@ -333,9 +366,11 @@ apiKeys.patch("/:id", requires("api_key:write"), async (c) => {
     return c.json({ error: "This key has been revoked and can no longer be changed." }, 409);
   }
 
-  // Same visibility rule as list/revoke: you can only edit a key that can act
-  // in a project you can reach.
-  const [visible] = await loadVisibleKeys(db, tenantId, currentProjectId, [existing]);
+  // Manageability is about reach, not about which project the session happens
+  // to have selected — the workspace page lists every key regardless.
+  const [withScope] = await loadVisibleKeys(db, tenantId, null, [existing]);
+  const visible =
+    withScope && canManageKey(withScope.scope, accessibleForManagement(c)) ? withScope : undefined;
   if (!visible) return c.json({ error: "API key not found" }, 404);
 
   const updates: Record<string, unknown> = {};
@@ -389,11 +424,6 @@ apiKeys.patch("/:id", requires("api_key:write"), async (c) => {
 apiKeys.delete("/:id", requires("api_key:write"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
-  // Scope revocation exactly like the list (GET): a project-admin must only be
-  // able to revoke keys that are visible from — i.e. can act in — their
-  // project. All-access and multi-project keys are visible from any project
-  // they include.
-  const projectId = getProjectId(c);
   const keyId = c.req.param("id")!;
 
   const [key] = await db
@@ -406,8 +436,12 @@ apiKeys.delete("/:id", requires("api_key:write"), async (c) => {
     return c.json({ error: "API key not found" }, 404);
   }
 
-  const [scoped] = await loadVisibleKeys(db, tenantId, projectId, [key]);
-  if (!scoped) {
+  // Revocation follows the same reach rule as editing: a caller confined to a
+  // subset of projects must not be able to revoke a key that other projects
+  // depend on (an all-access key is visible from every project, so the old
+  // visibility check let them).
+  const [scoped] = await loadVisibleKeys(db, tenantId, null, [key]);
+  if (!scoped || !canManageKey(scoped.scope, accessibleForManagement(c))) {
     return c.json({ error: "API key not found" }, 404);
   }
 
