@@ -246,7 +246,16 @@ to list the pool.
 
 ### Running a backtest
 
-Once the corpus is labelled, backtest a classifier version against it:
+Once the corpus is labelled, backtest a classifier version against it — from the
+CLI (labels the corpus and reads the result in the terminal):
+
+```bash
+koji classify corpus add inbound_mail invoice ./samples/*.pdf   # label some docs
+koji classify validate inbound_mail                             # backtest + render
+koji classify validate inbound_mail --version v1.2.0 --check    # pin a version; fail on regression
+```
+
+or directly over the API:
 
 ```bash
 curl -X POST .../api/classifiers/inbound_mail/validate \

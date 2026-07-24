@@ -454,3 +454,240 @@ def test_delete_error_exits(monkeypatch):
     result = runner.invoke(app, ["classify", "delete", "missing", "--yes"])
     assert result.exit_code != 0
     assert "delete" in result.output.lower()
+
+
+# ── Validate (backtest) ───────────────────────────────────────────────
+
+_VALIDATE_RESULT = {
+    "version": "v1.2.0",
+    "docsTotal": 3,
+    "docsCorrect": 2,
+    "docsFailed": 0,
+    "accuracy": 66.7,
+    "escalationRate": 0.33,
+    "byClass": [
+        {
+            "label": "invoice",
+            "support": 2,
+            "predicted": 2,
+            "tp": 2,
+            "fp": 0,
+            "fn": 0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+        },
+        {
+            "label": "receipt",
+            "support": 1,
+            "predicted": 1,
+            "tp": 0,
+            "fp": 1,
+            "fn": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": None,
+        },
+    ],
+    "confusion": [
+        {"expected": "invoice", "predicted": "invoice", "count": 2},
+        {"expected": "receipt", "predicted": "invoice", "count": 1},
+    ],
+    "tierHistogram": {"2": 2, "3": 1},
+    "flips": {"fixed": 0, "regressed": 0, "churned": 0, "items": []},
+    "costUsd": None,
+}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["classify", "validate", "--help"],
+        ["classify", "corpus", "--help"],
+        ["classify", "corpus", "ls", "--help"],
+        ["classify", "corpus", "add", "--help"],
+        ["classify", "corpus", "rm", "--help"],
+    ],
+)
+def test_new_commands_registered(args):
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+
+
+def test_validate_async_polls_and_renders(monkeypatch):
+    # POST 202 (queued), then a poll GET that is already completed.
+    client = _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "run-1", "docsTotal": 3, "status": "queued", "version": "v1.2.0"}),
+            _make_response(
+                200, {"status": "completed", "docsTotal": 3, "docsProcessed": 3, "result": _VALIDATE_RESULT}
+            ),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "validate", "inbound_mail"])
+    assert result.exit_code == 0, result.output
+    # The confusion matrix + per-class readout rendered, not just a number.
+    assert "accuracy" in result.output
+    assert "confusion" in result.output
+    assert "invoice" in result.output
+    # POST body requested an async run.
+    post_kwargs = client.post.call_args_list[0].kwargs
+    assert post_kwargs["json"]["async"] is True
+    assert "version" not in post_kwargs["json"]  # no --version → server default (released)
+
+
+def test_validate_version_flag_is_sent(monkeypatch):
+    _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "r", "docsTotal": 1, "version": "v2.0.0"}),
+            _make_response(
+                200, {"status": "completed", "docsTotal": 1, "docsProcessed": 1, "result": _VALIDATE_RESULT}
+            ),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "validate", "inbound_mail", "--version", "v2.0.0"])
+    assert result.exit_code == 0, result.output
+
+
+def test_validate_version_flag_populates_body(monkeypatch):
+    client = _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "r", "docsTotal": 1, "version": "v2.0.0"}),
+            _make_response(
+                200, {"status": "completed", "docsTotal": 1, "docsProcessed": 1, "result": _VALIDATE_RESULT}
+            ),
+        ],
+    )
+    runner.invoke(app, ["classify", "validate", "inbound_mail", "--version", "v2.0.0"])
+    assert client.post.call_args_list[0].kwargs["json"]["version"] == "v2.0.0"
+
+
+def test_validate_check_exits_nonzero_on_regression(monkeypatch):
+    regressed = {**_VALIDATE_RESULT, "flips": {"fixed": 0, "regressed": 1, "churned": 0, "items": []}}
+    _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "r", "docsTotal": 3}),
+            _make_response(200, {"status": "completed", "docsTotal": 3, "docsProcessed": 3, "result": regressed}),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "validate", "inbound_mail", "--check"])
+    assert result.exit_code == 1, result.output
+
+
+def test_validate_check_passes_when_no_regression(monkeypatch):
+    _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "r", "docsTotal": 3}),
+            _make_response(
+                200, {"status": "completed", "docsTotal": 3, "docsProcessed": 3, "result": _VALIDATE_RESULT}
+            ),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "validate", "inbound_mail", "--check"])
+    assert result.exit_code == 0, result.output
+
+
+def test_validate_json_output_is_raw(monkeypatch):
+    _install_client(
+        monkeypatch,
+        [
+            _make_response(202, {"runId": "r", "docsTotal": 3}),
+            _make_response(
+                200, {"status": "completed", "docsTotal": 3, "docsProcessed": 3, "result": _VALIDATE_RESULT}
+            ),
+        ],
+    )
+    result = runner.invoke(app, ["classify", "validate", "inbound_mail", "--json"])
+    assert result.exit_code == 0, result.output
+    import json as _json
+
+    payload = _json.loads(result.output)
+    assert payload["accuracy"] == 66.7
+
+
+# ── Classifier corpus (ls / add / rm) ─────────────────────────────────
+
+
+def test_corpus_ls_table(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(
+        200,
+        {
+            "data": [
+                {"id": "e1abcdef", "filename": "a.pdf", "label": "invoice", "source": "upload"},
+                {"id": "e2abcdef", "filename": "b.pdf", "label": "receipt", "source": "upload"},
+            ]
+        },
+    )
+    result = runner.invoke(app, ["classify", "corpus", "ls", "inbound_mail"])
+    assert result.exit_code == 0, result.output
+    assert "a.pdf" in result.output
+    assert "invoice" in result.output
+    assert "2 doc" in result.output
+
+
+def test_corpus_ls_label_filter(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(
+        200,
+        {
+            "data": [
+                {"id": "e1", "filename": "a.pdf", "label": "invoice", "source": "upload"},
+                {"id": "e2", "filename": "b.pdf", "label": "receipt", "source": "upload"},
+            ]
+        },
+    )
+    result = runner.invoke(app, ["classify", "corpus", "ls", "inbound_mail", "--label", "invoice"])
+    assert result.exit_code == 0, result.output
+    assert "a.pdf" in result.output
+    assert "b.pdf" not in result.output
+
+
+def test_corpus_add_uploads_and_labels(monkeypatch, doc):
+    client = _install_client(monkeypatch, [])
+    client.post.side_effect = None
+    client.post.return_value = _make_response(201, {"id": "e1"})
+    result = runner.invoke(app, ["classify", "corpus", "add", "inbound_mail", "invoice", str(doc)])
+    assert result.exit_code == 0, result.output
+    assert "invoice" in result.output
+    # multipart file + label form field.
+    kwargs = client.post.call_args.kwargs
+    assert "file" in kwargs["files"]
+    assert kwargs["data"] == {"label": "invoice"}
+
+
+def test_corpus_add_dedup_note(monkeypatch, doc):
+    client = _install_client(monkeypatch, [])
+    client.post.side_effect = None
+    client.post.return_value = _make_response(200, {"id": "existing"})
+    result = runner.invoke(app, ["classify", "corpus", "add", "inbound_mail", "invoice", str(doc)])
+    assert result.exit_code == 0, result.output
+    assert "already labelled" in result.output
+
+
+def test_corpus_rm_deletes(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(
+        200, {"data": [{"id": "e1abcdef", "filename": "a.pdf", "label": "invoice"}]}
+    )
+    client.delete.return_value = _make_response(204, {})
+    result = runner.invoke(app, ["classify", "corpus", "rm", "inbound_mail", "a.pdf", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "removed" in result.output.lower()
+    client.delete.assert_called_once()
+
+
+def test_corpus_ls_404(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(404, {"error": "not found"})
+    result = runner.invoke(app, ["classify", "corpus", "ls", "missing"])
+    assert result.exit_code != 0

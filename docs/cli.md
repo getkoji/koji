@@ -433,6 +433,14 @@ koji classify promote document_type                   # graduate the latest cand
 koji classify release document_type                   # release directly, skipping the rc loop
 koji classify release ./classifiers/document_type.yaml  # …from a local file
 koji classify delete document_type                    # delete a classifier + all its versions
+
+koji classify validate document_type                  # backtest against the labelled corpus (confusion matrix, tiers, flips)
+koji classify validate document_type --version v1.2.0 # backtest a specific version instead of the released one
+koji classify validate document_type --check          # exit non-zero if any class regressed vs the previous run
+
+koji classify corpus ls document_type                 # list the classifier's labelled corpus docs
+koji classify corpus add document_type invoice ./a.pdf ./b.pdf  # upload + label docs as class `invoice`
+koji classify corpus rm document_type <id|filename>   # drop a labelled doc from the corpus
 ```
 
 `koji classify run` drives the standalone `POST /api/classify` primitive and **persists nothing**. By default it runs the classifier's **released** version — the exact version the ingestion pipeline runs — so its result is a faithful proxy for how the pipeline will route the document. It prints which config it used (`released v0.0.2`, `draft`, or `local file …`), then the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.
@@ -443,6 +451,10 @@ koji classify delete document_type                    # delete a classifier + al
 For a large multi-page PDF, only the first `--max-pages` pages (default 3) are uploaded — classification reads the masthead, and this keeps big scans under the API's upload size limit; pass `--max-pages 0` to send the whole file.
 
 `koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
+
+`koji classify validate` backtests a classifier against its **labelled corpus** — the mirror of `koji validate` for schemas. It classifies every labelled document through the same cascade production uses and prints accuracy, per-class precision/recall/F1, the **confusion matrix** (which class each document was mistaken for — the signal that tells you which keywords to tighten), the **tier histogram + escalation rate** (the share of documents that needed the paid LLM/vision tail), and flips vs. the previous run. Backtests the released version by default; `--version` pins a specific one, and `--check` exits non-zero if any class regressed (for CI loops).
+
+`koji classify corpus ls / add / rm` manage that corpus. A classifier's corpus is **label-based** — each entry asserts the class a document *should* get (a released class id, or `unknown`) — so it's a distinct surface from the schema `koji corpus` group (which carries extraction ground truth). Documents live in the shared project pool, so `add` uploads and labels in one step, and a file already pooled by a schema corpus is reusable. See the [classifier guide](classifiers.md#corpus--backtesting).
 
 `koji classify delete <slug>` removes a classifier and all its versions (confirmation prompt; `--yes` to skip). Pipelines that reference the slug will fail to resolve it until it's recreated — use it to clean up a test classifier or to recreate one from scratch.
 

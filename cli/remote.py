@@ -574,16 +574,19 @@ def _poll_validate_run(
     headers: dict,
     slug: str,
     queued: dict,
+    resource: str = "schemas",
 ) -> dict:
-    """Poll an async validate run until it finishes; return the ValidateResult.
+    """Poll an async validate run until it finishes; return the result payload.
 
     The POST returned 202 with {runId, docsTotal}. Each corpus doc runs as its
     own background job server-side (oss-348) — this just watches progress.
     Exits non-zero if the run fails or hasn't finished after 30 minutes.
+    `resource` selects the surface ("schemas" or "classifiers") so schema
+    validate and classifier validate share one poller.
     """
     run_id = queued.get("runId")
     docs_total = int(queued.get("docsTotal") or 0)
-    url = f"{base_url}/api/schemas/{slug}/validate/runs/{run_id}"
+    url = f"{base_url}/api/{resource}/{slug}/validate/runs/{run_id}"
     deadline = time.monotonic() + 1800  # 30 min hard cap
 
     # Progress renders to stderr: it's human feedback, and stdout must stay
@@ -2350,6 +2353,97 @@ def _render_classify(filename: str, r: dict) -> None:
     console.print(table)
 
 
+def _render_classifier_validate(slug: str, r: dict) -> None:
+    """Pretty-print a classifier backtest result (oss-453 scoring shape)."""
+    acc = r.get("accuracy")
+    acc_disp = f"{acc:.1f}%" if isinstance(acc, (int, float)) else "?"
+    total = r.get("docsTotal") or 0
+    correct = r.get("docsCorrect") or 0
+    failed = r.get("docsFailed") or 0
+    esc = r.get("escalationRate")
+    esc_disp = f"{esc * 100:.0f}%" if isinstance(esc, (int, float)) else "—"
+    version = r.get("version") or "?"
+    failed_disp = f"  [red]{failed} failed[/red]" if failed else ""
+    console.print(
+        f"\n[bold]{slug}[/bold]  "
+        f"accuracy [bold]{acc_disp}[/bold]   "
+        f"docs {correct}/{total}{failed_disp}   "
+        f"escalation {esc_disp}   "
+        f"[cyan]{version}[/cyan]\n"
+    )
+
+    # Per-class precision / recall / F1.
+    by_class = r.get("byClass") or []
+    if by_class:
+        table = Table(show_header=True, header_style="bold", title="per class")
+        table.add_column("Class")
+        table.add_column("Support", justify="right")
+        table.add_column("Pred", justify="right")
+        table.add_column("P", justify="right")
+        table.add_column("R", justify="right")
+        table.add_column("F1", justify="right")
+
+        def pct(v: object) -> str:
+            return f"{v * 100:.0f}" if isinstance(v, (int, float)) else "[dim]—[/dim]"
+
+        for cl in by_class:
+            table.add_row(
+                cl.get("label", ""),
+                str(cl.get("support", 0)),
+                str(cl.get("predicted", 0)),
+                pct(cl.get("precision")),
+                pct(cl.get("recall")),
+                pct(cl.get("f1")),
+            )
+        console.print(table)
+
+    # Confusion matrix (expected rows × predicted columns). The off-diagonal
+    # cells are the actionable signal — *which* class a doc was mistaken for.
+    confusion = r.get("confusion") or []
+    if confusion:
+        labels: list[str] = [cl.get("label", "") for cl in by_class]
+        for cell in confusion:
+            for key in ("expected", "predicted"):
+                lab = cell.get(key)
+                if lab and lab not in labels:
+                    labels.append(lab)
+        counts: dict[tuple[str, str], int] = {
+            (c.get("expected"), c.get("predicted")): c.get("count", 0) for c in confusion
+        }
+        matrix = Table(show_header=True, header_style="bold", title="confusion (expected → predicted)")
+        matrix.add_column("exp ╲ pred", style="dim")
+        for lab in labels:
+            matrix.add_column(lab, justify="right")
+        for exp in labels:
+            row = [exp]
+            for pred in labels:
+                n = counts.get((exp, pred), 0)
+                if n == 0:
+                    row.append("[dim]·[/dim]")
+                elif exp == pred:
+                    row.append(f"[green]{n}[/green]")
+                else:
+                    row.append(f"[red]{n}[/red]")
+            matrix.add_row(*row)
+        console.print(matrix)
+
+    # Tier histogram — where the cost went (tiers 0-2 are free, 3-4 paid).
+    hist = r.get("tierHistogram") or {}
+    if hist:
+        tiers = ", ".join(f"t{k}={hist[k]}" for k in sorted(hist))
+        console.print(f"\n[dim]tiers:[/dim] {tiers}")
+
+    # Flips vs the previous run.
+    flips = r.get("flips") or {}
+    fixed, regressed, churned = flips.get("fixed", 0), flips.get("regressed", 0), flips.get("churned", 0)
+    if fixed or regressed or churned:
+        console.print(
+            f"[dim]vs prev:[/dim] [green]+{fixed} fixed[/green]  "
+            f"[red]-{regressed} regressed[/red]  [yellow]{churned} churned[/yellow]"
+        )
+    console.print()
+
+
 classify_app = typer.Typer(
     help="Run and manage classifiers — classify a document, list versions, promote a candidate, or release.",
     no_args_is_help=True,
@@ -2567,6 +2661,185 @@ def classify_delete(
         if resp.status_code not in (200, 204):
             _api_error(resp, f"delete {slug}")
     console.print(f"[green]✓[/green] deleted classifier [cyan]{slug}[/cyan]")
+
+
+@classify_app.command("validate")
+def classify_validate(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    version: str = typer.Option(
+        None, "--version", help="Backtest a specific version (semver label or id prefix). Default: the released one."
+    ),
+    check: bool = typer.Option(False, "--check", help="Exit non-zero if any class regressed vs the previous run."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Backtest a classifier against its labelled corpus.
+
+    Classifies every labelled corpus document through the same cascade
+    production uses and scores predicted vs. ground truth. By default backtests
+    the **released** version; pass --version to pin a specific one (the same
+    selector `koji classify run` uses, so a backtest and a live route agree).
+
+    Prints accuracy, per-class precision/recall/F1, the confusion matrix, the
+    tier histogram + escalation rate (the share of docs that needed the paid
+    LLM/vision tail), and flips vs. the previous run. Mirrors `koji validate`.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=300) as client:
+        body: dict = {"async": True}
+        if version:
+            body["version"] = version
+        resp = client.post(f"{base_url}/api/classifiers/{slug}/validate", json=body, headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 202:
+            # Async run: each labelled doc runs as its own job server-side
+            # (no request races a timeout — oss-348). Poll for the result.
+            queued = resp.json()
+            result = _poll_validate_run(client, base_url, headers, slug, queued, resource="classifiers")
+            result.setdefault("version", queued.get("version"))
+        elif resp.status_code == 200:
+            # Older server without async classifier validate — full result inline.
+            result = resp.json()
+        else:
+            _api_error(resp, f"validate {slug}")
+            return  # unreachable — _api_error raises
+
+    if as_json:
+        emit_json(result)
+    else:
+        _render_classifier_validate(slug, result)
+    regressed = (result.get("flips") or {}).get("regressed", 0)
+    if check and regressed:
+        raise typer.Exit(1)
+
+
+# ── Commands: classifier corpus group ─────────────────────────────────
+# A classifier's corpus is label-based (each entry asserts the class a document
+# *should* get), so this is a distinct surface from the schema `corpus` group
+# (which carries extraction ground truth, tags, and per-doc extraction diffs).
+# Documents live in the shared project pool — `add` uploads + labels; a doc
+# already pooled by a schema corpus can be attached by id.
+
+classify_corpus_app = typer.Typer(
+    help="Manage a classifier's backtest corpus (documents + their expected class label).",
+    no_args_is_help=True,
+)
+classify_app.add_typer(classify_corpus_app, name="corpus")
+
+
+@classify_corpus_app.command("ls")
+def classify_corpus_ls(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    label: str = typer.Option(None, "--label", help="Only entries carrying this class label."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """List a classifier's labelled corpus documents."""
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/classifiers/{slug}/corpus", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 404:
+            console.print(f"[red]Classifier '{slug}' not found.[/red]")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"list corpus for {slug}")
+        entries = resp.json().get("data", [])
+
+    if label:
+        entries = [e for e in entries if e.get("label") == label]
+    if as_json:
+        emit_json(entries)
+        return
+    if not entries:
+        console.print("[yellow]No matching corpus entries.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim")
+    table.add_column("Filename")
+    table.add_column("Label")
+    table.add_column("Source")
+    for e in entries:
+        table.add_row(
+            (e.get("id") or "")[:8],
+            e.get("filename", ""),
+            e.get("label") or "[dim]—[/dim]",
+            e.get("source", ""),
+        )
+    console.print(table)
+    console.print(f"\n[dim]{len(entries)} doc(s)[/dim]")
+
+
+@classify_corpus_app.command("add")
+def classify_corpus_add(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    label: str = typer.Argument(
+        ..., help="The class label this document should get (a released class id, or 'unknown')."
+    ),
+    files: list[str] = typer.Argument(..., help="One or more document files to upload and label."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Upload document(s) into a classifier's corpus with their expected label.
+
+    Each file is pooled at the project level and labelled for this classifier.
+    The label must be one of the classifier's released class ids (or 'unknown',
+    a legitimate ground truth: "this document should fall through").
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=120) as client:
+        for fp in files:
+            path = Path(fp)
+            if not path.is_file():
+                console.print(f"  [red]✗[/red] {fp} — not found")
+                continue
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            resp = client.post(
+                f"{base_url}/api/classifiers/{slug}/corpus",
+                files={"file": (path.name, path.read_bytes(), content_type)},
+                data={"label": label},
+                headers=headers,
+            )
+            if _auth_error(resp, base_url):
+                raise typer.Exit(1)
+            if resp.status_code not in (200, 201):
+                _api_error(resp, f"add {path.name}")
+            dedup = "  [dim](already labelled)[/dim]" if resp.status_code == 200 else ""
+            console.print(f"  [green]✓[/green] {path.name} → [cyan]{label}[/cyan]{dedup}")
+
+
+@classify_corpus_app.command("rm")
+def classify_corpus_rm(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    entry: str = typer.Argument(..., help="Corpus entry id (or filename)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Remove a labelled document from a classifier's corpus.
+
+    Soft-delete: the label drops out of the corpus (and future backtests) but
+    the pooled file is retained. Use it to drop a mislabelled or off-type doc.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/classifiers/{slug}/corpus", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"list corpus for {slug}")
+        entries = resp.json().get("data", [])
+        matched = _resolve_entry(entries, entry)
+        filename = matched.get("filename") or matched["id"]
+        if not yes and not typer.confirm(f"Remove '{filename}' from the {slug} corpus?"):
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+        resp = client.delete(f"{base_url}/api/classifiers/{slug}/corpus/{matched['id']}", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code not in (200, 204):
+            _api_error(resp, f"remove {filename}")
+    console.print(f"[green]✓[/green] removed {filename} from the {slug} corpus")
 
 
 # ── Projects ──────────────────────────────────────────────────────────

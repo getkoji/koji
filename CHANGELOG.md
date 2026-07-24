@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.104.0 — 2026-07-24
+
+**`koji classify validate` — backtest a classifier from the CLI.** Mirrors
+`koji validate`: it classifies every labelled corpus document through the same
+cascade production uses and renders accuracy, per-class precision/recall/F1, the
+confusion matrix, the tier histogram + escalation rate, and flips vs. the
+previous run in the terminal. `--version` pins a version; `--check` exits
+non-zero if any class regressed (for CI loops). Adds `koji classify corpus
+ls/add/rm` to manage the classifier's label-based backtest corpus — `add`
+uploads and labels a document in one step, reusing the shared project pool.
+
 ## 0.103.0 — 2026-07-23
 
 **Backtest a classifier against its corpus.** `POST /api/classifiers/{slug}/validate`
