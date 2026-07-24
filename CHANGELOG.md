@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.107.0 — 2026-07-24
+
+**Classifier Corpus + Validate tabs in the dashboard.** The classifier detail
+page gains the schema tab idiom — Config → Corpus → Validate. The Corpus tab
+labels documents by picking a class from a dropdown (upload, attach from the
+shared project pool, or auto-label unlabeled documents via bootstrap, then
+approve drafts). The Validate tab runs a backtest and renders the confusion
+matrix, per-class precision/recall/F1, the tier histogram + escalation rate,
+cost, and flips vs. the previous run.
+
 ## 0.106.0 — 2026-07-24
 
 **Agent-assisted classifier corpus labeling.** `koji classify corpus bootstrap`

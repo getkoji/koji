@@ -477,6 +477,109 @@ export interface ClassifyResult {
   error?: string;
 }
 
+/** One row of GET /api/classifiers/:slug/corpus. */
+export interface ClassifierCorpusEntry {
+  id: string;
+  documentId: string;
+  filename: string;
+  fileSize: number;
+  mimeType: string;
+  source: string;
+  /** The APPROVED (scored) label, or null when only a draft proposal exists. */
+  label: string | null;
+  /** Latest ground-truth version id — the target of an approve. */
+  latestGtId: string | null;
+  /** Agent-proposed draft label awaiting review (oss-456), or null. */
+  proposedLabel: string | null;
+  reviewStatus: string | null; // "draft" | "approved" | null
+  authoredViaAgent: boolean;
+  createdAt: string;
+}
+
+/** One pooled document from GET /api/corpus/documents (any artifact's uploads). */
+export interface CorpusPoolDoc {
+  id: string;
+  filename: string;
+  fileSize: number;
+  mimeType: string;
+  contentHash: string;
+  source: string;
+  createdAt: string;
+}
+
+export interface ClassifierPerClass {
+  label: string;
+  support: number;
+  predicted: number;
+  tp: number;
+  fp: number;
+  fn: number;
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+}
+export interface ClassifierConfusionCell {
+  expected: string;
+  predicted: string;
+  count: number;
+}
+export interface ClassifierFlip {
+  corpusEntryId: string;
+  expected: string | null;
+  from: string | null;
+  to: string | null;
+  kind: "fixed" | "regressed" | "churned";
+}
+/** Result of a classifier backtest (oss-452/453). */
+export interface ClassifierValidateResult {
+  runId?: string;
+  version?: string | null;
+  completedAt?: string | null;
+  docsTotal: number;
+  docsCorrect: number;
+  docsFailed: number;
+  accuracy: number | null;
+  byClass: ClassifierPerClass[];
+  confusion: ClassifierConfusionCell[];
+  tierHistogram: Record<string, number>;
+  escalationRate: number | null;
+  flips: { fixed: number; regressed: number; churned: number; items: ClassifierFlip[] };
+  costUsd: number | null;
+}
+export interface ClassifierValidateRunStatus {
+  runId: string;
+  status: string;
+  docsTotal: number;
+  docsProcessed: number;
+  result: ClassifierValidateResult | null;
+  error: string | null;
+}
+export interface ClassifierBootstrapProposal {
+  entryId: string;
+  gtId: string;
+  documentId: string;
+  filename: string | null;
+  proposedLabel: string;
+  confidence: number | null;
+  method: string;
+  tierUsed: number | null;
+}
+export interface ClassifierBootstrapResult {
+  proposed: number;
+  skipped: number;
+  remainingHint: string | null;
+  proposals: ClassifierBootstrapProposal[];
+  message?: string;
+}
+
+/** Project-level corpus pool — documents any artifact has uploaded. */
+export const corpusPool = {
+  list: (params?: { content_hash?: string }) => {
+    const qs = params?.content_hash ? `?content_hash=${encodeURIComponent(params.content_hash)}` : "";
+    return api.get<{ data: CorpusPoolDoc[] }>(`/api/corpus/documents${qs}`).then((r) => r.data);
+  },
+};
+
 export const classifiers = {
   list: () => api.get<{ data: ClassifierRow[] }>("/api/classifiers").then((r) => r.data),
   get: (slug: string) => api.get<ClassifierDetail>(`/api/classifiers/${slug}`),
@@ -505,6 +608,44 @@ export const classifiers = {
     form.append("config", config);
     return api.postForm<ClassifyResult>("/api/classify", form);
   },
+
+  // ── Corpus (oss-450/456) ──
+  corpus: (slug: string) =>
+    api.get<{ data: ClassifierCorpusEntry[] }>(`/api/classifiers/${slug}/corpus`).then((r) => r.data),
+  /** Attach a pooled document (already uploaded by any artifact) as a label. */
+  attachCorpus: (slug: string, documentId: string, label: string) =>
+    api.post<ClassifierCorpusEntry>(`/api/classifiers/${slug}/corpus`, { document_id: documentId, label }),
+  /** Upload + label a new document in one call. */
+  uploadCorpus: (slug: string, file: File, label: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("label", label);
+    return api.postForm<ClassifierCorpusEntry>(`/api/classifiers/${slug}/corpus`, form);
+  },
+  removeCorpus: (slug: string, entryId: string) =>
+    api.delete(`/api/classifiers/${slug}/corpus/${entryId}`),
+  /** Agent-propose draft labels for unlabeled pool documents. */
+  bootstrap: (slug: string, limit?: number) =>
+    api.post<ClassifierBootstrapResult>(`/api/classifiers/${slug}/corpus/bootstrap`, { limit }),
+  /** Approve a draft label (optionally correcting it) into the scored ground truth. */
+  approve: (slug: string, entryId: string, gtId: string, label?: string) =>
+    api.post<{ label: string }>(
+      `/api/classifiers/${slug}/corpus/${entryId}/ground-truth/${gtId}/approve`,
+      label ? { label } : {},
+    ),
+
+  // ── Validate / backtest (oss-453) ──
+  /** Start a backtest. `{async:true}` returns a runId to poll. */
+  validate: (slug: string, opts?: { async?: boolean; version?: string }) =>
+    api.post<ClassifierValidateResult & { runId?: string; status?: string; docsTotal?: number }>(
+      `/api/classifiers/${slug}/validate`,
+      opts ?? {},
+    ),
+  validateRun: (slug: string, runId: string) =>
+    api.get<ClassifierValidateRunStatus>(`/api/classifiers/${slug}/validate/runs/${runId}`),
+  /** The latest completed backtest, or null if never run. */
+  validateLatest: (slug: string) =>
+    api.get<ClassifierValidateResult | null>(`/api/classifiers/${slug}/validate`),
 };
 
 /** One row of GET /api/documents — the tenant/project-wide document list. */

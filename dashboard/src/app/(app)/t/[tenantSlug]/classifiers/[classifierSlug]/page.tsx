@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Loader2, Upload, Play, Save, Rocket, History } from "lucide-react";
 import { ListLayout, Breadcrumbs, PageHeader } from "@/components/layouts";
+import { ClassifierTabs } from "./ClassifierTabs";
 import {
   classifiers as classifiersApi,
   ApiError,
@@ -180,6 +181,7 @@ export default function ClassifierDetailPage() {
         </>
       }
     >
+      <ClassifierTabs base={base} slug={slug} active="config" />
       {notice && (
         <div
           className={`text-[12px] px-3 py-1.5 rounded-sm mb-4 ${
