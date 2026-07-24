@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.106.0 — 2026-07-24
+
+**Agent-assisted classifier corpus labeling.** `koji classify corpus bootstrap`
+(and `POST /api/classifiers/{slug}/corpus/bootstrap`) runs the classifier at
+`max_tier: 4` over unlabeled pool documents and writes each result as a **draft**
+label — labeling becomes reviewing a list instead of filling one in.
+`koji classify corpus approve` accepts a draft (with `--label` to correct it
+first), promoting it into the scored ground truth. A draft is never scored by a
+backtest until approved, so the classifier is never graded against its own
+guesses; draft rows are marked `authored_via_agent` for audit. The classifier
+corpus list now surfaces `proposedLabel` / `reviewStatus` / `authoredViaAgent`.
+
 ## 0.105.0 — 2026-07-24
 
 **Gate a classifier promotion on no regressions.** `POST /api/classifiers/{slug}/promote`

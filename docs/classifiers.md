@@ -244,6 +244,29 @@ See the [API Reference](api-reference.md#classifier-corpus) for the full corpus
 endpoints and [`GET /api/corpus/documents`](api-reference.md#get-apicorpusdocuments)
 to list the pool.
 
+### Bootstrap labeling — label by reviewing, not typing
+
+Labeling a corpus from zero is the real cost of a backtest. **Bootstrap** does
+the first pass for you: it runs the classifier at `max_tier: 4` (the most
+accurate cascade) over the project's *unlabeled* pool documents and writes each
+result as a **draft** label. Labeling then becomes reviewing a list — confirm or
+correct — instead of filling one in.
+
+```bash
+koji classify corpus bootstrap inbound_mail --limit 25   # propose draft labels
+koji classify corpus ls inbound_mail                     # review: draft labels show as "invoice?"
+koji classify corpus approve inbound_mail doc.pdf                 # accept the proposal
+koji classify corpus approve inbound_mail other.pdf --label policy  # correct, then accept
+```
+
+A draft is **never scored by a backtest** until you approve it — otherwise the
+classifier would be graded against its own guesses, which measures nothing.
+Approval promotes the draft into the scored ground truth. Bootstrap only touches
+documents not already in the classifier's corpus, and is bounded per call (≤ 50
+docs), so a large pool is labelled in review-sized batches — run it again to
+continue. Draft rows are marked `authored_via_agent`, so an audit can always
+tell a machine's first guess from a human's confirmation.
+
 ### Running a backtest
 
 Once the corpus is labelled, backtest a classifier version against it — from the

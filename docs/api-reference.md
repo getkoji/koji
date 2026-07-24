@@ -1741,6 +1741,16 @@ Label a document for this classifier. **Two input modes:**
 
 Soft-delete a label. `204` on success, `404` if the entry isn't in this classifier's corpus. Auth: `corpus:write`.
 
+### `POST /api/classifiers/{slug}/corpus/bootstrap`
+
+Agent-assisted labeling. Runs the classifier at `max_tier: 4` over the project's **unlabeled** pool documents (those not already in this classifier's corpus) and writes each result as a **draft** ground-truth label (`authored_via_agent: true`, `review_status: "draft"`). The entry's denormalized ground truth stays empty, so **a draft is never scored by a backtest until approved** — grading the classifier against its own guesses would measure nothing. Body: `{ limit? }` (default 25, max 50 — bounded so a large pool is labelled in review-sized batches; call again to continue). Returns `{ proposed, skipped, remainingHint, proposals: [{ entryId, gtId, documentId, filename, proposedLabel, confidence, method, tierUsed }] }`. `409` if the classifier has no released version. Auth: `corpus:write`.
+
+### `POST /api/classifiers/{slug}/corpus/{entryId}/ground-truth/{gtId}/approve`
+
+Approve a draft label — the human exit ramp from bootstrap. Marks the ground-truth row `approved` and writes the denormalized `groundTruthJson` so the backtest begins scoring it. Optional body `{ label }` corrects the proposal first (validated against the released class ids, or `unknown`). `404` if the draft isn't for this classifier; `400` for an invalid correction. Auth: `corpus:write`. Mirrors [`POST /api/schemas/{slug}/corpus/{entryId}/ground-truth/{gtId}/approve`](#post-apischemasslugcorpusentryidground-truthgtidapprove).
+
+The classifier corpus **list** (`GET /api/classifiers/{slug}/corpus`) surfaces the review state per entry: `label` (the approved, scored label, or `null`), `proposedLabel` + `reviewStatus` (`draft`/`approved`) for the latest ground-truth version, and `authoredViaAgent`.
+
 ## Classifier validate
 
 Backtest a classifier version against its labelled corpus: classify every labelled document through the **same cascade production uses** and score predicted vs. ground truth. The mirror of the [schema validate surface](#post-apischemasslugvalidate). Auth: `job:run`.
