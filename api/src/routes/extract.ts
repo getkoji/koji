@@ -218,13 +218,15 @@ extract.post("/extract/run", requires("job:run"), async (c) => {
   const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({
-        storageKey: schema.corpusEntries.storageKey,
-        filename: schema.corpusEntries.filename,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        // File fields come from the pooled document (oss-476).
+        storageKey: schema.corpusDocuments.storageKey,
+        filename: schema.corpusDocuments.filename,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
         schemaId: schema.corpusEntries.schemaId,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.id, body.corpus_entry_id), isNull(schema.corpusEntries.deletedAt)))
       .limit(1),
   );
@@ -667,8 +669,9 @@ extract.post("/extract/compare", requires("job:run"), async (c) => {
   // Fetch corpus entry filenames
   const fetchEntry = async (entryId: string) => {
     const [entry] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-      tx.select({ id: schema.corpusEntries.id, filename: schema.corpusEntries.filename })
+      tx.select({ id: schema.corpusEntries.id, filename: schema.corpusDocuments.filename })
         .from(schema.corpusEntries)
+        .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
         .where(and(eq(schema.corpusEntries.id, entryId), isNull(schema.corpusEntries.deletedAt)))
         .limit(1),
     );

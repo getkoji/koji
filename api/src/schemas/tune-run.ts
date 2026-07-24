@@ -124,13 +124,14 @@ async function loadEntries(db: Db, tenantId: string, schemaId: string): Promise<
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(and(eq(schema.corpusEntries.schemaId, schemaId))),
   );
   return rows

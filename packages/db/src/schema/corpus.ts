@@ -101,17 +101,19 @@ export const corpusEntries = pgTable(
      */
     projectId: projectId().references(() => projects.id),
     /**
-     * File columns — these now duplicate `corpus_documents`. They are kept
-     * (and still written) during the expand/contract window so no read path
-     * changes in this PR; a follow-up moves reads onto `documentId` and drops
-     * them. Unchanged (NOT NULL) here on purpose — relaxing them is read-site
-     * churn that belongs with the follow-up, not the one-way-door migration.
+     * Legacy file columns — these duplicate `corpus_documents` and are being
+     * retired (oss-476). Now NULLABLE and no longer written: every read path
+     * joins through `documentId` to `corpus_documents` for the canonical file.
+     * Existing rows keep their copies for one release (non-lossy rollback); a
+     * follow-up release drops these columns. New rows leave them NULL. Making
+     * them nullable is deliberate — it flips their inferred type to
+     * `string | null` so the compiler enumerates any remaining direct read.
      */
-    filename: varchar("filename", { length: 500 }).notNull(),
-    storageKey: varchar("storage_key", { length: 500 }).notNull(),
-    fileSize: bigint("file_size", { mode: "number" }).notNull(),
-    mimeType: varchar("mime_type", { length: 64 }).notNull(),
-    contentHash: char("content_hash", { length: 64 }).notNull(),
+    filename: varchar("filename", { length: 500 }),
+    storageKey: varchar("storage_key", { length: 500 }),
+    fileSize: bigint("file_size", { mode: "number" }),
+    mimeType: varchar("mime_type", { length: 64 }),
+    contentHash: char("content_hash", { length: 64 }),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     groundTruthJson: jsonb("ground_truth_json").notNull(),
     /**
@@ -124,9 +126,9 @@ export const corpusEntries = pgTable(
      * continues to read `groundTruthJson` alone.
      */
     groundTruthProvenanceJson: jsonb("ground_truth_provenance_json"),
-    // Also duplicated on the pool document; still written here during the
-    // expand/contract window. Unchanged in this PR.
-    source: varchar("source", { length: 64 }).notNull(),
+    // Legacy — canonical `source` now lives on the pool document. Nullable and
+    // no longer written (oss-476); reads join through `documentId`.
+    source: varchar("source", { length: 64 }),
     sourceRef: varchar("source_ref", { length: 255 }),
     addedBy: uuid("added_by")
       .notNull()

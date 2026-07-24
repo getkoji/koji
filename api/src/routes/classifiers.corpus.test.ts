@@ -51,6 +51,7 @@ function makeDb(selects: unknown[][], insertReturning: unknown[] = [{ id: "entry
     const result = q.shift() ?? [];
     const c: any = {
       from: () => c,
+      innerJoin: () => c,
       where: () => c,
       orderBy: () => c,
       limit: () => Promise.resolve(result),

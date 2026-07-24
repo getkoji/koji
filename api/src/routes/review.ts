@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { and, eq, desc, asc, gte, lt, isNotNull, sql } from "drizzle-orm";
+import { and, eq, desc, asc, gte, lt, isNotNull, isNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
@@ -576,9 +576,53 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
 
   const reviewStatus = decision.reviewStatus;
   const tags = body.to ? [body.to] : [];
+  const corpusProjectId = item.projectId;
 
-  // Dedup by (schemaId, contentHash). If the doc is already in the corpus,
-  // append a new ground-truth version rather than duplicating the entry.
+  // Resolve the pooled document for these bytes (one per project + contentHash;
+  // oss-449/476). Reuse an existing pool document when the same file was
+  // already pooled — no second stored copy — otherwise store the file and
+  // create it. `item.documentId` is the SOURCE document, distinct from this
+  // corpus pool document. "pipeline" source is a property of the pool document
+  // (how the file entered the pool), not the label.
+  const [poolDoc] = await withRLS(db, { tenantId, projectId: corpusProjectId }, (tx) =>
+    tx
+      .select({ id: schema.corpusDocuments.id })
+      .from(schema.corpusDocuments)
+      .where(
+        and(
+          eq(schema.corpusDocuments.projectId, corpusProjectId),
+          eq(schema.corpusDocuments.contentHash, contentHash),
+          isNull(schema.corpusDocuments.deletedAt),
+        ),
+      )
+      .limit(1),
+  );
+
+  let corpusDocumentId: string;
+  if (poolDoc) {
+    corpusDocumentId = poolDoc.id;
+  } else {
+    const safeName = item.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const corpusKey = `corpus/${tenantId}/${item.schemaId}/${Date.now()}-${safeName}`;
+    await storage.put(corpusKey, file.data, { contentType: corpusMime });
+    corpusDocumentId = await upsertCorpusDocument(db, { tenantId, projectId: corpusProjectId }, {
+      tenantId,
+      projectId: corpusProjectId,
+      filename: item.filename,
+      storageKey: corpusKey,
+      fileSize: file.data.length,
+      mimeType: corpusMime,
+      contentHash,
+      source: "pipeline",
+      sourceRef: item.reviewId,
+      addedBy: principal.userId,
+    });
+  }
+
+  // Dedup: one label per (schema, document). If the doc is already in the
+  // corpus, append a new ground-truth version rather than duplicating the
+  // entry. (Pre-split this keyed on contentHash and did not exclude
+  // soft-deleted entries; preserved via documentId.)
   const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
       .select({ id: schema.corpusEntries.id })
@@ -586,7 +630,7 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
       .where(
         and(
           eq(schema.corpusEntries.schemaId, item.schemaId),
-          eq(schema.corpusEntries.contentHash, contentHash),
+          eq(schema.corpusEntries.documentId, corpusDocumentId),
         ),
       )
       .limit(1),
@@ -599,42 +643,11 @@ review.post("/:id/promote", requires("corpus:promote"), async (c) => {
     corpusEntryId = existing.id;
     deduped = true;
   } else {
-    const safeName = item.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const corpusKey = `corpus/${tenantId}/${item.schemaId}/${Date.now()}-${safeName}`;
-    await storage.put(corpusKey, file.data, { contentType: corpusMime });
-    // Resolve the file to a pooled document (oss-449); the corpus lives in the
-    // review item's project (= the schema's project). The entry keeps the
-    // legacy file columns during expand/contract, so read paths are unchanged.
-    // `item.documentId` is the SOURCE document — distinct from this pool doc.
-    const corpusProjectId = item.projectId;
-    const corpusDocumentId = await upsertCorpusDocument(db, { tenantId, projectId: corpusProjectId }, {
-      tenantId,
-      projectId: corpusProjectId,
-      filename: item.filename,
-      storageKey: corpusKey,
-      fileSize: file.data.length,
-      mimeType: corpusMime,
-      contentHash,
-      source: "pipeline",
-      sourceRef: item.reviewId,
-      addedBy: principal.userId,
-    });
     const entryValues: typeof schema.corpusEntries.$inferInsert = {
       tenantId,
       projectId: corpusProjectId,
       documentId: corpusDocumentId,
       schemaId: item.schemaId,
-      filename: item.filename,
-      storageKey: corpusKey,
-      fileSize: file.data.length,
-      mimeType: corpusMime,
-      contentHash,
-      // "pipeline" = this entry originated from a pipeline job (via the review
-      // queue), as opposed to a manual "upload". The corpus source filter keys
-      // on this. Legacy entries promoted before this used "review" (aliased in
-      // the UI filter for backward compatibility).
-      source: "pipeline",
-      sourceRef: item.reviewId,
       // Denormalized GT is what `validate` scores. Only populate it for
       // approved (human-gated) labels; provisional drafts stay excluded.
       groundTruthJson: decision.writeDenormalizedGt ? payload : {},

@@ -103,24 +103,6 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
   // Compute content hash for dedup
   const contentHash = createHash("sha256").update(fileResult.data).digest("hex");
 
-  // Check for existing entry with same hash
-  const [existing] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-    tx.select()
-      .from(schema.corpusEntries)
-      .where(and(
-        eq(schema.corpusEntries.schemaId, s.id),
-        eq(schema.corpusEntries.contentHash, contentHash),
-        isNull(schema.corpusEntries.deletedAt),
-      ))
-      .limit(1),
-  );
-
-  if (existing) {
-    // Duplicate — clean up the just-uploaded file and return existing entry
-    await storage.delete(body.storageKey);
-    return c.json(existing, 200);
-  }
-
   const mimeResult = normalizeMimeTypeWithWarning(fileResult.contentType, body.filename);
   if (mimeResult.warning) {
     console.warn(
@@ -146,25 +128,57 @@ upload.post("/complete", requires("corpus:write"), async (c) => {
     addedBy: principal.userId,
   });
 
+  // Canonical file fields come from the pooled document (oss-476) — on a dedup
+  // hit the pool document may already point at a DIFFERENT stored copy, and we
+  // delete this upload below, so the response must reflect the pool document,
+  // not the just-deleted bytes.
+  const [doc] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select({
+      filename: schema.corpusDocuments.filename,
+      storageKey: schema.corpusDocuments.storageKey,
+      fileSize: schema.corpusDocuments.fileSize,
+      mimeType: schema.corpusDocuments.mimeType,
+      contentHash: schema.corpusDocuments.contentHash,
+      source: schema.corpusDocuments.source,
+    })
+      .from(schema.corpusDocuments)
+      .where(eq(schema.corpusDocuments.id, documentId))
+      .limit(1),
+  );
+
+  // Dedup on the pooled document, not the raw hash: one label per
+  // (schema, document).
+  const [existing] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx.select()
+      .from(schema.corpusEntries)
+      .where(and(
+        eq(schema.corpusEntries.schemaId, s.id),
+        eq(schema.corpusEntries.documentId, documentId),
+        isNull(schema.corpusEntries.deletedAt),
+      ))
+      .limit(1),
+  );
+
+  if (existing) {
+    // Duplicate label — clean up the just-uploaded file and return existing.
+    await storage.delete(body.storageKey);
+    return c.json({ ...existing, ...doc }, 200);
+  }
+
   const [row] = await withRLS(db, { tenantId, projectId }, (tx) =>
     tx.insert(schema.corpusEntries).values({
       tenantId,
       projectId,
       documentId,
       schemaId: s.id,
-      filename: body.filename,
-      storageKey: body.storageKey,
-      fileSize: fileResult.data.length,
-      mimeType: mimeResult.value,
-      contentHash,
-      source: "upload",
       groundTruthJson: {},
       addedBy: principal.userId,
     }).returning(),
   );
 
+  const entryResponse = { ...row, ...doc };
   return c.json(
-    mimeResult.warning ? { ...row, warnings: [mimeResult.warning] } : row,
+    mimeResult.warning ? { ...entryResponse, warnings: [mimeResult.warning] } : entryResponse,
     201,
   );
 });

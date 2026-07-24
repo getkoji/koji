@@ -229,12 +229,14 @@ export async function runValidateDoc(
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
-        storageKey: schema.corpusEntries.storageKey,
-        mimeType: schema.corpusEntries.mimeType,
-        contentHash: schema.corpusEntries.contentHash,
+        // The file lives on the pooled document (oss-476); join for it.
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+        contentHash: schema.corpusDocuments.contentHash,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(eq(schema.corpusEntries.id, corpusEntryId))
       .limit(1),
   );
@@ -464,10 +466,11 @@ export async function maybeFinalizeValidateRun(
     tx
       .select({
         id: schema.corpusEntries.id,
-        filename: schema.corpusEntries.filename,
+        filename: schema.corpusDocuments.filename,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
       })
       .from(schema.corpusEntries)
+      .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
       .where(inArray(schema.corpusEntries.id, entryIds)),
   );
   const entryById = new Map(entries.map((e) => [e.id, e]));

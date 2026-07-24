@@ -54,12 +54,30 @@ function createUploadApp(opts: {
         from: () => chain,
         where: () => chain,
         limit: () => {
-          // Each select() → from() → where() → limit() is one query.
-          // Query 1 = schema lookup; Query 2 = dedup check (in complete handler)
+          // Query sequence in the complete handler (oss-476):
+          //   1 = schema lookup
+          //   2 = upsertCorpusDocument's existing pool-doc lookup ([] → create)
+          //   3 = canonical pool-document read (file fields for the response)
+          //   4 = dedup on (schema, document)
           if (currentSelect === 1) {
             return Promise.resolve(schemaExists ? [{ id: SCHEMA_ID }] : []);
           }
-          // Dedup check
+          if (currentSelect === 2) {
+            return Promise.resolve([]); // no pooled doc yet → upsert inserts one
+          }
+          if (currentSelect === 3) {
+            return Promise.resolve([
+              {
+                filename: "test.pdf",
+                storageKey: "corpus/pool/test.pdf",
+                fileSize: 17,
+                mimeType: "application/pdf",
+                contentHash: "abc123",
+                source: "upload",
+              },
+            ]);
+          }
+          // Dedup check.
           return Promise.resolve(existingEntry ? [existingEntry] : []);
         },
       };

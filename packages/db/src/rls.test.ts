@@ -362,12 +362,12 @@ describe("per-table isolation", () => {
       VALUES ('${corpusDocAId}', '${tenantA}', '${projectAId}', 'a.pdf', 'k/a', 10, 'application/pdf', repeat('a', 64), 'upload', '${userA}'),
              ('${corpusDocBId}', '${tenantB}', '${projectBId}', 'b.pdf', 'k/b', 10, 'application/pdf', repeat('b', 64), 'upload', '${userB}')
     `));
-    // Entries still carry the legacy file columns in this phase (writers
-    // populate both), so the seed provides them just like a real write does.
+    // Entries no longer carry the legacy file columns (oss-476): the file lives
+    // on the pool document, and writers set document_id only — the seed matches.
     await rootDb.execute(sql.raw(`
-      INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, schema_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
-      VALUES ('${corpusEntryAId}', '${tenantA}', '${projectAId}', '${corpusDocAId}', '${schemaAId}', 'a.pdf', 'k/a', 10, 'application/pdf', repeat('a', 64), 'upload', '{"label":"x"}', '${userA}'),
-             ('${corpusEntryBId}', '${tenantB}', '${projectBId}', '${corpusDocBId}', '${schemaBId}', 'b.pdf', 'k/b', 10, 'application/pdf', repeat('b', 64), 'upload', '{"label":"y"}', '${userB}')
+      INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, schema_id, ground_truth_json, added_by)
+      VALUES ('${corpusEntryAId}', '${tenantA}', '${projectAId}', '${corpusDocAId}', '${schemaAId}', '{"label":"x"}', '${userA}'),
+             ('${corpusEntryBId}', '${tenantB}', '${projectBId}', '${corpusDocBId}', '${schemaBId}', '{"label":"y"}', '${userB}')
     `));
 
     // NOTE: Additional tables (webhook_targets, api_keys, extraction_runs, etc.)
@@ -544,13 +544,12 @@ describe("project isolation", () => {
     await expect(
       withRLS(db, { tenantId: tenantA, projectId: defaultProjectA }, async (tx) => {
         await tx.execute(sql`
-          INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
+          INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, ground_truth_json, added_by)
           VALUES (
             ${tenantA}::uuid,
             (SELECT id FROM projects WHERE slug = 'proj-a'),
             (SELECT id FROM corpus_documents LIMIT 1),
             (SELECT id FROM schemas WHERE slug = 'iso-test-a'),
-            'x.pdf', 'k/x', 10, 'application/pdf', repeat('c', 64), 'upload',
             '{"label":"sneaky"}', ${userA}::uuid
           )
         `);
@@ -590,14 +589,14 @@ describe("corpus label ownership (oss-475)", () => {
       VALUES (${clfId}::uuid, ${tenantA}::uuid, ${p}::uuid, 'clf-owned', 'Clf Owned', ${userA}::uuid)`);
     const docId = await seedDoc(p, "d");
 
-    // File columns stay NOT NULL in phase 2 (steps 1-2) — a classifier-owned
-    // entry copies them from the pool doc until the read migration relaxes them.
-    // The point of this test is schema_id NULL + classifier ownership.
+    // File columns are nullable and no longer written (oss-476) — the entry
+    // links the pool document via document_id only. The point of this test is
+    // schema_id NULL + classifier ownership.
     const entryId = randomUUID();
     await withRLS(db, { tenantId: tenantA, projectId: p }, (tx) =>
       tx.execute(sql`
-        INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, classifier_id, filename, storage_key, file_size, mime_type, content_hash, source, ground_truth_json, added_by)
-        VALUES (${entryId}::uuid, ${tenantA}::uuid, ${p}::uuid, ${docId}::uuid, ${clfId}::uuid, 'c.pdf', 'k/c', 10, 'application/pdf', repeat('d', 64), 'upload', '{"label":"invoice"}', ${userA}::uuid)`),
+        INSERT INTO corpus_entries (id, tenant_id, project_id, document_id, classifier_id, ground_truth_json, added_by)
+        VALUES (${entryId}::uuid, ${tenantA}::uuid, ${p}::uuid, ${docId}::uuid, ${clfId}::uuid, '{"label":"invoice"}', ${userA}::uuid)`),
     );
     const rows = await rootDb.execute(sql`SELECT schema_id FROM corpus_entries WHERE id = ${entryId}::uuid`);
     expect(rows.length).toBe(1);
@@ -610,21 +609,18 @@ describe("corpus label ownership (oss-475)", () => {
     const sch = (await rootDb.execute(sql`SELECT id FROM schemas WHERE slug = 'iso-test-a'`))[0]?.id;
     const clf = (await rootDb.execute(sql`SELECT id FROM classifiers WHERE slug = 'clf-owned'`))[0]?.id;
 
-    const cols = "filename, storage_key, file_size, mime_type, content_hash";
-    const vals = "'c.pdf', 'k/c', 10, 'application/pdf', repeat('e', 64)";
-
     // Neither owner set.
     await expect(
       rootDb.execute(sql.raw(`
-        INSERT INTO corpus_entries (tenant_id, project_id, document_id, ${cols}, source, ground_truth_json, added_by)
-        VALUES ('${tenantA}', '${p}', '${docId}', ${vals}, 'upload', '{}', '${userA}')`)),
+        INSERT INTO corpus_entries (tenant_id, project_id, document_id, ground_truth_json, added_by)
+        VALUES ('${tenantA}', '${p}', '${docId}', '{}', '${userA}')`)),
     ).rejects.toThrow();
 
     // Both owners set.
     await expect(
       rootDb.execute(sql.raw(`
-        INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, classifier_id, ${cols}, source, ground_truth_json, added_by)
-        VALUES ('${tenantA}', '${p}', '${docId}', '${sch}', '${clf}', ${vals}, 'upload', '{}', '${userA}')`)),
+        INSERT INTO corpus_entries (tenant_id, project_id, document_id, schema_id, classifier_id, ground_truth_json, added_by)
+        VALUES ('${tenantA}', '${p}', '${docId}', '${sch}', '${clf}', '{}', '${userA}')`)),
     ).rejects.toThrow();
   });
 });
