@@ -444,6 +444,8 @@ koji classify validate document_type --check          # exit non-zero if any cla
 koji classify corpus ls document_type                 # list the classifier's labelled corpus docs
 koji classify corpus add document_type invoice ./a.pdf ./b.pdf  # upload + label docs as class `invoice`
 koji classify corpus rm document_type <id|filename>   # drop a labelled doc from the corpus
+koji classify corpus bootstrap document_type --limit 25         # agent-propose draft labels for unlabeled pool docs
+koji classify corpus approve document_type <id|filename>        # accept a draft proposal (--label to correct first)
 ```
 
 `koji classify run` drives the standalone `POST /api/classify` primitive and **persists nothing**. By default it runs the classifier's **released** version — the exact version the ingestion pipeline runs — so its result is a faithful proxy for how the pipeline will route the document. It prints which config it used (`released v0.0.2`, `draft`, or `local file …`), then the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.

@@ -4,7 +4,14 @@ import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId } from "../auth/middleware";
-import { loadClassifierConfig, ClassifierConfigError, resolveClassifierConfig } from "../classify";
+import {
+  loadClassifierConfig,
+  ClassifierConfigError,
+  resolveClassifierConfig,
+  classifyWithConfig,
+  Tier,
+  UNKNOWN_LABEL,
+} from "../classify";
 import type { ClassifierConfig } from "../classify";
 import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { validateCorpusLabel } from "../classifiers/corpus-label";
@@ -692,6 +699,30 @@ classifiers.get("/:slug/corpus", requires("corpus:read"), async (c) => {
         source: schema.corpusDocuments.source,
         groundTruthJson: schema.corpusEntries.groundTruthJson,
         createdAt: schema.corpusEntries.createdAt,
+        // Latest ground-truth version — surfaces an agent-proposed draft label
+        // (oss-456) and its review status so the bootstrap review list can show
+        // "proposed: invoice [draft]" without a per-entry fetch. Runs inside the
+        // RLS tx, so it's tenant/project-scoped like the rest of the query.
+        latestGtId: sql<string | null>`(
+          SELECT id FROM corpus_entry_ground_truth
+          WHERE corpus_entry_id = ${schema.corpusEntries.id}
+          ORDER BY created_at DESC LIMIT 1
+        )`,
+        proposedLabel: sql<string | null>`(
+          SELECT payload_json->>'label' FROM corpus_entry_ground_truth
+          WHERE corpus_entry_id = ${schema.corpusEntries.id}
+          ORDER BY created_at DESC LIMIT 1
+        )`,
+        reviewStatus: sql<string | null>`(
+          SELECT review_status FROM corpus_entry_ground_truth
+          WHERE corpus_entry_id = ${schema.corpusEntries.id}
+          ORDER BY created_at DESC LIMIT 1
+        )`,
+        authoredViaAgent: sql<boolean | null>`(
+          SELECT authored_via_agent FROM corpus_entry_ground_truth
+          WHERE corpus_entry_id = ${schema.corpusEntries.id}
+          ORDER BY created_at DESC LIMIT 1
+        )`,
       })
       .from(schema.corpusEntries)
       .innerJoin(schema.corpusDocuments, eq(schema.corpusEntries.documentId, schema.corpusDocuments.id))
@@ -701,6 +732,8 @@ classifiers.get("/:slug/corpus", requires("corpus:read"), async (c) => {
 
   const data = rows.map((r) => {
     const gt = r.groundTruthJson as { label?: unknown } | null;
+    // The APPROVED label (denormalized, what the backtest scores), or null when
+    // only a draft proposal exists.
     const label = gt && typeof gt.label === "string" ? gt.label : null;
     return {
       id: r.id,
@@ -710,6 +743,11 @@ classifiers.get("/:slug/corpus", requires("corpus:read"), async (c) => {
       mimeType: r.mimeType,
       source: r.source,
       label,
+      // Agent-bootstrap review fields (oss-456).
+      latestGtId: r.latestGtId,
+      proposedLabel: r.proposedLabel,
+      reviewStatus: r.reviewStatus,
+      authoredViaAgent: r.authoredViaAgent ?? false,
       createdAt: r.createdAt,
     };
   });
@@ -891,6 +929,283 @@ classifiers.delete("/:slug/corpus/:entryId", requires("corpus:write"), async (c)
   if (deleted.length === 0) return c.json({ error: "Corpus entry not found" }, 404);
   return c.body(null, 204);
 });
+
+// ── Agent-assisted bootstrap labeling (oss-456) ─────────────────────────────
+//
+// Labeling a corpus from zero is the real cost of a backtest. Bootstrap runs
+// the classifier at max_tier 4 (the most accurate cascade) over the project's
+// UNLABELED pool documents, proposes a label for each, and writes it as a DRAFT
+// ground-truth row (authored_via_agent = true, review_status = "draft"). The
+// entry's denormalized groundTruthJson stays EMPTY, so a draft never enters a
+// backtest — scoring the classifier against its own proposals would be
+// circular. Labeling then becomes reviewing a list: approve to promote a draft
+// into the scored ground truth (optionally correcting the label first).
+
+/** Bounded per-call so a bootstrap can't race a request timeout — review in batches. */
+const BOOTSTRAP_MAX_DOCS = 50;
+const BOOTSTRAP_DEFAULT_DOCS = 25;
+const BOOTSTRAP_CONCURRENCY = 4;
+
+/**
+ * POST /api/classifiers/:slug/corpus/bootstrap — propose labels for unlabeled
+ * pool documents by running the classifier at max_tier 4, as draft ground truth.
+ *
+ * Body: `{ limit?: number }` (default 25, max 50). Idempotent-ish: only pool
+ * documents not already in this classifier's corpus are considered, so calling
+ * again picks up where it left off.
+ */
+classifiers.post("/:slug/corpus/bootstrap", requires("corpus:write"), async (c) => {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const storage = c.get("storage");
+  const parseProvider = c.get("parseProvider");
+  const slug = c.req.param("slug")!;
+  const principal = getPrincipal(c);
+  const projectId = requireProjectId(c);
+
+  const body = await c.req.json<{ limit?: number }>().catch(() => ({}) as { limit?: number });
+  const limit = Math.min(
+    Math.max(1, Math.floor(body.limit ?? BOOTSTRAP_DEFAULT_DOCS)),
+    BOOTSTRAP_MAX_DOCS,
+  );
+
+  const [cls] = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .select({ id: schema.classifiers.id })
+      .from(schema.classifiers)
+      .where(and(eq(schema.classifiers.slug, slug), isNull(schema.classifiers.deletedAt)))
+      .limit(1),
+  );
+  if (!cls) return c.json({ error: "Classifier not found" }, 404);
+
+  // Released config — the labels a proposal must draw from — run at max_tier 4.
+  const resolved = await resolveClassifierConfig(db, { tenantId, projectId }, slug);
+  if ("error" in resolved) {
+    return c.json(
+      { error: `Classifier '${slug}' has no released version to bootstrap from — release it first.` },
+      409,
+    );
+  }
+  const bootstrapConfig: ClassifierConfig = { ...resolved.config, maxTier: Tier.VISION };
+
+  // Pool documents not yet in THIS classifier's corpus. A LEFT JOIN with a NULL
+  // filter is the "unlabeled" set; ordered oldest-first so repeated calls make
+  // forward progress.
+  const docs = await withRLS(db, { tenantId, projectId }, (tx) =>
+    tx
+      .select({
+        id: schema.corpusDocuments.id,
+        filename: schema.corpusDocuments.filename,
+        storageKey: schema.corpusDocuments.storageKey,
+        mimeType: schema.corpusDocuments.mimeType,
+      })
+      .from(schema.corpusDocuments)
+      .leftJoin(
+        schema.corpusEntries,
+        and(
+          eq(schema.corpusEntries.documentId, schema.corpusDocuments.id),
+          eq(schema.corpusEntries.classifierId, cls.id),
+          isNull(schema.corpusEntries.deletedAt),
+        ),
+      )
+      .where(
+        and(
+          eq(schema.corpusDocuments.projectId, projectId),
+          isNull(schema.corpusDocuments.deletedAt),
+          isNull(schema.corpusEntries.id),
+        ),
+      )
+      .orderBy(schema.corpusDocuments.createdAt)
+      .limit(limit),
+  );
+
+  if (docs.length === 0) {
+    return c.json({
+      proposed: 0,
+      skipped: 0,
+      remainingHint: null,
+      proposals: [],
+      message: "No unlabeled pool documents to bootstrap.",
+    });
+  }
+
+  // Classify each doc and persist a draft proposal. A per-doc failure becomes a
+  // skipped result, never a run-killer (a provider outage isn't a label).
+  type Proposal = {
+    entryId: string;
+    gtId: string;
+    documentId: string;
+    filename: string | null;
+    proposedLabel: string;
+    confidence: number | null;
+    method: string;
+    tierUsed: number | null;
+  };
+  const results = await mapWithConcurrency(docs, BOOTSTRAP_CONCURRENCY, async (doc): Promise<Proposal | null> => {
+    try {
+      const fileResult = await storage.getBuffer(doc.storageKey);
+      if (!fileResult) return null;
+      const outcome = await classifyWithConfig(
+        db,
+        { tenantId, projectId },
+        {
+          filename: doc.filename ?? "document",
+          mimeType: doc.mimeType ?? "application/octet-stream",
+          fileBuffer: fileResult.data,
+        },
+        bootstrapConfig,
+        parseProvider ?? undefined,
+      );
+      const proposedLabel = outcome.label ?? UNKNOWN_LABEL;
+
+      // Create the classifier-owned entry with EMPTY denormalized GT (a draft is
+      // never scored), then the draft GT row carrying the proposal.
+      const [entry] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx
+          .insert(schema.corpusEntries)
+          .values({
+            tenantId,
+            projectId,
+            documentId: doc.id,
+            classifierId: cls.id,
+            groundTruthJson: {},
+            addedBy: principal.userId,
+          })
+          .returning({ id: schema.corpusEntries.id }),
+      );
+      if (!entry) return null;
+
+      const [gt] = await withRLS(db, { tenantId, projectId }, (tx) =>
+        tx
+          .insert(schema.corpusEntryGroundTruth)
+          .values({
+            tenantId,
+            corpusEntryId: entry.id,
+            payloadJson: { label: proposedLabel },
+            authoredBy: principal.userId,
+            authoredViaAgent: true,
+            reviewStatus: "draft",
+          })
+          .returning({ id: schema.corpusEntryGroundTruth.id }),
+      );
+
+      return {
+        entryId: entry.id,
+        gtId: gt!.id,
+        documentId: doc.id,
+        filename: doc.filename,
+        proposedLabel,
+        confidence: outcome.confidence,
+        method: outcome.method,
+        tierUsed: outcome.tierUsed,
+      };
+    } catch (err) {
+      console.warn(`[classify-bootstrap] failed to label ${doc.filename}:`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  });
+
+  const proposals = results.filter((r): r is Proposal => r !== null);
+  return c.json({
+    proposed: proposals.length,
+    skipped: docs.length - proposals.length,
+    remainingHint: docs.length === limit ? "more unlabeled documents may remain — run bootstrap again" : null,
+    proposals,
+  });
+});
+
+/**
+ * POST /api/classifiers/:slug/corpus/:entryId/ground-truth/:gtId/approve —
+ * approve an agent-proposed (or any) draft label. Marks the row `approved` and
+ * writes the denormalized `corpusEntries.groundTruthJson` so the backtest scores
+ * it. Optionally corrects the label first via `{ label }` (validated against the
+ * released class ids). Until approved, a draft is excluded from every backtest.
+ */
+classifiers.post(
+  "/:slug/corpus/:entryId/ground-truth/:gtId/approve",
+  requires("corpus:write"),
+  async (c) => {
+    const db = c.get("db");
+    const tenantId = getTenantId(c);
+    const slug = c.req.param("slug")!;
+    const entryId = c.req.param("entryId")!;
+    const gtId = c.req.param("gtId")!;
+    const principal = getPrincipal(c);
+
+    const body = await c.req.json<{ label?: string }>().catch(() => ({}) as { label?: string });
+
+    // Load the classifier + its released class ids (a correction must be a valid
+    // label). Reuses the corpus-write guard that the label endpoints use.
+    const loaded = await loadClassifierForCorpus(c, slug);
+    if ("error" in loaded) return loaded.error;
+    const { cls, classIds } = loaded;
+
+    // The draft GT row must belong to an entry owned by THIS classifier.
+    const [gt] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+      tx
+        .select({
+          id: schema.corpusEntryGroundTruth.id,
+          payloadJson: schema.corpusEntryGroundTruth.payloadJson,
+          classifierId: schema.corpusEntries.classifierId,
+        })
+        .from(schema.corpusEntryGroundTruth)
+        .innerJoin(
+          schema.corpusEntries,
+          eq(schema.corpusEntries.id, schema.corpusEntryGroundTruth.corpusEntryId),
+        )
+        .where(
+          and(
+            eq(schema.corpusEntryGroundTruth.id, gtId),
+            eq(schema.corpusEntryGroundTruth.corpusEntryId, entryId),
+          ),
+        )
+        .limit(1),
+    );
+    if (!gt || gt.classifierId !== cls.id) {
+      return c.json({ error: "Ground-truth version not found for this classifier" }, 404);
+    }
+
+    // Resolve the final label: the correction if given (validated), else the
+    // proposal already on the row.
+    let finalLabel: string;
+    if (body.label !== undefined) {
+      const check = validateCorpusLabel(body.label, classIds);
+      if (!check.ok) return c.json({ error: check.message }, 400);
+      finalLabel = check.label;
+    } else {
+      const existing = gt.payloadJson as { label?: unknown } | null;
+      if (!existing || typeof existing.label !== "string") {
+        return c.json({ error: "Draft has no label to approve; pass a `label` to set one." }, 400);
+      }
+      finalLabel = existing.label;
+    }
+
+    const payload = { label: finalLabel };
+    const [updated] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+      tx
+        .update(schema.corpusEntryGroundTruth)
+        .set({
+          payloadJson: payload,
+          reviewStatus: "approved",
+          reviewedBy: principal.userId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.corpusEntryGroundTruth.id, gtId))
+        .returning(),
+    );
+
+    // Promote into the denormalized copy the backtest scores.
+    await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+      tx
+        .update(schema.corpusEntries)
+        .set({ groundTruthJson: payload, updatedAt: new Date() })
+        .where(eq(schema.corpusEntries.id, entryId)),
+    );
+
+    return c.json({ ...updated, label: finalLabel });
+  },
+);
 
 // ── Validate (backtest) ───────────────────────────────────────────────────
 //

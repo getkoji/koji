@@ -2841,12 +2841,28 @@ def classify_corpus_ls(
     table.add_column("ID", style="dim")
     table.add_column("Filename")
     table.add_column("Label")
+    table.add_column("Status")
     table.add_column("Source")
     for e in entries:
+        # Approved label (scored) vs an agent-proposed draft (not yet scored).
+        approved = e.get("label")
+        proposed = e.get("proposedLabel")
+        status = e.get("reviewStatus")
+        if approved:
+            label_disp = approved
+            status_disp = "[green]approved[/green]"
+        elif status == "draft" and proposed:
+            agent = " [dim](agent)[/dim]" if e.get("authoredViaAgent") else ""
+            label_disp = f"[yellow]{proposed}?[/yellow]"
+            status_disp = f"[yellow]draft[/yellow]{agent}"
+        else:
+            label_disp = "[dim]—[/dim]"
+            status_disp = "[dim]unlabeled[/dim]"
         table.add_row(
             (e.get("id") or "")[:8],
             e.get("filename", ""),
-            e.get("label") or "[dim]—[/dim]",
+            label_disp,
+            status_disp,
             e.get("source", ""),
         )
     console.print(table)
@@ -2921,6 +2937,115 @@ def classify_corpus_rm(
         if resp.status_code not in (200, 204):
             _api_error(resp, f"remove {filename}")
     console.print(f"[green]✓[/green] removed {filename} from the {slug} corpus")
+
+
+@classify_corpus_app.command("bootstrap")
+def classify_corpus_bootstrap(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    limit: int = typer.Option(25, "--limit", help="Max unlabeled documents to label this run (max 50)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Propose labels for unlabeled pool documents by running the classifier hot.
+
+    Runs the classifier at max_tier 4 (the most accurate cascade) over the
+    project's unlabeled pool documents and writes each result as a DRAFT label
+    for review — labeling becomes reviewing instead of filling in. Drafts are
+    NOT scored by a backtest until approved (`koji classify corpus approve`), so
+    the classifier is never graded against its own guesses. Only documents not
+    already in this classifier's corpus are touched; run again to continue.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=600) as client:
+        resp = client.post(
+            f"{base_url}/api/classifiers/{slug}/corpus/bootstrap",
+            json={"limit": limit},
+            headers=headers,
+        )
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code == 404:
+            console.print(f"[red]Classifier '{slug}' not found.[/red]")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"bootstrap {slug}")
+        result = resp.json()
+
+    if as_json:
+        emit_json(result)
+        return
+    proposals = result.get("proposals", [])
+    if not proposals:
+        console.print(f"[yellow]{result.get('message') or 'No documents labelled.'}[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim")
+    table.add_column("Filename")
+    table.add_column("Proposed")
+    table.add_column("Conf", justify="right")
+    table.add_column("Tier", justify="right")
+    for p in proposals:
+        conf = p.get("confidence")
+        conf_disp = f"{conf * 100:.0f}%" if isinstance(conf, (int, float)) else "—"
+        table.add_row(
+            (p.get("entryId") or "")[:8],
+            p.get("filename") or "",
+            f"[yellow]{p.get('proposedLabel')}[/yellow]",
+            conf_disp,
+            str(p.get("tierUsed") if p.get("tierUsed") is not None else "—"),
+        )
+    console.print(table)
+    msg = f"\n[green]✓[/green] proposed {result.get('proposed')} draft label(s)"
+    if result.get("skipped"):
+        msg += f", [dim]{result['skipped']} skipped[/dim]"
+    console.print(msg)
+    if result.get("remainingHint"):
+        console.print(f"[dim]{result['remainingHint']}[/dim]")
+    console.print("[dim]Review and approve with `koji classify corpus approve`.[/dim]")
+
+
+@classify_corpus_app.command("approve")
+def classify_corpus_approve(
+    slug: str = typer.Argument(..., help="Classifier slug."),
+    entry: str = typer.Argument(..., help="Corpus entry id (or filename) with a draft label."),
+    label: str = typer.Option(
+        None, "--label", help="Correct the label before approving (a released class id, or 'unknown')."
+    ),
+    profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
+):
+    """Approve a draft label so the backtest starts scoring it.
+
+    Promotes the entry's latest draft ground truth to `approved` and writes it
+    into the scored ground truth. Pass --label to correct the proposal first.
+    """
+    base_url, headers = resolve_api(profile_name)
+    with httpx.Client(timeout=60) as client:
+        resp = client.get(f"{base_url}/api/classifiers/{slug}/corpus", headers=headers)
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"list corpus for {slug}")
+        entries = resp.json().get("data", [])
+        matched = _resolve_entry(entries, entry)
+        gt_id = matched.get("latestGtId")
+        if not gt_id:
+            console.print(f"[red]{matched.get('filename') or matched['id']} has no draft label to approve.[/red]")
+            raise typer.Exit(1)
+
+        body = {"label": label} if label else {}
+        resp = client.post(
+            f"{base_url}/api/classifiers/{slug}/corpus/{matched['id']}/ground-truth/{gt_id}/approve",
+            json=body,
+            headers=headers,
+        )
+        if _auth_error(resp, base_url):
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _api_error(resp, f"approve {matched.get('filename') or matched['id']}")
+        approved = resp.json()
+    console.print(
+        f"[green]✓[/green] approved [cyan]{approved.get('label')}[/cyan] for {matched.get('filename') or matched['id']}"
+    )
 
 
 # ── Projects ──────────────────────────────────────────────────────────

@@ -787,3 +787,78 @@ def test_promote_bad_min_recall_value_exits(monkeypatch):
     result = runner.invoke(app, ["classify", "promote", "docs", "--min-recall", "coi=high"])
     assert result.exit_code == 1
     assert "must be a number" in result.output
+
+
+# ── classify corpus bootstrap / approve (oss-456) ─────────────────────
+
+
+def test_corpus_bootstrap_renders_proposals(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.post.side_effect = None
+    client.post.return_value = _make_response(
+        200,
+        {
+            "proposed": 2,
+            "skipped": 0,
+            "remainingHint": None,
+            "proposals": [
+                {"entryId": "e1abc", "filename": "a.pdf", "proposedLabel": "invoice", "confidence": 0.9, "tierUsed": 4},
+                {"entryId": "e2abc", "filename": "b.pdf", "proposedLabel": "receipt", "confidence": 0.8, "tierUsed": 3},
+            ],
+        },
+    )
+    result = runner.invoke(app, ["classify", "corpus", "bootstrap", "inbound_mail", "--limit", "10"])
+    assert result.exit_code == 0, result.output
+    assert "invoice" in result.output
+    assert "proposed 2 draft" in result.output
+    # The limit was forwarded to the API.
+    assert client.post.call_args.kwargs["json"] == {"limit": 10}
+
+
+def test_corpus_bootstrap_empty(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.post.side_effect = None
+    client.post.return_value = _make_response(
+        200, {"proposed": 0, "skipped": 0, "proposals": [], "message": "No unlabeled pool documents to bootstrap."}
+    )
+    result = runner.invoke(app, ["classify", "corpus", "bootstrap", "inbound_mail"])
+    assert result.exit_code == 0, result.output
+    assert "No unlabeled" in result.output
+
+
+def test_corpus_approve_resolves_gt_and_posts(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(
+        200, {"data": [{"id": "e1abcdef", "filename": "a.pdf", "latestGtId": "gt-1", "reviewStatus": "draft"}]}
+    )
+    client.post.side_effect = None
+    client.post.return_value = _make_response(200, {"id": "gt-1", "label": "invoice", "reviewStatus": "approved"})
+    result = runner.invoke(app, ["classify", "corpus", "approve", "inbound_mail", "a.pdf"])
+    assert result.exit_code == 0, result.output
+    assert "approved" in result.output.lower()
+    assert "invoice" in result.output
+    # Hit the approve endpoint for the resolved entry + gt ids.
+    assert client.post.call_args.args[0].endswith("/corpus/e1abcdef/ground-truth/gt-1/approve")
+
+
+def test_corpus_approve_with_label_correction(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(
+        200, {"data": [{"id": "e1", "filename": "a.pdf", "latestGtId": "gt-1", "reviewStatus": "draft"}]}
+    )
+    client.post.side_effect = None
+    client.post.return_value = _make_response(200, {"id": "gt-1", "label": "receipt", "reviewStatus": "approved"})
+    result = runner.invoke(app, ["classify", "corpus", "approve", "inbound_mail", "a.pdf", "--label", "receipt"])
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.kwargs["json"] == {"label": "receipt"}
+
+
+def test_corpus_approve_no_draft_exits(monkeypatch):
+    client = _install_client(monkeypatch, [])
+    client.get.side_effect = None
+    client.get.return_value = _make_response(200, {"data": [{"id": "e1", "filename": "a.pdf", "latestGtId": None}]})
+    result = runner.invoke(app, ["classify", "corpus", "approve", "inbound_mail", "a.pdf"])
+    assert result.exit_code == 1
+    assert "no draft label" in result.output.lower()
