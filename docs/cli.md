@@ -430,6 +430,9 @@ koji classify run document_type ./big-scan.pdf --max-pages 0       # send the wh
 
 koji classify versions document_type                  # released lineage + candidates
 koji classify promote document_type                   # graduate the latest candidate to a release + make it live
+koji classify promote document_type --require-no-regressions          # …refuse if any class regressed vs live
+koji classify promote document_type --must-not-regress policy         # …refuse only if `policy` regressed
+koji classify promote document_type --min-recall coi=0.95             # …require an absolute recall floor
 koji classify release document_type                   # release directly, skipping the rc loop
 koji classify release ./classifiers/document_type.yaml  # …from a local file
 koji classify delete document_type                    # delete a classifier + all its versions

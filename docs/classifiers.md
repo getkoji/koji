@@ -289,6 +289,44 @@ immediately and fans the work out one document per job. Poll
 result; `GET /api/classifiers/{slug}/validate` returns the most recent completed
 run. See the [API Reference](api-reference.md#classifier-validate).
 
+### Gating a promotion on no regressions
+
+Tuning is a balancing act: widening one class's keywords to lift its recall can
+also make those keywords match a *different* class's documents — dropping the
+other class's recall and leaking cross-class false positives. Per-class metrics
+make that visible; a **promotion gate** makes it blocking, so a candidate that
+regresses a class you weren't watching can't quietly go live.
+
+Gate a promotion on the candidate's latest backtest:
+
+```bash
+# refuse if ANY class dropped vs. the live release
+koji classify promote inbound_mail --require-no-regressions
+
+# refuse only if specific classes regressed
+koji classify promote inbound_mail --must-not-regress policy --must-not-regress coi
+
+# require an absolute floor, regardless of the baseline
+koji classify promote inbound_mail --min-recall coi=0.95 --min-precision policy=0.9
+```
+
+The candidate is compared against the **live release's** most recent backtest
+(the "before"). If a guarded class regressed or fell under a floor, the promotion
+is refused and each offending class is listed with its before → after numbers:
+
+```
+✗ promotion blocked — inbound_mail would regress:
+  • coi recall 100% → 91%
+  • coi precision 100% → 80%
+```
+
+Fix the regression, re-validate, and promote again. The same gate is available
+on the API (`POST /api/classifiers/{slug}/promote` with `requireNoRegressions` /
+`mustNotRegress` / `minRecall` / `minPrecision`). A gate needs a completed
+backtest of the candidate to evaluate — without one, the promotion is refused
+rather than passed blindly. `koji classify release` is the explicit un-gated
+path: it releases directly, skipping the candidate/backtest loop by design.
+
 ## Managing classifiers
 
 Create, edit, and version classifiers from the dashboard (**Classifiers** in the

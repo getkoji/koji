@@ -2585,18 +2585,99 @@ def classify_versions(
     console.print(f"\n[dim]{len(versions)} version(s)[/dim]")
 
 
+def _parse_class_floor(pairs: list[str], flag: str) -> dict[str, float]:
+    """Parse repeated `class=value` options into {class: float}. Exits on a bad pair."""
+    out: dict[str, float] = {}
+    for p in pairs:
+        if "=" not in p:
+            console.print(f"[red]{flag} expects class=value (e.g. coi=0.9), got '{p}'.[/red]")
+            raise typer.Exit(1)
+        cls_name, _, raw = p.partition("=")
+        try:
+            out[cls_name.strip()] = float(raw)
+        except ValueError:
+            console.print(f"[red]{flag} value for '{cls_name}' must be a number (0..1), got '{raw}'.[/red]")
+            raise typer.Exit(1) from None
+    return out
+
+
 @classify_app.command("promote")
 def classify_promote(
     slug: str = typer.Argument(..., help="Classifier slug."),
+    require_no_regressions: bool = typer.Option(
+        False,
+        "--require-no-regressions",
+        help="Refuse if ANY class's recall or precision dropped vs. the live release.",
+    ),
+    must_not_regress: list[str] = typer.Option(
+        None,
+        "--must-not-regress",
+        help="Refuse if this class regressed vs. the live release. Repeatable.",
+    ),
+    min_recall: list[str] = typer.Option(
+        None, "--min-recall", help="Absolute recall floor for a class: class=0.9. Repeatable."
+    ),
+    min_precision: list[str] = typer.Option(
+        None, "--min-precision", help="Absolute precision floor for a class: class=0.9. Repeatable."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     profile_name: str = typer.Option(None, "--profile", "-p", help="CLI profile to use."),
 ):
-    """Graduate the latest candidate to a release and make it live (gated by deploy)."""
+    """Graduate the latest candidate to a release and make it live (gated by deploy).
+
+    Optionally gate the promotion on the candidate's latest backtest so tuning
+    that lifts one class can't quietly cost another (run `koji classify validate`
+    first): --require-no-regressions blocks any class dropping vs. the live
+    release; --must-not-regress names specific classes; --min-recall/--min-precision
+    set absolute floors (`class=0.9`). A blocked promotion lists the offending
+    class and its before → after numbers. `koji classify release` bypasses the gate.
+    """
+    body: dict = {}
+    if require_no_regressions:
+        body["requireNoRegressions"] = True
+    if must_not_regress:
+        body["mustNotRegress"] = must_not_regress
+    floors_recall = _parse_class_floor(min_recall or [], "--min-recall")
+    floors_precision = _parse_class_floor(min_precision or [], "--min-precision")
+    if floors_recall:
+        body["minRecall"] = floors_recall
+    if floors_precision:
+        body["minPrecision"] = floors_precision
+
     base_url, headers = resolve_api(profile_name)
     with httpx.Client(timeout=120) as client:
-        resp = client.post(f"{base_url}/api/classifiers/{slug}/promote", json={}, headers=headers)
+        resp = client.post(f"{base_url}/api/classifiers/{slug}/promote", json=body, headers=headers)
         if _auth_error(resp, base_url):
             raise typer.Exit(1)
+        # A gate refusal (409) carries structured `blocked` details — surface the
+        # offending class + its before/after numbers, not a bare error line.
+        if resp.status_code == 409:
+            payload = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            blocked = payload.get("blocked") if isinstance(payload, dict) else None
+            if blocked:
+
+                def _pct(v: object) -> str:
+                    return f"{v * 100:.0f}%" if isinstance(v, (int, float)) else "—"
+
+                console.print(f"[red]✗ promotion blocked[/red] — {slug} would regress:")
+                for b in blocked:
+                    metric = b.get("metric", "")
+                    cls_name = b.get("class", "")
+                    if b.get("kind") == "floor":
+                        console.print(
+                            f"  [red]•[/red] {cls_name} {metric} {_pct(b.get('after'))} < floor {_pct(b.get('floor'))}"
+                        )
+                    else:
+                        console.print(
+                            f"  [red]•[/red] {cls_name} {metric} {_pct(b.get('before'))} → {_pct(b.get('after'))}"
+                        )
+                console.print(
+                    "\n[dim]Fix the regression, re-validate, and promote again — "
+                    "or `koji classify release` to bypass the gate.[/dim]"
+                )
+                raise typer.Exit(1)
+            # A 409 without block details (e.g. no backtest to gate on) — show the message.
+            _api_error(resp, f"promote {slug}")
         if resp.status_code != 200:
             _api_error(resp, f"promote {slug}")
         result = resp.json()

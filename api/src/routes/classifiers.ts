@@ -15,6 +15,13 @@ import {
   type ClassifierValidateDocJobPayload,
 } from "../classifiers/validate-run";
 import { mapWithConcurrency } from "../parse/pdf-slice";
+import {
+  evaluateReleaseGate,
+  gateRequested,
+  describeBlock,
+  type ReleaseGateSpec,
+} from "../classifiers/release-gate";
+import type { ClassifierValidateResult } from "../classifiers/classify-scoring";
 import { resolveMimeType } from "../ingestion/mime";
 import { snapshotCandidate, graduateCandidate, releaseDirect } from "../classifiers/versioning";
 import { reactivateRefusalBody } from "../schemas/release-policy";
@@ -447,22 +454,52 @@ classifiers.post("/:slug/versions", requires("schema:write"), async (c) => {
   return c.json({ released: res.label, versionId: res.id, action: res.action, displaced: res.displaced });
 });
 
+/** Latest COMPLETED validate run's scored result for a specific version, or null. */
+async function latestCompletedRunResult(
+  c: Context<Env>,
+  classifierVersionId: string,
+): Promise<ClassifierValidateResult | null> {
+  const db = c.get("db");
+  const tenantId = getTenantId(c);
+  const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx
+      .select({ resultJson: schema.classifierRuns.resultJson })
+      .from(schema.classifierRuns)
+      .where(
+        and(
+          eq(schema.classifierRuns.classifierVersionId, classifierVersionId),
+          eq(schema.classifierRuns.status, "completed"),
+        ),
+      )
+      .orderBy(desc(schema.classifierRuns.createdAt))
+      .limit(1),
+  );
+  return (run?.resultJson as ClassifierValidateResult | null) ?? null;
+}
+
 /**
  * POST /api/classifiers/:slug/promote — graduate a release candidate to a
  * release and make it live. Defaults to the latest candidate; `versionId`
  * targets a specific one. Gated by schema:deploy.
+ *
+ * Optionally gated on backtest quality (oss-464): `requireNoRegressions` /
+ * `mustNotRegress` / `minRecall` / `minPrecision` refuse the promotion when the
+ * candidate's latest backtest shows a named (or any) class regressing vs. the
+ * live release, or falling under an absolute floor — so tuning that lifts one
+ * class can't quietly cost another. The refusal (409) lists each offending
+ * class with its before/after numbers. `koji classify release` is the explicit
+ * un-gated bypass (it skips the candidate/backtest loop by design).
  */
 classifiers.post("/:slug/promote", requires("schema:deploy"), async (c) => {
   const db = c.get("db");
   const tenantId = getTenantId(c);
   const slug = c.req.param("slug")!;
-  const body = await c.req
-    .json<{ versionId?: string }>()
-    .catch(() => ({}) as { versionId?: string });
+  type PromoteBody = { versionId?: string } & ReleaseGateSpec;
+  const body = await c.req.json<PromoteBody>().catch(() => ({}) as PromoteBody);
 
   const [cls] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
     tx
-      .select({ id: schema.classifiers.id })
+      .select({ id: schema.classifiers.id, currentVersionId: schema.classifiers.currentVersionId })
       .from(schema.classifiers)
       .where(eq(schema.classifiers.slug, slug))
       .limit(1),
@@ -486,6 +523,47 @@ classifiers.post("/:slug/promote", requires("schema:deploy"), async (c) => {
     );
     if (!latestRc) return c.json({ error: "No release candidate to promote. Commit one first." }, 400);
     versionId = latestRc.id;
+  }
+
+  // ── Regression gate (oss-464) ─────────────────────────────────
+  const gateSpec: ReleaseGateSpec = {
+    requireNoRegressions: body.requireNoRegressions,
+    mustNotRegress: body.mustNotRegress,
+    minRecall: body.minRecall,
+    minPrecision: body.minPrecision,
+  };
+  if (gateRequested(gateSpec)) {
+    const candidateResult = await latestCompletedRunResult(c, versionId);
+    if (!candidateResult) {
+      // A gate can't be honored without evidence — refuse rather than silently
+      // pass a check we couldn't evaluate. (Differs from the schema gate, which
+      // pre-dates per-class scoring; here the whole point is the backtest.)
+      return c.json(
+        {
+          error:
+            "Refusing to promote: no completed backtest for this candidate to gate on. " +
+            "Run `koji classify validate` on it first.",
+        },
+        409,
+      );
+    }
+    // Baseline = the live release's latest backtest (the "before"). Null when
+    // promoting the first-ever release, or when the candidate already IS live —
+    // nothing to regress against, so only absolute floors can bite.
+    const baselineResult =
+      cls.currentVersionId && cls.currentVersionId !== versionId
+        ? await latestCompletedRunResult(c, cls.currentVersionId)
+        : null;
+    const gate = evaluateReleaseGate(candidateResult, baselineResult, gateSpec);
+    if (!gate.ok) {
+      return c.json(
+        {
+          error: `Refusing to promote: ${gate.blocks.map(describeBlock).join("; ")}.`,
+          blocked: gate.blocks,
+        },
+        409,
+      );
+    }
   }
 
   const res = await graduateCandidate(db, tenantId, cls.id, versionId);

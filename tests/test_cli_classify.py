@@ -691,3 +691,99 @@ def test_corpus_ls_404(monkeypatch):
     client.get.return_value = _make_response(404, {"error": "not found"})
     result = runner.invoke(app, ["classify", "corpus", "ls", "missing"])
     assert result.exit_code != 0
+
+
+# ── classify promote — regression gate (oss-464) ──────────────────────
+
+
+def test_promote_gate_flags_map_to_body(monkeypatch):
+    client = _install_client(monkeypatch, [_make_response(200, {"released": "v1.3.0"})])
+    result = runner.invoke(
+        app,
+        [
+            "classify",
+            "promote",
+            "docs",
+            "--require-no-regressions",
+            "--must-not-regress",
+            "coi",
+            "--must-not-regress",
+            "policy",
+            "--min-recall",
+            "coi=0.9",
+            "--min-precision",
+            "policy=0.8",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    body = client.post.call_args_list[0].kwargs["json"]
+    assert body["requireNoRegressions"] is True
+    assert body["mustNotRegress"] == ["coi", "policy"]
+    assert body["minRecall"] == {"coi": 0.9}
+    assert body["minPrecision"] == {"policy": 0.8}
+
+
+def test_promote_no_gate_sends_empty_body(monkeypatch):
+    client = _install_client(monkeypatch, [_make_response(200, {"released": "v1.3.0"})])
+    result = runner.invoke(app, ["classify", "promote", "docs"])
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args_list[0].kwargs["json"] == {}
+
+
+def test_promote_blocked_renders_before_after(monkeypatch):
+    blocked = _make_response(
+        409,
+        {
+            "error": "Refusing to promote: coi recall regressed 100% → 91%.",
+            "blocked": [
+                {"class": "coi", "metric": "recall", "kind": "regression", "before": 1.0, "after": 0.91},
+                {"class": "coi", "metric": "precision", "kind": "regression", "before": 1.0, "after": 0.8},
+            ],
+        },
+    )
+    blocked.headers = {"content-type": "application/json"}
+    _install_client(monkeypatch, [blocked])
+    result = runner.invoke(app, ["classify", "promote", "docs", "--must-not-regress", "coi"])
+    assert result.exit_code == 1
+    assert "blocked" in result.output.lower()
+    assert "coi" in result.output
+    assert "100% → 91%" in result.output
+
+
+def test_promote_blocked_floor_renders(monkeypatch):
+    blocked = _make_response(
+        409,
+        {
+            "error": "Refusing to promote: coi recall 80% is below the required floor 90%.",
+            "blocked": [{"class": "coi", "metric": "recall", "kind": "floor", "after": 0.8, "floor": 0.9}],
+        },
+    )
+    blocked.headers = {"content-type": "application/json"}
+    _install_client(monkeypatch, [blocked])
+    result = runner.invoke(app, ["classify", "promote", "docs", "--min-recall", "coi=0.9"])
+    assert result.exit_code == 1
+    assert "floor" in result.output.lower()
+    assert "80%" in result.output
+
+
+def test_promote_no_backtest_409_shows_message(monkeypatch):
+    resp = _make_response(409, {"error": "Refusing to promote: no completed backtest for this candidate to gate on."})
+    resp.headers = {"content-type": "application/json"}
+    _install_client(monkeypatch, [resp])
+    result = runner.invoke(app, ["classify", "promote", "docs", "--require-no-regressions"])
+    assert result.exit_code != 0
+    assert "backtest" in result.output.lower()
+
+
+def test_promote_bad_min_recall_pair_exits(monkeypatch):
+    _install_client(monkeypatch, [])
+    result = runner.invoke(app, ["classify", "promote", "docs", "--min-recall", "coi"])
+    assert result.exit_code == 1
+    assert "class=value" in result.output
+
+
+def test_promote_bad_min_recall_value_exits(monkeypatch):
+    _install_client(monkeypatch, [])
+    result = runner.invoke(app, ["classify", "promote", "docs", "--min-recall", "coi=high"])
+    assert result.exit_code == 1
+    assert "must be a number" in result.output
