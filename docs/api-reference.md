@@ -1708,6 +1708,14 @@ Returns `{ released, versionId, action, displaced }`. `400` on invalid YAML; `40
 
 Graduate a candidate to a release and make it live — **manual, gated by `schema:deploy`**. Body: `{ versionId? }` (defaults to the latest candidate). Returns `{ released: "v0.0.4" }`. `400` if there's no candidate; `409` if a release already occupies that `x.y.z`.
 
+**Regression gate (optional).** The body also accepts gate fields that refuse the promotion when the candidate's latest backtest ([validate](#classifier-validate)) shows a class regressing vs. the live release or falling under an absolute floor — so tuning that lifts one class can't quietly cost another:
+
+- `requireNoRegressions: true` — refuse if **any** class's recall or precision dropped vs. the live release.
+- `mustNotRegress: ["policy", "coi"]` — refuse only if a **named** class regressed.
+- `minRecall: { coi: 0.95 }` / `minPrecision: { policy: 0.9 }` — absolute per-class floors (0..1), independent of the baseline.
+
+The candidate is compared against the live release's most recent completed backtest. A refusal is `409` with `{ error, blocked: [{ class, metric, kind, before, after, floor? }] }` — `kind` is `"regression"` (a drop vs. baseline, with `before`/`after`) or `"floor"` (`after` below `floor`). If a gate is requested but the candidate has no completed backtest to evaluate, the promotion is refused (`409`) rather than passed blindly. `POST /release` is the un-gated bypass (it skips the candidate/backtest loop).
+
 ### `POST /api/classifiers/{slug}/release`
 
 Release YAML directly (skip the rc loop) and make it live — the early-stage path. Auth: `schema:deploy`. Body: `{ yaml_source?, allow_reactivate? }` (`yaml` accepted as an alias). Returns `{ released, versionId, action, displaced }` — see [release actions](#release-actions), including the `409 requires_reactivate` refusal. The stored draft is released only when you send **no body at all**; the same body rules as [`POST /api/schemas/{slug}/release`](#post-apischemasslugrelease) apply.

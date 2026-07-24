@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.105.0 — 2026-07-24
+
+**Gate a classifier promotion on no regressions.** `POST /api/classifiers/{slug}/promote`
+(and `koji classify promote`) now accept a regression gate that refuses to
+promote a candidate whose latest backtest regresses a class vs. the live
+release — so tuning that lifts one class can't quietly cost another.
+`--require-no-regressions` blocks any class dropping; `--must-not-regress <class>`
+guards named classes; `--min-recall`/`--min-precision` (`class=0.9`) set absolute
+floors. A blocked promotion lists each offending class with its before → after
+numbers. The candidate is compared against the live release's most recent
+backtest; a gate with no backtest to evaluate is refused rather than passed
+blindly. `koji classify release` remains the explicit un-gated bypass.
+
 ## 0.104.0 — 2026-07-24
 
 **`koji classify validate` — backtest a classifier from the CLI.** Mirrors
