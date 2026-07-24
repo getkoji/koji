@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.103.0 — 2026-07-23
+
+**Backtest a classifier against its corpus.** `POST /api/classifiers/{slug}/validate`
+classifies every labelled corpus document through the same cascade production
+uses and scores predicted vs. ground truth — the classifier sibling of schema
+validate. The result carries accuracy, per-class precision/recall/F1, the
+expected→predicted confusion matrix, the tier histogram + escalation rate (the
+share of documents that needed the paid LLM/vision tail), and flips vs. the
+previous run. Backtests the released version by default, or a pinned one via
+`{ "version": … }`. For large corpora, `{ "async": true }` fans the work out one
+document per job and returns a `runId` to poll at
+`GET /api/classifiers/{slug}/validate/runs/{runId}`;
+`GET /api/classifiers/{slug}/validate` returns the latest completed run.
+
 ## 0.102.2 — 2026-07-23
 
 **Fixes "API key not found" when editing a key from workspace settings.** The

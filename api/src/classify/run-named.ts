@@ -27,7 +27,7 @@ import type { ParseProvider } from "../parse/provider";
  * not silently fall back to the live release.
  */
 export type ResolvedClassifier =
-  | { config: ClassifierConfig; version: string }
+  | { config: ClassifierConfig; version: string; versionId: string }
   | { error: "no_classifier" }
   | { error: "no_version"; requested: string };
 
@@ -96,7 +96,11 @@ export async function resolveClassifierConfig(
 
   // Compile from the resolved YAML — the same normalization the standalone
   // classify route applies to an inline config, so results are identical.
-  return { config: loadClassifierConfig(ver.yamlSource), version: versionLabel ?? formatSemver(ver) };
+  return {
+    config: loadClassifierConfig(ver.yamlSource),
+    version: versionLabel ?? formatSemver(ver),
+    versionId,
+  };
 }
 
 /**

@@ -244,6 +244,42 @@ See the [API Reference](api-reference.md#classifier-corpus) for the full corpus
 endpoints and [`GET /api/corpus/documents`](api-reference.md#get-apicorpusdocuments)
 to list the pool.
 
+### Running a backtest
+
+Once the corpus is labelled, backtest a classifier version against it:
+
+```bash
+curl -X POST .../api/classifiers/inbound_mail/validate \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+The run classifies every labelled document through the **same cascade production
+uses** and scores predicted vs. ground truth. By default it backtests the
+**released** version; pass `{ "version": "v1.2.0" }` (a semver label or a
+version-id prefix) to pin a specific one — the same selector the classify run
+and pipeline routes use, so a backtest and a live route agree on the same config.
+
+The result carries the diagnostics you tune against:
+
+- **`accuracy`** and per-document counts (failed documents — provider outages —
+  are excluded from the denominator, not scored as wrong).
+- **`byClass`** — precision / recall / F1 per class.
+- **`confusion`** — the expected→predicted matrix. With more than two classes,
+  *which* class a document was mistaken for is the actionable signal: it points
+  at the keywords to tighten.
+- **`tierHistogram`** and **`escalationRate`** — the share of documents that
+  needed the paid LLM/vision tail (tier ≥ 3), so raising `max_tier` has a
+  measured cost, not a guessed one.
+- **`flips`** — fixed / regressed / churned vs. the previous run, so a change
+  that lifts one class while quietly breaking another is visible.
+
+For a large corpus, pass `{ "async": true }`: the call returns `202 { runId }`
+immediately and fans the work out one document per job. Poll
+`GET /api/classifiers/{slug}/validate/runs/{runId}` for progress and the final
+result; `GET /api/classifiers/{slug}/validate` returns the most recent completed
+run. See the [API Reference](api-reference.md#classifier-validate).
+
 ## Managing classifiers
 
 Create, edit, and version classifiers from the dashboard (**Classifiers** in the
