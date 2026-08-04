@@ -26,7 +26,7 @@ import type { ParseChunk } from "../parse/chunk";
 import { chunkMarkdown, type Chunk } from "../extract/chunker";
 import { decrypt, getMasterKey } from "../crypto/envelope";
 import { TerminalError } from "../queue/worker";
-import { readParseProviderPin, markDocFailed } from "./process";
+import { readParseProviderPin, markDocFailed, recordDeliveryBillableEvent } from "./process";
 import { resolveParse, parseDocument } from "./seam";
 import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
 import { enqueueWebhookDeliveries } from "../webhooks/emit";
@@ -1139,6 +1139,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       extractResult: finalResult,
       reviewThreshold: pipeline.reviewThreshold,
     });
+    const outcomeSchemaId = finalSchemaId ?? pipeline.schemaId ?? null;
     const prepared = await persistDocumentOutcome({
       db,
       tenantId,
@@ -1146,7 +1147,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       jobId: doc.jobId,
       jobSlug: jobRow?.slug ?? "",
       pipelineId,
-      schemaId: finalSchemaId ?? pipeline.schemaId ?? null,
+      schemaId: outcomeSchemaId,
       threshold: Number(pipeline.reviewThreshold),
       outcome,
       extractResult: finalResult,
@@ -1157,6 +1158,20 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
     if (prepared) {
       await enqueueWebhookDeliveries(tenantId, prepared, { documentId });
     }
+
+    // Same billing contract as the simple-pipeline path: a DAG document that
+    // reaches delivered/review is billable exactly once.
+    //
+    // Mirror the state persistDocumentOutcome actually wrote: a below-threshold
+    // document with no schema to file a review item under is *delivered*, not
+    // review-routed. Disposition is `billable` either way, so this only keeps
+    // the audit column honest.
+    await recordDeliveryBillableEvent(tenantId, {
+      documentId,
+      jobId: doc.jobId,
+      pipelineId,
+      routeToReview: outcome.routeToReview && outcomeSchemaId !== null,
+    });
     return;
   }
 
@@ -1193,5 +1208,18 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
         updatedAt: new Date(),
       }).where(eq(schema.jobs.id, jobRow.jobId)),
     );
+  }
+
+  // A split parent is deliberately NOT billed: it fans out into child
+  // documents that each run the pipeline and bill themselves, so charging the
+  // parent too would double-bill the same pages. Everything else that lands
+  // here really did terminate as `delivered` and is billable.
+  if (!wasSplit) {
+    await recordDeliveryBillableEvent(tenantId, {
+      documentId,
+      jobId: doc.jobId,
+      pipelineId,
+      routeToReview: false,
+    });
   }
 }

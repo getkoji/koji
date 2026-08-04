@@ -734,21 +734,54 @@ export async function handleIngestionProcess(job: QueuedJob): Promise<void> {
     await enqueueWebhookDeliveries(tenantId, prepared, { documentId });
   }
 
-  // Record billable event for the terminal transition (best-effort —
-  // a billing write failure shouldn't un-do the successful delivery).
+  await recordDeliveryBillableEvent(tenantId, {
+    documentId,
+    jobId,
+    pipelineId: pipeline.id,
+    schemaVersionId: schemaVersion?.id,
+    routeToReview,
+  });
+}
+
+/**
+ * Record the billable event for a document that reached a *successful*
+ * terminal state — `delivered` or `review`. Both are billable: review means
+ * the extraction ran and the customer got a result to act on.
+ *
+ * Exported because the DAG runner terminates documents on its own code paths
+ * (`dag-runner.ts`) and must bill them identically. It previously had no
+ * billing call at all, so every document finishing under a DAG/router pipeline
+ * was invisible to metering — a silent revenue leak that scaled with usage.
+ * Keeping one definition here is what stops the two entrypoints drifting again.
+ *
+ * Best-effort by design: a billing write failure must not un-do a delivery the
+ * customer already received. The unbilled row is lost rather than the result.
+ */
+export async function recordDeliveryBillableEvent(
+  tenantId: string,
+  input: {
+    documentId: string;
+    jobId: string;
+    pipelineId?: string;
+    /** Optional — the DAG path doesn't resolve a version id. Audit metadata
+     *  only; it plays no part in the billing math. */
+    schemaVersionId?: string;
+    routeToReview: boolean;
+  },
+): Promise<void> {
   await _billing
     .recordBillableEvent(tenantId, {
       kind: "document_processed",
-      documentId,
-      jobId,
-      pipelineId: pipeline.id,
-      schemaVersionId: schemaVersion?.id,
+      documentId: input.documentId,
+      jobId: input.jobId,
+      pipelineId: input.pipelineId,
+      schemaVersionId: input.schemaVersionId,
       disposition: "billable",
-      terminalState: routeToReview ? "review" : "delivered",
+      terminalState: input.routeToReview ? "review" : "delivered",
     })
     .catch((err) => {
       console.warn(
-        "[ingestion.process] billing event write failed:",
+        "[ingestion] billing event write failed:",
         err instanceof Error ? err.message : err,
       );
     });
