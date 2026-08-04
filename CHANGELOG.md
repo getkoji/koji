@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.107.2 — 2026-08-04
+
+**Fix: DAG pipelines record billable events.** Documents finishing under a DAG
+pipeline reached `delivered` or `review` without recording a billable event —
+only the simple single-schema path did. On metered deployments that made every
+DAG-processed document invisible to usage reporting while still incurring full
+parse and extract cost. Both entrypoints now record through one shared helper.
+Split parents remain unbilled, since their child documents bill individually.
+
 ## 0.107.1 — 2026-07-24
 
 **Fix: object-valued fields are scored structurally in `koji test`/`bench`.** The
