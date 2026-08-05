@@ -3,12 +3,18 @@
  * real Postgres (Testcontainers), run under the app_user role so the RLS
  * policies production hits are actually exercised.
  *
- * The point of these tests is project scoping: schema_runs, corpus_entries, and
- * extraction_runs carry no project_id, so RLS does not narrow them on their own.
- * The query keeps them project-scoped by JOINing the project-scoped `schemas`
- * table on schema_id. Without that join, a project's overview leaks tenant-wide
- * numbers (another project's latest accuracy, validate regressions, onboarding
- * state). A mocked DB would prove none of this — it has to be real Postgres RLS.
+ * The point of these tests is project scoping: schema_runs, corpus_entries,
+ * extraction_runs, and documents carry no project_id, so RLS does not narrow
+ * them on their own. The query keeps them project-scoped by JOINing a
+ * project-scoped table — `schemas` on schema_id for the first three, `jobs` on
+ * job_id for documents. Without that join, a project's overview leaks
+ * tenant-wide numbers (another project's latest accuracy, validate regressions,
+ * onboarding state, document counts). A mocked DB would prove none of this — it
+ * has to be real Postgres RLS.
+ *
+ * Documents scope through jobs specifically because schema_id is nullable and
+ * is null for everything a router/DAG pipeline produces; scoping them through
+ * schemas both scopes and silently filters. See "overview documents_processed".
  */
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -35,7 +41,43 @@ async function reseed() {
   // extraction_runs (all reference it ON DELETE CASCADE). corpus_documents is
   // owned by the PROJECT, not the schema (oss-449) — it deliberately survives
   // schema deletion, so it is truncated explicitly here to reset between tests.
-  await rootDb.execute(sql`TRUNCATE schemas, corpus_documents RESTART IDENTITY CASCADE`);
+  // pipelines CASCADEs to jobs and, through them, documents.
+  await rootDb.execute(sql`TRUNCATE schemas, corpus_documents, pipelines RESTART IDENTITY CASCADE`);
+}
+
+/** Seed an active pipeline in a project. `schemaId` is null for a router. */
+async function seedPipeline(project: string, slug: string, schemaId: string | null) {
+  const pipelineId = randomUUID();
+  await rootDb.execute(sql`
+    INSERT INTO pipelines (id, tenant_id, project_id, slug, display_name, schema_id, status, created_by)
+    VALUES (${pipelineId}::uuid, ${tenant}::uuid, ${project}::uuid, ${slug}, ${slug},
+            ${schemaId}::uuid, 'active', ${user}::uuid)`);
+  return pipelineId;
+}
+
+/**
+ * Seed one job under a pipeline plus a document per entry in `docs`. A null
+ * `schemaId` is what a router/DAG pipeline actually produces.
+ */
+async function seedDocuments(
+  project: string,
+  pipelineId: string,
+  docs: { status: string; schemaId: string | null }[],
+) {
+  const jobId = randomUUID();
+  await rootDb.execute(sql`
+    INSERT INTO jobs (id, tenant_id, project_id, slug, pipeline_id, trigger_type, status)
+    VALUES (${jobId}::uuid, ${tenant}::uuid, ${project}::uuid, ${`job-${jobId.slice(0, 8)}`},
+            ${pipelineId}::uuid, 'manual', 'complete')`);
+  for (const d of docs) {
+    await rootDb.execute(sql`
+      INSERT INTO documents
+        (id, tenant_id, job_id, filename, storage_key, file_size, mime_type, content_hash, schema_id, status)
+      VALUES
+        (${randomUUID()}::uuid, ${tenant}::uuid, ${jobId}::uuid, 'd.pdf', 'k/d.pdf', 10,
+         'application/pdf', ${HASH}, ${d.schemaId}::uuid, ${d.status})`);
+  }
+  return jobId;
 }
 
 /** Seed a schema + one released version in a project. Returns their ids. */
@@ -181,5 +223,63 @@ describe("overview project scoping", () => {
 
     expect(dA.metrics.accuracy).toBeCloseTo(70);
     expect(dB.metrics.accuracy).toBeCloseTo(90);
+  });
+});
+
+describe("overview documents_processed", () => {
+  test("counts documents a router pipeline produced (schema_id null)", async () => {
+    // The regression this guards: documents_processed used to JOIN documents to
+    // schemas on schema_id. A router/DAG pipeline has no schema of its own, so
+    // every document it produces is inserted with schema_id null and the join
+    // dropped all of them — a project with thousands of processed documents
+    // read 0.
+    const router = await seedPipeline(projA, "router", null);
+    await seedDocuments(projA, router, [
+      { status: "delivered", schemaId: null },
+      { status: "review", schemaId: null },
+      { status: "review", schemaId: null },
+    ]);
+
+    const d = await fetchOverviewData(db, tenant, projA);
+
+    expect(d.metrics.documents_processed).toBe(3);
+  });
+
+  test("counts only terminal, extracted documents", async () => {
+    // 'processed' means the document finished and produced output. In-flight
+    // states have not, and a failure produced nothing to count.
+    const { schemaId } = await seedSchema(projA, "a-schema");
+    const simple = await seedPipeline(projA, "simple", schemaId);
+    await seedDocuments(projA, simple, [
+      { status: "delivered", schemaId },
+      { status: "review", schemaId },
+      { status: "failed", schemaId },
+      { status: "processing", schemaId },
+      { status: "extracting", schemaId },
+      { status: "pending", schemaId },
+    ]);
+
+    const d = await fetchOverviewData(db, tenant, projA);
+
+    expect(d.metrics.documents_processed).toBe(2);
+  });
+
+  test("does not count another project's documents", async () => {
+    // documents carries no project_id, so RLS cannot narrow it directly — the
+    // join to jobs is what keeps this scoped. Both pipelines are routers, so a
+    // schema-based scope would read 0 for each and hide the leak.
+    const routerA = await seedPipeline(projA, "router-a", null);
+    const routerB = await seedPipeline(projB, "router-b", null);
+    await seedDocuments(projA, routerA, [{ status: "delivered", schemaId: null }]);
+    await seedDocuments(projB, routerB, [
+      { status: "delivered", schemaId: null },
+      { status: "review", schemaId: null },
+    ]);
+
+    const dA = await fetchOverviewData(db, tenant, projA);
+    const dB = await fetchOverviewData(db, tenant, projB);
+
+    expect(dA.metrics.documents_processed).toBe(1);
+    expect(dB.metrics.documents_processed).toBe(2);
   });
 });

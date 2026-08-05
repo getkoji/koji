@@ -102,6 +102,11 @@ export async function persistDocumentOutcome(args: {
   pipelineId: string;
   /** Schema the review item files under. Required when routing to review. */
   schemaId: string | null;
+  /**
+   * Schema version the document was actually extracted with, when the caller
+   * resolved one. Null means "don't know" — never "clear it".
+   */
+  schemaVersionId?: string | null;
   threshold: number;
   outcome: DocumentOutcome;
   extractResult: OutcomeExtraction;
@@ -113,6 +118,16 @@ export async function persistDocumentOutcome(args: {
   const now = new Date();
   const docExtraction = args.extractResult.extracted ?? null;
   const docConfidence = outcome.docConfidence === null ? null : outcome.docConfidence.toFixed(4);
+  // Stamp the schema the document was actually extracted with. On the simple
+  // path this rewrites the value the document already inherited from the
+  // pipeline; on the router/DAG path it's the only chance to record it, since
+  // the pipeline itself has no schema and the row was inserted null. Both are
+  // written only when known — a null here means "caller couldn't resolve one",
+  // and clobbering a real id with null would lose the link permanently.
+  const resolvedSchemaUpdates = {
+    ...(args.schemaId ? { schemaId: args.schemaId } : {}),
+    ...(args.schemaVersionId ? { schemaVersionId: args.schemaVersionId } : {}),
+  };
   const commonDocUpdates = {
     extractionJson: docExtraction,
     confidenceScoresJson: outcome.fieldScores,
@@ -121,6 +136,7 @@ export async function persistDocumentOutcome(args: {
     confidence: docConfidence,
     durationMs: args.durationMs,
     completedAt: now,
+    ...resolvedSchemaUpdates,
     ...(args.extraDocUpdates ?? {}),
   };
 

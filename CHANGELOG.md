@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.107.3 — 2026-08-05
+
+**Fix: the overview "Processed" tile counted 0 for router pipelines.** The metric
+joined documents to schemas on `schema_id`, which is null for every document a
+router/DAG pipeline produces — the join scoped the count to the project and, by
+being an inner join, silently discarded the entire router corpus. A project with
+thousands of processed documents read `0 docs`. The count now scopes through
+`jobs` instead, and counts only documents in a terminal, extracted state
+(`delivered` or `review`) rather than every row including in-flight ones.
+
+**Fix: router-extracted documents record the schema they were extracted with.**
+A router pipeline resolves its schema per document at extract time, but the
+resolved schema and version were never written back to the document row — they
+were known only to the review item it filed. Finished documents now record both,
+so anything joining documents to schemas sees them. Existing documents keep
+their null `schema_id`; this applies going forward.
+
 ## 0.107.2 — 2026-08-04
 
 **Fix: DAG pipelines record billable events.** Documents finishing under a DAG

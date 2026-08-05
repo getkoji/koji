@@ -15,10 +15,17 @@ export const overview = new Hono<Env>();
  * narrows rows to the selected project.
  *
  * Tables that carry no project_id (schema_runs, corpus_entries, extraction_runs)
- * are NOT narrowed by RLS on their own, so every read of them here JOINs the
- * project-scoped `schemas` table on schema_id to keep the whole page scoped to
- * the current project. Adding such a read without that join silently leaks
- * tenant-wide numbers into a project view.
+ * are NOT narrowed by RLS on their own, so every read of them here JOINs a
+ * project-scoped table to keep the whole page scoped to the current project.
+ * Adding such a read without that join silently leaks tenant-wide numbers into
+ * a project view.
+ *
+ * Pick that join table by what the row actually always has. `documents` scopes
+ * through `jobs` (job_id is NOT NULL), not through `schemas`: documents.schema_id
+ * is nullable and is null for every document a router/DAG pipeline produces,
+ * since those resolve their schema per-route at extract time. Joining documents
+ * to schemas is therefore both a scope and an accidental filter that drops the
+ * entire router corpus — it read 0 processed docs against 6,342 real ones.
  */
 export async function fetchOverviewData(db: Db, tenantId: string, projectId: string | null) {
   const [result] = await withRLS(db, { tenantId, projectId }, (tx) =>
@@ -27,7 +34,7 @@ export async function fetchOverviewData(db: Db, tenantId: string, projectId: str
         metrics AS (
           SELECT
             (SELECT (sr.accuracy * 100)::float FROM schema_runs sr JOIN schemas s ON s.id = sr.schema_id WHERE sr.status = 'completed' AND s.deleted_at IS NULL ORDER BY sr.created_at DESC LIMIT 1) AS accuracy,
-            (SELECT count(*)::int FROM documents d JOIN schemas s ON s.id = d.schema_id WHERE s.deleted_at IS NULL) AS documents_processed,
+            (SELECT count(*)::int FROM documents d JOIN jobs j ON j.id = d.job_id WHERE d.status IN ('delivered', 'review')) AS documents_processed,
             (SELECT count(*)::int FROM review_items WHERE status = 'pending') AS review_pending,
             (SELECT count(*)::int FROM pipelines WHERE status = 'active') AS pipelines_active,
             (SELECT count(*)::int FROM schemas WHERE deleted_at IS NULL) AS schema_count
