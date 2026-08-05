@@ -36,7 +36,7 @@ export async function resolvePipelineSchemaVersion(
   tenantId: string,
   pipelineId: string,
   schemaSlug: string,
-): Promise<{ parsedJson: Record<string, unknown>; schemaId: string } | null> {
+): Promise<{ parsedJson: Record<string, unknown>; schemaId: string; versionId: string } | null> {
   // Load the pipeline first: schema slugs are only unique per PROJECT, so the
   // slug lookup below must be confined to the pipeline's project or a
   // same-slug schema in a sibling project could win the race.
@@ -90,5 +90,7 @@ export async function resolvePipelineSchemaVersion(
       .where(eq(schema.schemaVersions.id, versionId))
       .limit(1),
   );
-  return ver?.parsedJson ? { parsedJson: ver.parsedJson as Record<string, unknown>, schemaId: s.id } : null;
+  return ver?.parsedJson
+    ? { parsedJson: ver.parsedJson as Record<string, unknown>, schemaId: s.id, versionId }
+    : null;
 }

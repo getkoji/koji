@@ -60,10 +60,12 @@ vi.mock("./pipeline-schema-version", () => ({
   resolvePipelineSchemaVersion: vi.fn(async () => ({
     parsedJson: { fields: { invoice_number: { type: "string" } } },
     schemaId: schemaIdRef.current,
+    versionId: schemaVersionIdRef.current,
   })),
 }));
 
 const schemaIdRef = { current: "" };
+const schemaVersionIdRef = { current: "" };
 
 // Imported after the mocks so the module graph picks them up.
 const { handleDagRun, initDagRunner, setDagParseProvider } = await import("./dag-runner");
@@ -149,6 +151,8 @@ async function docRow(documentId: string) {
     .select({
       status: schema.documents.status,
       extractionJson: schema.documents.extractionJson,
+      schemaId: schema.documents.schemaId,
+      schemaVersionId: schema.documents.schemaVersionId,
     })
     .from(schema.documents)
     .where(eq(schema.documents.id, documentId))
@@ -195,6 +199,22 @@ beforeAll(async () => {
     createdBy: userId,
   });
   schemaIdRef.current = schemaId;
+
+  // The runner now stamps the resolved schema version onto the finished
+  // document, and documents.schema_version_id is a real FK — the version has to
+  // exist or every terminal write fails.
+  const schemaVersionId = randomUUID();
+  await db.insert(schema.schemaVersions).values({
+    id: schemaVersionId,
+    tenantId,
+    schemaId,
+    versionNumber: 1,
+    yamlSource: "fields:\n  invoice_number:\n    type: string\n",
+    yamlHash: "0".repeat(64),
+    parsedJson: { fields: { invoice_number: { type: "string" } } },
+    committedBy: userId,
+  });
+  schemaVersionIdRef.current = schemaVersionId;
 
   initDagRunner(db, {} as never);
   // Without a parse provider the runner skips parsing entirely, docText stays
@@ -252,5 +272,34 @@ describe("DAG pipeline metering", () => {
     const pipelineId = await seedPipeline("0.5", schemaIdRef.current);
     await runDoc(pipelineId);
     expect(billing.events).toHaveLength(1);
+  });
+});
+
+describe("DAG resolved-schema stamping", () => {
+  test("records the schema a router resolved onto the finished document", async () => {
+    // A router pipeline owns no schema, so the document is inserted with
+    // schema_id and schema_version_id null and the route picks them at extract
+    // time. Before this was persisted the finished document stayed null
+    // forever — the schema was known only to the review item, and anything
+    // joining documents to schemas silently dropped the whole router corpus.
+    const pipelineId = await seedPipeline("0.5", null);
+    const documentId = await runDoc(pipelineId);
+
+    const row = await docRow(documentId);
+    expect(row.extractionJson).toEqual(extracted);
+    expect(row.status).toBe("delivered");
+    expect(row.schemaId).toBe(schemaIdRef.current);
+    expect(row.schemaVersionId).toBe(schemaVersionIdRef.current);
+  });
+
+  test("stamps a review-routed document too", async () => {
+    confidenceScores = { invoice_number: 0.1 };
+    const pipelineId = await seedPipeline("0.9", null);
+    const documentId = await runDoc(pipelineId);
+
+    const row = await docRow(documentId);
+    expect(row.status).toBe("review");
+    expect(row.schemaId).toBe(schemaIdRef.current);
+    expect(row.schemaVersionId).toBe(schemaVersionIdRef.current);
   });
 });

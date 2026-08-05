@@ -514,6 +514,11 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   let failedStep: { id: string; error: string } | null = null;
   let finalSchemaDef: Record<string, unknown> | undefined;
   let finalSchemaId: string | null = null;
+  // The router picks the schema per document at extract time, so the document
+  // row starts with both of these null (it inherits the pipeline's, and a
+  // router pipeline has none). Carry the resolved pair to persistDocumentOutcome
+  // so the finished document records what it was actually extracted with.
+  let finalSchemaVersionId: string | null = null;
 
   while (currentId && stepOrder < plan.maxSteps) {
     const step = pSteps.find(s => s.id === currentId);
@@ -632,6 +637,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               finalResult = result as OutcomeExtraction;
               finalSchemaDef = ver.parsedJson;
               finalSchemaId = ver.schemaId;
+              finalSchemaVersionId = ver.versionId;
             }
           }
           if (!output.schema) {
@@ -1011,6 +1017,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                     finalResult = result as OutcomeExtraction;
                     finalSchemaDef = ver.parsedJson;
                     finalSchemaId = ver.schemaId;
+                    finalSchemaVersionId = ver.versionId;
                   }
                 }
                 if (!branchOutput.schema) {
@@ -1148,6 +1155,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
       jobSlug: jobRow?.slug ?? "",
       pipelineId,
       schemaId: outcomeSchemaId,
+      schemaVersionId: finalSchemaVersionId,
       threshold: Number(pipeline.reviewThreshold),
       outcome,
       extractResult: finalResult,
