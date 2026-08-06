@@ -170,7 +170,25 @@ export class SmartParseProvider implements ParseProvider {
       console.warn(
         `[smart-parse] pdfjs output for ${input.filename} looks corrupt (${corruption}), falling back to heavy provider`,
       );
-      return this.heavy.parse(input);
+      try {
+        return await this.heavy.parse(input);
+      } catch (err) {
+        // The heavy provider is an *upgrade* attempt here, not a requirement:
+        // we already hold a parse that produced text, just fragmented-looking
+        // text. Letting the heavy failure propagate throws that away and hands
+        // the pipeline an empty parse, which downstream reports as "the
+        // document produced no extractable text" — a claim that is simply
+        // false, and which hides the real error (oss-488: Doc AI rejecting a
+        // 76-page document with PAGE_LIMIT_EXCEEDED). Degraded text beats no
+        // text: the corruption heuristic is a quality signal, not a validity
+        // one, and every downstream consumer already tolerates imperfect OCR.
+        console.warn(
+          `[smart-parse] heavy provider also failed for ${input.filename} ` +
+            `(${err instanceof Error ? err.message : String(err)}); ` +
+            `returning the pdfjs parse despite ${corruption}.`,
+        );
+        return liteResult;
+      }
     }
 
     return liteResult;

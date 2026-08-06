@@ -2,6 +2,40 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.1 — 2026-08-06
+
+**Fix: documents whose page tree pdf-lib undercounts no longer fail to parse.**
+Some real PDFs — hybrid-reference files that carry both a classic xref table and
+an `/XRefStm`, as produced by Word — resolve some object numbers to the wrong
+objects under pdf-lib. It walks part of the page tree, skips what it can't
+interpret, and returns a short page count **with no error**. A 76-page policy
+counted as 11 pages, which routed it to a single Google Document AI online call
+that Doc AI rejected (`PAGE_LIMIT_EXCEEDED`), failing the document with the
+misleading message "the document produced no extractable text". Page counting
+now cross-checks pdf-lib's traversal against the page tree's declared `/Count`
+and against pdfjs, and any document pdf-lib cannot walk in full is normalized
+through the parse service before slicing. This was also a silent-corruption
+risk, not only a failure: pdf-lib's view of that document held 19,875 of its
+179,112 characters, so slicing it would have produced a confident extraction
+missing 86% of the document.
+
+**Fix: an oversize rejection from Document AI is now recoverable.** When Doc AI
+rejects a request for exceeding its page limit it reports the page count it
+actually saw. That number is now used to re-route the document through the
+slicing path — at a slice size small enough to be genuinely smaller than the
+rejected request — instead of failing the document.
+
+**Fix: a usable parse is no longer discarded when the fallback parser fails.**
+When pdfjs output looked fragmented, the parser fell back to the heavy provider
+and let any failure there propagate, throwing away text it already had. The
+document then reported as empty. The pdfjs result is now kept when the fallback
+fails.
+
+**Fix: parse failures name their cause.** A document whose parse threw reported
+only "the document produced no extractable text (parse returned empty)" — a
+symptom that hid the real error in the server logs. The underlying parse error
+is now carried into the failed step, so the trace page shows it.
+
 ## 0.108.0 — 2026-08-06
 
 **Feature: zoom, search, rotate, download, print and fullscreen in the

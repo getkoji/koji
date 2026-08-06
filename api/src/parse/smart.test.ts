@@ -263,6 +263,49 @@ describe("SmartParseProvider", () => {
       expect(result.engine).toBe("docling");
     });
 
+    it("keeps the corrupt-looking lite parse when heavy ALSO fails (oss-488)", async () => {
+      // The heavy provider is an upgrade attempt, not a requirement: we already
+      // hold text. Rethrowing its failure discarded a usable parse and left the
+      // pipeline reporting "the document produced no extractable text" — false,
+      // and it buried the real cause (Doc AI PAGE_LIMIT_EXCEEDED on a 76pg PDF).
+      mockClassify.mockResolvedValue("digital_pdf");
+      const corrupt: ParseResponse = {
+        markdown:
+          "M: FRO er: y numb Polic d: io y Per Polic rage a G or d / an bile mo uto t A ep exc es erag v l co Al ECP 035 30 58 EBA 035 30 58 FROM: TO: 10 01 24 27 25 a b c d e f g h i j k l m n o p q r s t u v w x y z",
+        pages: 1,
+        ocr_skipped: true,
+        engine: "pdfjs",
+      };
+      const lite = mockProvider(corrupt);
+      const heavy: ParseProvider = {
+        parse: vi.fn().mockRejectedValue(
+          new Error("google-docai process 400: Document pages exceed the limit: 30 got 76"),
+        ),
+      };
+      const smart = new SmartParseProvider(lite, heavy);
+
+      const result = await smart.parse(input);
+
+      expect(heavy.parse).toHaveBeenCalled();
+      expect(result).toBe(corrupt);
+      expect(result.markdown.length).toBeGreaterThan(0);
+    });
+
+    it("still surfaces the heavy failure when there is no lite parse to keep", async () => {
+      // Distinct from the case above: pdfjs itself threw, so nothing was
+      // salvaged and the error must propagate rather than yield a silent empty.
+      mockClassify.mockResolvedValue("digital_pdf");
+      const lite: ParseProvider = {
+        parse: vi.fn().mockRejectedValue(new Error("pdfjs exploded")),
+      };
+      const heavy: ParseProvider = {
+        parse: vi.fn().mockRejectedValue(new Error("docling unreachable")),
+      };
+      const smart = new SmartParseProvider(lite, heavy);
+
+      await expect(smart.parse(input)).rejects.toThrow(/docling unreachable/);
+    });
+
     it("does not fall back when lite output is clean", async () => {
       mockClassify.mockResolvedValue("digital_pdf");
       const lite = mockProvider(digitalResponse);

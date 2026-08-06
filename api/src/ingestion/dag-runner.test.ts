@@ -319,4 +319,28 @@ describe("extractSkipReason — why a configured extract couldn't run (oss-448)"
     const reason = extractSkipReason("", "real text", { model: "gpt-4o-mini" });
     expect(reason).toMatch(/no schema configured/);
   });
+
+  it("names the real parse failure instead of 'parse returned empty' (oss-488)", () => {
+    // Production: the parse threw with Doc AI's PAGE_LIMIT_EXCEEDED, but the
+    // runner only console.error'd it, so the trace page told the operator the
+    // document had no extractable text. That is a symptom, not a cause, and it
+    // sent debugging in the wrong direction entirely.
+    const reason = extractSkipReason(
+      "policy_umbrella",
+      undefined,
+      { model: "gpt-4o-mini" },
+      "google-docai process 400: Document pages exceed the limit: 30 got 76",
+    );
+    expect(reason).toContain("policy_umbrella");
+    expect(reason).toContain("pages exceed the limit: 30 got 76");
+    // The misleading phrasing must be gone when a real cause is known.
+    expect(reason).not.toMatch(/parse returned empty/);
+  });
+
+  it("keeps the generic wording when the parse produced empty text without throwing", () => {
+    // No error to report: the provider genuinely returned "" (image-only PDF
+    // with no OCR text), so "no extractable text" IS the accurate diagnosis.
+    const reason = extractSkipReason("invoice", "", { model: "gpt-4o-mini" }, undefined);
+    expect(reason).toMatch(/no extractable text/);
+  });
 });
