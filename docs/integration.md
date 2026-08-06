@@ -646,6 +646,10 @@ not nested under a `payload` key — e.g. `{ type: "koji:goToPage", page: 3 }`,
 | `koji:setTheme` | `{ theme: { activeColor?: string; inactiveColor?: string } }` | Recolor the highlight boxes (any CSS color; pass `rgba()`/`hsla()` for translucency). |
 | `koji:setViewMode` | `{ mode?: "paginated" \| "scroll"; overflow?: "auto" \| "scroll" \| "hidden" }` | Switch the layout at runtime — see [Layout](#layout-scroll-vs-paginated). Both fields optional; unknown values are ignored. |
 | `koji:setSelectionMode` | `{ field: string \| null }` | Arm region selection on behalf of a field (`null` disarms). Requires `?tools=select` — ignored (with a console warning) otherwise. See [Region selection](#region-selection-toolsselect). |
+| `koji:setZoom` | `{ zoom: number \| "in" \| "out" \| "fit" }` | Set the zoom multiplier (clamped to 0.25–4), step one level, or return to fit-width. Requires `?tools=zoom`. |
+| `koji:setRotation` | `{ rotation: 0 \| 90 \| 180 \| 270 \| "cw" \| "ccw" }` | Set or step the page rotation. Requires `?tools=rotate`. |
+| `koji:search` | `{ query: string \| null }` | Search the document and focus the first hit; `null` clears. Opens the search bar so the user can see and steer it. Requires `?tools=search`. |
+| `koji:searchNext` / `koji:searchPrev` | *(none)* | Move to the next/previous hit, wrapping at the ends. Requires `?tools=search`. |
 
 #### How fields resolve (important)
 
@@ -677,6 +681,14 @@ the viewer's **current highlights array**:
 | `koji:pageChanged` | `{ page: number }` | The most-visible page changed (1-indexed). Fires as the user scrolls in `mode=scroll` and on page navigation in `mode=paginated`. |
 | `koji:visibleField` | `{ field: string \| null; page: number }` | The highlighted field whose box is most prominently in view changed. `field` uses the same key space as `koji:setActiveField` (e.g. `total_premium`, `coverages.0`); `null` when no highlighted field is in view. |
 | `koji:regionSelected` | `{ field: string \| null; page: number; bbox; text: string \| null; words }` | The user selected a region (`?tools=select`), already resolved to the text underneath. See [Region selection](#region-selection-toolsselect). |
+| `koji:zoomChanged` | `{ zoom: number }` | The zoom level changed (`?tools=zoom`). |
+| `koji:rotationChanged` | `{ rotation: 0 \| 90 \| 180 \| 270 }` | The rotation changed (`?tools=rotate`). |
+| `koji:searchResults` | `{ query: string; total: number; activeIndex: number; page: number \| null }` | The hit list or focused hit changed (`?tools=search`). `activeIndex` is 0-based, `-1` when there are no hits. Emitted only once the scan has finished, so you never see a transient `total: 0`. |
+
+The three tool echoes fire for **host-driven** changes as well as user-driven
+ones — `koji:setZoom` and a click on the − button produce the same
+`koji:zoomChanged` — so a parent that mirrors the controls in its own chrome
+stays in sync either way. They are deduped on value.
 
 `koji:pageChanged` and `koji:visibleField` let a parent keep its own UI (e.g. a
 field list) in sync with the viewer's scroll — the cross-origin iframe boundary
@@ -778,6 +790,116 @@ iframe.contentWindow!.postMessage(
 scrolls the page into view in scroll mode. Unknown values fall back to the
 defaults.
 
+### Viewer tools (`?tools=`)
+
+Everything beyond the page navigation and the highlight toggle is an **opt-in
+tool**. Nothing is enabled by default, so an embed only ever shows the controls
+you asked for — and a document you didn't mean to hand out never grows a
+Download button on its own.
+
+Enable them with a comma-separated `tools` query param:
+
+```html
+<iframe
+  src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&tools=zoom,search,download"
+  allow="fullscreen"
+></iframe>
+```
+
+| Tool | Adds | Unlocks |
+|------|------|---------|
+| `select` | Crosshair toggle | `koji:setSelectionMode` → [Region selection](#region-selection-toolsselect) |
+| `zoom` | − / % / + controls, Ctrl/Cmd + scroll wheel, trackpad pinch | `koji:setZoom`, `koji:zoomChanged` |
+| `search` | Find-in-document bar, Cmd/Ctrl+F, match highlighting, prev/next | `koji:search`, `koji:searchNext`, `koji:searchPrev`, `koji:searchResults` |
+| `rotate` | 90°-per-click rotate button | `koji:setRotation`, `koji:rotationChanged` |
+| `download` | Download button (saves the original PDF) | — |
+| `print` | Print button (prints the original PDF) | — |
+| `fullscreen` | Expand/collapse button | — |
+
+`?tools=all` turns on every tool. **Unknown names are ignored**, not rejected —
+an embed URL naming a tool your Koji version doesn't ship still works, and the
+rest of the list still applies.
+
+A message for a tool you didn't enable is **ignored with a console warning**
+rather than silently applied, so `tools` is the single switch governing what an
+embed can do.
+
+#### Zoom
+
+`100%` is fit-to-width — the page exactly fills the viewer, which is the
+default and what the `%` button resets to. Steps run 25% → 400%. Above 100% the
+page overflows into the viewer's horizontal scroll, so pair zoom with
+`overflow=auto` or `overflow=scroll`; `overflow=hidden` will clip a zoomed page.
+
+```typescript
+iframe.contentWindow!.postMessage({ type: "koji:setZoom", zoom: 1.5 }, VIEWER_ORIGIN);
+iframe.contentWindow!.postMessage({ type: "koji:setZoom", zoom: "in" }, VIEWER_ORIGIN);
+iframe.contentWindow!.postMessage({ type: "koji:setZoom", zoom: "fit" }, VIEWER_ORIGIN);
+```
+
+#### Search
+
+The viewer searches **the whole document**, including pages that aren't
+rendered yet. This is why it exists: the browser's own Cmd/Ctrl+F can only see
+the pages currently in the DOM — one page in `mode=paginated`, a handful in
+`mode=scroll` — so it silently misses most of a long document. With the tool
+enabled, Cmd/Ctrl+F opens this search instead.
+
+Matching is case-insensitive substring, minimum two characters. Hits are
+highlighted on the page, the focused one more strongly; Enter / Shift+Enter (or
+the chevrons) walk them, wrapping at the ends. The first search on a document
+reads its text layer once and caches it, so later queries are instant.
+
+A hit that is split across a line break still matches and is drawn as one box
+per line. Text that isn't in the document's text layer — an un-OCR'd scan —
+can't be found; that's a property of the document, not the viewer.
+
+```typescript
+// Drive the viewer's search from your own UI
+iframe.contentWindow!.postMessage({ type: "koji:search", query: "policy number" }, VIEWER_ORIGIN);
+iframe.contentWindow!.postMessage({ type: "koji:searchNext" }, VIEWER_ORIGIN);
+
+window.addEventListener("message", (e) => {
+  if (e.origin !== VIEWER_ORIGIN) return;
+  if (e.data?.type === "koji:searchResults") {
+    // e.g. "3 of 11 on page 4"
+    showCount(e.data.activeIndex + 1, e.data.total, e.data.page);
+  }
+});
+```
+
+#### Rotate
+
+For documents scanned sideways. Each click turns the view 90° clockwise;
+`koji:setRotation` sets an absolute angle or steps `"cw"` / `"ccw"`. Rotation
+is a **view** setting — it doesn't modify the document, and it doesn't change
+the coordinate space you work in: highlights rotate with the page, and a region
+selection made on a rotated view is reported in the document's native
+orientation, so a correction saved from it lands in the right place.
+
+#### Download and print
+
+Both act on the **original PDF**, not on what's rendered — printing gives you
+the real document at full resolution rather than the pages that happen to be on
+screen. Download uses the document's own filename (in URL mode, pass
+`?filename=policy.pdf` to name it; otherwise it saves as `document.pdf`).
+
+These expose the file to anyone who can see the iframe. That's no more than the
+viewer already shows, but if your reviewers shouldn't be able to keep a copy,
+leave the tools off — that's what per-embed opt-in is for. If your host page
+sandboxes the iframe, `sandbox` must include `allow-downloads` and
+`allow-popups` for these to work.
+
+Print opens the browser's print UI. On the rare engine that won't print a PDF
+inline, the viewer falls back to opening the document in a new tab so the user
+can print from there.
+
+#### Fullscreen
+
+Pass `allow="fullscreen"` on the iframe. Without it a cross-origin host blocks
+the request, and the viewer hides the button rather than showing one that does
+nothing.
+
 ### Region selection (`?tools=select`)
 
 Let reviewers **point at where the correct value lives** instead of retyping
@@ -786,8 +908,8 @@ viewer resolves the region to the text underneath (server-side, snapped to
 exact word boxes), and you receive the derived value — ready to feed into your
 correction flow. Your app never touches PDF geometry.
 
-Optional tools are **off by default** and enabled per-embed with the `tools`
-query param (comma-separated list; `select` is the only tool today):
+Like every optional tool it is **off by default** and enabled per-embed with
+the `tools` query param (see [Viewer tools](#viewer-tools-tools)):
 
 ```html
 <iframe src="https://console.getkoji.dev/embed/viewer?job=JOB&doc=DOC&token=TOKEN&tools=select"></iframe>

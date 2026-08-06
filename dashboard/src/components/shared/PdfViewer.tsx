@@ -1,7 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Highlighter } from "lucide-react";
+import { useEffect, useImperativeHandle, useRef, useState, useMemo, useCallback } from "react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Crosshair,
+  Download,
+  Highlighter,
+  Maximize2,
+  Minimize2,
+  Printer,
+  RotateCw,
+  Search,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import dynamic from "next/dynamic";
 import {
   sourceConfidence,
@@ -10,6 +26,28 @@ import {
   SOURCE_CONFIDENCE_LABEL,
   SOURCE_CONFIDENCE_DESCRIPTION,
 } from "@/lib/provenance-resolution";
+import {
+  clampZoom,
+  collectHits,
+  downloadFilename,
+  FIT_ZOOM,
+  findMatches,
+  formatZoom,
+  MAX_ZOOM,
+  MIN_SEARCH_QUERY,
+  MIN_ZOOM,
+  rotateBox,
+  stepRotation,
+  stepZoom,
+  unrotateBox,
+  wrapIndex,
+  type NormBox,
+  type Rotation,
+  type SearchHit,
+  type ViewerTools,
+} from "@/lib/pdf-tools";
+
+export type { Rotation, ViewerTools } from "@/lib/pdf-tools";
 
 // react-pdf uses pdfjs which requires DOM APIs (DOMMatrix, canvas) that don't
 // exist during SSR. Import the entire component client-side only.
@@ -93,6 +131,12 @@ export interface SelectionConfig {
   active: boolean;
   onRegionSelected: (region: RegionSelection) => void;
   snapped?: BBoxHighlight | null;
+  /**
+   * Arm/disarm from the toolbar. Supply it (with `tools.select`) and the
+   * viewer renders the crosshair toggle alongside the other tools; leave it
+   * out and selection is host-driven only.
+   */
+  onToggleActive?: () => void;
 }
 
 /** Display mode: paginated (arrow nav, one page) or scroll (all pages stacked). */
@@ -110,7 +154,15 @@ export type EmbedMessage =
   | { type: "koji:setViewMode"; mode?: ViewMode; overflow?: ViewOverflow }
   // Arm region selection on behalf of a field (requires ?tools=select on the
   // embed URL); `field: null` disarms and clears the snapped echo.
-  | { type: "koji:setSelectionMode"; field: string | null };
+  | { type: "koji:setSelectionMode"; field: string | null }
+  // Tool control. Each requires the matching tool on the embed URL
+  // (?tools=zoom / rotate / search) and is ignored (with a console warning)
+  // otherwise, exactly like koji:setSelectionMode.
+  | { type: "koji:setZoom"; zoom: number | "in" | "out" | "fit" }
+  | { type: "koji:setRotation"; rotation: Rotation | "cw" | "ccw" }
+  | { type: "koji:search"; query: string | null }
+  | { type: "koji:searchNext" }
+  | { type: "koji:searchPrev" };
 
 /** Messages the embed viewer emits to its parent frame (outbound). */
 export type EmbedOutboundMessage =
@@ -132,6 +184,24 @@ export type EmbedOutboundMessage =
       bbox: { x: number; y: number; w: number; h: number };
       text: string | null;
       words: WordBox[];
+    }
+  // Tool state echoes — emitted for user-driven changes as well as for the
+  // host's own koji:setZoom / koji:setRotation / koji:search, so a parent that
+  // mirrors the controls in its own chrome stays in sync either way.
+  | { type: "koji:zoomChanged"; zoom: number }
+  | { type: "koji:rotationChanged"; rotation: Rotation }
+  | {
+      type: "koji:searchResults";
+      query: string;
+      /**
+       * Total hits in the document, or 0 when nothing matched. Never a
+       * transient 0 — the message waits for the scan to finish.
+       */
+      total: number;
+      /** 0-based index of the focused hit, or -1 when there are none. */
+      activeIndex: number;
+      /** Page of the focused hit, or null when there are none. */
+      page: number | null;
     };
 
 interface PdfViewerProps {
@@ -162,6 +232,40 @@ interface PdfViewerProps {
   toolbarSlot?: React.ReactNode;
   /** Region selection (highlight-to-correct) — see SelectionConfig. */
   selection?: SelectionConfig;
+  /**
+   * Which optional tools to expose in the toolbar. All off by default — an
+   * embed opts in with `?tools=zoom,search`, and internal dashboard surfaces
+   * keep the minimal toolbar unless they ask for more.
+   */
+  tools?: ViewerTools;
+  /** Original filename, used when the download tool saves the file. */
+  filename?: string | null;
+  /**
+   * Zoom multiplier over fit-to-width. Controlled-optional: pass it (with
+   * `onZoomChange`) to own the state, or leave it out and the viewer keeps its
+   * own. Same pattern for `rotation` and `searchQuery`.
+   */
+  zoom?: number;
+  onZoomChange?: (zoom: number) => void;
+  rotation?: Rotation;
+  onRotationChange?: (rotation: Rotation) => void;
+  searchQuery?: string | null;
+  onSearchQueryChange?: (query: string | null) => void;
+  /** Fired whenever the hit list or the focused hit changes. */
+  onSearchResults?: (results: {
+    query: string;
+    total: number;
+    activeIndex: number;
+    page: number | null;
+  }) => void;
+  /** Imperative handle for host-driven search navigation (koji:searchNext/Prev). */
+  controlRef?: React.Ref<PdfViewerHandle>;
+}
+
+/** Imperative surface for things that are events, not state. */
+export interface PdfViewerHandle {
+  searchNext: () => void;
+  searchPrev: () => void;
 }
 
 // Tailwind only ships classes it can see as literal strings. Mapping the
@@ -179,7 +283,10 @@ const overflowClass: Record<NonNullable<PdfViewerProps["overflow"]>, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, onVisibleFieldChange, theme, overflow = "auto", mode = "paginated", toolbarSlot, selection }: PdfViewerProps) {
+export function PdfViewer({ url, highlights = [], activeField, onPageChange, targetPage, onFieldClick, onLoad, onVisibleFieldChange, theme, overflow = "auto", mode = "paginated", toolbarSlot, selection, tools = {}, filename, zoom: zoomProp, onZoomChange, rotation: rotationProp, onRotationChange, searchQuery: searchQueryProp, onSearchQueryChange, onSearchResults, controlRef }: PdfViewerProps) {
+  // The fullscreen target — the whole viewer including its toolbar, so the
+  // controls come along instead of leaving a bare page on a black backdrop.
+  const rootRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentPage, setCurrentPage] = useState(1);
   // Mirror currentPage into a ref so the (mount-once) visible-field observer
@@ -197,6 +304,375 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
   const [totalPages, setTotalPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined);
   const [showHighlights, setShowHighlights] = useState(true);
+
+  // -------------------------------------------------------------------------
+  // Zoom + rotation
+  //
+  // Both are controlled-optional: pass the value (with its onChange) to own
+  // the state from outside — which is how the embed page drives them from
+  // koji:setZoom / koji:setRotation and echoes the result back to its host —
+  // or omit it and the viewer keeps its own.
+  // -------------------------------------------------------------------------
+  const [internalZoom, setInternalZoom] = useState(FIT_ZOOM);
+  const zoom = clampZoom(zoomProp ?? internalZoom);
+  const applyZoom = useCallback(
+    (next: number) => {
+      const clamped = clampZoom(next);
+      if (zoomProp === undefined) setInternalZoom(clamped);
+      onZoomChange?.(clamped);
+    },
+    [zoomProp, onZoomChange],
+  );
+
+  const [internalRotation, setInternalRotation] = useState<Rotation>(0);
+  const rotation = rotationProp ?? internalRotation;
+  const applyRotation = useCallback(
+    (next: Rotation) => {
+      if (rotationProp === undefined) setInternalRotation(next);
+      onRotationChange?.(next);
+    },
+    [rotationProp, onRotationChange],
+  );
+
+  // The rendered page width. Zoom is a multiplier over fit-to-width, so 100%
+  // keeps the historical behavior (page exactly fills the container) and
+  // anything above it overflows into the container's horizontal scroll.
+  const pageWidth = containerWidth ? Math.max(1, containerWidth * zoom) : undefined;
+
+  // Mirror zoom for the (mount-once) wheel handler below.
+  const zoomRef = useRef(zoom);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  // Ctrl/Cmd + wheel (and trackpad pinch, which browsers report the same way)
+  // zooms instead of scrolling. Registered natively because the listener has
+  // to be non-passive to preventDefault the browser's own page zoom.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !tools.zoom) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      applyZoom(stepZoom(zoomRef.current, e.deltaY < 0 ? "in" : "out"));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [tools.zoom, applyZoom]);
+
+  // -------------------------------------------------------------------------
+  // Fullscreen
+  // -------------------------------------------------------------------------
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  // `document.fullscreenEnabled` reports whether this document is *permitted*
+  // to go fullscreen — false in a cross-origin iframe whose host didn't pass
+  // allow="fullscreen". Hide the button in that case rather than ship a
+  // control that does nothing. (Chromium reports true for a same-origin
+  // iframe with no `allow` attribute, and fullscreen does work there.)
+  const [fullscreenAvailable, setFullscreenAvailable] = useState(false);
+  useEffect(() => {
+    setFullscreenAvailable(typeof document !== "undefined" && !!document.fullscreenEnabled);
+    const onChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+      return;
+    }
+    rootRef.current
+      ?.requestFullscreen?.()
+      .catch((err) => console.warn("[PdfViewer] Fullscreen request refused:", err));
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Download / print
+  //
+  // Both go through the bytes rather than the URL: the preview endpoint serves
+  // Content-Disposition: inline with an opaque path, so a plain <a download>
+  // would navigate away (cross-origin) or save a file called "preview".
+  // -------------------------------------------------------------------------
+  const [busy, setBusy] = useState<"download" | "print" | null>(null);
+
+  const fetchDocumentBlob = useCallback(async () => {
+    // Raw fetch by design: this is the same URL pdf.js is already streaming
+    // (a token-signed preview path, or the host's own URL in URL mode), not a
+    // tenant-scoped API call — see the note in no-raw-fetch.test.ts.
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Document fetch returned ${res.status}`);
+    return await res.blob();
+  }, [url]);
+
+  const handleDownload = useCallback(async () => {
+    setBusy("download");
+    try {
+      const blob = await fetchDocumentBlob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = downloadFilename(filename);
+      document.body.append(a);
+      a.click();
+      a.remove();
+      // Revoking immediately races the browser's save in some engines.
+      setTimeout(() => URL.revokeObjectURL(href), 10_000);
+    } catch (err) {
+      console.error("[PdfViewer] Download failed, opening the document instead:", err);
+      window.open(url, "_blank", "noopener");
+    } finally {
+      setBusy(null);
+    }
+  }, [fetchDocumentBlob, filename, url]);
+
+  const handlePrint = useCallback(async () => {
+    setBusy("print");
+    let href: string | null = null;
+    let frame: HTMLIFrameElement | null = null;
+    try {
+      const blob = await fetchDocumentBlob();
+      href = URL.createObjectURL(blob);
+      // Print the real PDF, not our canvases: in scroll mode only the pages
+      // near the viewport are rendered, so printing this document would emit
+      // a handful of screen-resolution pages.
+      frame = document.createElement("iframe");
+      frame.setAttribute("aria-hidden", "true");
+      Object.assign(frame.style, {
+        position: "fixed",
+        right: "0",
+        bottom: "0",
+        width: "0",
+        height: "0",
+        border: "0",
+      });
+      const loaded = new Promise<void>((resolve, reject) => {
+        frame!.onload = () => resolve();
+        frame!.onerror = () => reject(new Error("print frame failed to load"));
+        // The blob is already in memory, so a browser with a PDF viewer loads
+        // this in tens of milliseconds. A browser without one never fires the
+        // event at all — bail early and open a tab rather than leaving the
+        // button dead while the user waits on a timeout.
+        setTimeout(() => reject(new Error("print frame timed out")), 5_000);
+      });
+      frame.src = href;
+      document.body.append(frame);
+      await loaded;
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+      // Tearing the frame down while the print dialog is open cancels the job,
+      // so clean up well after the user has had a chance to confirm.
+      const doomed = frame;
+      const doomedHref = href;
+      setTimeout(() => {
+        doomed.remove();
+        URL.revokeObjectURL(doomedHref);
+      }, 60_000);
+    } catch (err) {
+      // Some engines refuse to print a PDF from a hidden frame. Hand the
+      // document to a real tab so the user still gets the browser's print UI.
+      console.warn("[PdfViewer] Inline print unavailable, opening in a new tab:", err);
+      frame?.remove();
+      window.open(href ?? url, "_blank", "noopener");
+    } finally {
+      setBusy(null);
+    }
+  }, [fetchDocumentBlob, url]);
+
+  // -------------------------------------------------------------------------
+  // Search
+  //
+  // The browser's own find can only see pages that are currently rendered —
+  // one page in paginated mode, a handful in scroll mode — so it silently
+  // misses most of the document. This searches the PDF's text through pdf.js
+  // instead, then draws the hits by replaying each match offset against the
+  // rendered text layer (see SearchOverlay).
+  // -------------------------------------------------------------------------
+  const pdfRef = useRef<{ numPages: number; getPage: (n: number) => Promise<unknown> } | null>(null);
+  /** Per-page text, index 0 = page 1. Built once per document, on first search. */
+  const pageTextsRef = useRef<string[] | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [internalQuery, setInternalQuery] = useState("");
+  const query = searchQueryProp !== undefined ? (searchQueryProp ?? "") : internalQuery;
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [indexing, setIndexing] = useState(false);
+  // Hits are stored WITH the query they belong to. Reading the two separately
+  // exposes the in-between state — query updated, scan not finished — which a
+  // host would receive as a "0 results" koji:searchResults before the real
+  // count lands, i.e. a false "nothing found" flash on every search.
+  const [search, setSearch] = useState<{ query: string; hits: SearchHit[] }>({
+    query: "",
+    hits: [],
+  });
+  const hits = search.hits;
+  const [activeHit, setActiveHit] = useState(-1);
+
+  const applyQuery = useCallback(
+    (next: string) => {
+      if (searchQueryProp === undefined) setInternalQuery(next);
+      onSearchQueryChange?.(next === "" ? null : next);
+    },
+    [searchQueryProp, onSearchQueryChange],
+  );
+
+  // A fresh document invalidates the index and any hits drawn against it.
+  useEffect(() => {
+    pageTextsRef.current = null;
+    setSearch({ query: "", hits: [] });
+    setActiveHit(-1);
+  }, [url]);
+
+  // Typing shouldn't re-scan the document on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 180);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const q = debouncedQuery.trim();
+    if (q.length < MIN_SEARCH_QUERY) {
+      setSearch({ query: q, hits: [] });
+      setActiveHit(-1);
+      return;
+    }
+    const pdf = pdfRef.current;
+    if (!pdf) return;
+
+    (async () => {
+      if (!pageTextsRef.current) {
+        setIndexing(true);
+        try {
+          const texts: string[] = [];
+          for (let p = 1; p <= pdf.numPages; p++) {
+            const page = (await pdf.getPage(p)) as {
+              getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
+            };
+            const content = await page.getTextContent();
+            if (cancelled) return;
+            // Concatenate exactly what the rendered text layer will hold:
+            // pdf.js appends one span per item containing `item.str` verbatim
+            // and skips empty ones. That makes this string and the DOM's
+            // textContent agree character for character, which is what lets a
+            // match offset found here be replayed against the DOM to draw the
+            // box (see SearchOverlay).
+            texts.push(content.items.map((i) => i.str ?? "").join(""));
+          }
+          pageTextsRef.current = texts;
+        } catch (err) {
+          console.error("[PdfViewer] Could not read the document's text for search:", err);
+          return;
+        } finally {
+          if (!cancelled) setIndexing(false);
+        }
+      }
+      if (cancelled) return;
+      const found = collectHits(pageTextsRef.current ?? [], q);
+      setSearch({ query: q, hits: found });
+      setActiveHit(found.length ? 0 : -1);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery, totalPages, url]);
+
+  // Whether `hits` describes the query the user has actually typed, or a scan
+  // is still in flight. Gates both the counter and the outbound results.
+  const searchResolved = search.query === debouncedQuery.trim();
+
+  // Report hit-list changes (the embed turns these into koji:searchResults).
+  // Only once the scan has caught up with the query — see the note on `search`.
+  useEffect(() => {
+    if (!onSearchResults || !searchResolved) return;
+    onSearchResults({
+      query: search.query,
+      total: search.query.length < MIN_SEARCH_QUERY ? 0 : hits.length,
+      activeIndex: activeHit,
+      page: hits[activeHit]?.page ?? null,
+    });
+  }, [hits, activeHit, search.query, searchResolved, onSearchResults]);
+
+  // Bring the focused hit into view: page first (so its overlay mounts), then
+  // the box itself once it has been drawn — same retry shape as activeField,
+  // because the overlay can only measure after the text layer has rendered.
+  useEffect(() => {
+    const hit = hits[activeHit];
+    if (!hit) return;
+    if (mode === "paginated") {
+      setCurrentPage((prev) => {
+        if (prev !== hit.page) onPageChange?.(hit.page);
+        return hit.page;
+      });
+    } else {
+      containerRef.current
+        ?.querySelector(`[data-page-number="${hit.page}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    let cancelled = false;
+    let attempts = 0;
+    const scrollToHit = () => {
+      if (cancelled) return;
+      const el = containerRef.current?.querySelector("[data-search-active]");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      if (attempts++ < 20) setTimeout(scrollToHit, 50); // up to ~1s
+    };
+    const t = setTimeout(scrollToHit, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [activeHit, hits]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // next/prev wrap around, so a reviewer can keep pressing Enter.
+  const hitCountRef = useRef(0);
+  useEffect(() => {
+    hitCountRef.current = hits.length;
+  }, [hits.length]);
+  const goToHit = useCallback((delta: number) => {
+    setActiveHit((cur) => wrapIndex((cur < 0 ? 0 : cur) + delta, hitCountRef.current));
+  }, []);
+
+  useImperativeHandle(
+    controlRef,
+    () => ({ searchNext: () => goToHit(1), searchPrev: () => goToHit(-1) }),
+    [goToHit],
+  );
+
+  // A query pushed in from outside (koji:search) opens the panel, so the user
+  // can see what is being searched and take over the prev/next controls.
+  useEffect(() => {
+    if (searchQueryProp) setSearchOpen(true);
+  }, [searchQueryProp]);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    // Focus after the row has mounted.
+    setTimeout(() => searchInputRef.current?.select(), 0);
+  }, []);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    applyQuery("");
+  }, [applyQuery]);
+
+  // Cmd/Ctrl+F opens *our* search rather than the browser's, which would only
+  // find the pages that happen to be rendered. Only bound when the tool is
+  // enabled, so surfaces without it leave the native shortcut alone.
+  useEffect(() => {
+    if (!tools.search) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        openSearch();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [tools.search, openSearch]);
 
   // Measure container width for responsive page sizing
   useEffect(() => {
@@ -401,10 +877,54 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
     [totalPages],
   );
 
+  // A search is "live" once the query is long enough to run. Gates both the
+  // per-page overlays and the text-layer render notifications that redraw them.
+  const searchActive = !!tools.search && debouncedQuery.trim().length >= MIN_SEARCH_QUERY;
+  const [textLayerTick, setTextLayerTick] = useState(0);
+  const bumpTextLayer = useCallback(() => setTextLayerTick((t) => t + 1), []);
+  const focusedHit = hits[activeHit];
+
+  /** The hit overlay for one page — nothing to draw unless a search is live. */
+  const searchOverlayFor = (pageNum: number) =>
+    searchActive ? (
+      <SearchOverlay
+        page={pageNum}
+        query={debouncedQuery.trim()}
+        activeOrdinal={focusedHit?.page === pageNum ? focusedHit.ordinal : null}
+        // Any of these moves the text layer, so the boxes must be re-measured.
+        redrawKey={`${textLayerTick}:${pageWidth ?? 0}:${rotation}`}
+      />
+    ) : null;
+
+  const zoomTool = tools.zoom;
+  const anyTool =
+    (tools.select && !!selection?.onToggleActive) ||
+    zoomTool ||
+    tools.search ||
+    tools.rotate ||
+    tools.download ||
+    tools.print ||
+    (tools.fullscreen && fullscreenAvailable);
+
+  const searchCountLabel =
+    query.trim().length < MIN_SEARCH_QUERY
+      ? ""
+      : indexing
+        ? "reading…"
+        : !searchResolved
+          ? "searching…"
+          : hits.length === 0
+            ? "no results"
+            : `${activeHit + 1} / ${hits.length}`;
+
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar: optional slot (e.g. field picker) + page navigation + highlight toggle */}
-      {(totalPages > 1 || highlights.length > 0 || toolbarSlot) && (() => {
+    <div
+      ref={rootRef}
+      className={`flex flex-col h-full min-h-0${isFullscreen ? " bg-white" : ""}`}
+      data-fullscreen={isFullscreen ? "true" : undefined}
+    >
+      {/* Toolbar: optional slot (e.g. field picker) + tools + page navigation + highlight toggle */}
+      {(totalPages > 1 || highlights.length > 0 || toolbarSlot || anyTool) && (() => {
         const prevBtn =
           totalPages > 1 && mode === "paginated" ? (
             <button
@@ -454,14 +974,109 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
             </button>
           ) : null;
 
+        // Optional tools, in the order a reader reaches for them. Each is
+        // rendered only when the embed opted into it (?tools=…).
+        const toolButtons = anyTool ? (
+          <div className="flex items-center gap-0.5 shrink-0">
+            {tools.select && selection?.onToggleActive && (
+              <ToolButton
+                icon={Crosshair}
+                label={
+                  selection.active
+                    ? "Exit region selection"
+                    : "Select a region on the document"
+                }
+                testId="pdf-tool-select"
+                active={selection.active}
+                onClick={selection.onToggleActive}
+              />
+            )}
+            {tools.search && (
+              <ToolButton
+                icon={Search}
+                label={searchOpen ? "Close search" : "Find in document"}
+                testId="pdf-tool-search"
+                active={searchOpen}
+                onClick={() => (searchOpen ? closeSearch() : openSearch())}
+              />
+            )}
+            {zoomTool && (
+              <>
+                <ToolButton
+                  icon={ZoomOut}
+                  label="Zoom out"
+                  testId="pdf-tool-zoom-out"
+                  disabled={zoom <= MIN_ZOOM}
+                  onClick={() => applyZoom(stepZoom(zoom, "out"))}
+                />
+                <button
+                  type="button"
+                  onClick={() => applyZoom(FIT_ZOOM)}
+                  title="Reset zoom to fit width"
+                  aria-label="Reset zoom to fit width"
+                  data-testid="pdf-tool-zoom-reset"
+                  className="rounded px-1 font-mono text-[10px] tabular-nums text-ink-4 hover:bg-cream-2"
+                >
+                  {formatZoom(zoom)}
+                </button>
+                <ToolButton
+                  icon={ZoomIn}
+                  label="Zoom in"
+                  testId="pdf-tool-zoom-in"
+                  disabled={zoom >= MAX_ZOOM}
+                  onClick={() => applyZoom(stepZoom(zoom, "in"))}
+                />
+              </>
+            )}
+            {tools.rotate && (
+              <ToolButton
+                icon={RotateCw}
+                label="Rotate 90° clockwise"
+                testId="pdf-tool-rotate"
+                active={rotation !== 0}
+                onClick={() => applyRotation(stepRotation(rotation, "cw"))}
+              />
+            )}
+            {tools.download && (
+              <ToolButton
+                icon={Download}
+                label="Download document"
+                testId="pdf-tool-download"
+                disabled={busy === "download"}
+                onClick={() => void handleDownload()}
+              />
+            )}
+            {tools.print && (
+              <ToolButton
+                icon={Printer}
+                label="Print document"
+                testId="pdf-tool-print"
+                disabled={busy === "print"}
+                onClick={() => void handlePrint()}
+              />
+            )}
+            {tools.fullscreen && fullscreenAvailable && (
+              <ToolButton
+                icon={isFullscreen ? Minimize2 : Maximize2}
+                label={isFullscreen ? "Exit full screen" : "Full screen"}
+                testId="pdf-tool-fullscreen"
+                active={isFullscreen}
+                onClick={toggleFullscreen}
+              />
+            )}
+          </div>
+        ) : null;
+
         // With a toolbar slot (the embed field picker), give the slot the
-        // flexible space on the left and pin the page nav + toggle to the
-        // right so the slot can never crowd them out. Without a slot, keep the
-        // original prev | center | next layout used by the dashboard surfaces.
+        // flexible space on the left and pin the tools + page nav + toggle to
+        // the right so the slot can never crowd them out. Without a slot, keep
+        // the original prev | center | next layout used by the dashboard
+        // surfaces, with the tools sharing the centre group.
         return toolbarSlot ? (
           <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0">
             <div className="min-w-0 flex-1">{toolbarSlot}</div>
             <div className="flex items-center gap-1 shrink-0">
+              {toolButtons}
               {prevBtn}
               {pageLabel}
               {nextBtn}
@@ -472,6 +1087,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
           <div className="flex items-center justify-between px-2 py-1 border-b border-border shrink-0">
             {prevBtn ?? <span />}
             <div className="flex items-center gap-2">
+              {toolButtons}
               {pageLabel}
               {highlightToggle}
             </div>
@@ -480,6 +1096,55 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
         );
       })()}
 
+      {/* Search row — a second toolbar line so the query field gets real
+          estate without squeezing the page nav on a narrow embed. */}
+      {tools.search && searchOpen && (
+        <div className="flex items-center gap-1 px-2 py-1 border-b border-border shrink-0">
+          <Search className="w-3 h-3 shrink-0 text-ink-4" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={query}
+            onChange={(e) => applyQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                goToHit(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                closeSearch();
+              }
+            }}
+            placeholder="Find in document"
+            aria-label="Find in document"
+            data-testid="pdf-search-input"
+            className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-ink-2 placeholder:text-ink-4 focus:outline-none"
+          />
+          <span
+            data-testid="pdf-search-count"
+            aria-live="polite"
+            className="shrink-0 font-mono text-[10px] tabular-nums text-ink-4 whitespace-nowrap"
+          >
+            {searchCountLabel}
+          </span>
+          <ToolButton
+            icon={ChevronUp}
+            label="Previous match"
+            testId="pdf-search-prev"
+            disabled={hits.length === 0}
+            onClick={() => goToHit(-1)}
+          />
+          <ToolButton
+            icon={ChevronDown}
+            label="Next match"
+            testId="pdf-search-next"
+            disabled={hits.length === 0}
+            onClick={() => goToHit(1)}
+          />
+          <ToolButton icon={X} label="Close search" testId="pdf-search-close" onClick={closeSearch} />
+        </div>
+      )}
+
       {/* PDF document. Tailwind class names MUST be literal strings — a
           template like `overflow-${overflow}` does not get picked up by the
           JIT compiler, so the generated CSS will be missing the overflow
@@ -487,8 +1152,15 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
       <div ref={containerRef} className={`flex-1 min-h-0 ${overflowClass[overflow]}`}>
         <ReactPdfDocument
           file={file}
+          // w-max lets a zoomed-in page grow past the container (the container
+          // scrolls horizontally); min-w-full + items-center keeps a zoomed-out
+          // page centred instead of pinned to the left edge.
+          className="flex w-max min-w-full flex-col items-center"
           onLoadSuccess={(pdf) => {
             setTotalPages(pdf.numPages);
+            // Held for search: pdf.js is the only way to read text off pages
+            // that aren't currently rendered.
+            pdfRef.current = pdf;
             onLoad?.({ pageCount: pdf.numPages });
             // Setup page observer after pages render in scroll mode
             if (mode === "scroll") {
@@ -510,8 +1182,10 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
           {mode === "paginated" ? (
             <ReactPdfPage
               pageNumber={currentPage}
-              width={containerWidth}
+              width={pageWidth}
+              rotate={rotation}
               renderAnnotationLayer={false}
+              onRenderTextLayerSuccess={searchActive ? bumpTextLayer : undefined}
             >
               {showHighlights && pageHighlights.length > 0 && (
                 <HighlightOverlay
@@ -520,10 +1194,17 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
                   currentPage={currentPage}
                   onFieldClick={onFieldClick}
                   theme={theme}
+                  rotation={rotation}
                 />
               )}
+              {searchOverlayFor(currentPage)}
               {selection && (selection.active || selection.snapped) && (
-                <SelectionLayer page={currentPage} selection={selection} theme={theme} />
+                <SelectionLayer
+                  page={currentPage}
+                  selection={selection}
+                  theme={theme}
+                  rotation={rotation}
+                />
               )}
             </ReactPdfPage>
           ) : (
@@ -531,13 +1212,16 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
               <LazyPage
                 key={pageNum}
                 pageNumber={pageNum}
-                width={containerWidth}
+                width={pageWidth}
                 scrollRoot={containerRef.current}
+                rotation={rotation}
               >
                 <ReactPdfPage
                   pageNumber={pageNum}
-                  width={containerWidth}
+                  width={pageWidth}
+                  rotate={rotation}
                   renderAnnotationLayer={false}
+                  onRenderTextLayerSuccess={searchActive ? bumpTextLayer : undefined}
                 >
                   {showHighlights && (
                     <HighlightOverlay
@@ -546,10 +1230,17 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
                       currentPage={pageNum}
                       onFieldClick={onFieldClick}
                       theme={theme}
+                      rotation={rotation}
                     />
                   )}
+                  {searchOverlayFor(pageNum)}
                   {selection && (selection.active || selection.snapped) && (
-                    <SelectionLayer page={pageNum} selection={selection} theme={theme} />
+                    <SelectionLayer
+                      page={pageNum}
+                      selection={selection}
+                      theme={theme}
+                      rotation={rotation}
+                    />
                   )}
                 </ReactPdfPage>
               </LazyPage>
@@ -557,6 +1248,182 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
           )}
         </ReactPdfDocument>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar icon button — one look for every optional tool.
+// ---------------------------------------------------------------------------
+
+function ToolButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  active,
+  testId,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      data-testid={testId}
+      className={`rounded p-0.5 transition-colors disabled:cursor-default disabled:opacity-30 ${
+        active ? "bg-vermillion-3/30 text-vermillion-2" : "text-ink-3 hover:bg-cream-2"
+      }`}
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Search overlay — draws the hits for one page.
+//
+// The boxes come from the rendered text layer rather than from pdf.js
+// geometry: a match can start mid-item and run across several of them, and a
+// DOM Range measures exactly that (including the line break in the middle of a
+// wrapped phrase) with the browser's own glyph metrics. The page's text layer
+// concatenates to the same string the search index was built from, so a match
+// offset from the index addresses the same characters here.
+// ---------------------------------------------------------------------------
+
+function SearchOverlay({
+  page,
+  query,
+  activeOrdinal,
+  redrawKey,
+}: {
+  page: number;
+  query: string;
+  /** Which hit on this page is focused, or null if the focused hit is elsewhere. */
+  activeOrdinal: number | null;
+  /** Changes whenever the text layer moves (re-render, zoom, rotation). */
+  redrawKey: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [boxes, setBoxes] = useState<Array<NormBox & { ordinal: number }>>([]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Measure after paint — mid-render the text layer may still be empty or
+    // sized against the previous zoom level.
+    const raf = requestAnimationFrame(() => {
+      const pageEl = el.closest(".react-pdf__Page");
+      const layer = pageEl?.querySelector(".react-pdf__Page__textContent");
+      const base = el.getBoundingClientRect();
+      if (!layer || !base.width || !base.height) {
+        setBoxes([]);
+        return;
+      }
+
+      // Walk the text nodes once, recording where each starts in the page's
+      // text, so a character offset can be turned into a (node, offset) pair.
+      const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+      const nodes: Array<{ node: Text; start: number }> = [];
+      let text = "";
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        nodes.push({ node: n as Text, start: text.length });
+        text += n.nodeValue ?? "";
+      }
+      if (!nodes.length) {
+        setBoxes([]);
+        return;
+      }
+
+      const locate = (offset: number) => {
+        let lo = 0;
+        let hi = nodes.length - 1;
+        let found = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (nodes[mid].start <= offset) {
+            found = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        const entry = nodes[found];
+        return { node: entry.node, offset: Math.min(offset - entry.start, entry.node.length) };
+      };
+
+      const out: Array<NormBox & { ordinal: number }> = [];
+      findMatches(text, query).forEach((match, ordinal) => {
+        const from = locate(match.start);
+        const to = locate(match.end);
+        const range = document.createRange();
+        try {
+          range.setStart(from.node, from.offset);
+          range.setEnd(to.node, to.offset);
+        } catch {
+          return; // Text layer changed under us; the next redraw will catch it.
+        }
+        // One rect per line the match spans.
+        for (const r of Array.from(range.getClientRects())) {
+          if (r.width <= 0 || r.height <= 0) continue;
+          out.push({
+            ordinal,
+            x: (r.left - base.left) / base.width,
+            y: (r.top - base.top) / base.height,
+            w: r.width / base.width,
+            h: r.height / base.height,
+          });
+        }
+      });
+      setBoxes(out);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [query, redrawKey, page]);
+
+  // The container always renders — it is what the effect measures against, so
+  // returning null while there are no boxes would mean never finding any.
+  return (
+    <div
+      data-search-layer={page}
+      ref={ref}
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        // Under the provenance highlights (z 3) so those stay clickable.
+        zIndex: 2,
+      }}
+    >
+      {boxes.map((b, i) => {
+        const isActive = b.ordinal === activeOrdinal;
+        return (
+          <div
+            key={`${b.ordinal}-${i}`}
+            data-search-hit={b.ordinal}
+            data-search-active={isActive ? "" : undefined}
+            className={`absolute rounded-[1px] ${
+              isActive ? "bg-vermillion-2/45 ring-1 ring-vermillion-2" : "bg-vermillion-3/35"
+            }`}
+            style={{
+              left: `${b.x * 100}%`,
+              top: `${b.y * 100}%`,
+              width: `${b.w * 100}%`,
+              height: `${b.h * 100}%`,
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -584,11 +1451,14 @@ function LazyPage({
   pageNumber,
   width,
   scrollRoot,
+  rotation = 0,
   children,
 }: {
   pageNumber: number;
   width: number | undefined;
   scrollRoot: HTMLDivElement | null;
+  /** Quarter turns swap the page's aspect, so the placeholder has to follow. */
+  rotation?: Rotation;
   children: React.ReactNode;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
@@ -622,7 +1492,8 @@ function LazyPage({
     return () => observer.disconnect();
   }, [hasRendered, scrollRoot]);
 
-  const placeholderHeight = width ? width * ESTIMATED_PAGE_ASPECT : 800;
+  const aspect = rotation === 90 || rotation === 270 ? 1 / ESTIMATED_PAGE_ASPECT : ESTIMATED_PAGE_ASPECT;
+  const placeholderHeight = width ? width * aspect : 800;
 
   return (
     <div
@@ -665,10 +1536,13 @@ function SelectionLayer({
   page,
   selection,
   theme,
+  rotation = 0,
 }: {
   page: number;
   selection: SelectionConfig;
   theme?: HighlightTheme;
+  /** Display rotation — the drag is un-rotated before it leaves this layer. */
+  rotation?: Rotation;
 }) {
   const layerRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
@@ -740,7 +1614,9 @@ function SelectionLayer({
         setDrag(null);
         const rect = layerRef.current!.getBoundingClientRect();
         if (marquee.w * rect.width < MIN_DRAG_PX || marquee.h * rect.height < MIN_DRAG_PX) return;
-        selection.onRegionSelected({ page, bbox: marquee });
+        // The drag is in rotated display space; resolve-region (and every
+        // stored bbox) speaks the page's native orientation.
+        selection.onRegionSelected({ page, bbox: unrotateBox(marquee, rotation) });
       }}
       onPointerCancel={() => setDrag(null)}
     >
@@ -769,7 +1645,10 @@ function SelectionLayer({
           : snapped.page === page && snapped.bbox
             ? [{ ...snapped.bbox, page: snapped.page }]
             : []
-        ).map((box, i) => (
+        )
+          // The echo comes back in page space — rotate it to match the view.
+          .map((box) => rotateBox(box, rotation))
+          .map((box, i) => (
           <div
             key={`snap-${i}`}
             data-selection-snapped=""
@@ -803,12 +1682,19 @@ function HighlightOverlay({
   currentPage,
   onFieldClick,
   theme,
+  rotation = 0,
 }: {
   highlights: BBoxHighlight[];
   activeField: string | null;
   currentPage: number;
   onFieldClick?: (field: string, page: number) => void;
   theme?: HighlightTheme;
+  /**
+   * Display rotation. Highlight geometry is stored against the page's native
+   * orientation, so every box is rotated into display space here — otherwise a
+   * rotated view leaves the highlights sitting on the wrong words.
+   */
+  rotation?: Rotation;
 }) {
   return (
     <div
@@ -862,6 +1748,7 @@ function HighlightOverlay({
         if (h.words && h.words.length > 0) {
           return h.words
             .filter((w) => w.page === currentPage)
+            .map((word) => rotateBox(word, rotation))
             .map((w, wi) => (
               <HoverBox
                 key={`${h.field}-${i}-w${wi}`}
@@ -886,15 +1773,16 @@ function HighlightOverlay({
 
         // Fallback: single enclosing bbox
         if (!h.bbox) return null;
+        const box = rotateBox(h.bbox, rotation);
         return (
           <HoverBox
             key={`${h.field}-${i}`}
             className={boxClass}
             style={{
-              left: `${h.bbox.x * 100}%`,
-              top: `${h.bbox.y * 100}%`,
-              width: `${h.bbox.w * 100}%`,
-              height: `${h.bbox.h * 100}%`,
+              left: `${box.x * 100}%`,
+              top: `${box.y * 100}%`,
+              width: `${box.w * 100}%`,
+              height: `${box.h * 100}%`,
               pointerEvents: "auto",
               ...themeStyle,
             }}

@@ -2,18 +2,28 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Crosshair } from "lucide-react";
 import {
   PdfViewer,
   type BBoxHighlight,
   type EmbedMessage,
   type EmbedOutboundMessage,
   type HighlightTheme,
+  type PdfViewerHandle,
   type RegionSelection,
   type ViewMode,
   type ViewOverflow,
   type WordBox,
 } from "@/components/shared/PdfViewer";
+import {
+  clampZoom,
+  FIT_ZOOM,
+  isRotation,
+  parseToolsParam,
+  stepRotation,
+  stepZoom,
+  type Rotation,
+  type ViewerToolName,
+} from "@/lib/pdf-tools";
 import { usePageTitle } from "@/lib/use-page-title";
 
 /**
@@ -44,13 +54,31 @@ import { usePageTitle } from "@/lib/use-page-title";
  *   default when highlights exist; selecting one jumps to its highlight. Hide
  *   it with ?fieldPicker=off (e.g. when the host drives selection itself).
  *
- * Tools (optional): ?tools=select — comma-separated list of optional tools,
- *   all OFF by default. `select` enables region selection
- *   (highlight-to-correct): a crosshair toolbar toggle appears, the host can
- *   arm/disarm it via koji:setSelectionMode, and a completed drag emits
- *   koji:regionSelected. In Document mode the viewer resolves the region to
- *   the text underneath via POST .../resolve-region (same HMAC token) before
- *   emitting; in URL mode it emits the raw rectangle with text: null.
+ * Tools (optional): ?tools=select,zoom,search,rotate,download,print,fullscreen
+ *   — a comma-separated list, all OFF by default (?tools=all turns on every
+ *   one). Each name adds its control to the toolbar AND unlocks the matching
+ *   inbound messages; unknown names are ignored so an embed URL written for a
+ *   newer viewer still works. The tools:
+ *
+ *   - select     region selection (highlight-to-correct): a crosshair toolbar
+ *                toggle appears, the host can arm/disarm it via
+ *                koji:setSelectionMode, and a completed drag emits
+ *                koji:regionSelected. In Document mode the viewer resolves the
+ *                region to the text underneath via POST .../resolve-region
+ *                (same HMAC token) before emitting; in URL mode it emits the
+ *                raw rectangle with text: null.
+ *   - zoom       − / % / + controls plus Ctrl/Cmd+wheel (and trackpad pinch).
+ *                100% is fit-to-width. koji:setZoom drives it.
+ *   - search     find-in-document across ALL pages (the browser's own find
+ *                only sees rendered ones), with match highlighting and
+ *                prev/next. Cmd/Ctrl+F opens it. koji:search drives it.
+ *   - rotate     90° clockwise per click. Highlights and region selection
+ *                rotate with the page. koji:setRotation drives it.
+ *   - download   saves the original PDF (uses the document's filename).
+ *   - print      prints the original PDF, not the rendered canvases.
+ *   - fullscreen expands the viewer. Pass allow="fullscreen" on the iframe —
+ *                without it a cross-origin host blocks the request and the
+ *                button hides itself.
  *
  * Outbound origin (optional): ?parentOrigin=<https://host> — the targetOrigin
  * the viewer posts outbound messages to. Falls back to the embedding page's
@@ -64,6 +92,10 @@ import { usePageTitle } from "@/lib/use-page-title";
  *   { type: "koji:setTheme", theme: { activeColor, inactiveColor } }
  *   { type: "koji:setViewMode", mode: "scroll", overflow: "auto" }  // both optional
  *   { type: "koji:setSelectionMode", field: "carrier" | null }  // arm/disarm region select (?tools=select)
+ *   { type: "koji:setZoom", zoom: 1.5 | "in" | "out" | "fit" }  // (?tools=zoom)
+ *   { type: "koji:setRotation", rotation: 90 | "cw" | "ccw" }   // (?tools=rotate)
+ *   { type: "koji:search", query: "policy number" | null }      // (?tools=search)
+ *   { type: "koji:searchNext" } / { type: "koji:searchPrev" }   // (?tools=search)
  *
  * Outbound postMessage (viewer → parent), posted to parentOrigin (never "*"):
  *   { type: "koji:ready", pageCount: 5 }                          // PDF loaded, controllable
@@ -71,6 +103,13 @@ import { usePageTitle } from "@/lib/use-page-title";
  *   { type: "koji:pageChanged", page: 3 }                        // most-visible page changed
  *   { type: "koji:visibleField", field: "carrier" | null, page: 3 }  // most-visible field changed
  *   { type: "koji:regionSelected", field, page, bbox, text, words }  // region picked + resolved (?tools=select)
+ *   { type: "koji:zoomChanged", zoom: 1.5 }                      // (?tools=zoom)
+ *   { type: "koji:rotationChanged", rotation: 90 }               // (?tools=rotate)
+ *   { type: "koji:searchResults", query, total, activeIndex, page }  // (?tools=search)
+ *
+ * The tool echoes fire for host-driven changes as well as user-driven ones
+ * (deduped on value), so a parent mirroring the controls in its own chrome
+ * stays in sync either way.
  *
  * The koji:pageChanged / koji:visibleField events fire on scroll (mode=scroll)
  * and on page navigation (mode=paginated), for both user and programmatic
@@ -141,10 +180,8 @@ function EmbedViewerInner() {
   }, [searchParams]);
   // Optional tools are all OFF unless listed in ?tools= (comma-separated).
   // Unknown names are ignored so a future tool name doesn't break old embeds.
-  const selectToolEnabled = useMemo(() => {
-    const v = searchParams.get("tools");
-    return v != null && v.split(",").map((t) => t.trim()).includes("select");
-  }, [searchParams]);
+  const tools = useMemo(() => parseToolsParam(searchParams.get("tools")), [searchParams]);
+  const selectToolEnabled = !!tools.select;
   // Region-selection state (?tools=select). `field` is what the host armed
   // selection for via koji:setSelectionMode (null when the built-in toolbar
   // toggle armed it); it is echoed back on koji:regionSelected.
@@ -153,6 +190,16 @@ function EmbedViewerInner() {
     field: null,
   });
   const [snapped, setSnapped] = useState<BBoxHighlight | null>(null);
+  // Tool state the host can both drive and observe. The viewer renders the
+  // controls; this page owns the values so koji:setZoom / koji:setRotation /
+  // koji:search and the toolbar buttons converge on the same state.
+  const [zoom, setZoom] = useState(FIT_ZOOM);
+  const [rotation, setRotation] = useState<Rotation>(0);
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
+  // Search next/prev are events, not state — they go through the viewer's
+  // imperative handle rather than a prop.
+  const viewerRef = useRef<PdfViewerHandle>(null);
   // Document-mode context for resolve-region calls. Mirrors the query params;
   // koji:setToken refreshes the token here too so resolution keeps working
   // through long review sessions.
@@ -248,6 +295,38 @@ function EmbedViewerInner() {
     [],
   );
 
+  // Tool-state echoes. Emitting from an effect (rather than from each button's
+  // handler) is what makes host-driven changes echo too — koji:setZoom and a
+  // click on the − button land in the same state and produce the same message.
+  // Seeded with the defaults so a fresh mount doesn't announce a no-op.
+  const lastZoomRef = useRef(FIT_ZOOM);
+  useEffect(() => {
+    if (lastZoomRef.current === zoom) return;
+    lastZoomRef.current = zoom;
+    postToParent({ type: "koji:zoomChanged", zoom });
+  }, [zoom, postToParent]);
+
+  const lastRotationRef = useRef<Rotation>(0);
+  useEffect(() => {
+    if (lastRotationRef.current === rotation) return;
+    lastRotationRef.current = rotation;
+    postToParent({ type: "koji:rotationChanged", rotation });
+  }, [rotation, postToParent]);
+
+  // Search results. Unlike zoom/rotation these fire while the user types, so
+  // they're held until the document is ready and skipped entirely until a
+  // search has actually happened (an empty query on mount is not news).
+  const searchedRef = useRef(false);
+  const handleSearchResults = useCallback(
+    (results: { query: string; total: number; activeIndex: number; page: number | null }) => {
+      if (!hasReadyRef.current) return;
+      if (!results.query && !searchedRef.current) return;
+      searchedRef.current = !!results.query;
+      postToParent({ type: "koji:searchResults", ...results });
+    },
+    [postToParent],
+  );
+
   // Parse query params and load data
   useEffect(() => {
     const url = searchParams.get("url");
@@ -270,6 +349,8 @@ function EmbedViewerInner() {
     // URL mode — client provides everything
     if (url) {
       setPdfUrl(url);
+      // No embed-data to read a name from; let the host name the download.
+      setFilename(searchParams.get("filename"));
       if (highlightsParam) {
         try {
           // UTF-8-safe base64 decode: atob() yields a binary string, so reading
@@ -301,6 +382,9 @@ function EmbedViewerInner() {
         .then((data: { previewUrl: string; highlights: BBoxHighlight[]; filename: string }) => {
           setPdfUrl(data.previewUrl);
           setHighlights(data.highlights ?? []);
+          // Kept for the download tool — the preview path is opaque, so this
+          // is the only place the real filename comes from.
+          setFilename(data.filename ?? null);
         })
         .catch((err) => {
           setError(err.message);
@@ -315,6 +399,18 @@ function EmbedViewerInner() {
 
   // Listen for postMessage from parent frame
   useEffect(() => {
+    /**
+     * Tool-gated messages follow koji:setSelectionMode's precedent: a message
+     * for a tool this embed didn't opt into is ignored with a console warning
+     * rather than silently applied, so `?tools=` stays the single switch for
+     * what an embed can do.
+     */
+    function toolEnabled(tool: ViewerToolName, type: string): boolean {
+      if (tools[tool]) return true;
+      console.warn(`[embed] ${type} ignored — enable the tool with ?tools=${tool}`);
+      return false;
+    }
+
     function handleMessage(e: MessageEvent) {
       const msg = e.data as EmbedMessage;
       if (!msg?.type?.startsWith("koji:")) return;
@@ -361,12 +457,48 @@ function EmbedViewerInner() {
           if (asViewMode(msg.mode)) setViewMode(msg.mode!);
           if (asViewOverflow(msg.overflow)) setOverflow(msg.overflow!);
           break;
+        case "koji:setZoom": {
+          if (!toolEnabled("zoom", msg.type)) break;
+          const z = msg.zoom;
+          setZoom((prev) =>
+            z === "in" || z === "out"
+              ? stepZoom(prev, z)
+              : z === "fit"
+                ? FIT_ZOOM
+                : clampZoom(Number(z)),
+          );
+          break;
+        }
+        case "koji:setRotation": {
+          if (!toolEnabled("rotate", msg.type)) break;
+          const r = msg.rotation;
+          if (r === "cw" || r === "ccw") {
+            setRotation((prev) => stepRotation(prev, r));
+          } else if (isRotation(r)) {
+            setRotation(r);
+          } else {
+            console.warn("[embed] koji:setRotation ignored — expected 0/90/180/270, 'cw' or 'ccw'");
+          }
+          break;
+        }
+        case "koji:search":
+          if (!toolEnabled("search", msg.type)) break;
+          setSearchQuery(msg.query);
+          break;
+        case "koji:searchNext":
+          if (!toolEnabled("search", msg.type)) break;
+          viewerRef.current?.searchNext();
+          break;
+        case "koji:searchPrev":
+          if (!toolEnabled("search", msg.type)) break;
+          viewerRef.current?.searchPrev();
+          break;
       }
     }
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [selectToolEnabled]);
+  }, [selectToolEnabled, tools]);
 
   // A completed selection drag: resolve the region to the text underneath
   // (Document mode — raw fetch with the HMAC token, same cookieless posture
@@ -473,36 +605,13 @@ function EmbedViewerInner() {
       </select>
     ) : undefined;
 
-  // Self-serve entry to selection mode: a small crosshair toggle next to the
-  // field picker, only when the tool is enabled. Hosts that drive selection
-  // via koji:setSelectionMode can keep using it — the states are shared.
-  const selectionToggle = selectToolEnabled ? (
-    <button
-      type="button"
-      aria-label={selectState.armed ? "Exit region selection" : "Select a region on the document"}
-      title={selectState.armed ? "Exit region selection" : "Select a region on the document"}
-      data-testid="embed-select-toggle"
-      onClick={() => {
-        setSnapped(null);
-        setSelectState((s) => ({ armed: !s.armed, field: s.armed ? null : s.field }));
-      }}
-      className={`shrink-0 rounded border px-1.5 py-0.5 transition-colors ${
-        selectState.armed
-          ? "border-neutral-700 bg-neutral-800 text-white"
-          : "border-neutral-300 bg-white text-neutral-500 hover:text-neutral-800"
-      }`}
-    >
-      <Crosshair className="h-3.5 w-3.5" />
-    </button>
+  // The self-serve crosshair lives in the viewer's tool group with the rest of
+  // the tools (it used to sit beside the field picker, which split the toolbar
+  // in two once zoom/search/rotate arrived). Hosts that drive selection via
+  // koji:setSelectionMode keep working — both paths write the same state.
+  const toolbarSlot = fieldPicker ? (
+    <div className="flex min-w-0 items-center gap-1.5">{fieldPicker}</div>
   ) : undefined;
-
-  const toolbarSlot =
-    fieldPicker || selectionToggle ? (
-      <div className="flex min-w-0 items-center gap-1.5">
-        {selectionToggle}
-        {fieldPicker}
-      </div>
-    ) : undefined;
 
   return (
     <div className="h-screen w-screen bg-white">
@@ -515,9 +624,27 @@ function EmbedViewerInner() {
         mode={viewMode}
         overflow={overflow}
         toolbarSlot={toolbarSlot}
+        tools={tools}
+        filename={filename}
+        controlRef={viewerRef}
+        zoom={zoom}
+        onZoomChange={setZoom}
+        rotation={rotation}
+        onRotationChange={setRotation}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
+        onSearchResults={handleSearchResults}
         selection={
           selectToolEnabled
-            ? { active: selectState.armed, onRegionSelected: handleRegionSelected, snapped }
+            ? {
+                active: selectState.armed,
+                onRegionSelected: handleRegionSelected,
+                snapped,
+                onToggleActive: () => {
+                  setSnapped(null);
+                  setSelectState((s) => ({ armed: !s.armed, field: s.armed ? null : s.field }));
+                },
+              }
             : undefined
         }
         onPageChange={handlePageChange}

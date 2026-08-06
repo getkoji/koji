@@ -2,6 +2,41 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.0 — 2026-08-06
+
+**Feature: zoom, search, rotate, download, print and fullscreen in the
+embeddable PDF viewer.** The embed previously offered page navigation, the
+highlight toggle, the field picker and region selection; everything else a
+reader reaches for was missing. Six new tools join `select` behind the same
+`?tools=` opt-in, so each embed shows only the controls its host asked for and
+nothing changes for existing embeds:
+
+- **`zoom`** — − / % / + controls, Ctrl/Cmd + wheel, and trackpad pinch. 100%
+  is fit-to-width; the range is 25–400%.
+- **`search`** — find-in-document across *every* page, not just the rendered
+  ones. The browser's own Cmd/Ctrl+F can only see pages currently in the DOM,
+  which in a long document is nearly none of it; with the tool on, Cmd/Ctrl+F
+  opens this search instead. Hits are highlighted in place with prev/next.
+- **`rotate`** — 90° per click, for sideways scans. Highlights rotate with the
+  page, and a region selection made on a rotated view is still reported in the
+  document's native orientation.
+- **`download`** / **`print`** — act on the original PDF, so a print is the
+  real document rather than the pages that happen to be on screen.
+- **`fullscreen`** — needs `allow="fullscreen"` on the host iframe; the button
+  hides itself when the host withholds it.
+
+`?tools=all` enables everything. Unknown tool names are ignored rather than
+rejected, so an embed URL naming a newer tool keeps working on an older Koji.
+
+New messages, each gated on its tool: inbound `koji:setZoom`,
+`koji:setRotation`, `koji:search`, `koji:searchNext`, `koji:searchPrev`;
+outbound `koji:zoomChanged`, `koji:rotationChanged`, `koji:searchResults`. The
+echoes fire for host-driven changes too, so a parent mirroring the controls in
+its own chrome stays in sync. See [Viewer tools](docs/integration.md).
+
+The self-serve region-selection crosshair moved from beside the field picker
+into the toolbar's tool group, alongside the new buttons.
+
 ## 0.107.3 — 2026-08-05
 
 **Fix: the overview "Processed" tile counted 0 for router pipelines.** The metric
