@@ -59,17 +59,36 @@
  * and concurrency are configurable via `config_json` (`slice_pages` default 15,
  * `online_concurrency` default 6).
  *
- * **pdf-lib-unreadable PDFs (oss-377).** Some real PDFs defeat pdf-lib while
- * remaining perfectly parseable: owner-password encryption (empty user
- * password) combined with a page tree in compressed object streams. pdf-lib's
- * `ignoreEncryption` skips decryption, so the page tree never materializes and
- * both counting and slicing throw. For those, the count comes from pdfjs
- * (which decrypts properly) via {@link probePdf}; a large doc is then
- * **normalized once** through the parse service's `/normalize-pdf` (a
- * PDFium/MuPDF re-save, see `pdf-normalize.ts`) so the standard sliced path
- * runs on the normalized bytes. If normalization fails, ≤30pg docs retry as a
- * single imageless online call; larger ones surface an actionable error
- * instead of Doc AI's bare PAGE_LIMIT_EXCEEDED.
+ * **PDFs pdf-lib can't slice faithfully (oss-377, oss-488).** Size routing and
+ * slicing both depend on a local page count, and pdf-lib gets that wrong on two
+ * families of real documents — in one case loudly, in the other silently:
+ *
+ *   - *It can't load the file at all* (oss-377): owner-password encryption
+ *     (empty user password) with a page tree in compressed object streams.
+ *     `ignoreEncryption` skips decryption rather than performing it, so the
+ *     object streams never inflate and both counting and slicing throw.
+ *   - *It loads the file but reaches only part of the page tree* (oss-488):
+ *     hybrid-reference PDFs (classic xref table + `/XRefStm`) resolve some
+ *     object numbers to the wrong objects, so nested `/Pages` kids come back as
+ *     `/StructElem` or arrays. pdf-lib skips what it can't interpret and returns
+ *     a short count **with no error**. Production case: a 76-page policy counted
+ *     as 11, which routed it to a single online call that Doc AI rejected with
+ *     PAGE_LIMIT_EXCEEDED — and would have been worse had it sliced, since
+ *     pdf-lib's view of that file holds 19,875 of its 179,112 characters.
+ *
+ * {@link probePdf} detects both by cross-checking pdf-lib's traversal against
+ * the declared `/Count` and pdfjs, reporting the true `pageCount` and setting
+ * `pdfLibLoadable: false` for either. Such a doc is **normalized once** through
+ * the parse service's `/normalize-pdf` (a PDFium/MuPDF re-save, see
+ * `pdf-normalize.ts`) and re-probed, so the standard sliced path runs on bytes
+ * that are known-complete. If normalization fails, ≤30pg docs retry as a single
+ * imageless online call; larger ones surface an actionable error instead of Doc
+ * AI's bare PAGE_LIMIT_EXCEEDED.
+ *
+ * As a final backstop, an online call that Doc AI *does* reject as oversize is
+ * re-routed through the large-document path using the page count Doc AI itself
+ * reports ({@link reportedPageCount}) — the only count guaranteed to match what
+ * the API will accept.
  *
  * Credentials are resolved per-tenant via `resolveTenantParseProvider`
  * (`parse_endpoints` → decrypt → driver registry) — never from raw env vars.
@@ -83,7 +102,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { PDFDocument } from "pdf-lib";
 import type { ParseProvider, ParseResponse } from "../provider";
 import type { ParseEndpointPayload } from "../resolve-tenant-parse";
 import {
@@ -569,6 +587,67 @@ function isOversizeError(err: unknown): boolean {
   );
 }
 
+/**
+ * The page count Doc AI itself reports when it rejects a request as oversize —
+ * the only reading of the document that is guaranteed to match what the API
+ * will accept, and the recount that lets a mis-routed online call recover
+ * instead of failing (oss-488).
+ *
+ * A PAGE_LIMIT_EXCEEDED body carries the number twice:
+ *
+ *   "message": "Document pages exceed the limit: 30 got 76",
+ *   "details": [{ "metadata": { "page_limit": "30", "pages": "76" } }]
+ *
+ * The structured `metadata.pages` is preferred; the message tail is the
+ * fallback for older/leaner error shapes. Returns null when neither is
+ * present — callers must not assume a number is available.
+ */
+export function reportedPageCount(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  const fromMetadata = msg.match(/"pages"\s*:\s*"?(\d+)"?/i);
+  const fromMessage = msg.match(/exceed[^:]*:\s*\d+\s*got\s+(\d+)/i);
+  return firstPositiveInt(fromMetadata?.[1] ?? fromMessage?.[1]);
+}
+
+/**
+ * The per-request page limit Doc AI reports alongside a PAGE_LIMIT_EXCEEDED
+ * rejection (`metadata.page_limit`, or the number before "got" in the
+ * message). Lets a retry be sized against the limit the API actually enforced
+ * rather than against {@link IMAGELESS_MAX_PAGES}, which is only our belief
+ * about it.
+ */
+export function reportedPageLimit(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  const fromMetadata = msg.match(/"page_limit"\s*:\s*"?(\d+)"?/i);
+  const fromMessage = msg.match(/exceed[^:]*:\s*(\d+)\s*got\s+\d+/i);
+  return firstPositiveInt(fromMetadata?.[1] ?? fromMessage?.[1]);
+}
+
+function firstPositiveInt(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Whether a whole-document online failure is worth the cost of re-routing
+ * through the large-document path (potentially a normalize round-trip plus N
+ * sliced calls).
+ *
+ * Stricter than {@link isOversizeError}, which treats *any* 400 as retryable.
+ * That is the right call for slice bisection, where a retry is cheap — but a
+ * bare 400 is just as likely to be a malformed request (an invalid
+ * `rawDocument.mime_type`, see oss-307) that no amount of slicing will fix.
+ * Require positive evidence that size is the problem: either Doc AI told us the
+ * page count it saw, or the message names a size/page limit.
+ */
+function isRecoverableOversize(err: unknown): boolean {
+  if (!isOversizeError(err)) return false;
+  if (reportedPageCount(err) !== null) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /page limit|page_limit|too large|payload size|request size|content too large/i.test(msg);
+}
+
 /** Document-AI-specific config read from the (decrypted) endpoint payload. */
 interface GoogleDocAiConfig {
   projectId?: string;
@@ -767,12 +846,16 @@ export class GoogleDocAiProvider implements ParseProvider {
       IMAGELESS_MAX_PAGES,
     );
 
-    // Route by page count. `probePdf` counts via pdf-lib and, when pdf-lib
-    // can't read the file (owner-password encryption + object-stream page
-    // trees — see pdf-normalize.ts), falls back to pdfjs for the count alone.
-    // An unknown count (non-PDF / unreadable by both) falls back to a single
-    // online `:process` call — the smallest, safest path.
-    const probe = await probePdf(input.fileBuffer, input.mimeType);
+    // Route by page count. `probePdf` cross-checks pdf-lib's traversal against
+    // the page tree's declared `/Count` and pdfjs, so `pageCount` is the true
+    // size and `pdfLibLoadable` means "pdf-lib can carve every page of it" —
+    // false both when pdf-lib can't read the file (owner-password encryption +
+    // object-stream page trees, oss-377) and when it reads it but reaches only
+    // part of the page tree (hybrid `/XRefStm` files, oss-488). Both route
+    // through normalization. An unknown count (non-PDF / unreadable by every
+    // reader) falls back to a single online `:process` call — the smallest,
+    // safest path, with the oversize catch below as its backstop.
+    let probe = await probePdf(input.fileBuffer, input.mimeType);
     let pageCount = probe.pageCount;
 
     // Encrypted-but-loadable PDFs are the trap the sliced path silently fell
@@ -790,7 +873,10 @@ export class GoogleDocAiProvider implements ParseProvider {
     if (probe.encrypted && probe.pdfLibLoadable) {
       try {
         const decrypted = await normalizePdfViaService(input.fileBuffer, input.filename);
-        const recount = await countPdfPages(decrypted, input.mimeType);
+        // Re-probe rather than bare-count: the decrypted re-save has to be
+        // both readable AND fully traversable before we route on its number.
+        const reprobe = await probePdf(decrypted, input.mimeType);
+        const recount = reprobe.pdfLibLoadable ? reprobe.pageCount : null;
         if (recount !== null) {
           console.log(
             `[google-docai] ${input.filename}: decrypted owner-password-encrypted ` +
@@ -798,6 +884,7 @@ export class GoogleDocAiProvider implements ParseProvider {
           );
           input = { ...input, fileBuffer: decrypted };
           pageCount = recount;
+          probe = reprobe;
         } else {
           // The re-save produced a PDF pdf-lib still can't read — don't trust it;
           // fall through on the original bytes rather than slicing garbage.
@@ -828,51 +915,129 @@ export class GoogleDocAiProvider implements ParseProvider {
     }
 
     // Fits a single online call (or page count unknown).
+    //
+    // "Fits" rests on a local page count, and a local count can be wrong in the
+    // one direction that matters: too low. `probePdf` cross-checks pdf-lib
+    // against `/Count` and pdfjs precisely to catch that (oss-488), but Doc AI
+    // is the only reader whose opinion actually decides the request. When it
+    // rejects the call as oversize it states the count it saw — so treat that
+    // as the authoritative recount and re-route, rather than surfacing a
+    // PAGE_LIMIT_EXCEEDED that we now have everything we need to recover from.
     if (pageCount === null || pageCount <= sliceSize) {
       const imageless = pageCount !== null && pageCount > ONLINE_MAX_PAGES;
-      return this.processOnline(cfg, token, input, imageless);
+      try {
+        return await this.processOnline(cfg, token, input, imageless);
+      } catch (err) {
+        if (!isRecoverableOversize(err)) throw err;
+        const reported = reportedPageCount(err);
+        // Two different things get rejected as oversize, and they need
+        // different recoveries:
+        //   - Doc AI counted MORE pages than we did → our page tree really is
+        //     incomplete, so pdf-lib must not be trusted to slice it either;
+        //     normalize first.
+        //   - Doc AI agreed on the count (or gave none) → this is a payload-size
+        //     rejection on image-heavy pages, not a structural problem. pdf-lib
+        //     is fine; slice directly and let per-slice bisection handle it.
+        const treeProvenWrong =
+          reported !== null && pageCount !== null && reported > pageCount;
+        // Doc AI's count when it gave one; otherwise just enough to force the
+        // large-doc path, which recounts from the normalized bytes anyway.
+        const retryPageCount = reported ?? sliceSize + 1;
+        // Re-slicing at the SAME size would rebuild the request that was just
+        // rejected — one slice spanning the whole document — and fail
+        // identically. Size the retry against the limit Doc AI enforced, and
+        // if that still wouldn't subdivide (the configured slice size already
+        // exceeded the document), halve it so the retry is genuinely smaller.
+        let retrySliceSize = Math.min(
+          sliceSize,
+          reportedPageLimit(err) ?? IMAGELESS_MAX_PAGES,
+        );
+        if (retrySliceSize >= retryPageCount) {
+          retrySliceSize = Math.max(1, Math.floor(retryPageCount / 2));
+        }
+        console.warn(
+          `[google-docai] ${input.filename}: routed to a single online call as ` +
+            `${pageCount ?? "?"}pg, but Doc AI rejected it as oversize` +
+            `${reported === null ? "" : ` (it counted ${reported}pg)`}. ` +
+            `Re-routing through the large-document path at ≤${retrySliceSize}pg/slice` +
+            `${treeProvenWrong ? " (normalizing first — our page tree undercounted)" : ""}.`,
+        );
+        return this.processLarge(
+          cfg,
+          token,
+          input,
+          retryPageCount,
+          retrySliceSize,
+          probe.pdfLibLoadable && !treeProvenWrong,
+        );
+      }
     }
 
-    // Large doc → the sliced path, which carves the PDF locally with pdf-lib.
-    // When pdf-lib can't read the file, normalize it once through the parse
-    // service (a PDFium/MuPDF re-save) and slice the normalized bytes. Without
-    // this, the pre-oss-377 behavior was a doomed whole-doc online call that
-    // Doc AI rejected with PAGE_LIMIT_EXCEEDED.
-    if (!probe.pdfLibLoadable) {
+    return this.processLarge(cfg, token, input, pageCount, sliceSize, probe.pdfLibLoadable);
+  }
+
+  /**
+   * Large-document path: get to bytes pdf-lib can carve faithfully, then slice
+   * into ≤`sliceSize` segments, run each through online `:process` in parallel
+   * (concurrency-capped), and merge with global page renumbering. GCS-free.
+   *
+   * `sliceable` is {@link PdfProbeResult.pdfLibLoadable} — pdf-lib both loads
+   * the document AND reaches every page. When it is false the bytes go through
+   * the parse service's `/normalize-pdf` (a PDFium/MuPDF re-save) exactly once
+   * and the normalized result is re-probed; anything still unsliceable falls to
+   * {@link handleUnsliceable}. Without this, the pre-oss-377 behavior was a
+   * doomed whole-doc online call that Doc AI rejected with PAGE_LIMIT_EXCEEDED.
+   *
+   * `pageCount` is advisory on entry — after a normalize the re-probe's count
+   * wins, so an over- or under-estimate from the caller self-corrects.
+   */
+  private async processLarge(
+    cfg: GoogleDocAiConfig,
+    token: string,
+    input: { filename: string; mimeType: string; fileBuffer: Buffer },
+    pageCount: number,
+    sliceSize: number,
+    sliceable: boolean,
+  ): Promise<ParseResponse> {
+    if (!sliceable) {
       let normalized: Buffer;
       try {
         normalized = await normalizePdfViaService(input.fileBuffer, input.filename);
       } catch (err) {
         return this.handleUnsliceable(cfg, token, input, pageCount, err);
       }
-      // Recount from the normalized bytes — authoritative for range building.
-      // A normalize that pdf-lib still can't read is treated like a failure.
-      const recount = await countPdfPages(normalized, input.mimeType);
-      if (recount === null) {
+      // Re-probe the normalized bytes — authoritative for range building. Use
+      // the full probe, not a bare count: a re-save that pdf-lib can load but
+      // still can't fully traverse would otherwise hand `processSliced` a page
+      // tree it can only partly copy, silently dropping the unreachable pages.
+      const reprobe = await probePdf(normalized, input.mimeType);
+      if (reprobe.pageCount === null || !reprobe.pdfLibLoadable) {
         return this.handleUnsliceable(
           cfg,
           token,
           input,
           pageCount,
-          new Error("normalized PDF is still not readable by pdf-lib"),
+          new Error(
+            reprobe.pageCount === null
+              ? "normalized PDF is still not readable by pdf-lib"
+              : `normalized PDF still has an incomplete page tree under pdf-lib ` +
+                `(${reprobe.pdfLibPageCount} of ${reprobe.pageCount} pages reachable)`,
+          ),
         );
       }
       console.log(
-        `[google-docai] ${input.filename}: pdf-lib cannot read this PDF ` +
-          `(likely owner-password encryption with object streams); normalized ` +
-          `via parse service (${pageCount} → ${recount}pg).`,
+        `[google-docai] ${input.filename}: pdf-lib cannot faithfully slice this ` +
+          `PDF (owner-password encryption with object streams, or an incomplete ` +
+          `page tree); normalized via parse service (${pageCount} → ${reprobe.pageCount}pg).`,
       );
       input = { ...input, fileBuffer: normalized };
-      pageCount = recount;
+      pageCount = reprobe.pageCount;
       if (pageCount <= sliceSize) {
         // Rare: the re-save collapsed the count under the slice size.
         return this.processOnline(cfg, token, input, pageCount > ONLINE_MAX_PAGES);
       }
     }
 
-    // Default large-doc path: slice into ≤sliceSize segments, run each through
-    // online `:process` in parallel (concurrency-capped), merge with global
-    // page renumbering. GCS-free.
     return this.processSliced(cfg, token, input, pageCount, sliceSize);
   }
 
@@ -1351,24 +1516,4 @@ export function resolveBatchUris(cfg: GoogleDocAiConfig): {
 /** Strip path separators and unsafe chars from a filename for use as an object name. */
 function sanitizeObjectName(filename: string): string {
   return filename.replace(/[/\\]/g, "_").replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-/**
- * Count pages of a PDF buffer via pdf-lib, or return null when the count can't
- * be determined (non-PDF mime type, or an unreadable/corrupt PDF). A null
- * result routes to the online path — the safe default. `ignoreEncryption` is
- * set because many customer PDFs ship with an owner-password / no-print flag
- * that otherwise blocks loading (mirrors `chunked.ts`).
- */
-export async function countPdfPages(
-  fileBuffer: Buffer,
-  mimeType: string,
-): Promise<number | null> {
-  if (!/pdf/i.test(mimeType)) return null;
-  try {
-    const doc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
-    return doc.getPageCount();
-  } catch {
-    return null;
-  }
 }

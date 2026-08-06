@@ -113,10 +113,14 @@ Table- vs text-heaviness is a **geometric** signal (the fraction of lines that r
 - Returns markdown text, page count, and a `text_map` of word-level bounding boxes
 - Caches Hugging Face and Torch model weights in Docker volumes for fast restarts
 - Also exposes `/normalize-pdf`: a pypdfium2 re-save (with security removal)
-  for PDFs the API's local pdf-lib tooling can't read — owner-password
-  encryption with object-stream page trees. The API calls it once before
-  slicing such documents (Doc AI slice-and-merge, chunked parse); see
-  `api/src/parse/pdf-normalize.ts`.
+  for PDFs the API's local pdf-lib tooling can't slice faithfully. Two classes
+  qualify: owner-password encryption with object-stream page trees (pdf-lib
+  throws), and hybrid-reference files carrying both a classic xref table and an
+  `/XRefStm` (pdf-lib walks only part of the page tree and returns a short count
+  with no error). The API detects both by cross-checking pdf-lib's traversal
+  against the declared `/Count` and pdfjs, then calls this once before slicing
+  such documents (Doc AI slice-and-merge, chunked parse); see
+  `api/src/parse/pdf-normalize.ts` and `api/src/parse/pdf-slice.ts`.
 - Recovers **space-mangled** digital text layers: when Docling's own output
   shows the long-token signature (Type-3 / custom-encoded fonts whose spacing
   its default and pypdfium backends both drop), the service re-extracts with

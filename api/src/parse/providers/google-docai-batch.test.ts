@@ -16,9 +16,10 @@ import { PDFDocument } from "pdf-lib";
 
 import {
   GoogleDocAiProvider,
-  countPdfPages,
   resolveBatchUris,
   mergeShardChunks,
+  reportedPageCount,
+  reportedPageLimit,
 } from "./google-docai";
 import type { GoogleDocument } from "./google-docai";
 import type { ParseChunk } from "../chunk";
@@ -91,23 +92,10 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Page counting + URI resolution (pure units).
+// URI resolution (pure units). Page counting now lives in `probePdf` — see
+// pdf-slice.test.ts; the bare pdf-lib counter it replaced could not tell a
+// complete page tree from a partially-traversed one (oss-488).
 // ---------------------------------------------------------------------------
-
-describe("countPdfPages", () => {
-  it("counts pages of a real PDF", async () => {
-    expect(await countPdfPages(await makePdf(7), "application/pdf")).toBe(7);
-    expect(await countPdfPages(await makePdf(40), "application/pdf")).toBe(40);
-  });
-
-  it("returns null for a non-PDF mime type", async () => {
-    expect(await countPdfPages(Buffer.from("PNG"), "image/png")).toBeNull();
-  });
-
-  it("returns null for an unreadable/corrupt PDF", async () => {
-    expect(await countPdfPages(Buffer.from("not a pdf"), "application/pdf")).toBeNull();
-  });
-});
 
 describe("resolveBatchUris", () => {
   it("derives input/output prefixes from gcs_bucket", () => {
@@ -364,5 +352,45 @@ describe("GoogleDocAiProvider.buildBatchResponse", () => {
     ]);
     expect(resp.chunks?.map((c) => c.text)).toEqual(["first", "second"]);
     expect(resp.chunks?.map((c) => c.page)).toEqual([1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reading Doc AI's own numbers out of a PAGE_LIMIT_EXCEEDED rejection —
+// the recount that lets a mis-routed online call recover (oss-488).
+// ---------------------------------------------------------------------------
+
+/** The verbatim 400 body from the production failure, as the driver wraps it. */
+const PAGE_LIMIT_400 = new Error(
+  'google-docai process 400: {   "error": {     "code": 400,     "message": ' +
+    '"Document pages exceed the limit: 30 got 76",     "status": "INVALID_ARGUMENT",  ' +
+    '   "details": [       {         "@type": "type.googleapis.com/google.rpc.ErrorInfo", ' +
+    '        "reason": "PAGE_LIMIT_EXCEEDED",         "domain": "documentai.googleapis.com", ' +
+    '        "metadata": {           "page_limit": "30",           "pages": "76"    ' +
+    "     }       }     ]   } }",
+);
+
+describe("reportedPageCount / reportedPageLimit", () => {
+  it("reads both numbers out of the real production 400 body", () => {
+    expect(reportedPageCount(PAGE_LIMIT_400)).toBe(76);
+    expect(reportedPageLimit(PAGE_LIMIT_400)).toBe(30);
+  });
+
+  it("falls back to the message when there is no structured metadata", () => {
+    const err = new Error("google-docai process 400: Document pages exceed the limit: 30 got 62");
+    expect(reportedPageCount(err)).toBe(62);
+    expect(reportedPageLimit(err)).toBe(30);
+  });
+
+  it("returns null when the error carries no page numbers", () => {
+    const err = new Error("google-docai process 403: permission denied");
+    expect(reportedPageCount(err)).toBeNull();
+    expect(reportedPageLimit(err)).toBeNull();
+  });
+
+  it("does not confuse the limit for the count", () => {
+    // "30 got 76" — the driver must never re-route on 30, which would build a
+    // slice plan for less than half the document.
+    expect(reportedPageCount(PAGE_LIMIT_400)).not.toBe(30);
   });
 });

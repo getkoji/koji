@@ -282,3 +282,87 @@ describe("GoogleDocAiProvider.parse — graceful slice handling", () => {
     expect(calls).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Doc AI's own oversize rejection as the last-resort recount (oss-488).
+// ---------------------------------------------------------------------------
+
+describe("GoogleDocAiProvider.parse — oversize rejection on the online route", () => {
+  it("re-routes to slicing when Doc AI rejects a call we sized as one page-count", async () => {
+    // The production shape, reduced: a local count says the document fits one
+    // online call, Doc AI disagrees. Before oss-488 the 400 propagated and the
+    // document failed outright; now Doc AI's rejection is treated as the
+    // authoritative recount and the document is sliced instead.
+    // The request body carries only the bytes, so the whole-document call is
+    // identified by being the first one.
+    let calls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (!String(url).includes(":process")) throw new Error(`unexpected fetch: ${url}`);
+      calls += 1;
+      if (calls === 1) {
+        return jsonResponse(
+          {
+            error: {
+              code: 400,
+              message: "Document pages exceed the limit: 30 got 20",
+              details: [{ metadata: { page_limit: "30", pages: "20" } }],
+            },
+          },
+          400,
+        );
+      }
+      return jsonResponse({ document: onlineDoc("sliced text") });
+    });
+
+    // slice_pages 25 > the real 20 pages, so routing picks a single online call.
+    const provider = new GoogleDocAiProvider(payload({ slice_pages: 25, online_concurrency: 1 }));
+    const result = await provider.parse({
+      filename: "p.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: await makePdf(20),
+    });
+
+    expect(result.markdown).toContain("sliced text");
+    // The retry has to be genuinely SMALLER than the rejected call. Re-slicing
+    // at the configured 25pg would rebuild the same 20-page request and fail
+    // identically, so the recovery halves it: 1 rejected + 2 slices of ≤10pg.
+    expect(processCalls().length).toBe(3);
+  });
+
+  it("still surfaces a non-oversize failure from the online route", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (!String(url).includes(":process")) throw new Error(`unexpected fetch: ${url}`);
+      return jsonResponse({ error: { message: "permission denied" } }, 403);
+    });
+
+    const provider = new GoogleDocAiProvider(payload({ slice_pages: 25 }));
+    await expect(
+      provider.parse({ filename: "p.pdf", mimeType: "application/pdf", fileBuffer: await makePdf(5) }),
+    ).rejects.toThrow(/process 403/);
+    // A 403 is not fixed by re-routing — exactly one call, no recovery attempt.
+    expect(processCalls().length).toBe(1);
+  });
+});
+
+describe("GoogleDocAiProvider.parse — a bare 400 is not treated as oversize", () => {
+  it("fails fast on a malformed-request 400 instead of normalizing and re-slicing", async () => {
+    // A bad `rawDocument.mime_type` also comes back as 400 (oss-307). Slicing
+    // cannot fix it, so the whole-document route must not spend a normalize
+    // round-trip plus N sliced calls discovering that. (Slice-level bisection
+    // keeps its looser any-400 rule — a retry there is cheap.)
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes("/normalize-pdf")) throw new Error("normalize must not be called");
+      if (!String(url).includes(":process")) throw new Error(`unexpected fetch: ${url}`);
+      return jsonResponse(
+        { error: { code: 400, message: "Invalid rawDocument.mime_type", status: "INVALID_ARGUMENT" } },
+        400,
+      );
+    });
+
+    const provider = new GoogleDocAiProvider(payload({ slice_pages: 25 }));
+    await expect(
+      provider.parse({ filename: "p.pdf", mimeType: "application/pdf", fileBuffer: await makePdf(5) }),
+    ).rejects.toThrow(/process 400/);
+    expect(processCalls().length).toBe(1);
+  });
+});

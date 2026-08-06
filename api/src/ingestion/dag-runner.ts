@@ -322,15 +322,25 @@ export function evalCondition(condition: string, context: Record<string, unknown
  * this maps the first missing precondition to a human-readable message. The most
  * common cause in practice is `docText === ""` — a parse that produced no text
  * (an encrypted or image-only PDF the parse provider couldn't read).
+ *
+ * `parseError` carries the reason the parse *threw*, when it did. Without it
+ * every parse failure reads as "the document produced no extractable text",
+ * which describes the symptom and buries the cause: in oss-488 the real error
+ * was Doc AI rejecting a 76-page PDF with PAGE_LIMIT_EXCEEDED, visible only in
+ * the runtime logs while the trace page insisted the document was empty. An
+ * error the operator can act on has to survive into the persisted step.
  */
 export function extractSkipReason(
   schemaSlug: string,
   docText: string | undefined,
   endpoint: unknown,
+  parseError?: string,
 ): string {
   if (!schemaSlug) return "Extract step has no schema configured.";
   if (!docText)
-    return `Extraction for "${schemaSlug}" could not run: the document produced no extractable text (parse returned empty).`;
+    return parseError
+      ? `Extraction for "${schemaSlug}" could not run: parsing the document failed — ${parseError}`
+      : `Extraction for "${schemaSlug}" could not run: the document produced no extractable text (parse returned empty).`;
   if (!endpoint)
     return `Extraction for "${schemaSlug}" could not run: no model endpoint is configured for this pipeline.`;
   return `Extraction for "${schemaSlug}" could not run: the schema version could not be resolved.`;
@@ -436,6 +446,13 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
 
   // Parse the document + chunk
   let docText: string | undefined;
+  /**
+   * Why the parse threw, when it did. A failed parse is not fatal on its own —
+   * classify and other steps still run off the raw bytes — so the error has to
+   * be carried forward to whichever step actually needs the text, instead of
+   * dying in a `console.error` (oss-488).
+   */
+  let parseError: string | undefined;
   let pageCount: number | undefined;
   let chunks: Chunk[] = [];
   // Parse-layer provenance carried into extraction so pipeline results get bbox
@@ -492,7 +509,8 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       );
     }
   } catch (err) {
-    console.error(`[dag-runner] Parse failed for ${doc.filename}:`, (err as Error).message);
+    parseError = (err as Error).message;
+    console.error(`[dag-runner] Parse failed for ${doc.filename}:`, parseError);
   }
 
   // Resolve model endpoint
@@ -645,7 +663,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
             // failure is actionable instead of a silent blank delivery — the
             // most common cause is a parse that produced no text (an encrypted
             // or image-only PDF the parse provider couldn't read).
-            const reason = extractSkipReason(schemaSlug, docText, endpoint);
+            const reason = extractSkipReason(schemaSlug, docText, endpoint, parseError);
             output = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: reason };
             // A configured extract that can't run is a hard failure, not a
             // `delivered` blank — mark the step failed so the document is failed
@@ -1024,7 +1042,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
                   // Mirror the linear extract path: diagnose and hard-fail a
                   // configured-but-unrunnable extraction instead of silently
                   // delivering a blank (see extractSkipReason).
-                  const reason = extractSkipReason(schemaSlug, docText, endpoint);
+                  const reason = extractSkipReason(schemaSlug, docText, endpoint, parseError);
                   branchOutput = { schema: schemaSlug, fields: {}, fieldCount: 0, totalFields: 0, note: reason };
                   if (schemaSlug) { branchStatus = "failed"; branchError = reason; }
                 }

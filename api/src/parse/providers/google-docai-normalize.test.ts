@@ -249,3 +249,55 @@ describe("GoogleDocAiProvider.parse — encrypted/object-stream PDFs (pdf-lib un
     expect(processCalls()).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A page tree pdf-lib reads but undercounts (oss-488).
+// ---------------------------------------------------------------------------
+
+describe("GoogleDocAiProvider.parse — Doc AI contradicts our page count", () => {
+  it("normalizes and re-slices when Doc AI reports more pages than we counted", async () => {
+    // The production shape: pdf-lib loads the document without complaint and
+    // reports far fewer pages than it holds, so routing sends the whole thing
+    // to one online call. Doc AI's rejection is the first reliable signal that
+    // our page tree is wrong — at which point pdf-lib must not be trusted to
+    // slice either, so the bytes go through /normalize-pdf first.
+    let calls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes("/normalize-pdf")) {
+        return jsonResponse({
+          pdf_base64: ENCRYPTED_OBJSTM_PDF_40_NORMALIZED.toString("base64"),
+          pages: 40,
+          byte_size: ENCRYPTED_OBJSTM_PDF_40_NORMALIZED.length,
+        });
+      }
+      calls += 1;
+      if (calls === 1) {
+        return jsonResponse(
+          {
+            error: {
+              code: 400,
+              message: "Document pages exceed the limit: 30 got 40",
+              details: [{ metadata: { page_limit: "30", pages: "40" } }],
+            },
+          },
+          400,
+        );
+      }
+      return jsonResponse({ document: onlineDoc(`segment ${calls}`) });
+    });
+
+    // ENCRYPTED_LOADABLE_PDF_20 is loadable and probes at 20 pages; slice_pages
+    // 25 sends it down the single-online route, where Doc AI says it saw 40.
+    const provider = new GoogleDocAiProvider(payload({ slice_pages: 25 }));
+    const res = await provider.parse({
+      filename: "undercounted.pdf",
+      mimeType: "application/pdf",
+      fileBuffer: ENCRYPTED_LOADABLE_PDF_20,
+    });
+
+    // The rejected whole-document call, then normalize, then real slices.
+    expect(normalizeCalls().length).toBeGreaterThanOrEqual(1);
+    expect(processCalls().length).toBeGreaterThan(1);
+    expect(res.markdown).toContain("segment");
+  });
+});
