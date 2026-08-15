@@ -46,12 +46,20 @@ const AVAILABLE_ROLES = [
   { value: "owner", label: "Owner" },
 ];
 
-function roleLabel(roles: string[]): string {
-  const order = AVAILABLE_ROLES.map((r) => r.value);
+const ROLE_ORDER = AVAILABLE_ROLES.map((r) => r.value);
+
+/** The member's highest-ranked role. AVAILABLE_ROLES is ordered by rank, so
+ *  position in that list is the rank — same ordering the API enforces. */
+function highestRole(roles: string[]): string {
   let highest = roles[0] ?? "viewer";
   for (const r of roles) {
-    if (order.indexOf(r) > order.indexOf(highest)) highest = r;
+    if (ROLE_ORDER.indexOf(r) > ROLE_ORDER.indexOf(highest)) highest = r;
   }
+  return highest;
+}
+
+function roleLabel(roles: string[]): string {
+  const highest = highestRole(roles);
   return AVAILABLE_ROLES.find((r) => r.value === highest)?.label ?? highest;
 }
 
@@ -73,7 +81,7 @@ function isExpired(dateStr: string): boolean {
 
 export default function MembersPage() {
   usePageTitle("Members");
-  const { hasPermission, user } = useAuth();
+  const { hasPermission, user, grants } = useAuth();
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [accessMember, setAccessMember] = useState<Member | null>(null);
 
@@ -153,7 +161,13 @@ export default function MembersPage() {
                 )}
               </div>
               <div className="flex items-center gap-4">
-                <Badge>{roleLabel(m.roles)}</Badge>
+                <MemberRoleSelect
+                  member={m}
+                  myRoles={grants?.roles ?? []}
+                  isSelf={m.userId === user?.id}
+                  canEdit={hasPermission("member:invite")}
+                  onChanged={refetchMembers}
+                />
                 <Meta>{timeAgo(m.lastLoginAt)}</Meta>
                 {hasPermission("member:invite") && (
                   <button
@@ -249,11 +263,81 @@ export default function MembersPage() {
   );
 }
 
+/**
+ * A member's workspace role, editable in place.
+ *
+ * Falls back to a read-only badge whenever the change would be rejected
+ * anyway — the API refuses to assign a role above your own or to modify
+ * someone who outranks you, and self-demotion is an easy way for the last
+ * owner to lock themselves out.
+ */
+function MemberRoleSelect({
+  member,
+  myRoles,
+  isSelf,
+  canEdit,
+  onChanged,
+}: {
+  member: Member;
+  myRoles: string[];
+  isSelf: boolean;
+  canEdit: boolean;
+  onChanged: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const myRank = ROLE_ORDER.indexOf(highestRole(myRoles));
+  const theirRank = ROLE_ORDER.indexOf(highestRole(member.roles));
+  const editable = canEdit && !isSelf && theirRank <= myRank;
+
+  if (!editable) {
+    return <Badge>{roleLabel(member.roles)}</Badge>;
+  }
+
+  async function handleChange(role: string) {
+    setError(null);
+    setSaving(true);
+    try {
+      await api.patch(`/api/members/${member.id}`, { roles: [role] });
+      onChanged();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update role");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        value={highestRole(member.roles)}
+        disabled={saving}
+        onChange={(e) => handleChange(e.target.value)}
+        aria-label={`Role for ${member.name ?? member.email}`}
+        className="h-[26px] rounded-sm border border-input bg-white px-1.5 text-[11.5px] outline-none focus:border-ring disabled:opacity-50"
+      >
+        {/* Can't grant above your own rank — the API rejects it with a 403. */}
+        {AVAILABLE_ROLES.slice(0, myRank + 1).map((r) => (
+          <option key={r.value} value={r.value}>{r.label}</option>
+        ))}
+      </select>
+      {error && <span className="font-mono text-[10px] text-vermillion-2">{error}</span>}
+    </div>
+  );
+}
+
 function InviteDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const { grants } = useAuth();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("viewer");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Same ceiling the API applies to invites — offering roles above your own
+  // just produces a 403 after the user has filled the form in.
+  const myRank = ROLE_ORDER.indexOf(highestRole(grants?.roles ?? []));
+  const assignableRoles = AVAILABLE_ROLES.slice(0, myRank + 1);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -303,7 +387,7 @@ function InviteDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
               onChange={(e) => setRole(e.target.value)}
               className="w-full h-[30px] rounded-sm border border-input bg-white px-2 text-[13px] outline-none focus:border-ring focus:ring-[2px] focus:ring-ring/30"
             >
-              {AVAILABLE_ROLES.map((r) => (
+              {assignableRoles.map((r) => (
                 <option key={r.value} value={r.value}>{r.label}</option>
               ))}
             </select>

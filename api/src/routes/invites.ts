@@ -58,10 +58,15 @@ invites.post("/", requires("member:invite"), async (c) => {
     .where(eq(schema.tenants.id, tenantId))
     .limit(1);
 
+  const directory = c.get("directory");
+
   const token = randomBytes(32).toString("hex");
   const tokenHashBuf = hashToken(token);
   const expiresAt = new Date(Date.now() + INVITE_EXPIRY_MS);
 
+  // The row is written either way — it is where the *intended roles* live.
+  // A directory invitation carries no Koji role, so this pending row is what
+  // the membership webhook reads to decide what the accepted member gets.
   await db.insert(schema.invites).values({
     tenantId,
     email: body.email,
@@ -71,18 +76,29 @@ invites.post("/", requires("member:invite"), async (c) => {
     expiresAt,
   });
 
-  // Send invite email
-  const inviteUrl = `${c.get("appUrl")}/accept-invite?token=${token}`;
-  const inviterName = principal.name ?? principal.email;
-  const projectName = tenant?.displayName ?? "Koji";
-  const email = teamInviteEmail(inviterName, projectName, inviteUrl);
+  if (directory) {
+    // The directory owns the accept flow and delivers its own email; minting
+    // a second Koji-side accept link would create a membership the directory
+    // has never heard of.
+    await directory.inviteMember({
+      tenantId,
+      email: body.email,
+      invitedByUserId: principal.userId,
+      roles: body.roles,
+    });
+  } else {
+    const inviteUrl = `${c.get("appUrl")}/accept-invite?token=${token}`;
+    const inviterName = principal.name ?? principal.email;
+    const projectName = tenant?.displayName ?? "Koji";
+    const email = teamInviteEmail(inviterName, projectName, inviteUrl);
 
-  await c.get("emailSender").send({
-    to: body.email,
-    subject: email.subject,
-    text: email.text,
-    html: email.html,
-  });
+    await c.get("emailSender").send({
+      to: body.email,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+    });
+  }
 
   return c.json({ ok: true, message: `Invite sent to ${body.email}` }, 201);
 });
@@ -132,7 +148,11 @@ invites.delete("/:id", requires("member:invite"), async (c) => {
   const inviteId = c.req.param("id")!;
 
   const [invite] = await db
-    .select({ id: schema.invites.id, acceptedAt: schema.invites.acceptedAt })
+    .select({
+      id: schema.invites.id,
+      email: schema.invites.email,
+      acceptedAt: schema.invites.acceptedAt,
+    })
     .from(schema.invites)
     .where(
       and(
@@ -148,6 +168,13 @@ invites.delete("/:id", requires("member:invite"), async (c) => {
 
   if (invite.acceptedAt) {
     return c.json({ error: "Cannot revoke an accepted invite" }, 400);
+  }
+
+  // Withdraw upstream first. Dropping only the Koji row would leave a live
+  // invitation email that still lands the recipient in the organization.
+  const directory = c.get("directory");
+  if (directory) {
+    await directory.revokeInvite({ tenantId, email: invite.email });
   }
 
   await db.delete(schema.invites).where(eq(schema.invites.id, inviteId));

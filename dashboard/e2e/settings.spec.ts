@@ -84,3 +84,66 @@ test.describe("settings", () => {
     await expect(page.getByText("Danger zone")).toBeVisible();
   });
 });
+
+/**
+ * The workspace role is editable in place (PATCH /api/members/:id), which the
+ * page previously had no UI for at all.
+ *
+ * Like project-members.spec.ts: the shared CI seed has only the owner, so the
+ * always-true assertion is that your *own* role is not editable, and the actual
+ * role change runs only when the environment seeds a second member. The API
+ * rules are covered exhaustively by api/src/routes/members.test.ts and
+ * api/src/auth/middleware.test.ts.
+ */
+test.describe("member role editing", () => {
+  test("your own role is a read-only badge, others are editable", async ({ page }) => {
+    const tenantBase = await getTenantBase(page);
+    const tenantSlug = tenantBase.split("/").pop()!;
+    await page.goto(`${tenantBase}/settings/members`);
+
+    await expect(page.getByRole("heading", { name: "Members", level: 1 })).toBeVisible();
+    await expect(page.getByText("you")).toBeVisible();
+
+    const me = await page.request
+      .get("/api/me", { headers: { "x-koji-tenant": tenantSlug } })
+      .then((r) => r.json());
+    const members: Array<{ userId: string; name: string | null; email: string }> = await page.request
+      .get("/api/members", { headers: { "x-koji-tenant": tenantSlug } })
+      .then((r) => r.json())
+      .then((b) => b.data ?? []);
+
+    const self = members.find((m) => m.userId === me.id);
+    // Self-demotion is how a last owner locks themselves out — no select.
+    if (self) {
+      await expect(page.getByLabel(`Role for ${self.name ?? self.email}`)).toHaveCount(0);
+    }
+
+    const other = members.find((m) => m.userId !== me.id);
+    if (!other) {
+      test.info().annotations.push({
+        type: "skip-reason",
+        description: "only the owner is seeded; the role change itself is covered by API tests",
+      });
+      return;
+    }
+
+    const select = page.getByLabel(`Role for ${other.name ?? other.email}`);
+    await expect(select).toBeVisible();
+    const original = await select.inputValue();
+
+    try {
+      await select.selectOption("runner");
+      await expect(select).toHaveValue("runner");
+
+      // Survives a reload — persisted, not just local state.
+      await page.reload();
+      await expect(page.getByLabel(`Role for ${other.name ?? other.email}`)).toHaveValue("runner");
+    } finally {
+      // Specs share one seeded DB — hand the fixture back as we found it.
+      await page.request.patch(`/api/members/${(other as any).id}`, {
+        headers: { "x-koji-tenant": tenantSlug },
+        data: { roles: [original] },
+      });
+    }
+  });
+});

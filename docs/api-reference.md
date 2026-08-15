@@ -98,6 +98,38 @@ requested change applies to this one (the response carries
 `400`; change their workspace role instead. All require `member:invite` and
 enforce the same role ceiling.
 
+**Who owns membership when an external directory is configured.** A deployment
+can delegate *identity* to an external directory (a hosted auth provider, an
+enterprise IdP) while Koji keeps owning *authorization*. The split is fixed:
+
+| Owned by the directory | Owned by Koji |
+|---|---|
+| Whether a user exists and can sign in | `memberships.roles` — the workspace role |
+| Whether they belong to the organization | `project_access` — per-project grants |
+| Delivery of the invitation email | The roles a pending invite will confer |
+
+This is not a preference — a directory typically models one or two coarse org
+roles, so nothing upstream can represent `runner`, `reviewer`,
+`schema-deployer`, or a per-project grant. Consequences worth knowing:
+
+- `POST /api/invites` still records the intended roles, but hands delivery to
+  the directory and does **not** mint a Koji accept link. `POST
+  /api/invites/accept` is a self-hosted flow; with a directory the recipient
+  accepts upstream and the membership arrives by webhook, which applies the
+  roles from the pending invite.
+- `DELETE /api/invites/{id}` withdraws the upstream invitation before dropping
+  the Koji row, and `DELETE /api/members/{id}` removes the upstream org
+  membership before deleting the Koji one. Skipping either leaves a live path
+  back into the tenant.
+- A member's first request just-in-time provisions a membership from their
+  coarse org role. That is **seeding only** — an existing membership is never
+  re-derived from the org role afterwards, so roles set through `PATCH
+  /api/members/{id}` survive. Changing someone's role upstream therefore has no
+  effect on their Koji role; change it here instead.
+
+Self-hosted Koji configures no directory: it sends its own invite email, owns
+the accept flow, and is the only record of membership.
+
 ### `POST /api/projects/{slug}/move`
 
 Move a resource into the project named by `{slug}`. Requires the moved

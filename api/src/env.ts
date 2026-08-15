@@ -1,5 +1,6 @@
 import type { Db } from "@koji/db";
 import type { AuthAdapter, Principal } from "./auth/adapter";
+import type { DirectoryAdapter } from "./auth/directory";
 import type { Permission } from "./auth/roles";
 import type { BillingAdapter } from "./billing/adapter";
 import type { EmailSender } from "./email/provider";
@@ -42,6 +43,10 @@ export type Env = {
      *  wires an SMTP sender; hosted can wire an HTTP-based sender or a no-op
      *  when Clerk handles user-lifecycle emails itself. */
     emailSender: EmailSender;
+    /** External identity directory, or `null` when Koji owns identity itself
+     *  (self-hosted). When set, membership existence and invitation delivery
+     *  belong to the directory; roles stay Koji's. See `auth/directory.ts`. */
+    directory: DirectoryAdapter | null;
     /** 64-hex master key for envelope encryption; null if not configured. */
     masterKey: string | null;
     /** Public URL of the dashboard — used in password-reset and invite emails. */
