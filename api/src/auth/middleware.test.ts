@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
-import { authMiddleware, requires, getTenantId, getPrincipal } from "./middleware";
+import { authMiddleware, requires, getTenantId, getPrincipal, getRoles } from "./middleware";
 import type { AuthAdapter, Principal, Session } from "./adapter";
 import type { Env } from "../env";
 
@@ -39,6 +39,10 @@ function createTestApp(opts: {
    * unconditionally).
    */
   masterKey?: string;
+  /** Collects membership writes the middleware performs, so tests can assert
+   *  that just-in-time provisioning happens exactly once and that an existing
+   *  membership is never rewritten from the coarse org role. */
+  writes?: Array<{ op: "insert" | "update"; values: unknown }>;
 }) {
   const adapter = createMockAdapter(opts.users ?? new Map());
   const app = new Hono<Env>();
@@ -125,7 +129,21 @@ function createTestApp(opts: {
       return chain;
     };
 
-    c.set("db", { select: fakeChain } as any);
+    const record = (op: "insert" | "update") => (values: unknown) => {
+      opts.writes?.push({ op, values });
+      return Promise.resolve();
+    };
+
+    c.set("db", {
+      select: fakeChain,
+      insert: () => ({ values: record("insert") }),
+      update: () => ({
+        set: (values: unknown) => {
+          opts.writes?.push({ op: "update", values });
+          return { where: () => Promise.resolve() };
+        },
+      }),
+    } as any);
     await next();
   });
 
@@ -541,5 +559,90 @@ describe("requires() middleware", () => {
 
     expect((await app.request("/api/jobs", { method: "POST", headers, body: "{}" })).status).toBe(200);
     expect((await app.request("/api/schemas", { method: "POST", headers, body: "{}" })).status).toBe(200);
+  });
+});
+
+describe("authMiddleware — external directory membership", () => {
+  const tenants = new Map([["acme", "t1"]]);
+  const headers = { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme" };
+
+  /** A principal carrying the coarse org claims an external directory sets. */
+  function orgUsers(orgRole: string): Map<string, Principal> {
+    return new Map([
+      [
+        "valid-token",
+        { userId: "u1", email: "test@koji.dev", name: "Test", orgId: "org_1", orgRole },
+      ],
+    ]);
+  }
+
+  it("provisions a membership on first request for an org member who has none", async () => {
+    const writes: Array<{ op: "insert" | "update"; values: any }> = [];
+    const app = createTestApp({
+      users: orgUsers("org:admin"),
+      tenants,
+      memberships: new Map(),
+      writes,
+    });
+    app.get("/api/schemas", (c) => c.json({ roles: getRoles(c) }));
+
+    const res = await app.request("/api/schemas", { headers });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ roles: ["tenant-admin"] });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.op).toBe("insert");
+    expect(writes[0]!.values.roles).toEqual(["tenant-admin"]);
+  });
+
+  it("leaves an existing role the org role cannot express untouched", async () => {
+    // The heart of it: `viewer` has no counterpart in a coarse org role, which
+    // only distinguishes admin from everyone else. Re-deriving would rewrite
+    // this member to schema-editor and silently undo an admin's role change.
+    const writes: Array<{ op: "insert" | "update"; values: any }> = [];
+    const app = createTestApp({
+      users: orgUsers("org:member"),
+      tenants,
+      memberships: new Map([["u1:t1", { roles: ["viewer"] }]]),
+      writes,
+    });
+    app.get("/api/schemas", (c) => c.json({ roles: getRoles(c) }));
+
+    const res = await app.request("/api/schemas", { headers });
+
+    expect(await res.json()).toEqual({ roles: ["viewer"] });
+    expect(writes).toEqual([]);
+  });
+
+  it("does not downgrade a Koji-assigned role on a plain org member", async () => {
+    const writes: Array<{ op: "insert" | "update"; values: any }> = [];
+    const app = createTestApp({
+      users: orgUsers("org:member"),
+      tenants,
+      memberships: new Map([["u1:t1", { roles: ["schema-deployer"] }]]),
+      writes,
+    });
+    app.post("/api/schemas/deploy", requires("schema:deploy"), (c) => c.json({ ok: true }));
+
+    const res = await app.request("/api/schemas/deploy", { method: "POST", headers, body: "{}" });
+
+    expect(res.status).toBe(200);
+    expect(writes).toEqual([]);
+  });
+
+  it("does not touch memberships when the principal has no org", async () => {
+    const writes: Array<{ op: "insert" | "update"; values: any }> = [];
+    const app = createTestApp({
+      users: new Map([["valid-token", { userId: "u1", email: "test@koji.dev", name: "Test" }]]),
+      tenants,
+      memberships: new Map([["u1:t1", { roles: ["viewer"] }]]),
+      writes,
+    });
+    app.get("/api/schemas", (c) => c.json({ roles: getRoles(c) }));
+
+    const res = await app.request("/api/schemas", { headers });
+
+    expect(await res.json()).toEqual({ roles: ["viewer"] });
+    expect(writes).toEqual([]);
   });
 });

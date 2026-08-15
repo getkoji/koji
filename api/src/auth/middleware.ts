@@ -409,9 +409,19 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       )
       .limit(1);
 
-    // JIT provisioning + role sync for Clerk org members.
-    // When a user is in a Clerk org but has no Koji membership, create one.
-    // When they have one, sync roles from Clerk in case the org role changed.
+    // JIT provisioning for external-directory org members: a user who belongs
+    // to the upstream organization but has no Koji membership yet gets one on
+    // first request, seeded from their coarse org role.
+    //
+    // Seeding only. An existing membership is never rewritten from the org
+    // role, because the org role cannot represent what Koji stores. Upstream
+    // directories model roughly "admin" vs "everyone else", while Koji has a
+    // seven-role hierarchy plus per-project grants — so re-deriving on every
+    // request would flatten `viewer`, `runner`, `reviewer` and
+    // `schema-deployer` back to `schema-editor`, undoing role changes made in
+    // the Members UI the moment the affected member made their next request.
+    // Roles are changed through PATCH /api/members/:id; membership *existence*
+    // is still the directory's call and arrives via its webhook.
     if (principal.orgId) {
       const orgRole = principal.orgRole ?? "org:member";
       const kojiRoles = orgRole.includes("admin") || orgRole.includes("owner")
@@ -442,27 +452,6 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
               .limit(1);
           }
         }
-      } else if (
-        membership.roles.length === 1 &&
-        membership.roles[0] !== kojiRoles[0] &&
-        !membership.roles.includes("owner") && !membership.roles.includes("tenant-admin") // don't downgrade admins/owners
-      ) {
-        // Sync: Clerk role changed since last JIT provision. Re-evaluate
-        // default-deny too — demoting an org admin to a regular member must
-        // make them need-to-know (else they'd keep tenant-wide PII visibility).
-        await db
-          .update(schema.memberships)
-          .set({
-            roles: kojiRoles,
-            projectRestricted: shouldRestrictByDefault(kojiRoles),
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(schema.memberships.userId, principal.userId),
-            eq(schema.memberships.tenantId, tenant.id),
-          ));
-        membership = { roles: kojiRoles };
-        console.log(`[auth] Synced membership roles for user ${principal.userId} in tenant ${tenant.id} (roles: ${kojiRoles})`);
       }
     }
 

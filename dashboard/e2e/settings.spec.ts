@@ -84,3 +84,31 @@ test.describe("settings", () => {
     await expect(page.getByText("Danger zone")).toBeVisible();
   });
 });
+
+test.describe("member role editing", () => {
+  test("an owner can change another member's workspace role", async ({ page }) => {
+    const tenantBase = await getTenantBase(page);
+    await page.goto(`${tenantBase}/settings/members`);
+
+    // The seeded dev owner — anyone but the current user, whose own row is
+    // intentionally not editable (self-demotion is how a last owner locks
+    // themselves out).
+    const select = page.getByLabel("Role for Dev Owner");
+    await expect(select).toBeVisible();
+
+    await select.selectOption("runner");
+    await expect(select).toHaveValue("runner");
+
+    // Survives a reload — i.e. it was persisted, not just local state.
+    await page.reload();
+    await expect(page.getByLabel("Role for Dev Owner")).toHaveValue("runner");
+  });
+
+  test("your own role is not editable", async ({ page }) => {
+    const tenantBase = await getTenantBase(page);
+    await page.goto(`${tenantBase}/settings/members`);
+
+    await expect(page.getByText("you")).toBeVisible();
+    await expect(page.getByLabel("Role for E2E Test User")).toHaveCount(0);
+  });
+});

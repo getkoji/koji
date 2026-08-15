@@ -612,11 +612,10 @@ export function AppSidebar({
                     ))}
                     {/*
                       Always rendered, including when a host sets
-                      `hideDefaultNav`. That flag means "the host replaces
-                      General/Members" — on the hosted console those are Clerk's
-                      OrganizationProfile. API keys are a Koji resource with no
-                      Clerk equivalent, so hiding them alongside left the page
-                      reachable only by typing its URL.
+                      `hideDefaultNav`. That flag means "the host substitutes
+                      its own General/Members pages". API keys are a Koji
+                      resource that no host replaces, so hiding them alongside
+                      left the page reachable only by typing its URL.
                     */}
                     <SubNavItemLink
                       href={`${base}/settings/api-keys`}

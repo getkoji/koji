@@ -149,6 +149,15 @@ members.delete("/:id", requires("member:remove"), async (c) => {
     return c.json({ error: "Cannot remove a member with a higher role than your own" }, 403);
   }
 
+  // Remove upstream first. Deleting only the Koji row leaves the user in the
+  // directory's organization, so the auth middleware would just-in-time
+  // provision a fresh membership on their next request — the removal would
+  // appear to work and then quietly undo itself.
+  const directory = c.get("directory");
+  if (directory) {
+    await directory.removeMember({ tenantId, userId: membership.userId });
+  }
+
   await db
     .delete(schema.memberships)
     .where(eq(schema.memberships.id, membershipId));

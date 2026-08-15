@@ -29,6 +29,7 @@ import { logger as honoLogger } from "hono/logger";
 
 import type { Db } from "@koji/db";
 import type { AuthAdapter } from "./auth/adapter";
+import type { DirectoryAdapter } from "./auth/directory";
 import { authMiddleware, type AuthMiddlewareOptions } from "./auth/middleware";
 import type { BillingAdapter } from "./billing/adapter";
 import { NoOpBillingAdapter } from "./billing/noop";
@@ -120,6 +121,12 @@ export interface CreateAppDeps {
    */
   parseConfig?: ParseConfig;
   emailSender: EmailSender;
+
+  /** External identity directory. When provided, the directory delivers invite
+   *  email and owns organization membership; Koji still owns roles and project
+   *  access. Omit on self-hosted — Koji then sends its own invites and is the
+   *  only record of membership. See `auth/directory.ts`. */
+  directory?: DirectoryAdapter;
 
   /** 64-hex master key for envelope encryption. May be `null` in read-only
    *  deployments, but any route that needs to encrypt/decrypt (webhook
@@ -224,6 +231,7 @@ export function createApp(deps: CreateAppDeps): CreateAppResult {
     c.set("queue", deps.queue);
     c.set("auth", requestAuth);
     c.set("emailSender", deps.emailSender);
+    c.set("directory", deps.directory ?? null);
     c.set("masterKey", deps.masterKey);
     c.set("appUrl", deps.appUrl);
     c.set("parseUrl", deps.parseUrl);
