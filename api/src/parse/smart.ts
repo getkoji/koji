@@ -32,14 +32,34 @@
  * The structured path has the same safety net: if it throws, we fall through
  * to the source-type routing below (digital → pdfjs, otherwise → heavy).
  *
- * Optional methods (extractCoordinates, renderRegion, pageHeaders,
- * analyzePages, slicePdf) are proxied to the heavy provider.
+ * Optional methods (extractCoordinates, renderRegion, pageImages, pageHeaders,
+ * analyzePages, slicePdf) are proxied to the heavy provider — and, for anything
+ * the heavy provider does not implement, to the `platform` provider passed as
+ * the fourth argument.
+ *
+ * That fallback exists because BYO parse replaces *text extraction*, not the
+ * platform's PDF utilities. No BYO driver (Google Doc AI, Azure Document
+ * Intelligence, Textract, Mistral OCR) implements any of the optional methods,
+ * so binding them from `heavy` alone meant a tenant with a parse endpoint
+ * configured silently lost page rendering (the classifier's vision tier),
+ * page analysis and PDF slicing (document splitting), and coordinate
+ * extraction (provenance bboxes) — with no error, just a capability that was
+ * suddenly `undefined`. See oss-489.
  */
 
 import type { ParseProvider, ParseResponse } from "./provider";
 import { classifyDocument } from "./classify";
 import { classifyContentShape } from "./content-shape";
 import { resolveMimeType } from "../ingestion/mime";
+
+/** The optional platform capabilities a provider may or may not implement. */
+type OptionalCapability =
+  | "extractCoordinates"
+  | "renderRegion"
+  | "pageImages"
+  | "pageHeaders"
+  | "analyzePages"
+  | "slicePdf";
 
 export class SmartParseProvider implements ParseProvider {
   extractCoordinates?: ParseProvider["extractCoordinates"];
@@ -59,25 +79,31 @@ export class SmartParseProvider implements ParseProvider {
      * structured-path failure fall back to the source-type routing below.
      */
     private structured: ParseProvider | null = null,
+    /**
+     * The platform's own backend provider (docling via Docker or Modal), used
+     * ONLY as the fallback source for optional capabilities `heavy` does not
+     * implement. When no BYO provider is configured this is the same object as
+     * `heavy` and every bind below resolves identically to before.
+     */
+    platform: ParseProvider | null = null,
   ) {
-    if (heavy.extractCoordinates) {
-      this.extractCoordinates = heavy.extractCoordinates.bind(heavy);
-    }
-    if (heavy.renderRegion) {
-      this.renderRegion = heavy.renderRegion.bind(heavy);
-    }
-    if (heavy.pageImages) {
-      this.pageImages = heavy.pageImages.bind(heavy);
-    }
-    if (heavy.pageHeaders) {
-      this.pageHeaders = heavy.pageHeaders.bind(heavy);
-    }
-    if (heavy.analyzePages) {
-      this.analyzePages = heavy.analyzePages.bind(heavy);
-    }
-    if (heavy.slicePdf) {
-      this.slicePdf = heavy.slicePdf.bind(heavy);
-    }
+    // Whoever implements the capability owns it: the routed heavy provider
+    // first, then the platform provider. `null` when neither does.
+    const owner = (method: OptionalCapability): ParseProvider | null =>
+      heavy[method] ? heavy : platform?.[method] ? platform : null;
+
+    const coordinates = owner("extractCoordinates");
+    if (coordinates) this.extractCoordinates = coordinates.extractCoordinates!.bind(coordinates);
+    const region = owner("renderRegion");
+    if (region) this.renderRegion = region.renderRegion!.bind(region);
+    const images = owner("pageImages");
+    if (images) this.pageImages = images.pageImages!.bind(images);
+    const headers = owner("pageHeaders");
+    if (headers) this.pageHeaders = headers.pageHeaders!.bind(headers);
+    const pages = owner("analyzePages");
+    if (pages) this.analyzePages = pages.analyzePages!.bind(pages);
+    const slice = owner("slicePdf");
+    if (slice) this.slicePdf = slice.slicePdf!.bind(slice);
   }
 
   async parse(input: {

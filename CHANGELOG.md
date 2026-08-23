@@ -2,6 +2,47 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.2 — 2026-08-22
+
+**Fix: configuring a BYO parse endpoint no longer silently disables the
+classifier's vision tier (and page analysis, PDF slicing, and provenance
+bboxes).** A tenant's own parse provider replaces *text extraction*; it was
+also replacing the platform's PDF utilities. No BYO driver (Google Document AI,
+Azure Document Intelligence, Textract, Mistral OCR) implements the optional
+`pageImages` / `analyzePages` / `slicePdf` / `extractCoordinates` methods, and
+the composed provider bound those capabilities from the tenant's provider
+alone — so they became `undefined`, with no error. The most visible symptom:
+a scanned PDF with no text layer returned `unknown` from a `classify` step in
+tens of milliseconds, because tier 4 (vision) needs a renderer and there wasn't
+one. The same document classified correctly through `POST /api/classify`, which
+used the global default provider. The backend-derived provider is now the
+capability fallback, so a BYO endpoint changes how text is extracted and
+nothing else.
+
+**A classifier that returns `unknown` now says why.** The outcome carries a
+`reason` naming the tiers that couldn't run and what was missing ("no
+extractable text layer…", "vision tier skipped: the parse provider cannot
+render page images", "vision tier not allowed by maxTier=3"). It appears as
+`reason` on `POST /api/classify` and as `reasoning` on a pipeline's classify
+step output. "The classifier looked and couldn't tell" and "the classifier
+never got to look" were previously indistinguishable — both routed the document
+down the `default` edge.
+
+**Fix: `/page-images` on the self-hosted parse service actually renders pages.**
+It rasterized with PyMuPDF (`fitz`), a dependency declared in neither parse
+image, inside an `except (ImportError, Exception): return []` — so every request
+answered `{"images": [], "pages": 0}` with HTTP 200 and the vision tier had
+nothing to look at. Pages now render through pypdfium2, which the image already
+carries, and a render failure is a 422 with the reason instead of an empty
+document. (Modal-backed deployments were unaffected; they render elsewhere.)
+
+**All three classify surfaces now resolve the parse provider the same way.**
+The ingestion DAG's classify step reached past the provider its own parse had
+resolved to the process-wide default; the standalone route used the global
+default; the pipeline dry-run used the resolved one. They now share one
+resolution path, so a dry-run and a real run can't disagree about which
+provider looked at the document.
+
 ## 0.108.1 — 2026-08-06
 
 **Fix: documents whose page tree pdf-lib undercounts no longer fail to parse.**

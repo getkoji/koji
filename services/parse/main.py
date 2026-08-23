@@ -28,7 +28,9 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-app = FastAPI(title="Koji Parse Service", version="0.108.1")
+KOJI_PARSE_VERSION = "0.108.2"
+
+app = FastAPI(title="Koji Parse Service", version=KOJI_PARSE_VERSION)
 
 # Two converters cover the cases we actually want:
 #   - skip_ocr=True  → digital PDFs whose text layer we trust
@@ -481,20 +483,34 @@ def image_to_base64(file_path: str) -> list[str]:
 
 
 def pdf_pages_to_images(file_path: str, max_pages: int = 10) -> list[str]:
-    try:
-        import fitz
+    """Rasterize the first `max_pages` pages to base64 PNGs at 150 DPI.
 
-        doc = fitz.open(file_path)
-        images = []
-        for page_num in range(min(len(doc), max_pages)):
-            page = doc[page_num]
-            pix = page.get_pixmap(dpi=150)
-            img_bytes = pix.tobytes("png")
-            images.append(base64.b64encode(img_bytes).decode("ascii"))
-        doc.close()
+    Rendered with pypdfium2, which the image already carries for text
+    extraction. This used to import `fitz` (PyMuPDF) — a dependency that is
+    declared nowhere and has never been installed — inside a bare
+    `except (ImportError, Exception): return []`. Every call therefore returned
+    an empty list with HTTP 200, which read to callers as "this document has no
+    pages to render" rather than "this renderer does not work". The classifier's
+    vision tier and the vision-OCR parse fallback both silently did nothing on
+    the docker backend as a result (oss-489).
+
+    Failures now raise. The endpoint turns them into a 422 with the message,
+    because a renderer that cannot render must not look like an empty document.
+    """
+    # 150 DPI over the 72 DPI PDF user space — the scale pdfium renders at.
+    scale = 150 / 72
+    pdf = pdfium.PdfDocument(file_path)
+    try:
+        images: list[str] = []
+        for page_index in range(min(len(pdf), max_pages)):
+            page = pdf[page_index]
+            bitmap = page.render(scale=scale)
+            buf = io.BytesIO()
+            bitmap.to_pil().save(buf, format="PNG")
+            images.append(base64.b64encode(buf.getvalue()).decode("ascii"))
         return images
-    except (ImportError, Exception):
-        return []
+    finally:
+        pdf.close()
 
 
 def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> list[str]:
@@ -510,7 +526,8 @@ def get_page_images(file_path: str, input_type: str, max_pages: int = 10) -> lis
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "koji-parse", "version": "0.107.0"}
+    # Mirrors the FastAPI app version above — keep the two in step on a bump.
+    return {"status": "healthy", "service": "koji-parse", "version": KOJI_PARSE_VERSION}
 
 
 @app.post("/parse")
@@ -584,7 +601,9 @@ _MAX_PAGE_IMAGES = 50
 async def page_images(file: UploadFile = File(...), max_pages: int = Form(20)):
     """Render document pages to base64 PNGs for the vision-OCR parse fallback.
 
-    PDFs are rasterized at 150 DPI (via fitz); image inputs pass through as-is.
+    PDFs are rasterized at 150 DPI (via pypdfium2); image inputs pass through
+    as-is. A render failure is a 422 with the reason, never an empty list —
+    "nothing to render" and "the renderer is broken" must not look alike.
     The escalation path renders a bad scan's pages and sends each to a vision
     model that reads it far better than the default OCR (see ingestion/process).
     """

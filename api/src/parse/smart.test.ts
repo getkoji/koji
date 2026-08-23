@@ -360,7 +360,7 @@ describe("SmartParseProvider", () => {
       expect(smart.analyzePages).toBeDefined();
     });
 
-    it("leaves optional methods undefined when heavy doesnt support them", async () => {
+    it("leaves optional methods undefined when neither heavy nor the platform fallback supports them", async () => {
       const heavy = mockProvider(scannedResponse);
       const lite = mockProvider(digitalResponse);
       const smart = new SmartParseProvider(lite, heavy);
@@ -370,6 +370,58 @@ describe("SmartParseProvider", () => {
       expect(smart.pageHeaders).toBeUndefined();
       expect(smart.analyzePages).toBeUndefined();
       expect(smart.slicePdf).toBeUndefined();
+      expect(smart.pageImages).toBeUndefined();
+    });
+
+    // oss-489: a tenant's BYO parse provider replaces text extraction only. No
+    // BYO driver implements the optional platform capabilities, so binding them
+    // from `heavy` alone silently disabled page rendering (the classifier's
+    // vision tier), split detection, slicing, and provenance bboxes for every
+    // tenant with a parse endpoint configured.
+    it("falls back to the platform provider for capabilities the BYO heavy provider lacks", async () => {
+      const images = { images: ["b64page1"] };
+      const byoHeavy = mockProvider(scannedResponse); // a Doc AI / Textract-shaped driver
+      const platform = mockProvider(scannedResponse, {
+        pageImages: vi.fn().mockResolvedValue(images),
+        analyzePages: vi.fn().mockResolvedValue({ pages: 3, data: [] }),
+        slicePdf: vi.fn().mockResolvedValue({ fileBuffer: Buffer.alloc(0) }),
+        extractCoordinates: vi.fn().mockResolvedValue({ extracted: {}, has_text_layer: false }),
+      });
+      const smart = new SmartParseProvider(mockProvider(digitalResponse), byoHeavy, null, platform);
+
+      expect(smart.pageImages).toBeDefined();
+      expect(smart.analyzePages).toBeDefined();
+      expect(smart.slicePdf).toBeDefined();
+      expect(smart.extractCoordinates).toBeDefined();
+
+      const result = await smart.pageImages!({
+        fileBuffer: Buffer.alloc(0),
+        filename: "scan.pdf",
+        mimeType: "application/pdf",
+        maxPages: 1,
+      });
+      expect(result).toBe(images);
+      expect(platform.pageImages).toHaveBeenCalledOnce();
+    });
+
+    it("prefers the heavy provider's own capability over the platform fallback", async () => {
+      const heavyImages = { images: ["from-heavy"] };
+      const heavy = mockProvider(scannedResponse, {
+        pageImages: vi.fn().mockResolvedValue(heavyImages),
+      });
+      const platform = mockProvider(scannedResponse, {
+        pageImages: vi.fn().mockResolvedValue({ images: ["from-platform"] }),
+      });
+      const smart = new SmartParseProvider(mockProvider(digitalResponse), heavy, null, platform);
+
+      const result = await smart.pageImages!({
+        fileBuffer: Buffer.alloc(0),
+        filename: "scan.pdf",
+        mimeType: "application/pdf",
+        maxPages: 1,
+      });
+      expect(result).toBe(heavyImages);
+      expect(platform.pageImages).not.toHaveBeenCalled();
     });
   });
 });

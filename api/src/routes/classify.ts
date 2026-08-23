@@ -11,6 +11,7 @@ import {
   UNKNOWN_LABEL,
 } from "../classify";
 import type { ClassifyOutcome, ClassifierConfig } from "../classify";
+import { resolveParse } from "../ingestion/seam";
 
 /**
  * Document classifier route — POST /api/classify.
@@ -77,6 +78,9 @@ export function classifyResponseBody(outcome: ClassifyOutcome) {
     method: outcome.method,
     tier_used: outcome.tierUsed,
     evidence_page: outcome.evidencePage,
+    // Only set on an `unknown` — names the tiers that couldn't run and why, so
+    // a caller can tell "looked and couldn't tell" from "never got to look".
+    reason: outcome.reason,
     scores: outcome.scores?.map((s) => ({
       id: s.id,
       score: s.score,
@@ -194,6 +198,17 @@ classify.post("/", requires("job:run"), async (c) => {
     }
   }
 
+  // Resolve the tenant's parse provider through the same seam the DAG and the
+  // pipeline dry-run use, rather than reaching for the global default. All
+  // three surfaces now render the vision tier's page images from one resolution
+  // path, so a standalone classify and a pipeline route can't disagree about
+  // which provider looked at the document (oss-489).
+  const { provider: resolvedParseProvider } = await resolveParse(db, getRlsScope(c), {
+    parseProviderId: null,
+    defaultProvider: parseProvider,
+    parseConfig: c.get("parseConfig"),
+  });
+
   // Classify through the shared cascade helper — the exact same path the
   // ingestion DAG's `classifier: <slug>` step uses (oss-410), so a standalone
   // classify and a pipeline route agree on the same document + config.
@@ -204,7 +219,7 @@ classify.post("/", requires("job:run"), async (c) => {
       getRlsScope(c),
       { filename, mimeType, fileBuffer },
       config,
-      parseProvider ?? undefined,
+      resolvedParseProvider ?? undefined,
     );
   } catch (err) {
     // The classifier never got to look — report the outage instead of an

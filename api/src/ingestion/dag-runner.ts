@@ -460,6 +460,13 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
   // above, which is the DAG's markdown chunking persisted to documents.chunksJson.
   let parseTextMap: TextMap | undefined;
   let parseChunks: readonly ParseChunk[] | undefined;
+  /**
+   * The parse provider this run actually used, hoisted so downstream steps see
+   * the same provider the parse did. The classify step used to reach past this
+   * to the module-level default, which meant a pipeline could classify through
+   * a different provider than it parsed with (oss-489).
+   */
+  let effectiveParseProvider: ParseProvider | null = _parseProvider;
   try {
     if (_parseProvider) {
       // Resolve the tenant's BYO parse provider — DAG pipelines must honor the
@@ -475,6 +482,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           parseConfig: _parseConfig,
         },
       );
+      effectiveParseProvider = parseProvider;
       // Provider-aware parse cache (oss-298): keyed under the resolved provider's
       // fingerprint, so switching/editing the parse provider re-parses instead of
       // serving a stale cache from a different provider. Shared with production
@@ -585,7 +593,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               scope,
               { filename: doc.filename, mimeType: doc.mimeType, fileBuffer: file.data, text: docText ?? undefined },
               resolved.config,
-              _parseProvider ?? undefined,
+              effectiveParseProvider ?? undefined,
             );
             output = {
               label: outcome.label,
@@ -595,6 +603,10 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               evidence_page: outcome.evidencePage,
               classifier: classifierSlug,
               classifier_version: resolved.version,
+              // Present only on an `unknown`: which tiers couldn't run and why.
+              // Without it a default-routed document looks identical whether the
+              // classifier read it and couldn't tell or never got to look.
+              ...(outcome.reason ? { reasoning: outcome.reason } : {}),
             };
             break;
           }

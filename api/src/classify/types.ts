@@ -70,4 +70,12 @@ export interface ClassifyOutcome {
   evidencePage: number | null;
   /** Per-class deterministic scores (present when the keyword tier ran). */
   scores?: ClassScore[];
+  /**
+   * Why the cascade could not decide, when `label` is {@link UNKNOWN_LABEL}.
+   * Names the tiers that were skipped and what was missing — a text-less PDF
+   * that never reached the vision tier because nothing could render its pages
+   * is a very different failure from one the model looked at and could not
+   * label, and the two used to be indistinguishable (oss-489).
+   */
+  reason?: string;
 }
