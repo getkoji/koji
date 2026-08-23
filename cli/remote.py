@@ -2450,6 +2450,88 @@ classify_app = typer.Typer(
 )
 
 
+def _classifier_window(config_yaml: str) -> tuple[int, str]:
+    """Return ``(effective_window, scan)`` for a classifier config.
+
+    Mirrors the engine's `effectiveWindow`: the deepest window any class asks
+    for, since the cascade reads one window for all of them. `scan` decides
+    WHICH pages that window selects — `head` takes the first N, `head_and_tail`
+    splits the budget across both ends, so a head-only truncation would drop
+    half of what the server reads.
+    """
+    import yaml as yaml_mod
+
+    try:
+        parsed = yaml_mod.safe_load(config_yaml) or {}
+    except Exception:
+        return 1, "head"
+    classify_block = parsed.get("classify") or {}
+    window = classify_block.get("window")
+    window = window if isinstance(window, int) and window > 0 else 1
+    scan = classify_block.get("scan") or "head"
+    classes = parsed.get("classes") or {}
+    if isinstance(classes, dict):
+        for cls in classes.values():
+            if not isinstance(cls, dict):
+                continue
+            w = cls.get("window")
+            if isinstance(w, int) and w > window:
+                window = w
+    return window, str(scan)
+
+
+# The API rejects a request body over ~4.5 MB. Slice below that, with headroom
+# for the multipart envelope and the config field.
+_UPLOAD_SLICE_THRESHOLD = 4_000_000
+
+
+def _slice_for_upload(data: bytes, max_pages: int, window: int, scan: str) -> bytes:
+    """Return the bytes to upload for `classify run`, slicing only if needed.
+
+    `max_pages > 0` is an explicit instruction: slice to the first N pages and
+    warn if that is fewer than the classifier's window, because the pages
+    carrying its signals may not be in the upload. `max_pages < 0` is the
+    default: send the document whole unless it is too big, and if it is, keep
+    the pages the window actually reads rather than an arbitrary prefix.
+    """
+    if max_pages > 0:
+        capped = _cap_pdf_pages(data, max_pages)
+        if capped is None:
+            return data
+        sliced, kept, total = capped
+        note = f"[dim]uploading the first {kept} of {total} pages (--max-pages {max_pages})[/dim]"
+        if kept < window:
+            note = (
+                f"[yellow]uploading the first {kept} of {total} pages, but this classifier reads a "
+                f"window of {window} — pages {kept + 1}-{window} are missing from the upload, so a "
+                f"keyword on them cannot match. Raise --max-pages or pass 0 to send everything.[/yellow]"
+            )
+        err_console.print(note)
+        return sliced
+
+    if len(data) <= _UPLOAD_SLICE_THRESHOLD:
+        return data
+
+    # Too large to upload whole. Keep exactly what the server would read.
+    capped = _cap_pdf_pages(data, window) if scan != "head_and_tail" else None
+    if capped is None:
+        # head_and_tail reads from both ends, so a head slice would drop half of
+        # it. Send the document as-is and let the API answer — a 413 the user
+        # can see beats a silently truncated classification.
+        err_console.print(
+            f"[yellow]{len(data) // 1_000_000} MB document may exceed the upload limit; sending it whole "
+            f"because a {scan} window can't be sliced from the front without dropping pages the "
+            f"classifier reads.[/yellow]"
+        )
+        return data
+    sliced, kept, total = capped
+    err_console.print(
+        f"[yellow]{len(data) // 1_000_000} MB document sliced to the first {kept} of {total} pages — the "
+        f"window this classifier reads. Scores can differ from the whole document.[/yellow]"
+    )
+    return sliced
+
+
 def _cap_pdf_pages(data: bytes, max_pages: int) -> tuple[bytes, int, int] | None:
     """If `data` is a PDF with more than `max_pages` pages, return (first-N-pages
     bytes, kept, total). Returns None when no capping is needed or possible
@@ -2482,11 +2564,12 @@ def classify_run(
     classifier: str = typer.Argument(..., help="Classifier slug, or path to a local classifier YAML."),
     document: Path = typer.Argument(..., exists=True, dir_okay=False, help="Document to classify."),
     max_pages: int = typer.Option(
-        3,
+        -1,
         "--max-pages",
-        help="For multi-page PDFs, classify only the first N pages (0 = send all). "
-        "Classification keys on the masthead / first page, so capping keeps large "
-        "scans under the API upload limit.",
+        help="For multi-page PDFs, upload only the first N pages (0 = send all). "
+        "The default (-1) sends the whole document unless it is too large for the "
+        "API's upload limit, in which case it slices to the pages the classifier's "
+        "`window` actually reads.",
     ),
     draft: bool = typer.Option(
         False,
@@ -2500,15 +2583,21 @@ def classify_run(
     """Classify one document and show the label, confidence, method, and tier.
 
     Uses the LOCAL classifier YAML if a file is found (so you can iterate without
-    pushing); otherwise the server's RELEASED version — the exact version the
-    ingestion pipeline runs, so this is a faithful proxy for how the pipeline
-    will route the document. Pass --draft to run the latest unreleased candidate
+    pushing); otherwise the server's RELEASED version — the same version the
+    ingestion pipeline runs. Pass --draft to run the latest unreleased candidate
     instead. Drives the standalone POST /api/classify primitive — nothing is
     persisted.
 
-    Large multi-page PDF scans are capped to the first `--max-pages` pages before
-    upload (classification only needs the masthead), which avoids the API's
-    request-body size limit. Pass `--max-pages 0` to send the whole document.
+    Two caveats before you treat the result as what the pipeline will do. A
+    pipeline classifies the document its parse step produced, which for a
+    scanned PDF may differ from the bytes on disk. And if this command has to
+    slice a large PDF to fit the upload limit, it says so — a sliced document
+    can score differently from the whole one.
+
+    The whole document is uploaded by default. Only when it exceeds the API's
+    request-body limit is it sliced, and then to the pages the classifier's
+    `window`/`scan` actually read, never fewer. `--max-pages N` forces a slice
+    to the first N pages; `--max-pages 0` always sends everything.
     """
     base_url, headers = resolve_api(profile_name)
     slug, local_yaml, local_path = _load_classifier_arg(classifier)
@@ -2516,13 +2605,6 @@ def classify_run(
         err_console.print("[yellow]--draft ignored: running the local file instead.[/yellow]")
     content_type = mimetypes.guess_type(document.name)[0] or "application/octet-stream"
     upload_bytes = document.read_bytes()
-    if max_pages > 0 and content_type == "application/pdf":
-        capped = _cap_pdf_pages(upload_bytes, max_pages)
-        if capped is not None:
-            upload_bytes, kept, total = capped
-            err_console.print(
-                f"[dim]large PDF — classifying the first {kept} of {total} pages (use --max-pages 0 to send all)[/dim]"
-            )
     with httpx.Client(timeout=300) as client:
         if local_yaml is not None:
             config, source = local_yaml, f"local file {local_path}"
@@ -2531,6 +2613,18 @@ def classify_run(
         # Always say which config ran — silent source selection is exactly what
         # made `classify run` disagree with the pipeline without explanation.
         err_console.print(f"[dim]config: {source}[/dim]")
+
+        # Slicing the PDF client-side is purely an upload-size measure: the
+        # server reads only the pages `window`/`scan` select no matter how long
+        # the document is. A fixed 3-page default therefore bought nothing on a
+        # small file and silently defeated any classifier whose window reached
+        # past page 3 — the keyword tier never saw the pages carrying its
+        # signals, and the command reported `unknown` while the pipeline (which
+        # gets the whole document) labelled it correctly.
+        if content_type == "application/pdf" and max_pages != 0:
+            window, scan = _classifier_window(config)
+            upload_bytes = _slice_for_upload(upload_bytes, max_pages, window, scan)
+
         resp = client.post(
             f"{base_url}/api/classify",
             files={"file": (document.name, upload_bytes, content_type)},

@@ -8,11 +8,13 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+import cli.remote as remote_mod
 from cli.main import app
 from cli.remote import (
     _TERMINAL_DOC_STATES,
     _api_error,
     _cap_pdf_pages,
+    _classifier_window,
     _diff_fields,
     _elem_labels,
     _expand_input_paths,
@@ -26,6 +28,7 @@ from cli.remote import (
     _render_pipeline_docs,
     _render_pipeline_test,
     _resolve_entry,
+    _slice_for_upload,
     err_console,
     resolve_api,
 )
@@ -536,3 +539,74 @@ def test_cap_pdf_pages_none_when_short_or_invalid():
     assert _cap_pdf_pages(_make_pdf(3), 3) is None
     # Non-PDF / malformed bytes → None (caller sends original).
     assert _cap_pdf_pages(b"not a pdf at all", 3) is None
+
+
+# ── classify run: the window the upload has to cover (oss-490) ─────────
+
+
+def test_classifier_window_takes_the_deepest_class_window():
+    """The cascade reads ONE window for every class — the deepest any asks for.
+    A hardcoded 3-page upload defeated a class that declared `window: 20`: the
+    server never saw the pages carrying its keywords."""
+    window, scan = _classifier_window(
+        """
+classify:
+  window: 2
+  scan: head
+classes:
+  invoice:
+    keywords: ["invoice"]
+  umbrella:
+    window: 20
+    keywords: ["retained limit"]
+"""
+    )
+    assert (window, scan) == (20, "head")
+
+
+def test_classifier_window_defaults_and_survives_bad_yaml():
+    assert _classifier_window("classes: {invoice: {keywords: [x]}}") == (1, "head")
+    assert _classifier_window("scan: [unbalanced") == (1, "head")
+    assert _classifier_window("classify:\n  scan: head_and_tail\n  window: 8\n") == (
+        8,
+        "head_and_tail",
+    )
+
+
+def test_slice_for_upload_sends_a_small_document_whole():
+    """The default no longer slices: the server reads only what `window` selects,
+    so client-side slicing buys nothing until the upload limit is in play."""
+    data = _make_pdf(40)
+    assert _slice_for_upload(data, -1, 20, "head") is data
+
+
+def test_slice_for_upload_honors_an_explicit_max_pages():
+    import io
+
+    from pypdf import PdfReader
+
+    sliced = _slice_for_upload(_make_pdf(9), 2, 20, "head")
+    assert len(PdfReader(io.BytesIO(sliced)).pages) == 2
+
+
+def test_slice_for_upload_warns_when_an_explicit_cap_is_under_the_window(capsys):
+    _slice_for_upload(_make_pdf(9), 2, 20, "head")
+    assert "window of 20" in capsys.readouterr().err
+
+
+def test_slice_for_upload_slices_an_oversize_document_to_the_window(monkeypatch):
+    import io
+
+    from pypdf import PdfReader
+
+    monkeypatch.setattr(remote_mod, "_UPLOAD_SLICE_THRESHOLD", 1)
+    sliced = _slice_for_upload(_make_pdf(30), -1, 6, "head")
+    assert len(PdfReader(io.BytesIO(sliced)).pages) == 6
+
+
+def test_slice_for_upload_never_head_slices_a_head_and_tail_window(monkeypatch):
+    """A head-only slice would drop the tail pages the server reads, so an
+    oversize head_and_tail document goes up whole and the API answers."""
+    monkeypatch.setattr(remote_mod, "_UPLOAD_SLICE_THRESHOLD", 1)
+    data = _make_pdf(30)
+    assert _slice_for_upload(data, -1, 6, "head_and_tail") is data

@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.3 — 2026-08-22
+
+**Fix: `koji classify run` no longer truncates a PDF to 3 pages by default.**
+The command sliced every multi-page PDF to its first 3 pages before upload, a
+measure meant only to stay under the API's request-body limit. It bought
+nothing on a normal file — the server reads only the pages a classifier's
+`window`/`scan` select, however long the document is — and it silently defeated
+any classifier whose window reached past page 3: the keyword tier never saw the
+pages carrying its signals, so `classify run` reported `unknown` while the
+pipeline, which gets the whole document, labelled it correctly. Documents are
+now uploaded whole; only one that exceeds the upload limit is sliced, and then
+to the window's own depth rather than an arbitrary prefix. A `head_and_tail`
+window is never sliced from the front. `--max-pages N` still forces a slice and
+now warns when N is below the window; `--max-pages 0` sends everything.
+
+The help text also no longer calls the command "a faithful proxy for how the
+pipeline will route the document" without qualification — a pipeline classifies
+the document its parse step produced, and a sliced upload can score differently
+from the whole one. Both caveats are now stated where they're read.
+
 ## 0.108.2 — 2026-08-22
 
 **Fix: configuring a BYO parse endpoint no longer silently disables the
