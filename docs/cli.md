@@ -426,7 +426,7 @@ koji classify run document_type ./invoice.pdf         # classify a doc: label, c
 koji classify run document_type ./invoice.pdf --json  # raw result for an agent
 koji classify run document_type ./invoice.pdf --draft # run the unreleased candidate instead of the release
 koji classify run ./classifiers/document_type.yaml ./invoice.pdf   # …with a local config (iterate without pushing)
-koji classify run document_type ./big-scan.pdf --max-pages 0       # send the whole doc (default: first 3 pages)
+koji classify run document_type ./big-scan.pdf --max-pages 5       # upload only the first 5 pages (default: the whole doc)
 
 koji classify versions document_type                  # released lineage + candidates
 koji classify promote document_type                   # graduate the latest candidate to a release + make it live
@@ -448,12 +448,14 @@ koji classify corpus bootstrap document_type --limit 25         # agent-propose 
 koji classify corpus approve document_type <id|filename>        # accept a draft proposal (--label to correct first)
 ```
 
-`koji classify run` drives the standalone `POST /api/classify` primitive and **persists nothing**. By default it runs the classifier's **released** version — the exact version the ingestion pipeline runs — so its result is a faithful proxy for how the pipeline will route the document. It prints which config it used (`released v0.0.2`, `draft`, or `local file …`), then the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`.
+`koji classify run` drives the standalone `POST /api/classify` primitive and **persists nothing**. By default it runs the classifier's **released** version — the same version the ingestion pipeline runs. It prints which config it used (`released v0.0.2`, `draft`, or `local file …`), then the assigned label, the confidence, the method and tier that produced it, and the evidence page. A document that matches no class comes back as `unknown`, with a `reason` naming the tiers that couldn't run.
+
+Two things keep this from being an unqualified proxy for pipeline routing, and both are worth knowing before you chase a disagreement. A pipeline classifies the document **its parse step produced**, which for a scanned PDF need not match the bytes on disk. And if the document is too large to upload whole, this command slices it — it says so when it does, and a sliced document can score differently.
 
 - `--draft` runs the latest unreleased candidate instead of the release — for checking an edit before you release it.
 - Passing a file path (`./classifiers/document_type.yaml`) runs that local YAML, for iterating before you push at all.
 
-For a large multi-page PDF, only the first `--max-pages` pages (default 3) are uploaded — classification reads the masthead, and this keeps big scans under the API's upload size limit; pass `--max-pages 0` to send the whole file.
+The whole document is uploaded by default. Slicing it client-side buys nothing — the server reads only the pages the classifier's `window`/`scan` select no matter how long the document is — and a fixed cap actively breaks a classifier whose window reaches past it, because the pages carrying its keywords never arrive. Only when a PDF exceeds the API's request-body limit is it sliced, and then to the window's own depth, with a warning. `--max-pages N` forces a slice to the first N pages (warning you if N is under the window); `--max-pages 0` always sends everything.
 
 `koji classify versions / promote / release` mirror their `koji schema` equivalents: `versions` lists the released lineage and candidates; `promote` graduates the latest candidate to a live release; `release` skips the candidate loop and releases directly (from the server draft, or a local file if you pass one). Promotion and release are gated by the deploy permission. All `classify` subcommands accept `--json` and `--profile`.
 
