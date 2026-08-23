@@ -85,6 +85,48 @@ fields:
   });
 });
 
+describe("computeValidateResult — fields the schema doesn't declare (oss-492)", () => {
+  // Ground truth carries a field the schema being validated has no field for.
+  // Nothing is extracted for it, so it scores 0% — which reads as a broken
+  // extraction, and as a −100 point regression against a schema version that
+  // DID declare it. Neither is true: the schema was never asked for it.
+  const doc: Result = {
+    entryId: "e1",
+    filename: "policy.pdf",
+    groundTruth: { policy_number: "ABC-123", policy_forms: ["CG 00 01", "CG 20 10"] },
+    extracted: { policy_number: "ABC-123" },
+    confidenceScores: { policy_number: 1 },
+  };
+  const schemaFields = { policy_number: { type: "string" } };
+
+  it("labels a ground-truth field the schema has no field for", () => {
+    const out = computeValidateResult([doc], new Map(), 1, Date.now(), [], schemaFields);
+    const forms = out.fields.find((f) => f.name === "policy_forms");
+    expect(forms?.status).toBe("not_in_schema");
+    // Still reported, and still counted — a field a schema edit REMOVED is a
+    // real change the operator needs to see.
+    expect(forms?.accuracy).toBe(0);
+  });
+
+  it("does not count it among regressions", () => {
+    const prev = new Map([["e1", { policy_number: "ABC-123", policy_forms: ["CG 00 01", "CG 20 10"] }]]);
+    const out = computeValidateResult([doc], prev, 1, Date.now(), [], schemaFields);
+    expect(out.regressions.map((f) => f.name)).not.toContain("policy_forms");
+  });
+
+  it("declared fields keep their normal statuses", () => {
+    const out = computeValidateResult([doc], new Map(), 1, Date.now(), [], schemaFields);
+    expect(out.fields.find((f) => f.name === "policy_number")?.status).toBe("pass");
+  });
+
+  it("stays silent when the caller passes no schema fields", () => {
+    // The read-only GET path has no compiled schema to compare against; it
+    // must not label everything as missing.
+    const out = computeValidateResult([doc], new Map(), 1, Date.now(), []);
+    expect(out.fields.find((f) => f.name === "policy_forms")?.status).not.toBe("not_in_schema");
+  });
+});
+
 describe("computeValidateResult — parse failures are surfaced, not silently dropped (oss-308)", () => {
   // A doc that perfectly matches ground truth (one field, exact value) → passes.
   const passingDoc: Result = {

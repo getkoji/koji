@@ -2,6 +2,28 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.5 — 2026-08-22
+
+**Fix: `koji validate --no-push` validates the version that is actually live.**
+It took the schema's highest version number, which is an unreleased candidate
+the moment anyone has run `koji validate` once — that run snapshots an rc, and
+the rc outranks the release. So the mode documented as validating "the version
+already live on the server" quietly scored a candidate. Comparing a local file
+against `--no-push` was then comparing two different schemas, which can differ
+in which fields they even declare. It now resolves the released version, falling
+back to the newest and then the draft for a schema that has never been released.
+
+**A ground-truth field the scored schema doesn't declare is reported `not in
+schema`, not as a 0% failure.** The scorer reports every field ground truth
+carries, including fields the schema being validated has no field for — nothing
+is extracted for them, so they scored 0% and, against a version that did declare
+them, showed up as a large regression. They are still reported and still
+counted, since a field an edit *removed* is a real change; they're just no
+longer labelled as extraction failures or counted among regressions.
+
+**A validate run says what it scored.** Every run was labelled "candidate · not
+live", including `--no-push` runs, which score the live release.
+
 ## 0.108.4 — 2026-08-22
 
 **Fix: `koji pull` reads the project you selected.** It built its own request

@@ -330,7 +330,7 @@ koji validate insurance_policy --json                # raw result for an agent t
 |------|-------------|
 | `--model` | Override the extraction model (e.g. `openai/gpt-4o-mini`). |
 | `--bump` | Override the auto-derived semver bump: `major` \| `minor` \| `patch`. |
-| `--no-push` | Validate the version already live on the server; don't snapshot local edits. |
+| `--no-push` | Validate the **released** version — the one your pipelines run; don't snapshot local edits. |
 | `--message`, `-m` | Message for the candidate snapshot. |
 | `--watch`, `-w` | Re-run whenever the local schema file changes. |
 | `--check` | Exit non-zero if any field regressed (for CI / loops). |
@@ -339,6 +339,14 @@ koji validate insurance_policy --json                # raw result for an agent t
 | `--profile`, `-p` | CLI profile to use. |
 
 The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found automatically) or a path to a YAML file. The slug is taken from the file's `name:` field. Promote a candidate to live with [`koji schema promote`](#koji-schema).
+
+**Comparing across the two modes.** `--no-push` scores the released version;
+passing a file scores that file. The header line says which (`released · live`
+vs `candidate · not live`), and it's worth reading before you treat a difference
+as a regression — the two can be schemas that don't declare the same fields.
+A field ground truth carries but the scored schema doesn't declare shows as
+`not in schema` rather than 0%: nothing extracted it because nothing asked for
+it. To compare like with like, validate both sides the same way.
 
 #### Diagnosing failures with `--explain`
 

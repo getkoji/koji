@@ -389,7 +389,7 @@ def _diff_fields(ground_truth: dict, extracted: dict) -> list[dict]:
 # ── Renderers ─────────────────────────────────────────────────────────
 
 
-def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
+def _render_validate(slug: str, r: dict, explain: bool = False, candidate: bool = True) -> None:
     overall = r.get("overallAccuracy")
     prev = r.get("prevAccuracy")
     delta = ""
@@ -407,7 +407,15 @@ def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
     version = r.get("version") or f"v{r.get('schemaVersion', '?')}"
     bump = r.get("bump")
     bump_disp = f"  [magenta]{bump}[/magenta]" if bump else ""
-    dedup_disp = "  [dim](reused)[/dim]" if r.get("deduped") else "  [dim](candidate · not live)[/dim]"
+    # Say what was scored. A --no-push run scores the RELEASED version, and
+    # labelling that "candidate · not live" — as this did for every run — told
+    # the operator the opposite of what happened.
+    if not candidate:
+        dedup_disp = "  [dim](released · live)[/dim]"
+    elif r.get("deduped"):
+        dedup_disp = "  [dim](reused)[/dim]"
+    else:
+        dedup_disp = "  [dim](candidate · not live)[/dim]"
     console.print(
         f"\n[bold {head_color}]{slug}[/bold {head_color}]  "
         f"overall [bold]{overall_disp}[/bold]{delta}   "
@@ -438,6 +446,10 @@ def _render_validate(slug: str, r: dict, explain: bool = False) -> None:
                 "pass": "[green]pass[/green]",
                 "regressed": "[red]regressed[/red]",
                 "failing": "[yellow]failing[/yellow]",
+                # Ground truth has this field; the schema being validated doesn't
+                # declare it. Nothing was extracted for it, so its 0% says
+                # nothing about extraction quality.
+                "not_in_schema": "[dim]not in schema[/dim]",
             }.get(st, st)
             acc_disp = "—" if acc is None else f"{acc:.0f}%"
             prec = f.get("precision")
@@ -717,6 +729,10 @@ def validate(
     pipelines run. Promote a candidate with `koji schema promote` once it
     performs well. With --no-push (or a bare slug with no local file), validates
     the version already live on the server instead.
+
+    The two modes are not interchangeable for before/after comparison: they can
+    score schemas that declare different fields, and a field ground truth has
+    but the scored schema doesn't is reported `not in schema`, not as a failure.
     """
     if bump and bump not in ("major", "minor", "patch"):
         console.print("[red]--bump must be major, minor, or patch.[/red]")
@@ -733,13 +749,14 @@ def validate(
                 body["model"] = model
             if bump:
                 body["bump"] = bump
-            if no_push or local_yaml is None:
+            scored_stored_version = bool(no_push or local_yaml is None)
+            if scored_stored_version:
                 if local_yaml is None and not no_push:
                     err_console.print(
                         f"[yellow]No local file for '{slug}' — validating the live server version. "
                         f"(Pass a path to backtest local edits.)[/yellow]"
                     )
-                # No yaml in body → server scores the latest stored version.
+                # No yaml in body → the server scores the RELEASED version.
             else:
                 body["yaml"] = local_yaml
                 if message:
@@ -766,7 +783,7 @@ def validate(
         if as_json:
             emit_json(result)
         else:
-            _render_validate(slug, result, explain=explain)
+            _render_validate(slug, result, explain=explain, candidate=not scored_stored_version)
         regressed = [f for f in result.get("fields", []) if f.get("status") == "regressed"]
         return 1 if (check and regressed) else 0
 
