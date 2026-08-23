@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.108.3"
+KOJI_VERSION = "0.108.4"
 
 
 def _version_callback(value: bool) -> None:
@@ -1032,49 +1032,15 @@ def push(
     live until you promote it (or pass --release). Creating a brand-new artifact
     still releases v0.0.1, since there is no live version to displace.
     """
-    import os
-
     import httpx
     import yaml as yaml_mod
 
-    from .credentials import get_active_profile, load_credentials
+    from .remote import note_resolved_project, resolve_api
 
-    # Env vars override profile (useful for CI and local Docker clusters)
-    env_url = os.environ.get("KOJI_API_URL")
-    env_key = os.environ.get("KOJI_API_KEY")
-
-    if env_url and env_key:
-        base_url = env_url.rstrip("/")
-        headers: dict[str, str] = {"Authorization": f"Bearer {env_key}"}
-        # Scope to the requested project, same as resolve_api. Without this,
-        # push silently lands in the API key's bound project regardless of the
-        # requested scope — writing to the wrong project.
-        env_project = os.environ.get("KOJI_PROJECT")
-        if env_project:
-            headers["x-koji-project"] = env_project
-    else:
-        if profile_name:
-            creds = load_credentials()
-            profile = creds.profiles.get(profile_name)
-            if not profile:
-                console.print(f"[red]Profile '{profile_name}' not found.[/red]")
-                raise SystemExit(1)
-        else:
-            profile = get_active_profile()
-
-        if not profile:
-            console.print(
-                "[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]"
-            )
-            raise SystemExit(1)
-
-        headers = {"Authorization": f"Bearer {profile.api_key}"}
-        base_url = profile.url.rstrip("/")
-        # Send the profile's project scope so push targets the project the user
-        # selected — not whatever project the API key happens to be bound to.
-        # An unreachable scope then 404s loudly instead of silently falling back.
-        if profile.project:
-            headers["x-koji-project"] = profile.project
+    # One resolver for every remote command. Push and pull each grew their own
+    # copy of this, and they drifted: pull's never sent `x-koji-project` at all
+    # (oss-491). Scope is the thing you least want two implementations of.
+    base_url, headers = resolve_api(profile_name)
 
     # Collect YAML files from the directory and common subdirectories
     root = Path(directory)
@@ -1177,6 +1143,7 @@ def push(
             display_name = parsed.get("name", slug)
 
             resp = client.get(f"{base_url}/api/schemas/{slug}", headers=headers)
+            note_resolved_project(resp)
 
             if _check_http_auth_error(resp, base_url):
                 raise SystemExit(1)
@@ -1231,6 +1198,7 @@ def push(
             description = parsed.get("description")
 
             resp = client.get(f"{base_url}/api/classifiers/{slug}", headers=headers)
+            note_resolved_project(resp)
 
             if resp.status_code == 200:
                 existing_yaml = resp.json().get("latestVersion", {}).get("yamlSource", "") or ""
@@ -1360,42 +1328,24 @@ def pull(
 
     Downloads the latest version of every schema and writes them to the
     output directory. Existing files are overwritten.
-    """
-    import os
 
+    Pulls from the project the profile (or KOJI_PROJECT) names, and says which
+    project answered.
+    """
     import httpx
 
-    from .credentials import get_active_profile, load_credentials
+    from .remote import note_resolved_project, resolve_api
 
-    # Env vars override profile
-    env_url = os.environ.get("KOJI_API_URL")
-    env_key = os.environ.get("KOJI_API_KEY")
-
-    if env_url and env_key:
-        base_url = env_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {env_key}"}
-    else:
-        # Resolve profile
-        if profile_name:
-            creds = load_credentials()
-            profile = creds.profiles.get(profile_name)
-            if not profile:
-                console.print(f"[red]Profile '{profile_name}' not found.[/red]")
-                raise SystemExit(1)
-        else:
-            profile = get_active_profile()
-
-        if not profile:
-            console.print(
-                "[red]Not authenticated. Run [bold]koji login[/bold] first, or set KOJI_API_URL + KOJI_API_KEY.[/red]"
-            )
-            raise SystemExit(1)
-
-        headers = {"Authorization": f"Bearer {profile.api_key}"}
-        base_url = profile.url.rstrip("/")
+    # Shared with every other remote command, which is the point: pull built its
+    # own headers and never sent `x-koji-project`, so it silently read the API
+    # key's own project no matter which project the profile selected. Against a
+    # key bound elsewhere it wrote a different project's schemas into your
+    # working directory and reported success (oss-491).
+    base_url, headers = resolve_api(profile_name)
 
     # Get all schemas
     resp = httpx.get(f"{base_url}/api/schemas", headers=headers, timeout=30)
+    note_resolved_project(resp)
     if _check_http_auth_error(resp, base_url):
         raise SystemExit(1)
     if resp.status_code != 200:

@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.108.4 — 2026-08-22
+
+**Fix: `koji pull` reads the project you selected.** It built its own request
+headers and never sent `x-koji-project`, so it always read whatever project the
+API key itself is bound to — regardless of the profile's project or
+`KOJI_PROJECT`. Against a key bound elsewhere it wrote a different project's
+schemas into your working directory and reported success. `push` and `pull` now
+share the one resolver every other remote command uses.
+
+**Every command says which project it is targeting, and every API response says
+which project answered.** Scope resolves from three places at once — a
+`KOJI_PROJECT` env var, the profile's `project`, or the API key's own binding
+when neither names one — and nothing printed which of them won. Commands now
+announce the scope they resolved (`project: acme-policy (from profile
+'acme-policy')`, or `project: unset … — the API key's own project decides`), and
+authenticated responses carry an `x-koji-project-resolved` header naming the
+project the server actually used. `push` and `pull` report it when it differs
+from what was asked for, or when nothing was asked for at all — the case where
+a write lands somewhere you weren't looking.
+
 ## 0.108.3 — 2026-08-22
 
 **Fix: `koji classify run` no longer truncates a PDF to 3 pages by default.**

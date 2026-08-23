@@ -334,7 +334,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
 
     if (projectSlug) {
       const [project] = await db
-        .select({ id: schema.projects.id })
+        .select({ id: schema.projects.id, slug: schema.projects.slug })
         .from(schema.projects)
         .where(
           and(
@@ -359,13 +359,14 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         projectForbidden = true;
       } else {
         c.set("projectId", project.id);
+        setResolvedProject(c, project.slug);
       }
     } else {
       // No x-koji-project header — pick a default project the caller can
       // access. Preference: the key's own default project, then the tenant
       // default (slug matches the tenant slug), then the oldest live project.
       const candidates = await db
-        .select({ id: schema.projects.id })
+        .select({ id: schema.projects.id, slug: schema.projects.slug })
         .from(schema.projects)
         .innerJoin(schema.tenants, eq(schema.tenants.id, schema.projects.tenantId))
         .where(and(eq(schema.projects.tenantId, tenant.id), isNull(schema.projects.deletedAt)))
@@ -378,6 +379,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
       const project = candidates.find((p) => canAccessProject(p.id));
       if (project) {
         c.set("projectId", project.id);
+        setResolvedProject(c, project.slug);
       } else if (isApiKey && accessibleProjectIds !== null) {
         // A single-/multi-project key whose entire accessible set is gone (e.g.
         // its only bound project was soft-deleted). The key is scoped to
@@ -558,6 +560,27 @@ export function getPrincipal(c: Context<Env>): Principal {
 }
 
 /** Get the resolved tenant ID. Throws if not set. */
+/**
+ * The project scope is decided here, from three sources a client can't see: an
+ * `x-koji-project` header, an API key's own binding, or a default pick. A CLI
+ * that guesses wrong writes to the wrong project silently — `koji push`
+ * creating a duplicate classifier in a project the operator wasn't looking at,
+ * `koji pull` writing a different project's schemas. So every authenticated
+ * response says which project actually answered it (oss-491).
+ */
+export const RESOLVED_PROJECT_HEADER = "x-koji-project-resolved";
+
+function setResolvedProject(c: Context<Env>, slug: string | undefined): void {
+  if (!slug) return;
+  c.set("projectSlug", slug);
+  c.header(RESOLVED_PROJECT_HEADER, slug);
+}
+
+/** The slug of the project this request resolved to, when it resolved to one. */
+export function getProjectSlug(c: Context<Env>): string | null {
+  return (c.get("projectSlug") as string | undefined) ?? null;
+}
+
 export function getTenantId(c: Context<Env>): string {
   const id = c.get("tenantId");
   if (!id) throw new Error("No tenantId on context — tenant resolution not applied?");

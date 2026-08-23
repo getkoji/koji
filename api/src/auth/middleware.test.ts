@@ -93,11 +93,11 @@ function createTestApp(opts: {
         const projSlug = c.req.header("x-koji-project");
         if (projSlug) {
           const projId = opts.projects?.get(projSlug);
-          return projId ? [{ id: projId }] : [];
+          return projId ? [{ id: projId, slug: projSlug }] : [];
         }
         // Default-project resolution returns the ordered candidate list; the
         // middleware picks the first one the member can access.
-        return [{ id: "00000000-0000-4000-8000-00000000aaaa" }];
+        return [{ id: "00000000-0000-4000-8000-00000000aaaa", slug: "default-project" }];
       }
       if (idx === grantsIdx) {
         const principal = c.get("principal") as Principal | undefined;
@@ -247,6 +247,36 @@ describe("authMiddleware", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body.projectId).toBe("00000000-0000-4000-8000-00000000bbbb");
+  });
+
+  // oss-491: project scope is decided server-side from three sources a client
+  // can't see. A CLI that assumes wrong writes to the wrong project in silence,
+  // so the response has to say which project answered it.
+  it("echoes the resolved project slug on the response", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const projects = new Map([["side", "00000000-0000-4000-8000-00000000bbbb"]]);
+    const app = createTestApp({ users, tenants, memberships, projects });
+    app.get("/api/schemas", (c) => c.json({ ok: true }));
+    const res = await app.request("/api/schemas", {
+      headers: {
+        Cookie: "koji_session=valid-token",
+        "x-koji-tenant": "acme",
+        "x-koji-project": "side",
+      },
+    });
+    expect(res.headers.get("x-koji-project-resolved")).toBe("side");
+  });
+
+  it("echoes the DEFAULT project slug when the caller named none", async () => {
+    const memberships = new Map([["u1:t1", { roles: ["viewer"] }]]);
+    const app = createTestApp({ users, tenants, memberships });
+    app.get("/api/schemas", (c) => c.json({ ok: true }));
+    const res = await app.request("/api/schemas", {
+      headers: { Cookie: "koji_session=valid-token", "x-koji-tenant": "acme" },
+    });
+    // The case that bit: no header, so the server picked — and the caller had
+    // no way to find out which one it picked.
+    expect(res.headers.get("x-koji-project-resolved")).toBe("default-project");
   });
 
   it("restricted member: allows a granted project via header", async () => {
