@@ -18,7 +18,7 @@ import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/
 import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { reactivateRefusalBody } from "../schemas/release-policy";
-import { parseVersionSelector } from "../schemas/version-selector";
+import { parseVersionSelector, selectValidateVersion } from "../schemas/version-selector";
 import { parseReleaseInput } from "../schemas/release-input";
 import { resolveMimeType } from "../ingestion/mime";
 import { resolveParse } from "../ingestion/seam";
@@ -1612,6 +1612,7 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     tx.select({
       id: schema.schemas.id,
       draftYaml: schema.schemas.draftYaml,
+      currentVersionId: schema.schemas.currentVersionId,
     })
       .from(schema.schemas)
       .where(eq(schema.schemas.slug, slug))
@@ -1677,7 +1678,16 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
     bump = snap.bump;
     deduped = snap.deduped;
   } else {
-    const [latestVersion] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    // No YAML in the body — validate the version that is actually LIVE, i.e.
+    // the released one (`currentVersionId`). This used to take the highest
+    // versionNumber, which is an unreleased candidate the moment anyone has run
+    // `koji validate` once: the rc it snapshotted outranks the release. So
+    // `--no-push`, documented as "the version already live on the server",
+    // quietly scored a candidate — and a before/after against a local file was
+    // then comparing two different schemas, which can differ in which fields
+    // they even declare (oss-492). Falls back to the newest version, then the
+    // draft, for a schema that has never been released.
+    const versionRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
       tx.select({
         id: schema.schemaVersions.id,
         versionNumber: schema.schemaVersions.versionNumber,
@@ -1690,12 +1700,12 @@ schemas.post("/:slug/validate", requires("job:run"), async (c) => {
         .from(schema.schemaVersions)
         .where(eq(schema.schemaVersions.schemaId, schemaRow.id))
         .orderBy(desc(schema.schemaVersions.versionNumber))
-        .limit(1)
     );
-    schemaYaml = latestVersion?.yamlSource ?? schemaRow.draftYaml;
-    versionId = latestVersion?.id;
-    versionNumber = latestVersion?.versionNumber ?? 0;
-    versionLabel = latestVersion ? formatSemver(latestVersion) : null;
+    const chosen = selectValidateVersion(versionRows, schemaRow.currentVersionId);
+    schemaYaml = chosen?.yamlSource ?? schemaRow.draftYaml;
+    versionId = chosen?.id;
+    versionNumber = chosen?.versionNumber ?? 0;
+    versionLabel = chosen ? formatSemver(chosen) : null;
   }
 
   if (!schemaYaml) return c.json({ error: "No schema YAML found" }, 400);

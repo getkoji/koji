@@ -49,3 +49,29 @@ export function parseVersionSelector(raw: string): VersionSelector | null {
   if (ID_PREFIX_RE.test(v)) return { by: "id", prefix: v };
   return null;
 }
+
+/**
+ * Which stored version a validate run with no candidate YAML should score.
+ *
+ * The released one — `koji validate <slug> --no-push` is documented as
+ * validating "the version already live on the server", and the live version is
+ * the released version, not the newest row. Taking the newest row (the previous
+ * behaviour) meant that after a single `koji validate <file>` the schema's
+ * highest versionNumber is the rc that run snapshotted, so `--no-push` scored
+ * that candidate instead of the release. Two runs the operator believed were
+ * the same schema could then differ in which fields they even declare, and the
+ * score difference read as a regression (oss-492).
+ *
+ * `rows` must be ordered newest-first, so the fallback for a schema with no
+ * release is its newest version.
+ */
+export function selectValidateVersion<T extends { id: string }>(
+  rows: T[],
+  currentVersionId: string | null | undefined,
+): T | undefined {
+  if (currentVersionId) {
+    const released = rows.find((r) => r.id === currentVersionId);
+    if (released) return released;
+  }
+  return rows[0];
+}

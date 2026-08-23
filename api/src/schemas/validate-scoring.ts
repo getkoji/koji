@@ -161,7 +161,20 @@ export function computeValidateResult(
     const prevAccuracy = prevChecked > 0 ? (prevScoreSum / prevChecked) * 100 : null;
     totalScore += scoreSum;
     totalChecked += checked;
-    const status = failing.length > 0 ? (prevAccuracy !== null && prevAccuracy > accuracy ? "regressed" : "failing") : "pass";
+    // A ground-truth key the schema doesn't declare scores 0% for a reason that
+    // has nothing to do with extraction quality: the schema was never asked for
+    // it. Reported as its own status so it can't be read as a failing field —
+    // and so comparing two schema versions that differ in which fields they
+    // declare doesn't look like a −67 point regression (oss-492). Only
+    // detectable when the caller passed the schema's field specs.
+    const notInSchema = schemaFields !== undefined && fieldSpec === undefined;
+    const status = notInSchema
+      ? "not_in_schema"
+      : failing.length > 0
+        ? prevAccuracy !== null && prevAccuracy > accuracy
+          ? "regressed"
+          : "failing"
+        : "pass";
     // Report precision/recall for array fields (mean over docs, as percentages)
     // so a low F1 can be read as "missed elements" (recall) vs "spurious/wrong
     // elements" (precision) — the diagnosis needed on under-counted arrays.

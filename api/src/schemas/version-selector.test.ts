@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseVersionSelector } from "./version-selector";
+import { parseVersionSelector, selectValidateVersion } from "./version-selector";
 
 describe("parseVersionSelector", () => {
   it("reads a bare integer as the versionNumber (the historical contract)", () => {
@@ -47,5 +47,31 @@ describe("parseVersionSelector", () => {
       const sel = parseVersionSelector(input);
       if (sel?.by === "number") expect(Number.isNaN(sel.versionNumber)).toBe(false);
     }
+  });
+});
+
+describe("selectValidateVersion", () => {
+  // Newest-first, as the query returns them. #5 is an rc that a previous
+  // `koji validate <file>` snapshotted; #4 is what's actually live.
+  const rows = [
+    { id: "v5", label: "0.0.3-rc.3" },
+    { id: "v4", label: "0.0.3" },
+    { id: "v1", label: "0.0.1" },
+  ];
+
+  it("picks the RELEASED version, not the newest row", () => {
+    expect(selectValidateVersion(rows, "v4")?.label).toBe("0.0.3");
+  });
+
+  it("falls back to the newest version when nothing is released", () => {
+    expect(selectValidateVersion(rows, null)?.label).toBe("0.0.3-rc.3");
+  });
+
+  it("falls back when the released id isn't among the rows", () => {
+    expect(selectValidateVersion(rows, "gone")?.label).toBe("0.0.3-rc.3");
+  });
+
+  it("returns undefined for a schema with no versions at all", () => {
+    expect(selectValidateVersion([], "v4")).toBeUndefined();
   });
 });
