@@ -124,6 +124,64 @@ describe("runCascade", () => {
     expect(out.method).toBe("unknown");
   });
 
+  // oss-489: an `unknown` from a text-less PDF that never reached the vision
+  // tier is a different failure from one the model looked at and couldn't
+  // label. The outcome has to say which.
+  it("explains WHY it could not decide — no renderer for the vision tier", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "" }], 1),
+      classifyDocType: fakeDocType("scanned_pdf"),
+      provider: {
+        generate: vi.fn(),
+        generateWithImage: vi.fn(),
+      } as unknown as ModelProvider,
+      // no renderPageImages — what a BYO parse provider leaves behind
+    };
+    const config = normalizeConfig({ classes: { policy: { keywords: ["declarations"] } } });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("unknown");
+    expect(out.reason).toContain("cannot render page images");
+    expect(out.reason).toContain("no extractable text layer");
+  });
+
+  it("explains WHY it could not decide — model provider has no image support", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "" }], 1),
+      classifyDocType: fakeDocType("scanned_pdf"),
+      provider: { generate: vi.fn() } as unknown as ModelProvider,
+      renderPageImages: vi.fn(async () => ["base64img"]),
+    };
+    const config = normalizeConfig({ classes: { policy: { keywords: ["declarations"] } } });
+    const out = await runCascade(input, config, deps);
+    expect(out.reason).toContain("does not support image input");
+  });
+
+  it("explains WHY it could not decide — the cost ceiling stopped short of vision", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "" }], 1),
+      classifyDocType: fakeDocType("scanned_pdf"),
+    };
+    const config = normalizeConfig({
+      classify: { max_tier: 3 },
+      classes: { policy: { keywords: ["declarations"] } },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.reason).toContain("maxTier=3");
+  });
+
+  it("leaves no reason on a decided outcome", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "declarations page insuring agreement" }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const config = normalizeConfig({
+      classes: { policy: { keywords: ["declarations", "insuring agreement"] } },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("policy");
+    expect(out.reason).toBeUndefined();
+  });
+
   it("includes deterministic scores in the outcome once the keyword tier ran", async () => {
     const deps: CascadeDeps = {
       getPageTexts: fakePages([{ page: 1, text: "invoice amount due remit to" }]),

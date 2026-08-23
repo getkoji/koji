@@ -432,6 +432,7 @@ classes:
 | `method` | string | Tier that produced the label: `keyword`, `llm`, `vision`, or `unknown`. |
 | `tier_used` | integer | Numeric tier reached (0 metadata … 4 vision). Conveys the cost paid. |
 | `evidence_page` | integer\|null | Page the label was keyed on — helps debug cover-sheet misses. |
+| `reason` | string | Present only when `label` is `"unknown"`: which tiers couldn't run and why (e.g. `"no extractable text layer, so the keyword and LLM tiers had nothing to read; vision tier skipped: the model provider does not support image input"`). Distinguishes "looked and couldn't tell" from "never got to look". |
 | `scores` | array | Per-class deterministic scores, when the keyword tier ran. |
 
 **Errors**

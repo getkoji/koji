@@ -18,8 +18,13 @@ vi.mock("./classify", () => ({ classifyDocument: vi.fn() }));
 vi.mock("./content-shape", () => ({ classifyContentShape: vi.fn() }));
 // Mock the default heavy backend so we can assert whether it was used.
 const defaultHeavyParse = vi.fn();
+// The real DockerParseProvider implements pageImages; the mock carries it too so
+// the platform-capability fallback (oss-489) is exercised end to end.
+const defaultHeavyPageImages = vi.fn();
 vi.mock("./docker", () => ({
-  DockerParseProvider: vi.fn().mockImplementation(() => ({ parse: defaultHeavyParse })),
+  DockerParseProvider: vi
+    .fn()
+    .mockImplementation(() => ({ parse: defaultHeavyParse, pageImages: defaultHeavyPageImages })),
 }));
 
 import { classifyDocument } from "./classify";
@@ -76,6 +81,27 @@ describe("createParseProvider — tenantHeavy hook", () => {
     await provider.parse(input);
 
     expect(defaultHeavyParse).toHaveBeenCalledWith(input);
+  });
+
+  // oss-489: BYO parse replaces text extraction, not the platform's PDF
+  // utilities. No BYO driver implements pageImages / analyzePages / slicePdf /
+  // extractCoordinates, so before this the classifier's vision tier, split
+  // detection, and provenance bboxes silently went dark the moment a tenant
+  // configured a parse endpoint.
+  it("keeps the platform's page renderer when the tenant provider has none", async () => {
+    const tenantHeavy: ParseProvider = { parse: vi.fn().mockResolvedValue(heavyResponse) };
+    defaultHeavyPageImages.mockResolvedValue({ images: ["b64"] });
+
+    const provider = await createParseProvider(dockerConfig, { tenantHeavy });
+
+    expect(provider.pageImages).toBeDefined();
+    await provider.pageImages!({
+      fileBuffer: Buffer.alloc(0),
+      filename: "scan.pdf",
+      mimeType: "application/pdf",
+      maxPages: 1,
+    });
+    expect(defaultHeavyPageImages).toHaveBeenCalledOnce();
   });
 
   it("falls back to the default heavy provider when tenantHeavy is null", async () => {

@@ -1347,7 +1347,7 @@ async function executeTestStep(
         }
         return {
           ok: true,
-          output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug, classifier_version: resolved.version },
+          output: { label: outcome.label, confidence: outcome.confidence, method: outcome.method, tier: outcome.tierUsed, evidence_page: outcome.evidencePage, classifier: classifierSlug, classifier_version: resolved.version, ...(outcome.reason ? { reasoning: outcome.reason } : {}) },
           costUsd: cost,
         };
       }

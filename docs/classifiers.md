@@ -145,6 +145,12 @@ classifier escalates to the vision tier (4): it renders the leading pages to
 images and asks a vision-capable model. Cost stays bounded to the window — the
 classifier never renders the whole document just to label it.
 
+Tier 4 needs two things: a model endpoint that accepts image input, and a parse
+provider that can render pages. Both are platform capabilities and are always
+available — configuring your own parse endpoint changes how text is extracted
+and nothing else. When a tier can't run, the outcome says so in `reason` rather
+than returning a bare `unknown`.
+
 ## Testing a classifier
 
 Testing runs the exact same cascade production would — nothing is simulated, and
@@ -200,6 +206,25 @@ The response:
 
 `method` names the tier that decided (`keyword`, `llm`, `vision`, or `unknown`),
 and `tier_used` is its numeric cost tier.
+
+An `unknown` also carries a `reason` naming the tiers that couldn't run and what
+was missing:
+
+```json
+{
+  "label": "unknown",
+  "confidence": 0,
+  "method": "unknown",
+  "tier_used": 1,
+  "evidence_page": null,
+  "reason": "no extractable text layer, so the keyword and LLM tiers had nothing to read; vision tier not allowed by maxTier=3"
+}
+```
+
+Read it before you tune keywords: "the classifier looked and couldn't tell"
+needs a config change, while "the classifier never got to look" (no vision-
+capable model on the endpoint, or a cost ceiling below tier 4) does not. In a
+pipeline the same text lands on the classify step's output as `reasoning`.
 
 ## Versioning
 

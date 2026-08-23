@@ -7,7 +7,7 @@
  * provider. Proves the endpoint works end-to-end at the HTTP boundary: multipart
  * parsing → config load → cascade → wire response.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Hono } from "hono";
 import type { Env } from "../env";
 import { classify } from "./classify";
@@ -28,7 +28,7 @@ async function makePdf(pages: string[][]): Promise<Buffer> {
 }
 
 /** Real app with the route mounted; auth grants + infra handles pre-seeded. */
-function testApp() {
+function testApp(parseProvider: Record<string, unknown> = {}) {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => {
     c.set("grants", new Set(["job:run"]) as any);
@@ -36,12 +36,32 @@ function testApp() {
     c.set("principal", { userId: "u_test" } as any);
     c.set("db", {} as any);
     c.set("storage", {} as any);
-    c.set("parseProvider", {} as any); // no pageImages → vision tier skipped
+    // Default: no pageImages → vision tier skipped. Pass a provider to give the
+    // route a renderer. `parseConfig` is unset, so resolveParse hands this
+    // straight back as the effective provider.
+    c.set("parseProvider", parseProvider as any);
     await next();
   });
   app.route("/api/classify", classify);
   return app;
 }
+
+/** A PDF with pages but no text layer — what a scan looks like to the cascade. */
+async function makeTextlessPdf(pageCount = 2): Promise<Buffer> {
+  const { PDFDocument } = await import("pdf-lib");
+  const pdf = await PDFDocument.create();
+  for (let i = 0; i < pageCount; i++) pdf.addPage([612, 792]);
+  return Buffer.from(await pdf.save());
+}
+
+const VISION_CONFIG = `
+classify:
+  max_tier: 4
+  on_unknown: return
+classes:
+  invoice:
+    keywords: ["invoice", "amount due"]
+`;
 
 const CONFIG = `
 classify:
@@ -88,6 +108,33 @@ describe("POST /api/classify (integration)", () => {
     const res = await post(testApp(), buf, CONFIG.replace("on_unknown: return", "on_unknown: reject"));
     expect(res.status).toBe(422);
     expect((await res.json()).error).toBe("no class matched");
+  });
+
+  // oss-489: the route must hand its parse provider to the cascade, because
+  // that provider is the only source of rendered page images. When a BYO parse
+  // endpoint left the composed provider without `pageImages`, a text-less PDF
+  // silently skipped tier 4 and came back `unknown` in milliseconds.
+  describe("vision tier plumbing", () => {
+    it("says WHY it gave up when nothing can render pages", async () => {
+      const buf = await makeTextlessPdf();
+      const res = await post(testApp(), buf, VISION_CONFIG);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, string>;
+      expect(body.label).toBe("unknown");
+      expect(body.reason).toContain("cannot render page images");
+    });
+
+    it("reaches the vision tier when the parse provider can render pages", async () => {
+      const pageImages = vi.fn(async () => ({ images: ["b64page"] }));
+      const buf = await makeTextlessPdf();
+      const res = await post(testApp({ pageImages }), buf, VISION_CONFIG);
+      // The stub DB can't resolve a model endpoint, and the route reports that
+      // outage as a 503 rather than an `unknown` — which it can only do because
+      // the renderer reached the cascade and made tier 4 reachable. Before the
+      // fix this same request returned 200 `unknown`.
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: string }).error).toContain("model provider");
+    });
   });
 
   it("rejects an invalid config with 400", async () => {

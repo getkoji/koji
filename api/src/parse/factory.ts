@@ -10,6 +10,11 @@
  * everything else (scanned PDFs, images, DOCX/HTML/PPTX) to the heavy
  * backend. Large PDFs are then chunked via `ChunkedParseProvider`.
  *
+ * The backend-derived provider is ALSO handed to `SmartParseProvider` as its
+ * platform-capability fallback, so a tenant's BYO parse provider replaces text
+ * extraction without taking page rendering, page analysis, PDF slicing, or
+ * coordinate extraction down with it.
+ *
  * Config is injected so the same factory works under Node (where `index.ts`
  * reads `process.env`) and under Cloudflare Workers (where the entry point
  * reads `env.*` bindings). The providers themselves still allow constructor-
@@ -99,10 +104,17 @@ export async function createParseProvider(
   // configured) enables PB-10 doc-type routing for table-heavy docs. Otherwise
   // we keep the system default and doc-type routing stays off. This is the
   // BYO-parse hook — inert until a driver + a configured endpoint exist.
+  // `heavy` is passed twice on purpose: once as the routed provider (unless a
+  // tenant provider replaces it) and once as the platform capability fallback.
+  // BYO parse swaps out text extraction, but page rendering / page analysis /
+  // slicing / coordinate extraction are platform utilities no BYO driver
+  // implements — without the fallback they silently vanish for every tenant
+  // with a parse endpoint configured (oss-489).
   let provider: ParseProvider = new SmartParseProvider(
     new DigitalPdfProvider(),
     opts?.tenantHeavy ?? heavy,
     opts?.tenantStructured ?? null,
+    heavy,
   );
 
   // Wrap with chunked parsing for large PDFs (after SmartParseProvider)

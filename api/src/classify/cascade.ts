@@ -103,6 +103,14 @@ export async function runCascade(
   const classifyDocType = deps.classifyDocType ?? classifyDocument;
 
   let deepestTier: TierValue = Tier.METADATA;
+  /**
+   * Why each tier that could have decided the label didn't get to run. Rolled
+   * into the outcome's `reason` when nothing decides, so an `unknown` says
+   * whether the classifier looked and couldn't tell or never got to look
+   * (oss-489). Not populated once a tier returns a label — the answer is the
+   * explanation.
+   */
+  const skipped: string[] = [];
 
   // Tier 0 — metadata / doc type. Informs routing (does the cheap text path
   // even apply?) but never produces a class label on its own.
@@ -130,6 +138,9 @@ export async function runCascade(
   }
 
   const hasText = rankedPages.length > 0;
+  if (!hasText && config.maxTier >= Tier.KEYWORD) {
+    skipped.push("no extractable text layer, so the keyword and LLM tiers had nothing to read");
+  }
 
   // Disqualify classes whose exclude signals appear in the window text. Computed
   // once from the window and applied to every tier below, so an excluded class
@@ -164,6 +175,9 @@ export async function runCascade(
   }
 
   // Tier 3 — LLM over the windowed text.
+  if (config.maxTier >= Tier.LLM && hasText && !deps.provider) {
+    skipped.push("LLM tier skipped: no model provider");
+  }
   if (config.maxTier >= Tier.LLM && deps.provider && hasText) {
     deepestTier = Tier.LLM;
     const prompt = buildClassifyPrompt(rankedPages, eligibleClasses);
@@ -191,6 +205,22 @@ export async function runCascade(
 
   // Tier 4 — vision over rendered page images. The scanned/image tail: no text
   // layer, so deterministic and text-LLM tiers found nothing.
+  // Every missing prerequisite is reported, not just the first one found: a
+  // document that needs BOTH a vision-capable model and a renderer should say
+  // so once, instead of sending the operator back for a second run to discover
+  // the next thing that was also missing.
+  if (config.maxTier < Tier.VISION) {
+    skipped.push(`vision tier not allowed by maxTier=${config.maxTier}`);
+  } else {
+    const missing: string[] = [];
+    if (!deps.provider) missing.push("no model provider");
+    else if (!deps.provider.generateWithImage) {
+      missing.push("the model provider does not support image input");
+    }
+    // The oss-489 failure: a BYO parse provider with no `pageImages`.
+    if (!deps.renderPageImages) missing.push("the parse provider cannot render page images");
+    if (missing.length > 0) skipped.push(`vision tier skipped: ${missing.join(" and ")}`);
+  }
   if (
     config.maxTier >= Tier.VISION &&
     deps.provider?.generateWithImage &&
@@ -209,6 +239,9 @@ export async function runCascade(
         `[classify] vision render failed for ${input.filename}:`,
         err instanceof Error ? err.message : err,
       );
+    }
+    if (images.length === 0) {
+      skipped.push("vision tier produced no page images to classify");
     }
     for (let i = 0; i < images.length; i++) {
       let raw: string | null = null;
@@ -244,5 +277,6 @@ export async function runCascade(
     tierUsed: deepestTier,
     evidencePage: null,
     scores,
+    reason: skipped.length > 0 ? skipped.join("; ") : "no tier matched a class",
   };
 }
