@@ -88,6 +88,11 @@ def _make_response(status_code: int, body: dict | list) -> MagicMock:
     resp.status_code = status_code
     resp.json.return_value = body
     resp.text = str(body)
+    # Real dicts: the resolved-project reporter reads both, and a MagicMock
+    # would hand it a truthy mock for every header name.
+    resp.headers = {}
+    resp.request = MagicMock()
+    resp.request.headers = {}
     return resp
 
 

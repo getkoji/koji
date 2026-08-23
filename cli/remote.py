@@ -56,6 +56,57 @@ def emit_json(data: Any) -> None:
 # ── Auth / connection ─────────────────────────────────────────────────
 
 
+#: Response header carrying the project the SERVER resolved a request to. The
+#: client can name a project, but the server decides — from the header, the API
+#: key's own binding, or a default pick — and only it knows which.
+RESOLVED_PROJECT_HEADER = "x-koji-project-resolved"
+
+#: Print the local scope line at most once per process, however many API calls
+#: a command makes.
+_scope_announced = False
+
+
+def _announce_scope(source: str, project: str | None) -> None:
+    """Say which project this command is asking for, and where that came from.
+
+    Every project-scoped read and write went out with no indication of its
+    target. When the scope was wrong — a profile without a project, an
+    unexpected `KOJI_PROJECT`, an API key bound somewhere else — nothing said
+    so: `koji pull` wrote a different project's schemas over yours, and
+    `koji push` reported "created" for something that already existed in the
+    project you meant (oss-491).
+    """
+    global _scope_announced
+    if _scope_announced:
+        return
+    _scope_announced = True
+    if project:
+        err_console.print(f"[dim]project: {project} (from {source})[/dim]")
+    else:
+        err_console.print(f"[dim]project: unset in {source} — the API key's own project decides[/dim]")
+
+
+def note_resolved_project(resp: httpx.Response) -> None:
+    """Report the project the server actually used, when it can surprise you.
+
+    Silent when the server confirms the project we asked for; loud when we
+    asked for nothing and the server picked, because that is the case where a
+    command writes somewhere the operator was not looking.
+    """
+    resolved = resp.headers.get(RESOLVED_PROJECT_HEADER)
+    if not resolved:
+        return
+    asked = resp.request.headers.get("x-koji-project")
+    if asked == resolved:
+        return
+    if asked:
+        err_console.print(
+            f"[yellow]server resolved project '{resolved}', not the '{asked}' this command asked for.[/yellow]"
+        )
+    else:
+        err_console.print(f"[dim]server resolved project: {resolved}[/dim]")
+
+
 def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
     """Resolve (base_url, auth_headers) from env vars or a CLI profile.
 
@@ -64,6 +115,10 @@ def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
     profile, else the active profile, is used. A profile's `project` (set via
     `koji login --project`) is sent as the `x-koji-project` header — without
     it the server scopes requests to the API key's own project.
+
+    Announces the resolved scope on stderr, once per process. Which project a
+    command targets is not something the operator should have to reconstruct
+    afterwards from what changed.
     """
     env_url = os.environ.get("KOJI_API_URL")
     env_key = os.environ.get("KOJI_API_KEY")
@@ -72,6 +127,7 @@ def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
         headers = {"Authorization": f"Bearer {env_key}"}
         if env_project:
             headers["x-koji-project"] = env_project
+        _announce_scope("KOJI_PROJECT", env_project)
         return env_url.rstrip("/"), headers
 
     if profile_name:
@@ -91,6 +147,8 @@ def resolve_api(profile_name: str | None = None) -> tuple[str, dict[str, str]]:
     headers = {"Authorization": f"Bearer {profile.api_key}"}
     if profile.project:
         headers["x-koji-project"] = profile.project
+    label = f"profile '{profile.name}'" if profile.name else "the active profile"
+    _announce_scope(label, profile.project)
     return profile.url.rstrip("/"), headers
 
 

@@ -35,6 +35,19 @@ x-koji-tenant: your-tenant-slug
 x-koji-project: your-project-slug   # optional with session auth
 ```
 
+Because two of those three sources are invisible to the caller, every
+authenticated response echoes the project it resolved to:
+
+```
+x-koji-project-resolved: your-project-slug
+```
+
+Read it whenever a request writes something. A client that assumes its scope
+rather than checking it can create a resource in one project while reading
+another — and every response along the way looks successful.
+
+
+
 **An API key's project scope.** A key is scoped to one of:
 
 - **single project** (the default; every legacy key) — the project it was

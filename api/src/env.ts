@@ -27,6 +27,10 @@ export type Env = {
      *  project, or the tenant's default project. Undefined only for tenants
      *  with zero projects (mid-setup). */
     projectId: string | undefined;
+    /** Slug of the resolved project, mirrored onto every authenticated response
+     *  as `x-koji-project-resolved` so a client can see which project actually
+     *  answered instead of assuming (oss-491). */
+    projectSlug: string | undefined;
     /** The projects the current session member may access, or `null` when the
      *  member is unrestricted (all projects). Set by the auth middleware. */
     accessibleProjectIds: Set<string> | null;

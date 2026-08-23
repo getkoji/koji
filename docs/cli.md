@@ -283,6 +283,34 @@ or a live release. If the content you are pushing matches a *different* existing
 release, the push is refused rather than moving the live pointer — promote that
 version deliberately instead.
 
+**Check the project line.** Every remote command opens by naming the project it
+resolved and where that came from — `project: acme-policy (from profile
+'acme-policy')`, or `project: unset in profile 'acme' — the API key's own
+project decides`. A push into a project you weren't looking at is not obviously
+wrong from its output: an artifact that exists in the project you meant does
+not exist in the project you hit, so `push` correctly reports it as `created`.
+When the server resolves a project you didn't ask for, `push` and `pull` say
+so.
+
+### `koji pull`
+
+The inverse of `push`: writes every schema in the resolved project to local YAML
+files. Existing files are overwritten.
+
+```bash
+koji pull                       # → ./schemas/
+koji pull -o ./config/schemas   # → somewhere else
+```
+
+| Flag | Description |
+|------|-------------|
+| `--output`, `-o` | Directory to write into. Default `./schemas`. |
+| `--profile`, `-p` | CLI profile to use. |
+
+Pulls from the project the profile (or `KOJI_PROJECT`) names, and prints which
+project answered. If that isn't the project you expected, the files you just
+overwrote came from somewhere else.
+
 ### `koji validate`
 
 Backtest a schema against its corpus ground truth — **safely**. Snapshots your local YAML as a release **candidate** (`v0.0.4-rc.N`, deduped by content), then runs the platform's validation — re-extracting every corpus doc that has ground truth and scoring it — and prints overall + per-field accuracy, regressions, and failing docs. The run executes in the background on the server (each document as its own job) while the CLI shows a live progress bar — a large corpus or an expensive schema (e.g. `enumerate_rows` fields) never hits a request timeout. Array fields are scored by F1 and show a `P/R` (precision/recall) column so you can tell missed elements from spurious ones; `--json` includes `precision`/`recall` per array field. **The candidate is not made live**: iterating never touches the schema your pipelines run. The semver bump (`major`/`minor`/`patch`) is auto-derived from how the output shape changed.
