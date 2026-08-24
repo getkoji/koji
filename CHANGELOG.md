@@ -937,11 +937,11 @@ draft / approved) to drive the queue.
 **Fixed: localized text-layer corruption on one page of a large document no
 longer poisons extraction.** Some digital PDFs carry a text layer whose
 inter-word spacing lives in glyph geometry; the fast (pdfjs) parser drops it and
-emits scrambled fragments (`"The Ci nc i nn at i I n su ra nc e C o m pa ny"`).
+emits scrambled fragments (`"The No rt hg at e I n su ra nc e C o m pa ny"`).
 The corruption check that reroutes such documents to the higher-fidelity parser
 was document-level, so a single mangled page inside an otherwise-clean multi-page
 policy averaged out below the detection threshold and slipped through — yielding
-wrong values (e.g. a website read as `cinfini.com` instead of `cinfin.com`) with
+wrong values (e.g. a website read as `exampleco.com` instead of `examplec.com`) with
 low confidence and no located source. Detection now also slides a window across
 the document and reroutes when any span shows the fragment signature, so a few
 bad pages can't hide behind the whole-document average. Tuned against 1,114

@@ -25,7 +25,7 @@
  * 1. Hard fail: if the lite provider throws, fall back to heavy.
  * 2. Soft fail: if the lite provider returns markdown that *looks* corrupt
  *    (mostly 1-2 character fragments, heavy fragmentation), fall back to
- *    heavy. This caught the Cincinnati CinciPak regression where LiteParse
+ *    heavy. This caught the commercial-carrier regression where LiteParse
  *    returned text items with scrambled positions and the model silently
  *    consumed the resulting garbage.
  *
