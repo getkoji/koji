@@ -13,7 +13,7 @@ import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, getRlsScope } from "../auth/middleware";
 import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { extractKVPairs } from "../extract/kv-pairs";
-import { classifyDocType, getTemplate } from "../extract/schema-templates";
+import { buildStarterSchema } from "../extract/starter-schema";
 import { buildAgentPrompt, parseAgentResponse, type AgentMessage } from "../extract/agent-prompt";
 import { compileSchema } from "../schemas/compiler";
 
@@ -103,16 +103,25 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   const markdownHead = markdown.slice(0, 2000);
   const kvPairs = markdown ? extractKVPairs(markdown).slice(0, 40) : [];
 
-  // 5. Classify doc type on first turn
+  // 5. Seed the first turn from the document itself.
+  //
+  // This used to classify the document with a regex and hand the editor one of
+  // eight built-in vertical templates. That could only be right for the
+  // industries someone had enumerated — and a document that merely said "policy
+  // number" was given insurance field names regardless of what it actually was.
+  // The skeleton now comes from the document's own labels, so the starting
+  // point fits the document instead of a guessed industry. The document type,
+  // when the user sees one at all, comes from the model's `<doc_type>` block.
   const isFirstTurn = history.length === 0;
-  let docType: string | undefined;
   let proposedYaml = body.yaml;
 
   if (isFirstTurn && markdown) {
-    docType = classifyDocType(kvPairs, markdownHead);
-    // If current YAML looks like a default/empty schema, propose template
-    if (!body.yaml.trim() || body.yaml.includes("example_field") || body.yaml.trim().length < 50) {
-      proposedYaml = getTemplate(docType as any);
+    const looksUnstarted =
+      !body.yaml.trim() || body.yaml.includes("example_field") || body.yaml.trim().length < 50;
+    if (looksUnstarted) {
+      // Null when the document yielded nothing usable — then leave the editor
+      // as it is and let the model propose from the document text.
+      proposedYaml = buildStarterSchema(slug, kvPairs) ?? proposedYaml;
     }
   }
 
@@ -124,7 +133,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
     history,
     body.message,
     proposedYaml,
-    { markdown_head: markdownHead, kv_pairs: kvPairs, doc_type: docType },
+    { markdown_head: markdownHead, kv_pairs: kvPairs },
   );
 
   let rawResponse: string;
@@ -147,7 +156,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
         [...history, { role: "user", content: body.message }, { role: "assistant", content: rawResponse }],
         `Your schema had validation errors: ${compileErr instanceof Error ? compileErr.message : String(compileErr)}. Please fix the YAML and return a corrected version.`,
         parsed.yaml,
-        { markdown_head: markdownHead, kv_pairs: kvPairs, doc_type: docType },
+        { markdown_head: markdownHead, kv_pairs: kvPairs },
       );
       try {
         const retryResponse = await provider.generate(retryPrompt, false);
@@ -185,7 +194,7 @@ agentRouter.post("/:slug/agent", requires("schema:write"), async (c) => {
   return c.json({
     yaml: finalYaml,
     explanation: parsed.explanation,
-    doc_type: parsed.doc_type ?? docType ?? null,
+    doc_type: parsed.doc_type ?? null,
   });
 });
 

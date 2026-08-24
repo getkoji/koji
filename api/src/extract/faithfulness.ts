@@ -31,7 +31,7 @@
 import { numericAnchoredInText } from "./provenance";
 
 export interface NulledNumeric {
-  /** Dotted path to the nulled leaf, e.g. `coverages[0].limits[1].deductible`. */
+  /** Dotted path to the nulled leaf, e.g. `line_items[0].charges[1].amount`. */
   path: string;
   /** The fabricated value that was removed. */
   value: number;

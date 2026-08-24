@@ -26,8 +26,21 @@ const NOISE_LABELS = new Set([
   "note", "notes", "see", "ref", "reference",
 ]);
 
-// Patterns that indicate a label (not just any word before a colon)
-const LABEL_INDICATORS = /^[A-Z]|[a-z]\s[A-Z]|#|number|name|date|amount|limit|total|policy|insured|carrier|premium|address|phone|email|type|status|id\b/i;
+/**
+ * What makes a string on the left of a colon a *label* rather than prose.
+ *
+ * Purely structural: a leading capital, an internal capital (Title Case), or a
+ * `#` marker. This used to carry a word list that included `policy`, `insured`,
+ * `carrier`, and `premium` — so an insurance document's lowercase labels were
+ * recognised and a shipping manifest's, a lab report's, or a lease's were not.
+ * Every document type the engine has never heard of was quietly worse served
+ * than the one industry someone had in mind.
+ *
+ * The structural signals below already catch the labels those words caught,
+ * because a label in a real document is capitalised. Nothing here knows what
+ * the document is about.
+ */
+const LABEL_INDICATORS = /^[A-Z]|[a-z]\s[A-Z]|#/;
 
 /**
  * Extract all key-value pairs from parsed markdown.
@@ -99,6 +112,18 @@ function normalizeKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * A short label with a short value — the shape of a data cell rather than
+ * prose. Used to keep lowercase labels that capitalisation alone would drop.
+ */
+function isDataShapedPair(label: string, value: string): boolean {
+  const words = label.trim().split(/\s+/);
+  if (words.length > 4) return false;
+  if (!/^[\w][\w\s/&.#-]*$/.test(label)) return false;
+  // Prose runs long and ends in a full stop; a data value does neither.
+  return value.length <= 60 && !/[.!?]$/.test(value.trim());
+}
+
 function isValidPair(label: string, value: string, seen: Set<string>): boolean {
   // Too short or too long
   if (label.length < 2 || label.length > 60) return false;
@@ -107,8 +132,12 @@ function isValidPair(label: string, value: string, seen: Set<string>): boolean {
   // Noise filter
   if (NOISE_LABELS.has(label.toLowerCase())) return false;
 
-  // Must look like a label (starts with capital, or contains indicator words)
-  if (!LABEL_INDICATORS.test(label)) return false;
+  // Must look like a label. Capitalisation is the primary signal; a lowercase
+  // label still counts when the pair is short and data-shaped, which is what a
+  // lowercased table cell looks like ("quantity | 42"). Before, a lowercase
+  // label survived only if it contained one of a handful of insurance words,
+  // so `policy number` was kept and `specimen id` was dropped.
+  if (!LABEL_INDICATORS.test(label) && !isDataShapedPair(label, value)) return false;
 
   // Value shouldn't be another label pattern
   if (/^[A-Z][\w\s]{2,30}:/.test(value)) return false;
@@ -121,7 +150,13 @@ function isValidPair(label: string, value: string, seen: Set<string>): boolean {
 }
 
 /**
- * Summary stats for quick overview.
+ * Summary stats for quick overview — what SHAPES of value the document
+ * carries, not what it is about.
+ *
+ * `hasNames` used to test for `insured|policyholder|applicant|holder` and a few
+ * company suffixes, which reported "no names" for a document full of patient,
+ * tenant, or claimant names. It now looks for the shape of a proper noun: two
+ * or more consecutive capitalised words in a value.
  */
 export function kvPairsSummary(pairs: KVPair[]): {
   total: number;
@@ -129,11 +164,13 @@ export function kvPairsSummary(pairs: KVPair[]): {
   hasDates: boolean;
   hasNames: boolean;
 } {
-  const labels = pairs.map((p) => p.label.toLowerCase() + " " + p.value.toLowerCase()).join(" ");
+  const blob = pairs.map((p) => p.label + " " + p.value).join(" ");
   return {
     total: pairs.length,
-    hasAmounts: /\$[\d,.]+/.test(labels),
-    hasDates: /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/.test(labels),
-    hasNames: /insured|policyholder|applicant|holder|company|corp|inc|llc/i.test(labels),
+    // Any currency symbol before a number, not one locale's.
+    hasAmounts: /[^\w\s]\s?\d[\d,.]*/.test(blob) || /\d[\d,]*\.\d{2}\b/.test(blob),
+    hasDates:
+      /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}/.test(blob) || /\b\d{4}-\d{2}-\d{2}\b/.test(blob),
+    hasNames: pairs.some((p) => /\b[A-Z][A-Za-z'.-]*(?:\s+[A-Z][A-Za-z'.-]*)+/.test(p.value)),
   };
 }

@@ -255,9 +255,9 @@ function selectCoverageMax(
   chunksPerSection: number = DEFAULT_CHUNKS_PER_SECTION,
 ): { chunks: Chunk[]; sectionsFound: number } {
   // Group ALL chunks per section (score-descending within each), not just the
-  // best one — a coverage-part/limits table that spans multiple chunks with the
-  // same heading must keep every chunk, or the rows in the dropped chunks never
-  // reach the model (the intra-section recall bug).
+  // best one — a table that spans multiple chunks under the same heading must
+  // keep every chunk, or the rows in the dropped chunks never reach the model
+  // (the intra-section recall bug).
   const bySection = new Map<string, Chunk[]>();
   for (const [, chunk] of scored) {
     const key = sectionKey(chunk);

@@ -16,19 +16,19 @@
  * Spec shape (YAML):
  *
  *   forms:
- *     - id: premium_summary
- *       detect: "SUMMARY OF PREMIUMS CHARGED"     # optional presence gate
- *       anchor: "SUMMARY OF PREMIUMS CHARGED"     # region start (regex)
- *       end: "ANNUAL TOTAL|PAYMENTS"              # region end (regex, optional)
- *       field: coverages                          # target array field
+ *     - id: charge_summary
+ *       detect: "SUMMARY OF CHARGES"              # optional presence gate
+ *       anchor: "SUMMARY OF CHARGES"              # region start (regex)
+ *       end: "TOTAL DUE|PAYMENTS"                 # region end (regex, optional)
+ *       field: line_items                         # target array field
  *       row:
- *         pattern: "(?<label>[A-Z][A-Za-z /&]+ Coverage Part)\\s*\\$\\s*(?<amount>[\\d,]+|INCL)?"
+ *         pattern: "(?<label>[A-Z][A-Za-z /&]+ Item)\\s*\\$\\s*(?<amount>[\\d,]+|N/A)?"
  *         require: [label]                        # groups that must be non-empty
  *         skip_when_blank: [amount]               # blank group → row not emitted
  *       set:
  *         label: "{label}"
- *         coverage_code: { resolve: "{label}", via: coverage_code }
- *         premium: { money: "{amount}", null_tokens: [INCL] }
+ *         item_code: { resolve: "{label}", via: item_code }
+ *         amount: { money: "{amount}", null_tokens: [N/A] }
  *
  * Region text is normalized before matching: table pipes become spaces and
  * whitespace collapses, so the same grammar matches plain lines, pipe-table
