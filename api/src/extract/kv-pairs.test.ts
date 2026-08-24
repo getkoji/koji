@@ -137,6 +137,25 @@ POLICY EXPIRATION: 04/01/2027`;
   });
 });
 
+// oss-498: the label test used to carry `policy|insured|carrier|premium`, so a
+// lowercase label was kept for one industry and dropped for every other.
+describe("label recognition is industry-neutral", () => {
+  it.each([
+    ["a policy table", "| policy number | GL-4471 |", "policy number"],
+    ["a lab report", "| specimen id | SP-90210 |", "specimen id"],
+    ["a shipping manifest", "| container no | MSKU4471 |", "container no"],
+    ["a lease", "| monthly rent | 2,400 |", "monthly rent"],
+  ])("keeps a lowercase data-shaped label — %s", (_case, md, expected) => {
+    const pairs = extractKVPairs(md);
+    expect(pairs.map((p) => p.label)).toContain(expected);
+  });
+
+  it("still rejects prose that happens to contain a colon", () => {
+    const md = "| the parties agree as follows | that each of them shall indemnify the other in full. |";
+    expect(extractKVPairs(md)).toHaveLength(0);
+  });
+});
+
 describe("kvPairsSummary", () => {
   it("detects dollar amounts", () => {
     const pairs = [{ label: "Premium", value: "$12,500.00", position: 0 }];
@@ -151,10 +170,20 @@ describe("kvPairsSummary", () => {
     expect(summary.hasDates).toBe(true);
   });
 
-  it("detects insurance names", () => {
-    const pairs = [{ label: "Named Insured", value: "ABC Corp", position: 0 }];
-    const summary = kvPairsSummary(pairs);
-    expect(summary.hasNames).toBe(true);
+  // Proper-noun SHAPE, not a vocabulary. The previous implementation tested for
+  // `insured|policyholder|applicant|holder`, so a document full of patient,
+  // tenant, or claimant names reported "no names" (oss-498).
+  it.each([
+    ["an organisation", "ABC Corp"],
+    ["a person", "Maria Gonzalez"],
+    ["a hyphenated surname", "Jean-Luc Picard"],
+    ["a facility", "St. Jude Medical Center"],
+  ])("detects a name-shaped value — %s", (_label, value) => {
+    expect(kvPairsSummary([{ label: "Party", value, position: 0 }]).hasNames).toBe(true);
+  });
+
+  it("does not call a plain value a name", () => {
+    expect(kvPairsSummary([{ label: "Quantity", value: "42", position: 0 }]).hasNames).toBe(false);
   });
 
   it("handles empty pairs", () => {

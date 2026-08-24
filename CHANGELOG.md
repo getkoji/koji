@@ -2,6 +2,39 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.0 — 2026-08-23
+
+**The engine no longer contains insurance domain logic.** Koji is a generic
+document platform: what a document *is* belongs in your schemas and
+classifiers, not in the engine. Four places had drifted from that, and each of
+them made the product quietly worse at every industry except one.
+
+- **The schema builder proposed a canned vertical template.** A hardcoded regex
+  classified the uploaded document as one of eight built-in types and seeded the
+  editor with a matching template — so a lease, a lab result, a bill of lading,
+  or a permit got an empty skeleton, while any document that mentioned "policy
+  number" was offered insurance fields (carrier, named insured, premium). The
+  first draft is now built from the document's own labels, with field types
+  inferred from the shape of each value, and the document type (when shown) comes
+  from the model rather than a regex. The eight built-in templates are gone.
+- **Key-value extraction recognised insurance labels specifically.** The test for
+  "is this a label" carried the words `policy`, `insured`, `carrier`, and
+  `premium`, so a lowercase label was kept for one industry and dropped for every
+  other. It is now structural — capitalisation, or a short data-shaped pair — and
+  `specimen id`, `container no`, and `monthly rent` are kept exactly as
+  `policy number` was. The "has names" summary likewise tests for the shape of a
+  proper noun instead of a list of insurance roles.
+- **Form fingerprints were boosted only for insurance forms.** High-signal terms
+  came from a fixed list (`ACORD 25`, `certificate of liability insurance`,
+  `declarations page`); every other form had to be matched on frequent-word
+  overlap alone. Fingerprints now take the form's own title line and its printed
+  form code, so a CMS-1500, a W-9, a bill of lading, or a building permit each
+  get the same quality of identifier an ACORD 25 always had. Existing stored
+  fingerprints are matched against raw incoming text and are unaffected; only
+  newly activated mappings fingerprint differently.
+- Insurance illustrations in engine comments and doc examples were replaced with
+  neutral ones. Test fixtures keep their domain data — that's test data.
+
 ## 0.108.5 — 2026-08-22
 
 **Fix: `koji validate --no-push` validates the version that is actually live.**
