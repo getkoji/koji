@@ -975,7 +975,12 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
     const durationMs = Date.now() - stepStart;
     totalCost += cost;
 
-    // Persist step run
+    // Persist step run. Upsert, not insert: `pipeline_step_runs` is UNIQUE on
+    // (document_id, step_id), and a retry re-walks the DAG from the entry step,
+    // so a plain insert throws on every step the previous attempt already
+    // recorded. That made retries a guaranteed failure — the attempt counter
+    // burned down to max_retries and the document was stranded mid-run
+    // (oss-493). The latest attempt's result wins.
     await withRLS(db, tenantId, (tx) =>
       tx.insert(schema.pipelineStepRuns).values({
         tenantId,
@@ -991,6 +996,23 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
         costUsd: String(cost),
         startedAt: new Date(Date.now() - durationMs),
         completedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: [schema.pipelineStepRuns.documentId, schema.pipelineStepRuns.stepId],
+        set: {
+          jobId: doc.jobId,
+          stepType: step.type,
+          stepOrder,
+          status,
+          outputJson: output,
+          // `?? null` matters: Drizzle omits `undefined` from the SET clause, so a
+          // step that failed on attempt 1 and succeeded on attempt 2 would keep the
+          // stale error text next to a `completed` status.
+          errorMessage: error ?? null,
+          durationMs,
+          costUsd: String(cost),
+          startedAt: new Date(Date.now() - durationMs),
+          completedAt: new Date(),
+        },
       }),
     );
 
@@ -1107,6 +1129,7 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
           const branchDurationMs = Date.now() - branchStart;
           totalCost += branchCost;
 
+          // Upsert for the same reason as the sequential path above (oss-493).
           await withRLS(db, tenantId, (tx) =>
             tx.insert(schema.pipelineStepRuns).values({
               tenantId,
@@ -1122,6 +1145,21 @@ Only report genuine contradictions, not acceptable differences (e.g., different 
               costUsd: String(branchCost),
               startedAt: new Date(Date.now() - branchDurationMs),
               completedAt: new Date(),
+            }).onConflictDoUpdate({
+              target: [schema.pipelineStepRuns.documentId, schema.pipelineStepRuns.stepId],
+              set: {
+                jobId: doc.jobId,
+                stepType: branchStep.type,
+                stepOrder,
+                status: branchStatus,
+                outputJson: branchOutput,
+                // See the sequential path — `undefined` would be dropped from SET.
+                errorMessage: branchError ?? null,
+                durationMs: branchDurationMs,
+                costUsd: String(branchCost),
+                startedAt: new Date(Date.now() - branchDurationMs),
+                completedAt: new Date(),
+              },
             }),
           );
 

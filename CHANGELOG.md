@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.1 — 2026-08-24
+
+**Retrying a document on a DAG pipeline now works.** A retry re-walks the
+pipeline from its entry step, but each step's result was written with a plain
+insert into a table that is unique on (document, step) — so the first step the
+previous attempt had already recorded failed the write, and with it the whole
+retry. Every subsequent attempt failed the same way until the retry budget was
+gone, leaving the document stuck mid-run and its job never marked failed. The
+practical effect was that *no* transient error on a DAG pipeline was ever
+recoverable: a momentary model timeout or parse-provider blip stranded the
+document permanently. Step results are now upserted, so a retry overwrites the
+previous attempt rather than colliding with it, and a step that failed once and
+succeeds on retry no longer keeps the stale error text beside its new result.
+
 ## 0.110.0 — 2026-08-23
 
 **The engine no longer contains insurance domain logic.** Koji is a generic
