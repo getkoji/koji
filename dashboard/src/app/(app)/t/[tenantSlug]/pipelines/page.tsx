@@ -478,7 +478,7 @@ function CreatePipelineDialog({
               <input
                 value={name}
                 onChange={(e) => handleNameChange(e.target.value)}
-                placeholder="e.g. Claims Intake"
+                placeholder="e.g. Inbound Documents"
                 autoFocus
                 aria-invalid={Boolean(showErrors && errors.name)}
                 className={inputClass(showErrors && errors.name)}

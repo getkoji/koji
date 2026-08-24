@@ -707,7 +707,7 @@ function CreateSchemaDialog({
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Insurance Claim"
+              placeholder="e.g. Document Intake"
               autoFocus
               data-1p-ignore
               autoComplete="off"

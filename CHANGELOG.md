@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.1 — 2026-08-24
+
+**Dashboard placeholder copy is no longer insurance-branded.** The example text
+in the form-mapping, project, pipeline, and classify-label inputs named ACORD
+25, "Insurance Claim", "Claims Intake", and `certificate_of_insurance`. Koji
+processes any document, and the first thing a new user reads should not imply
+otherwise. The engine itself was cleared of domain logic in 0.110.0; this is the
+same change to what the product says out loud.
+
 ## 0.110.0 — 2026-08-23
 
 **The engine no longer contains insurance domain logic.** Koji is a generic
