@@ -7,7 +7,7 @@
  * outside routes/schemas.ts so the finalizer can import it without a cycle.
  */
 
-import { compareValues, type ValueDiff } from "../extract/value-compare";
+import { compareValues, type ArrayElemDiff, type ValueDiff } from "../extract/value-compare";
 
 /** Per-field chunk-routing record produced by the intelligent pipeline. */
 export type RoutingPlan = Record<
@@ -80,6 +80,41 @@ export function answerPresentInText(expected: unknown, text: string | undefined)
   return null;
 }
 
+
+/** Element-status counts for array fields (oss-507). */
+export interface ElementTally {
+  /** Expected elements across every scored doc. */
+  expected: number;
+  /** Emitted elements across every scored doc. */
+  got: number;
+  /** Paired with an expected element and identical. */
+  matched: number;
+  /** Paired with an expected element but a sub-field differs. */
+  changed: number;
+  /** Expected but never found — the recall loss. */
+  missing: number;
+  /** Emitted with no expected counterpart — the precision loss. */
+  extra: number;
+}
+
+function emptyTally(): ElementTally {
+  return { expected: 0, got: 0, matched: 0, changed: 0, missing: 0, extra: 0 };
+}
+
+function tallyElements(
+  into: ElementTally,
+  diff: { expectedCount: number; gotCount: number; elements: ArrayElemDiff[] },
+): void {
+  into.expected += diff.expectedCount;
+  into.got += diff.gotCount;
+  for (const el of diff.elements) {
+    if (el.status === "matched") into.matched += 1;
+    else if (el.status === "changed") into.changed += 1;
+    else if (el.status === "missing") into.missing += 1;
+    else into.extra += 1;
+  }
+}
+
 /** Compare extraction results against ground truth and compute accuracy/regressions. */
 export function computeValidateResult(
   results: ValidateDocResult[],
@@ -106,9 +141,14 @@ export function computeValidateResult(
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; elements?: ElementTally; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
   let totalScore = 0;
   let totalChecked = 0;
+  // Run-wide element tally across every array field (oss-507). A document is
+  // counted as failing if ANY field mismatches, so a ten-row table with one
+  // wrong cell fails the whole document — `docsPassed` cannot express array
+  // quality, and it saturates exactly where most of the work happens.
+  const runElements = emptyTally();
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
@@ -117,6 +157,7 @@ export function computeValidateResult(
     // Precision/recall accumulate only over docs whose expected value is an
     // array, so array fields can report both alongside the F1 accuracy.
     let precSum = 0, recSum = 0, arrChecked = 0;
+    const fieldElements = emptyTally();
     const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> = [];
 
     for (const r of results) {
@@ -129,6 +170,8 @@ export function computeValidateResult(
         precSum += cmp.diff.precision;
         recSum += cmp.diff.recall;
         arrChecked++;
+        tallyElements(fieldElements, cmp.diff);
+        tallyElements(runElements, cmp.diff);
       }
 
       if (!cmp.match) {
@@ -182,7 +225,15 @@ export function computeValidateResult(
       arrChecked > 0
         ? { precision: (precSum / arrChecked) * 100, recall: (recSum / arrChecked) * 100 }
         : {};
-    fieldResults.push({ name: fieldName, accuracy, prevAccuracy, status, ...prAgg, failingDocs: failing });
+    fieldResults.push({
+      name: fieldName,
+      accuracy,
+      prevAccuracy,
+      status,
+      ...prAgg,
+      ...(arrChecked > 0 ? { elements: fieldElements } : {}),
+      failingDocs: failing,
+    });
   }
 
   fieldResults.sort((a, b) => a.accuracy - b.accuracy);
@@ -197,6 +248,18 @@ export function computeValidateResult(
      * be recorded as a perfect one, so `checkRunSanity` gates on this.
      */
     scoredCount: totalChecked,
+    /**
+     * Element-level totals over every array field in the run (oss-507).
+     *
+     * `docsPassed` is all-or-nothing per document, so a ten-row four-column
+     * table extracted at 99% per-cell accuracy is recorded as a flat failure
+     * and array work cannot be evaluated from it. These counts separate the
+     * three array failure modes a single boolean collapses: `changed` (row
+     * found, a sub-field differs), `missing` (row never found — the recall
+     * loss), `extra` (row invented — the precision loss). `null` when the run
+     * scored no array fields.
+     */
+    elements: runElements.expected > 0 || runElements.got > 0 ? runElements : null,
     prevAccuracy: null,
     // Attempted docs = scored docs + docs that failed to parse/extract. Counting
     // failures keeps accuracy honest — a dropped doc can't silently shrink the

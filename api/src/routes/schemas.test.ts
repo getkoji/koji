@@ -303,3 +303,135 @@ describe("computeValidateResult — F1 array scoring + precision/recall reportin
     expect(field.recall).toBeUndefined();
   });
 });
+
+describe("computeValidateResult — element tallies make array quality legible (oss-507)", () => {
+  const schemaFields = {
+    coverages: {
+      type: "array",
+      hints: { element_key: "code" },
+      items: { type: "object", properties: { code: { type: "string" }, limit: { type: "string" } } },
+    },
+    policy_number: { type: "string" },
+  };
+
+  it("counts one wrong cell in a ten-row table as one changed element, not a failed document", () => {
+    // This is the saturation the tally exists to break: `docsPassed` is
+    // all-or-nothing, so ten rows with a single wrong sub-field score the same
+    // as ten rows of garbage.
+    const rows = Array.from({ length: 10 }, (_, i) => ({ code: `C${i}`, limit: `${i}000` }));
+    const emitted = rows.map((r, i) => (i === 3 ? { code: r.code, limit: "WRONG" } : r));
+    const out = computeValidateResult(
+      [
+        {
+          entryId: "d1",
+          filename: "policy.pdf",
+          groundTruth: { coverages: rows },
+          extracted: { coverages: emitted },
+          confidenceScores: { coverages: 0.9 },
+        } as Result,
+      ],
+      new Map(),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    expect(out.docsPassed).toBe(0); // the document still "fails" — unchanged
+    expect(out.elements).toEqual({
+      expected: 10,
+      got: 10,
+      matched: 9,
+      changed: 1,
+      missing: 0,
+      extra: 0,
+    });
+  });
+
+  it("separates the three array failure modes a boolean collapses", () => {
+    const out = computeValidateResult(
+      [
+        {
+          entryId: "d1",
+          filename: "policy.pdf",
+          groundTruth: {
+            coverages: [
+              { code: "GL", limit: "1000000" },
+              { code: "PROP", limit: "2000000" },
+              { code: "AUTO", limit: "500000" },
+            ],
+          },
+          // GL exact, PROP found with a wrong limit, AUTO never found, UMB invented.
+          extracted: {
+            coverages: [
+              { code: "GL", limit: "1000000" },
+              { code: "PROP", limit: "9999999" },
+              { code: "UMB", limit: "5000000" },
+            ],
+          },
+          confidenceScores: { coverages: 0.9 },
+        } as Result,
+      ],
+      new Map(),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    expect(out.elements).toEqual({
+      expected: 3,
+      got: 3,
+      matched: 1,
+      changed: 1, // row found, sub-field differs
+      missing: 1, // recall loss
+      extra: 1, // precision loss
+    });
+  });
+
+  it("attaches per-field tallies to array fields only", () => {
+    const out = computeValidateResult(
+      [
+        {
+          entryId: "d1",
+          filename: "policy.pdf",
+          groundTruth: { coverages: [{ code: "GL", limit: "1" }], policy_number: "ABC-123" },
+          extracted: { coverages: [{ code: "GL", limit: "1" }], policy_number: "ABC-123" },
+          confidenceScores: {},
+        } as Result,
+      ],
+      new Map(),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    expect(out.fields.find((f) => f.name === "coverages")!.elements).toEqual({
+      expected: 1,
+      got: 1,
+      matched: 1,
+      changed: 0,
+      missing: 0,
+      extra: 0,
+    });
+    expect(out.fields.find((f) => f.name === "policy_number")!.elements).toBeUndefined();
+  });
+
+  it("reports null when the run scored no arrays at all", () => {
+    const out = computeValidateResult(
+      [
+        {
+          entryId: "d1",
+          filename: "policy.pdf",
+          groundTruth: { policy_number: "ABC-123" },
+          extracted: { policy_number: "ABC-123" },
+          confidenceScores: {},
+        } as Result,
+      ],
+      new Map(),
+      1,
+      Date.now(),
+      [],
+      { policy_number: { type: "string" } },
+    );
+    expect(out.elements).toBeNull();
+  });
+});
