@@ -16,6 +16,7 @@ import { normalizeExtracted } from "./normalize";
 import { validateExtracted } from "./validate";
 import { arrayItemProperties, objectProperties, resolveVocab } from "./schema-tree";
 import { resolveProvenance, type ProvenanceMap, type TextMap } from "./provenance";
+import { elementValidationRate, type FieldSchema } from "./field-confidence";
 import { applyFormTables } from "./form-tables";
 import type { FitReport } from "./fit";
 import type { ParseChunk } from "../parse/chunk";
@@ -681,8 +682,14 @@ function buildConfidence(
       provStrength = 1.0;
     }
 
-    // Validation bonus
-    const valBonus = failedFields.has(fieldName) ? 0 : 1;
+    // Validation term. Scalars get 1 or 0 from the validator's issue list.
+    // An array with a declared element shape gets the share of its elements'
+    // declared, present sub-fields that satisfy their declared types — arrays
+    // skip the scalar type validation that populates `failedFields`, so this
+    // term used to be an unconditional 1 and every list collected the full
+    // 0.30 for a check that never ran (oss-504).
+    const elementRate = elementValidationRate(value, fields[fieldName] as FieldSchema);
+    const valBonus = failedFields.has(fieldName) ? 0 : (elementRate ?? 1);
 
     // Deterministic scoring: provenance + validation only
     let score = W_PROV * provStrength + W_VAL * valBonus;
