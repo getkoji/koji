@@ -451,7 +451,7 @@ describe("detectCorruption", () => {
   it("flags space-mangled output (Type-3 long-token signature)", () => {
     // Whole phrases collapsed into single tokens, as pdfjs emits on Type-3 /
     // custom-encoded fonts. ~21% of tokens are >=20 chars (matches the failing
-    // Catawba doc) — well over the 10% threshold.
+    // real-world regression doc) — well over the 10% threshold.
     const mashed = [
       "STATEFARMFIREANDCASUALTYCOMPANY",
       "ASTOCKCOMPANYWITHHOMEOFFICESINBLOOMINGTONILLINOIS",

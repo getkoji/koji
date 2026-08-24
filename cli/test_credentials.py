@@ -190,14 +190,14 @@ class TestVerifyProfileConnectivity:
             if url.endswith("/api/me"):
                 return _FakeResp(200, {"email": "f@x.com"})
             if url.endswith("/api/tenants"):
-                return _FakeResp(200, {"data": [{"slug": "superkey"}, {"slug": "koji"}]})
+                return _FakeResp(200, {"data": [{"slug": "northgate"}, {"slug": "koji"}]})
             return _FakeResp(404)
 
         monkeypatch.setattr(httpx, "get", fake_get)
         ok, msg = verify_profile_connectivity(Profile(url="https://x", api_key="good"))
         assert ok is True
         assert "f@x.com" in msg
-        assert "superkey" in msg
+        assert "northgate" in msg
 
     def test_unreachable_server(self, monkeypatch):
         import httpx

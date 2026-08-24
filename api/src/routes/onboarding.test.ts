@@ -77,9 +77,9 @@ describe("tenant listing with soft-deleted tenants", () => {
   it("soft-deleted tenant should be excluded even if slug matches", () => {
     // Simulates the query filter: WHERE slug = ? AND deleted_at IS NULL
     const tenants = [
-      { id: "t1", slug: "superkey", deletedAt: new Date("2026-05-20") },
-      { id: "t2", slug: "superkey", deletedAt: new Date("2026-05-21") },
-      { id: "t3", slug: "superkey", deletedAt: null }, // active
+      { id: "t1", slug: "northgate", deletedAt: new Date("2026-05-20") },
+      { id: "t2", slug: "northgate", deletedAt: new Date("2026-05-21") },
+      { id: "t3", slug: "northgate", deletedAt: null }, // active
     ];
 
     const active = tenants.filter((t) => t.deletedAt === null);
@@ -91,7 +91,7 @@ describe("tenant listing with soft-deleted tenants", () => {
     // The partial unique index enforces this at DB level:
     // CREATE UNIQUE INDEX ON tenants(slug) WHERE deleted_at IS NULL
     // This test documents the invariant
-    const activeSlugs = ["superkey"];
+    const activeSlugs = ["northgate"];
     const uniqueSlugs = new Set(activeSlugs);
     expect(uniqueSlugs.size).toBe(activeSlugs.length);
   });

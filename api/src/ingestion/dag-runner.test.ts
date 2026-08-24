@@ -4,6 +4,7 @@ import {
   evalCondition,
   extractSkipReason,
   resolveNextSteps,
+  matchReferenceToFilename,
   type TestEdge,
 } from "./dag-runner";
 
@@ -342,5 +343,55 @@ describe("extractSkipReason — why a configured extract couldn't run (oss-448)"
     // with no OCR text), so "no extractable text" IS the accurate diagnosis.
     const reason = extractSkipReason("invoice", "", { model: "gpt-4o-mini" }, undefined);
     expect(reason).toMatch(/no extractable text/);
+  });
+});
+
+describe("matchReferenceToFilename", () => {
+  // The rule this replaced carried a fixed list of document types (bylaws,
+  // CC&Rs, budget, policy…), so a reference resolved for one industry and
+  // silently failed for every other. These cases span industries on purpose:
+  // none of the nouns below appear anywhere in the engine.
+  it.each([
+    ["see the Bylaws", "Bylaws.pdf"],
+    ["refer to the Bill of Lading", "bill_of_lading_2026.pdf"],
+    ["per the Lab Report", "patient-lab-report.pdf"],
+    ["pursuant to the Master Lease", "MasterLease-signed.docx"],
+    ["as defined in the Loan Agreement", "loan agreement (executed).pdf"],
+    ["in accordance with the Safety Datasheet", "SAFETY_DATASHEET.PDF"],
+  ])("resolves %j to %j", (ref, filename) => {
+    expect(matchReferenceToFilename(ref, ["unrelated.pdf", filename])).toBe(filename);
+  });
+
+  it("matches across singular/plural", () => {
+    expect(matchReferenceToFilename("see the Rules", ["house-rule.pdf"])).toBe("house-rule.pdf");
+    expect(matchReferenceToFilename("see the Rule", ["house-rules.pdf"])).toBe("house-rules.pdf");
+  });
+
+  it("ignores punctuation, so CC&Rs finds CCRs.pdf", () => {
+    expect(matchReferenceToFilename("refer to the CC&Rs", ["CCRs.pdf"])).toBe("CCRs.pdf");
+  });
+
+  it("returns null when only connective words remain", () => {
+    expect(matchReferenceToFilename("see the", ["bylaws.pdf"])).toBeNull();
+    expect(matchReferenceToFilename("pursuant to the", ["bylaws.pdf"])).toBeNull();
+  });
+
+  it("does not match on the connective words themselves", () => {
+    // "per" and "the" are in the reference; a filename built from them alone
+    // must not resolve.
+    expect(matchReferenceToFilename("per the Schedule", ["see-the-other.pdf"])).toBeNull();
+  });
+
+  it("does not match on bare numbers or 1-2 char tokens", () => {
+    expect(matchReferenceToFilename("Section 4", ["4.pdf", "a.pdf"])).toBeNull();
+  });
+
+  it("returns null when nothing matches", () => {
+    expect(matchReferenceToFilename("see the Bylaws", ["invoice.pdf", "receipt.pdf"])).toBeNull();
+  });
+
+  it("returns the first matching filename in the given order", () => {
+    expect(matchReferenceToFilename("see the Budget", ["budget-2025.pdf", "budget-2026.pdf"]))
+      .toBe("budget-2025.pdf");
   });
 });

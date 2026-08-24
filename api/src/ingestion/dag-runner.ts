@@ -373,6 +373,67 @@ export function resolveNextSteps(edges: TestEdge[], output: Record<string, unkno
   return def ? [def.to] : [];
 }
 
+/**
+ * Connective words the `resolve_references` patterns match, plus generic English
+ * function words. This is grammar, not vocabulary — nothing here names a kind of
+ * document, so reference matching stays industry-agnostic.
+ */
+const REFERENCE_STOPWORDS = new Set([
+  "see", "refer", "referred", "per", "pursuant", "accordance", "defined",
+  "described", "set", "forth", "the", "this", "that", "these", "those", "and",
+  "for", "with", "from", "into", "under", "above", "below", "such", "any",
+  "all", "each", "shall", "may", "must", "other", "same", "herein", "hereof",
+  "hereto", "thereof", "attached", "provided",
+]);
+
+/**
+ * Lowercase alphanumeric tokens of 3+ characters, excluding bare numbers.
+ * camelCase boundaries split too, so `MasterLease-signed.docx` yields
+ * "master"/"lease"/"signed" rather than one unmatchable blob.
+ */
+function significantTokens(text: string): string[] {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length >= 3 && !/^\d+$/.test(t));
+}
+
+/** Strip one trailing "s" so "bylaws" and "bylaw" compare equal. */
+function singular(token: string): string {
+  return token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token;
+}
+
+/**
+ * Resolve a detected reference to a sibling document by matching the words the
+ * reference *itself* uses against the words in each filename.
+ *
+ * Deliberately carries no list of document types: "see the Bylaws", "refer to
+ * the Bill of Lading", and "per the Lab Report" all resolve by the same rule.
+ * Which words name a document is a property of the customer's corpus, not of
+ * the engine.
+ *
+ * Returns the matching filename, or null when nothing matches.
+ */
+export function matchReferenceToFilename(refText: string, filenames: string[]): string | null {
+  const refTokens = new Set(
+    significantTokens(refText).filter(t => !REFERENCE_STOPWORDS.has(t)).map(singular),
+  );
+  // No early return on an empty token set: the squashed comparison below still
+  // resolves references whose only distinguishing text is a punctuated
+  // initialism ("CC&Rs", "W-9"), which tokenizes to nothing.
+  const refSquashed = refText.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  for (const filename of filenames) {
+    const base = filename.replace(/\.[^.]+$/, "");
+    if (significantTokens(base).map(singular).some(t => refTokens.has(t))) return filename;
+    // Punctuation-insensitive fallback, so "CC&Rs" still finds "CCRs.pdf".
+    const baseSquashed = base.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (baseSquashed.length >= 4 && refSquashed.includes(baseSquashed)) return filename;
+  }
+  return null;
+}
+
 export async function handleDagRun(job: QueuedJob): Promise<void> {
   const db = _db!;
   const storage = _storage!;
@@ -873,25 +934,21 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
               }
             }
             if (!matched) {
-              // Try fuzzy: match document type words against filenames
-              const typeWords = ["bylaws", "ccr", "cc&r", "rules", "regulation", "budget", "policy", "agreement", "amendment", "addendum"];
-              for (const word of typeWords) {
-                if (refLower.includes(word)) {
-                  const matchDoc = groupDocs.find(d => d.filename.toLowerCase().includes(word));
-                  if (matchDoc) {
-                    resolved.push({
-                      text: ref.text,
-                      source_chunk: ref.chunkTitle,
-                      target_filename: matchDoc.filename,
-                      target_section: null,
-                      target_content: null,
-                      resolved: true,
-                      method: "filename_match",
-                    });
-                    matched = true;
-                    break;
-                  }
-                }
+              // Try fuzzy: match the reference's own words against the sibling
+              // filenames (see matchReferenceToFilename — no document-type
+              // vocabulary lives in the engine).
+              const targetFilename = matchReferenceToFilename(ref.text, groupDocs.map(d => d.filename));
+              if (targetFilename) {
+                resolved.push({
+                  text: ref.text,
+                  source_chunk: ref.chunkTitle,
+                  target_filename: targetFilename,
+                  target_section: null,
+                  target_content: null,
+                  resolved: true,
+                  method: "filename_match",
+                });
+                matched = true;
               }
             }
             if (!matched) {

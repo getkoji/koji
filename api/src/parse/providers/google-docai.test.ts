@@ -287,7 +287,7 @@ describe("GoogleDocAiCanonicalizer — two-column reading order (oss-437)", () =
 
   // Label column (left) and value column (right). Each value sits a hair ABOVE
   // its label (so a naive top-sort emits value-before-label and interleaves
-  // successive rows — the exact Auto-Owners dec scramble). Fed in reversed
+  // successive rows — the exact real-world two-column scramble). Fed in reversed
   // order to prove geometry, not input order, drives the result.
   const poly = (x: number, y: number, w: number, h: number) => ({
     normalizedVertices: [

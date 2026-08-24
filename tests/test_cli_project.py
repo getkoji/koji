@@ -162,7 +162,7 @@ def test_use_switches_away_from_broken_pin(monkeypatch):
     # The footgun fix: profile pinned to a broken project, switching to a good
     # one must work — the probe is scoped to the target, not the stale pin.
     creds = _install_creds(monkeypatch)
-    creds.profiles["rnd"].project = "superkey-policy"  # broken pin
+    creds.profiles["rnd"].project = "northgate-policy"  # broken pin
     _install_client(monkeypatch, [_make_response(200, {"slug": "rnd"})])
     result = runner.invoke(app, ["project", "use", "rnd"])
     assert result.exit_code == 0, result.output
@@ -189,10 +189,10 @@ def test_use_existing_but_unreachable_gives_key_binding_message(monkeypatch):
         monkeypatch,
         [
             _make_response(404, {"error": "Project not found"}),
-            _make_response(200, {"data": [{"slug": "superkey-policy"}]}),
+            _make_response(200, {"data": [{"slug": "northgate-policy"}]}),
         ],
     )
-    result = runner.invoke(app, ["project", "use", "superkey-policy"])
+    result = runner.invoke(app, ["project", "use", "northgate-policy"])
     assert result.exit_code != 0
     assert "can't scope" in result.output.lower() or "bound to a single project" in result.output.lower()
     assert creds.profiles["rnd"].project is None

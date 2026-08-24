@@ -2,6 +2,30 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.2 — 2026-08-24
+
+**A fifth place in the engine knew what documents are called.** 0.110.0 said the
+engine no longer contains domain logic; the `resolve_references` pipeline step
+still did. When a cross-document reference ("see the Bylaws", "refer to the Bill
+of Lading") didn't match a section title, the fallback matched it against a
+hardcoded list of ten document-type words — `bylaws`, `ccr`, `cc&r`, `rules`,
+`regulation`, `budget`, `policy`, `agreement`, `amendment`, `addendum`. A
+reference to any word outside that list resolved as `unresolved`, so the step
+worked for community-association and insurance paperwork and quietly did nothing
+for a lab report, a bill of lading, a permit, or a datasheet.
+
+The fallback now matches the words the reference *itself* uses against the words
+in each sibling document's filename — singular/plural tolerant, camelCase-aware
+(`MasterLease-signed.docx`), and punctuation-insensitive so `CC&Rs` still finds
+`CCRs.pdf`. Every reference the old list resolved still resolves; references it
+had no word for now resolve too. Which words name a document is a property of
+your corpus, not of the engine.
+
+**Repo hygiene.** A one-off debugging script (`api/parity-probe.mts`) had been
+committed with an absolute path into a private working tree; it is deleted.
+Named companies used as filler in test fixtures and code comments were replaced
+with neutral ones — no test behavior changed.
+
 ## 0.110.1 — 2026-08-24
 
 **Dashboard placeholder copy is no longer insurance-branded.** The example text
