@@ -2,6 +2,25 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.5 — 2026-08-24
+
+**A pipeline's reported cost now matches its estimate.** Step prices lived in
+three separate tables — the shared one the estimate is built from, and a private
+copy inside each of the two runners — and they had drifted apart. The DAG runner's
+copy was missing seven step types (`redact`, `enrich`, `validate`, `summarize`,
+`compare`, `merge_documents`, `resolve_references`) and the test endpoint's was
+missing one. A pipeline containing any of them was quoted one price on the editor
+and reported another on the run: `resolve_references` was estimated at $0.02 and
+reported $0 by both the test panel and production.
+
+There is now one table. Both runners read it through a shared lookup, and it is
+typed so that declaring a step type without pricing it fails the build — the
+drift can't recur silently.
+
+This changes the cost **shown** on the document trace page, job listings, and the
+pipeline test panel. It does not change what anyone is charged: invoicing runs off
+billable events, not these figures.
+
 ## 0.110.4 — 2026-08-24
 
 **Testing a pipeline now actually resolves cross-document references.** The

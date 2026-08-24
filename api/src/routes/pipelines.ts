@@ -3,7 +3,7 @@ import { eq, and, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import { schema, withRLS } from "@koji/db";
-import { compilePipeline, calculatePipelineCosts } from "@koji/pipeline";
+import { compilePipeline, calculatePipelineCosts, stepCost } from "@koji/pipeline";
 import type { RetryPolicy } from "@koji/types/db";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId, getRlsScope } from "../auth/middleware";
@@ -1230,13 +1230,6 @@ pipelinesRouter.post("/:idOrSlug/jobs/:jobId/docs", requires("job:run"), async (
 
 // ── Pipeline test mode (dry-run) ──
 
-const STEP_COSTS: Record<string, number> = {
-  classify: 0.005, extract: 0.08, ocr: 0.03, split: 0.01,
-  tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
-  redact: 0.005, enrich: 0, validate: 0, summarize: 0.01,
-  compare: 0.005, merge_documents: 0,
-};
-
 function resolveTestDotPath(obj: Record<string, unknown>, path: string): unknown {
   let current: unknown = obj;
   for (const part of path.split(".")) {
@@ -1293,7 +1286,7 @@ async function executeTestStep(
   priorOutputs: Record<string, unknown>,
   ctx?: { db: unknown; tenantId: string; projectId?: string | null; pipelineId: string; groupKey?: string | null },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
-  const cost = STEP_COSTS[step.type] ?? 0;
+  const cost = stepCost(step.type);
   switch (step.type) {
     case "classify": {
       // A `classifier: <slug>` reference classifies through the same cascade

@@ -9,7 +9,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import { parse as parseYaml } from "yaml";
-import { compilePipeline, evaluateCondition, type ParsedCondition } from "@koji/pipeline";
+import { compilePipeline, evaluateCondition, stepCost, type ParsedCondition } from "@koji/pipeline";
 import { schema, withRLS } from "@koji/db";
 import type { Db } from "@koji/db";
 import type { QueuedJob } from "../queue/provider";
@@ -194,12 +194,6 @@ async function executeSplit(
 
   return output;
 }
-
-// Step cost lookup
-const STEP_COSTS: Record<string, number> = {
-  classify: 0.005, extract: 0.08, ocr: 0.03, split: 0.01,
-  tag: 0, filter: 0, webhook: 0, transform: 0, gate: 0,
-};
 
 export interface TestEdge {
   from: string;
@@ -556,7 +550,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
     let output: Record<string, unknown> = {};
     let status = "completed";
     let error: string | undefined;
-    const cost = STEP_COSTS[step.type] ?? 0;
+    const cost = stepCost(step.type);
 
     try {
       switch (step.type) {
@@ -874,7 +868,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
           let branchOutput: Record<string, unknown> = {};
           let branchStatus = "completed";
           let branchError: string | undefined;
-          const branchCost = STEP_COSTS[branchStep.type] ?? 0;
+          const branchCost = stepCost(branchStep.type);
 
           try {
             // Re-use the same step execution switch logic
