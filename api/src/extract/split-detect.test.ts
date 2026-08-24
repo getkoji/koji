@@ -149,7 +149,7 @@ function stapledSubmissionFixture(): PageAnalysis[] {
     // COI (pages 1-2)
     page(1, {
       page_label: 1,
-      content_preview: "ACORD 25 CERTIFICATE OF LIABILITY INSURANCE DATE 08/15/2026 PRODUCER SuperKey Insurance",
+      content_preview: "ACORD 25 CERTIFICATE OF LIABILITY INSURANCE DATE 08/15/2026 PRODUCER Northgate Insurance Agency",
       bold_headings: [{ text: "CERTIFICATE OF LIABILITY INSURANCE", y: 0.08, size: 12 }],
       has_dollar_amounts: true,
       has_dates: true,

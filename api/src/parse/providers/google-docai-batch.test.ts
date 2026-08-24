@@ -1,7 +1,7 @@
 /**
  * Google Document AI batch-processing tests (oss-283).
  *
- * Covers the Superkey-blocking path: docs over the synchronous page cap route
+ * Covers the large-document path: docs over the synchronous page cap route
  * to async `:batchProcess` (GCS in/out + a long-running operation). The whole
  * REST surface — pdf-lib page counting (real generated PDFs), Document AI
  * process/batchProcess/operation-poll, and the GCS upload/list/download/delete

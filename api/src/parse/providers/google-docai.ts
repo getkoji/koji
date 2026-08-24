@@ -21,9 +21,9 @@
  *     AI, runs the canonicalizer, and returns both the canonicalized chunks and
  *     a linearized markdown view (for the legacy text path).
  *
- * **Size routing (the Superkey-blocking part).** The synchronous `:process`
- * endpoint caps at 15 pages (30 with `imagelessMode`), but most Superkey docs
- * are larger (50–226pg policies). The provider counts the PDF's pages and, by
+ * **Size routing.** The synchronous `:process` endpoint caps at 15 pages (30
+ * with `imagelessMode`), but real-world documents routinely run far longer
+ * (50–226pg is common). The provider counts the PDF's pages and, by
  * default, keeps everything on the synchronous path — **GCS-free**:
  *
  *   - ≤ slice size (default 15pg) → a single online `:process` call.

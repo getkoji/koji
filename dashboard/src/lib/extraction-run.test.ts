@@ -71,13 +71,13 @@ describe("runExtraction request headers", () => {
   });
 
   it("sends the project from the URL so a non-default project resolves its own corpus", async () => {
-    installBrowser("/t/acme/projects/superkey-quote");
+    installBrowser("/t/acme/projects/northgate-quote");
     const calls = stubFetch();
 
     const { onComplete, onError } = await run();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.headers["x-koji-project"]).toBe("superkey-quote");
+    expect(calls[0]!.headers["x-koji-project"]).toBe("northgate-quote");
     expect(calls[0]!.headers["x-koji-tenant"]).toBe("acme");
     expect(onError).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith({ extracted: { a: 1 }, confidence: 0.9 });
@@ -88,13 +88,13 @@ describe("runExtraction request headers", () => {
     // segment at all, which is why the header has to come from the switcher's
     // persisted selection.
     installBrowser("/t/acme/schemas/quote_do/build", {
-      "koji:project:acme": "superkey-quote",
+      "koji:project:acme": "northgate-quote",
     });
     const calls = stubFetch();
 
     await run();
 
-    expect(calls[0]!.headers["x-koji-project"]).toBe("superkey-quote");
+    expect(calls[0]!.headers["x-koji-project"]).toBe("northgate-quote");
   });
 
   it("omits the project header when no project is known (server picks the default)", async () => {
@@ -107,7 +107,7 @@ describe("runExtraction request headers", () => {
   });
 
   it("reports a failed run through onError instead of onComplete", async () => {
-    installBrowser("/t/acme/projects/superkey-quote");
+    installBrowser("/t/acme/projects/northgate-quote");
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {

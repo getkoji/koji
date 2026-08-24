@@ -49,7 +49,7 @@ class TestLooksUndecodable:
         assert main._looks_undecodable(garbage) is True
 
     def test_clean_prose_not_flagged(self):
-        clean = "NOTICE OF PRIVACY PRACTICES. At Auto-Owners we value your business. " * 100
+        clean = "NOTICE OF PRIVACY PRACTICES. At Northgate we value your business. " * 100
         assert main._looks_undecodable(clean) is False
 
     def test_dates_fractions_and_paths_not_flagged(self):

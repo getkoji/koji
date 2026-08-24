@@ -129,7 +129,7 @@ describe("getEffectivePlan", () => {
   });
 
   // Concurrency overrides — the motivating case for moving the limit
-  // into PlanFeatures. Superkey-style scenario: Scale tier pricing,
+  // into PlanFeatures. Enterprise-style scenario: Scale tier pricing,
   // higher (or unlimited) concurrency slots.
   it("applies max_concurrent_jobs override (raise the limit)", () => {
     const plan = getEffectivePlan({

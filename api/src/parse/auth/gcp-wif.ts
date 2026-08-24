@@ -5,7 +5,7 @@
  * with a short-lived OAuth2 access token (Google Document AI sends
  * `payload.api_key` as a `Bearer` token). Today that token is stored static in
  * the endpoint's encrypted credentials — but a ~1-hour token isn't a durable
- * production credential, and enterprises (e.g. Superkey's GCP org) enforce
+ * production credential, and enterprise GCP orgs commonly enforce
  * `iam.disableServiceAccountKeyCreation`, so a downloaded service-account JSON
  * key isn't an option either. The enterprise-correct pattern is **keyless
  * Workload Identity Federation**: the hosted workload presents its own OIDC
