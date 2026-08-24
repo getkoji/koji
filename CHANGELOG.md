@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.3 — 2026-08-24
+
+- **Array confidence no longer credits a validation that never ran.** Every
+  extracted field is scored `0.70·provenance + 0.30·validation`, but for an
+  array the validation term was the literal value `true` — arrays skip the
+  per-field type validation scalars go through, so a list collected the full
+  0.30 unconditionally. The remaining 0.70 is a substring provenance hit on the
+  field as a whole, which lands almost always over short numeric strings
+  (limits, dates, form codes), so an array of rows that violated every type the
+  schema declared could still score near 1.00 and auto-deliver. The term is now
+  the share of the elements' declared, present sub-fields that actually satisfy
+  their declared types. Absent sub-fields are not failures, and an array whose
+  schema declares no element shape is unchanged — as is any array whose
+  elements all validate.
+
 ## 0.110.2 — 2026-08-24
 
 **A fifth place in the engine knew what documents are called.** 0.110.0 said the

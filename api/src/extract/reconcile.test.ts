@@ -418,3 +418,44 @@ describe("snapToSource", () => {
     expect(result).toBe("Effective Date: January 15, 2024");
   });
 });
+
+describe("reconcile — array validation term (oss-504)", () => {
+  const SCHEMA = {
+    fields: {
+      coverages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { coverage_name: { type: "string" }, limit: { type: "number" } },
+        },
+      },
+    },
+  };
+
+  it("no longer credits an array for a validation that never ran", () => {
+    // Standalone reconcile has no route chunks, so provenance is 0 and the
+    // whole score is the validation term. It used to be a hardcoded `true`,
+    // so an array of type-violating rows scored a flat 0.30 — the same as a
+    // perfect one. Now the term is the share of declared sub-fields that
+    // actually satisfy their declared types.
+    const clean = reconcile(
+      [{ coverages: [{ coverage_name: "General Liability", limit: 1000000 }] }],
+      SCHEMA,
+    );
+    const garbage = reconcile(
+      [{ coverages: [{ coverage_name: "", limit: "see endorsement" }] }],
+      SCHEMA,
+    );
+    expect(clean.confidence_scores.coverages).toBeCloseTo(0.30, 5);
+    expect(garbage.confidence_scores.coverages).toBeCloseTo(0.0, 5);
+    expect(garbage.confidence_scores.coverages!).toBeLessThan(
+      clean.confidence_scores.coverages!,
+    );
+  });
+
+  it("leaves a shapeless array on the old formula — nothing declared to check", () => {
+    const shapeless = { fields: { tags: { type: "array" } } };
+    const result = reconcile([{ tags: ["a", "b"] }], shapeless);
+    expect(result.confidence_scores.tags).toBeCloseTo(0.30, 5);
+  });
+});

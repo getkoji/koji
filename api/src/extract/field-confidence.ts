@@ -431,6 +431,96 @@ function provenanceHit(span: ProvenanceSpan | null | undefined): boolean {
   return Boolean(span.chunk && span.chunk.length > 0);
 }
 
+/**
+ * Does the schema say what an ELEMENT of this array looks like?
+ *
+ * Only a declared element shape gives us something to validate. A bare
+ * `{ type: "array" }` declares nothing to check, so there is no honest
+ * judgement to form about its contents.
+ */
+export function hasDeclaredElementShape(schema: FieldSchema | undefined): boolean {
+  if (!schema) return false;
+  const items = schema.items as FieldSchema | undefined;
+  if (items && typeof items === "object") {
+    if (typeof items.type === "string") return true;
+    if (itemProperties(items) !== undefined) return true;
+  }
+  // Array-of-object shorthand: element properties hang off the field itself.
+  return itemProperties(schema) !== undefined;
+}
+
+/**
+ * Did this value satisfy the constraints its schema actually declares?
+ *
+ * A pass/fail read of the scoring matrix: every scorer above returns 0.0 for
+ * "violates what the schema declared" (not in the enum set, doesn't parse as
+ * a number, out of range, no date in it, pattern mismatch, empty string) and
+ * something above 0.0 otherwise. Graded values in between express how much
+ * corroborating evidence there is — not a constraint violation — so they
+ * count as a pass here. Absent values are the caller's business, not this
+ * function's.
+ */
+function satisfiesDeclaredType(value: unknown, schema: FieldSchema | undefined): boolean {
+  return computeFieldConfidence(value, schema, null) > 0;
+}
+
+/**
+ * The validation term for an ARRAY field: the share of its elements' declared,
+ * present sub-fields that satisfy the types the schema declared for them.
+ * `null` when the schema declares no element shape (nothing to check).
+ *
+ * Why this exists (oss-504): the engine scores every field
+ * `0.70·provenance + 0.30·validation`, but for an array the validation term
+ * was the literal `true` — "arrays skip type validation" — so every list
+ * collected the full 0.30 for a check that never ran. The remaining 0.70 is a
+ * substring provenance hit on the field as a whole, which lands almost always
+ * over short numeric strings (limits, dates, form codes). A coverage schedule
+ * of complete garbage therefore scored near 1.00, on the field class that is
+ * corrected most often in production — the score was inverted on exactly the
+ * data carrying most of the error budget.
+ *
+ * This runs the check instead of asserting it passed. It only ever *lowers* a
+ * score, and only where a declared type is actually violated: an array whose
+ * elements all satisfy their declared types still returns 1.0 and scores
+ * exactly as it did before.
+ *
+ * Note what this deliberately does NOT measure: an element that was never
+ * emitted cannot fail a check, so omission and row misassignment stay
+ * invisible here (oss-505 owns that).
+ */
+export function elementValidationRate(
+  value: unknown,
+  schema: FieldSchema | undefined,
+): number | null {
+  if (!Array.isArray(value)) return null;
+  if (!hasDeclaredElementShape(schema)) return null;
+  if (value.length === 0) return null; // "no value" — scored as absence, not as a failure
+
+  const itemSchema = (schema?.items as FieldSchema | undefined) ?? {};
+  const props = itemProperties(itemSchema) ?? itemProperties(schema ?? {});
+
+  let sum = 0;
+  for (const item of value) {
+    if (props && item != null && typeof item === "object" && !Array.isArray(item)) {
+      const obj = item as Record<string, unknown>;
+      let checked = 0;
+      let passed = 0;
+      for (const [name, propSchema] of Object.entries(props)) {
+        const pv = obj[name];
+        if (pv === null || pv === undefined) continue; // absence is not a type failure
+        checked += 1;
+        if (satisfiesDeclaredType(pv, propSchema)) passed += 1;
+      }
+      // An element with nothing present to check can't fail one.
+      sum += checked === 0 ? 1 : passed / checked;
+    } else {
+      // Scalar elements (`items: { type: "string" }`) — check the element itself.
+      sum += satisfiesDeclaredType(item, itemSchema) ? 1 : 0;
+    }
+  }
+  return round3(sum / value.length);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers for callers (process.ts uses these)
 // ---------------------------------------------------------------------------

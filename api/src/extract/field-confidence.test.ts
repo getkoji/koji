@@ -13,6 +13,8 @@ import {
   resolveFieldConfidences,
   aggregateDocConfidence,
   findLowestField,
+  elementValidationRate,
+  hasDeclaredElementShape,
 } from "./field-confidence";
 import type { ProvenanceSpan } from "./provenance";
 
@@ -556,5 +558,90 @@ describe("computeFieldConfidence — object", () => {
   it("soft-scores unresolved sub-fields (0.7) rather than 0", () => {
     const value = { name: "Acme", code: "GL" };
     expect(computeFieldConfidence(value, schema, null)).toBe(0.7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Array validation term (oss-504)
+// ---------------------------------------------------------------------------
+
+describe("elementValidationRate — the validation term arrays never had", () => {
+  const COVERAGES = {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        coverage_name: { type: "string" },
+        limit: { type: "number" },
+        effective_date: { type: "date" },
+        status: { type: "enum", options: ["active", "expired"] },
+      },
+    },
+  };
+
+  it("returns null when there is nothing to check", () => {
+    expect(elementValidationRate("not an array", COVERAGES)).toBeNull();
+    // `type: array` with no declared element shape — nothing to validate.
+    expect(elementValidationRate([{ a: 1 }], { type: "array" })).toBeNull();
+    // An empty array is scored as absence elsewhere, not as a failed check.
+    expect(elementValidationRate([], COVERAGES)).toBeNull();
+  });
+
+  it("returns 1.0 when every declared sub-field satisfies its type", () => {
+    const rate = elementValidationRate(
+      [
+        { coverage_name: "General Liability", limit: 1000000, effective_date: "2026-01-01", status: "active" },
+        { coverage_name: "Property", limit: 500000, effective_date: "2026-03-15", status: "expired" },
+      ],
+      COVERAGES,
+    );
+    expect(rate).toBe(1.0);
+  });
+
+  it("returns 0.0 when every declared sub-field violates its type", () => {
+    // This is the case the engine used to score as a full pass: `true`,
+    // hardcoded, because "arrays skip type validation".
+    const rate = elementValidationRate(
+      [
+        { coverage_name: "", limit: "see endorsement", effective_date: "whenever", status: "banana" },
+        { coverage_name: "", limit: "n/a", effective_date: "soon", status: "kiwi" },
+      ],
+      COVERAGES,
+    );
+    expect(rate).toBe(0.0);
+  });
+
+  it("grades a partial failure rather than collapsing it to pass/fail", () => {
+    // Row 1 clean (4/4), row 2 has a bad limit and a bad status (2/4).
+    const rate = elementValidationRate(
+      [
+        { coverage_name: "General Liability", limit: 1000000, effective_date: "2026-01-01", status: "active" },
+        { coverage_name: "Property", limit: "included", effective_date: "2026-03-15", status: "banana" },
+      ],
+      COVERAGES,
+    );
+    expect(rate).toBe(0.75); // mean(1.0, 0.5)
+  });
+
+  it("does not treat an absent sub-field as a type failure", () => {
+    // Absence is scored as absence (required/optional) elsewhere. A model that
+    // correctly declines to invent a limit must not be penalized here.
+    const rate = elementValidationRate(
+      [{ coverage_name: "General Liability", limit: null, effective_date: undefined }],
+      COVERAGES,
+    );
+    expect(rate).toBe(1.0);
+  });
+
+  it("checks scalar elements against the declared item type", () => {
+    const schema = { type: "array", items: { type: "date" } };
+    expect(elementValidationRate(["2026-01-01", "2026-02-01"], schema)).toBe(1.0);
+    expect(elementValidationRate(["2026-01-01", "nonsense"], schema)).toBe(0.5);
+  });
+
+  it("recognizes the array-of-object shorthand (properties on the field)", () => {
+    const shorthand = { type: "array", properties: { limit: { type: "number" } } };
+    expect(hasDeclaredElementShape(shorthand)).toBe(true);
+    expect(elementValidationRate([{ limit: "nope" }], shorthand)).toBe(0.0);
   });
 });

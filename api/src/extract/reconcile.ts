@@ -7,6 +7,7 @@
  */
 
 import type { Chunk } from "./document-map";
+import { elementValidationRate, type FieldSchema } from "./field-confidence";
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -170,10 +171,21 @@ export function computeProvenanceStrength(
  */
 export function computeFieldConfidence(opts: {
   provenanceStrength: number;
-  validationPassed: boolean;
+  /**
+   * `true`/`false` for a scalar the validator either accepted or rejected, or
+   * a graded pass rate in [0,1] for an array — the share of its elements'
+   * declared sub-fields that satisfy their declared types (oss-504, see
+   * `elementValidationRate`). A list has no single pass/fail.
+   */
+  validationPassed: boolean | number;
   llmConfidence?: number | null;
 }): number {
-  const valBonus = opts.validationPassed ? 1.0 : 0.0;
+  const valBonus =
+    typeof opts.validationPassed === "number"
+      ? Math.max(0.0, Math.min(opts.validationPassed, 1.0))
+      : opts.validationPassed
+        ? 1.0
+        : 0.0;
   const score = W_PROV * opts.provenanceStrength + W_VAL * valBonus;
   return Math.max(0.0, Math.min(score, 1.0));
 }
@@ -322,11 +334,16 @@ export function reconcile(
       merged[fieldName] = allItems;
       sources[fieldName] = `group_${firstGroup}`;
 
-      // Confidence: no route chunks in standalone reconcile → prov = 0
+      // Confidence: no route chunks in standalone reconcile → prov = 0.
+      // The validation term is the share of the elements' declared sub-fields
+      // that satisfy their declared types (oss-504); it was a hardcoded `true`
+      // on the grounds that "arrays skip type validation", which handed every
+      // list the full 0.30 for a check that never ran. `null` (no declared
+      // element shape) means there is genuinely nothing to check.
       const prov = computeProvenanceStrength(allItems, [], fieldType);
       const score = computeFieldConfidence({
         provenanceStrength: prov,
-        validationPassed: true, // arrays skip type validation
+        validationPassed: elementValidationRate(allItems, fieldSpec as FieldSchema) ?? true,
       });
       confidenceScores[fieldName] = score;
       confidence[fieldName] = scoreLabel(score);
