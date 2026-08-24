@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.2 — 2026-08-24
+
+**Job document counts now describe the present, not everything that ever
+happened.** A job's processed / passed / failed / in-review counts were bumped
+by one at every terminal transition and never adjusted afterwards, so a
+document that failed on bad input and later succeeded stayed counted as failed
+forever, and a document reprocessed three times was counted three times. The
+totals drifted above the number of documents that actually existed, and because
+these are the numbers `koji pipeline ls` and the dashboard show, every failure
+rate read off them was overstated.
+
+The counts are now derived from the documents themselves whenever a document
+settles, so each document lands in exactly one bucket — the one matching where
+it stands now. Reruns move a document between buckets instead of adding to the
+totals, and any job whose counts had already drifted repairs itself on its next
+write.
+
 ## 0.110.1 — 2026-08-24
 
 **Retrying a document on a DAG pipeline now works.** A retry re-walks the

@@ -10,6 +10,7 @@ import { formatSemverLabel } from "../schemas/semver";
 import { locateWordsByRegion } from "../extract/region";
 import { toProvenanceTextMap, type BBox, type FlatTextMapSegment } from "../extract/provenance";
 import { parseOverrideProvenance, buildAnchoredSpan, type AnchoredProvenance } from "./review";
+import { jobCounterRecompute } from "../ingestion/job-counters";
 
 export const jobs = new Hono<Env>();
 
@@ -882,11 +883,13 @@ jobs.post("/:slug/documents/:docId/fail", requires("job:run"), async (c) => {
       completedAt: now,
     }).where(eq(schema.documents.id, docId));
 
-    // Update parent job counters
-    await tx.update(schema.jobs).set({
-      docsFailed: sql`${schema.jobs.docsFailed} + 1`,
-      docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-    }).where(eq(schema.jobs.id, doc.jobId));
+    // Recompute the parent job's counters inside this transaction, so the
+    // re-read below sees them. A document force-failed after it had already
+    // been delivered or routed to review moves between buckets rather than
+    // adding to the totals (oss-495).
+    await tx.update(schema.jobs)
+      .set(jobCounterRecompute(doc.jobId))
+      .where(eq(schema.jobs.id, doc.jobId));
 
     // Transition the parent job to a terminal state if this was the last
     // outstanding document. The organic completion paths in
