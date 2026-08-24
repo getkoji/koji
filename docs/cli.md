@@ -614,7 +614,7 @@ EXTRACTION (correctly-routed only): 87.9% F1 over 72 fields (61 exact)
 That distinction matters because both a failed classifier and a genuine `unknown` send a document down its pipeline's `default` edge — from the routed schema alone they are indistinguishable. When a classify step fails to run, the bench says so loudly and tells you not to trust the routing number:
 
 ```
-  MISROUTE policy_04.pdf: routed to policy_generic, expected policy_harford_mutual
+  MISROUTE policy_04.pdf: routed to policy_generic, expected policy_carrier_a
        classify: classify_line=package(llm)  classify_carrier=unknown(no_classifier)
        ! classify_carrier never ran (no_classifier): Classifier 'family_carrier' has no released version in this project
 
