@@ -190,6 +190,13 @@ export function computeValidateResult(
 
   return {
     overallAccuracy,
+    /**
+     * How many field-value comparisons this run actually made. Zero means
+     * nothing was scored — and `overallAccuracy` reports 100 in that case,
+     * because there is nothing failing. A run that measured nothing must not
+     * be recorded as a perfect one, so `checkRunSanity` gates on this.
+     */
+    scoredCount: totalChecked,
     prevAccuracy: null,
     // Attempted docs = scored docs + docs that failed to parse/extract. Counting
     // failures keeps accuracy honest — a dropped doc can't silently shrink the
@@ -212,3 +219,60 @@ export function computeValidateResult(
 }
 
 export type ValidateResult = ReturnType<typeof computeValidateResult>;
+
+// ---------------------------------------------------------------------------
+// Run sanity (oss-500)
+// ---------------------------------------------------------------------------
+
+/**
+ * A run is only allowed to finalize as `completed` if its result could
+ * plausibly be a measurement. Below this many documents, a clean 0% is a
+ * believable verdict on a badly-matched schema; at or above it, a clean 0%
+ * across every field of every document is much more likely to mean the run
+ * measured the wrong thing.
+ */
+const ZERO_ACCURACY_MIN_DOCS = 5;
+
+/**
+ * Reject results that cannot be measurements (oss-500).
+ *
+ * Returns an operator-facing reason to fail the run, or `null` if it looks
+ * like a real result. This exists because a validate run finalized as
+ * `completed` on the sole condition that the runner did not throw — no gate on
+ * accuracy, on how many fields were scored, or on anything else. In production
+ * that recorded two 50-document runs at exactly 0.0000 accuracy as successes,
+ * after 248s and 387s of work, and left them to be read as the schema's score.
+ * A confidently wrong number is worse than a wide error bar, because it
+ * invites no caution.
+ *
+ * Deliberately NOT gated here: duration. A run that is merely slow is not
+ * wrong, and calling it wrong needs a per-schema distribution this function
+ * does not have.
+ */
+export function checkRunSanity(result: {
+  overallAccuracy: number;
+  scoredCount: number;
+  docsTotal: number;
+}): string | null {
+  if (result.scoredCount === 0) {
+    return (
+      `Nothing was scored: ${result.docsTotal} document(s) produced no comparable ` +
+      `fields. Accuracy is reported as 100% when no comparison is made, so this ` +
+      `run would have recorded a perfect score for measuring nothing. Check that ` +
+      `the corpus entries carry ground truth and that its keys match the schema's ` +
+      `field names.`
+    );
+  }
+  if (result.overallAccuracy === 0 && result.docsTotal >= ZERO_ACCURACY_MIN_DOCS) {
+    return (
+      `Scored 0.0% across ${result.scoredCount} field comparison(s) on ` +
+      `${result.docsTotal} documents. Scoring awards partial credit, so a clean ` +
+      `zero at this size is far more often a run that measured the wrong thing — ` +
+      `no extractions, the wrong schema version, or ground-truth keys that don't ` +
+      `match the schema's fields — than a schema that is perfectly wrong. Failing ` +
+      `the run rather than publishing the number; re-run to record a real 0% if ` +
+      `that is genuinely the result.`
+    );
+  }
+  return null;
+}

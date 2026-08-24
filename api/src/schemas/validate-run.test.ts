@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { assembleValidateInputs, type FinalizeDocRow } from "./validate-run";
+import { checkRunSanity, computeValidateResult } from "./validate-scoring";
 
 function okRow(entryId: string, routingPlan: unknown = null): FinalizeDocRow {
   return { corpusEntryId: entryId, status: "ok", errorMessage: null, routingPlanJson: routingPlan };
@@ -94,5 +95,59 @@ describe("assembleValidateInputs", () => {
     ];
     const { results, parseFailures } = assembleValidateInputs(rows, entries, extractions);
     expect(results.length + parseFailures.length).toBe(rows.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run sanity gate (oss-500)
+// ---------------------------------------------------------------------------
+
+describe("checkRunSanity", () => {
+  it("passes an ordinary result", () => {
+    expect(checkRunSanity({ overallAccuracy: 81.4, scoredCount: 250, docsTotal: 50 })).toBeNull();
+  });
+
+  it("passes a genuinely poor result that still measured something", () => {
+    expect(checkRunSanity({ overallAccuracy: 4.2, scoredCount: 250, docsTotal: 50 })).toBeNull();
+  });
+
+  it("fails a run that scored nothing, however many documents it saw", () => {
+    // The silent case: `overallAccuracy` is reported as 100 when no comparison
+    // is made, so this run would have recorded a perfect score for measuring
+    // nothing at all.
+    const reason = checkRunSanity({ overallAccuracy: 100, scoredCount: 0, docsTotal: 50 });
+    expect(reason).toContain("Nothing was scored");
+    expect(checkRunSanity({ overallAccuracy: 100, scoredCount: 0, docsTotal: 1 })).not.toBeNull();
+  });
+
+  it("fails a clean 0% over a corpus large enough to make it implausible", () => {
+    // The observed production case: 50 documents, accuracy exactly 0.0000,
+    // recorded as a successful run after several minutes of work.
+    const reason = checkRunSanity({ overallAccuracy: 0, scoredCount: 400, docsTotal: 50 });
+    expect(reason).toContain("Scored 0.0%");
+  });
+
+  it("allows a 0% on a corpus small enough for it to be a real verdict", () => {
+    // One or two documents against a badly-matched schema really can be 0%.
+    expect(checkRunSanity({ overallAccuracy: 0, scoredCount: 3, docsTotal: 1 })).toBeNull();
+    expect(checkRunSanity({ overallAccuracy: 0, scoredCount: 8, docsTotal: 4 })).toBeNull();
+  });
+
+  it("catches the empty-ground-truth run end to end", () => {
+    // Ground truth present but with no keys: nothing to compare, so scoring
+    // reports 100% over zero comparisons. The gate is what stops that from
+    // being published as a perfect schema.
+    const result = computeValidateResult(
+      [
+        { entryId: "e1", filename: "a.pdf", groundTruth: {}, extracted: { policy: "X-1" }, confidence: {} },
+        { entryId: "e2", filename: "b.pdf", groundTruth: {}, extracted: { policy: "Y-2" }, confidence: {} },
+      ],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(result.overallAccuracy).toBe(100);
+    expect(result.scoredCount).toBe(0);
+    expect(checkRunSanity(result)).toContain("Nothing was scored");
   });
 });

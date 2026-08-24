@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.6 — 2026-08-24
+
+- **A validate run that couldn't have measured anything now fails instead of
+  publishing a number.** Finalization treated "the runner didn't throw" as
+  success, with no check on the result itself. That recorded runs scoring
+  exactly 0.0000 over a 50-document corpus as the schema's accuracy, and — more
+  quietly — recorded runs that scored *nothing at all* as 100%, since nothing
+  is failing when no comparison is made. Both now finalize as `failed` with the
+  reason attached, and the result is still stored so the failure stays
+  diagnosable. Duration is deliberately not gated: a slow run is not a wrong
+  one.
+
 ## 0.110.5 — 2026-08-24
 
 **A pipeline's reported cost now matches its estimate.** Step prices lived in
