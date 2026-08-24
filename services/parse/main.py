@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-KOJI_PARSE_VERSION = "0.110.3"
+KOJI_PARSE_VERSION = "0.110.4"
 
 app = FastAPI(title="Koji Parse Service", version=KOJI_PARSE_VERSION)
 

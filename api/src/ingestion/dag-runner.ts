@@ -19,6 +19,7 @@ import type { ParseConfig } from "../parse/factory";
 import { resolveExtractEndpoint } from "../extract/resolve-endpoint";
 import { resolveClassifierConfig, classifyWithConfig } from "../classify";
 import { resolvePipelineSchemaVersion } from "./pipeline-schema-version";
+import { resolveReferences } from "./resolve-references";
 import { createProvider } from "../extract/providers";
 import { extractFields } from "../extract/pipeline";
 import type { TextMap } from "../extract/provenance";
@@ -371,67 +372,6 @@ export function resolveNextSteps(edges: TestEdge[], output: Record<string, unkno
   // Fall back to default edge
   const def = edges.find(e => e.default);
   return def ? [def.to] : [];
-}
-
-/**
- * Connective words the `resolve_references` patterns match, plus generic English
- * function words. This is grammar, not vocabulary — nothing here names a kind of
- * document, so reference matching stays industry-agnostic.
- */
-const REFERENCE_STOPWORDS = new Set([
-  "see", "refer", "referred", "per", "pursuant", "accordance", "defined",
-  "described", "set", "forth", "the", "this", "that", "these", "those", "and",
-  "for", "with", "from", "into", "under", "above", "below", "such", "any",
-  "all", "each", "shall", "may", "must", "other", "same", "herein", "hereof",
-  "hereto", "thereof", "attached", "provided",
-]);
-
-/**
- * Lowercase alphanumeric tokens of 3+ characters, excluding bare numbers.
- * camelCase boundaries split too, so `MasterLease-signed.docx` yields
- * "master"/"lease"/"signed" rather than one unmatchable blob.
- */
-function significantTokens(text: string): string[] {
-  return text
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(t => t.length >= 3 && !/^\d+$/.test(t));
-}
-
-/** Strip one trailing "s" so "bylaws" and "bylaw" compare equal. */
-function singular(token: string): string {
-  return token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token;
-}
-
-/**
- * Resolve a detected reference to a sibling document by matching the words the
- * reference *itself* uses against the words in each filename.
- *
- * Deliberately carries no list of document types: "see the Bylaws", "refer to
- * the Bill of Lading", and "per the Lab Report" all resolve by the same rule.
- * Which words name a document is a property of the customer's corpus, not of
- * the engine.
- *
- * Returns the matching filename, or null when nothing matches.
- */
-export function matchReferenceToFilename(refText: string, filenames: string[]): string | null {
-  const refTokens = new Set(
-    significantTokens(refText).filter(t => !REFERENCE_STOPWORDS.has(t)).map(singular),
-  );
-  // No early return on an empty token set: the squashed comparison below still
-  // resolves references whose only distinguishing text is a punctuated
-  // initialism ("CC&Rs", "W-9"), which tokenizes to nothing.
-  const refSquashed = refText.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-  for (const filename of filenames) {
-    const base = filename.replace(/\.[^.]+$/, "");
-    if (significantTokens(base).map(singular).some(t => refTokens.has(t))) return filename;
-    // Punctuation-insensitive fallback, so "CC&Rs" still finds "CCRs.pdf".
-    const baseSquashed = base.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (baseSquashed.length >= 4 && refSquashed.includes(baseSquashed)) return filename;
-  }
-  return null;
 }
 
 export async function handleDagRun(job: QueuedJob): Promise<void> {
@@ -845,164 +785,18 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
         }
 
         case "resolve_references": {
-          const groupKeyVal = doc.groupKey as string | null;
-          if (!groupKeyVal) {
-            output = { references: [], contradictions: [], note: "No group key — skipping reference resolution" };
-            break;
-          }
+          output = await resolveReferences({
+            db,
+            tenantId,
+            filename: doc.filename,
+            chunks,
+            groupKey: doc.groupKey as string | null,
+            excludeDocumentId: documentId,
+            extraction: finalExtraction,
+            endpoint,
+          });
 
-          // Get all other completed documents in the same group WITH their chunks
-          const groupDocs = await withRLS(db, tenantId, (tx) =>
-            tx.select({
-              id: schema.documents.id,
-              filename: schema.documents.filename,
-              extractionJson: schema.documents.extractionJson,
-              chunksJson: schema.documents.chunksJson,
-            })
-            .from(schema.documents)
-            .where(
-              and(
-                eq(schema.documents.groupKey, groupKeyVal),
-                sql`${schema.documents.id} != ${documentId}`,
-                sql`${schema.documents.extractionJson} IS NOT NULL`,
-              ),
-            ),
-          ) as Array<{ id: string; filename: string; extractionJson: Record<string, unknown> | null; chunksJson: Chunk[] | null }>;
-
-          if (groupDocs.length === 0) {
-            output = { references: [], contradictions: [], note: "No other documents in this group yet" };
-            break;
-          }
-
-          // Step 1: Regex scan current doc's chunks for reference patterns
-          const refPatterns = [
-            /(?:see|refer to|per|pursuant to|in accordance with|as (?:defined|described|set forth) in)\s+(?:the\s+)?(.{3,80}?)(?:\.|,|;|\)|\n|$)/gi,
-            /(?:Section|Article|Exhibit|Schedule|Appendix|Addendum|Amendment)\s+[\d.A-Z]+/gi,
-          ];
-          const detectedRefs: Array<{ text: string; chunkTitle: string; chunkIndex: number }> = [];
-          for (const chunk of chunks) {
-            for (const pattern of refPatterns) {
-              pattern.lastIndex = 0;
-              let match;
-              while ((match = pattern.exec(chunk.content)) !== null) {
-                detectedRefs.push({
-                  text: match[0].trim(),
-                  chunkTitle: chunk.title,
-                  chunkIndex: chunk.index,
-                });
-              }
-            }
-          }
-
-          // Step 2: Build a section index from all other docs' chunks
-          const sectionIndex: Array<{ filename: string; docId: string; title: string; content: string }> = [];
-          for (const gd of groupDocs) {
-            const gdChunks = (gd.chunksJson || []) as Chunk[];
-            for (const c of gdChunks) {
-              sectionIndex.push({ filename: gd.filename, docId: gd.id, title: c.title, content: c.content.slice(0, 500) });
-            }
-          }
-
-          // Step 3: Try to resolve references via chunk title matching (no LLM)
-          const resolved: Array<{
-            text: string;
-            source_chunk: string;
-            target_filename: string | null;
-            target_section: string | null;
-            target_content: string | null;
-            resolved: boolean;
-            method: string;
-          }> = [];
-
-          for (const ref of detectedRefs) {
-            const refLower = ref.text.toLowerCase();
-            // Try exact section title match
-            let matched = false;
-            for (const sec of sectionIndex) {
-              if (refLower.includes(sec.title.toLowerCase()) || sec.title.toLowerCase().includes(refLower.replace(/^(?:see|refer to|per|pursuant to)\s+(?:the\s+)?/i, "").trim())) {
-                resolved.push({
-                  text: ref.text,
-                  source_chunk: ref.chunkTitle,
-                  target_filename: sec.filename,
-                  target_section: sec.title,
-                  target_content: sec.content.slice(0, 300),
-                  resolved: true,
-                  method: "chunk_match",
-                });
-                matched = true;
-                break;
-              }
-            }
-            if (!matched) {
-              // Try fuzzy: match the reference's own words against the sibling
-              // filenames (see matchReferenceToFilename — no document-type
-              // vocabulary lives in the engine).
-              const targetFilename = matchReferenceToFilename(ref.text, groupDocs.map(d => d.filename));
-              if (targetFilename) {
-                resolved.push({
-                  text: ref.text,
-                  source_chunk: ref.chunkTitle,
-                  target_filename: targetFilename,
-                  target_section: null,
-                  target_content: null,
-                  resolved: true,
-                  method: "filename_match",
-                });
-                matched = true;
-              }
-            }
-            if (!matched) {
-              resolved.push({
-                text: ref.text,
-                source_chunk: ref.chunkTitle,
-                target_filename: null,
-                target_section: null,
-                target_content: null,
-                resolved: false,
-                method: "unresolved",
-              });
-            }
-          }
-
-          // Step 4: Contradiction detection via LLM (semantic judgment)
-          let contradictions: Array<Record<string, unknown>> = [];
-          if (endpoint && finalExtraction) {
-            try {
-              const provider = createProvider(endpoint.model, endpoint);
-              const otherExtractions = groupDocs
-                .filter(d => d.extractionJson)
-                .map(d => `${d.filename}: ${JSON.stringify(d.extractionJson).slice(0, 800)}`)
-                .join("\n\n");
-
-              const prompt = `Compare these extracted values from related documents and identify contradictions (conflicting claims about the same topic).
-
-Current document (${doc.filename}):
-${JSON.stringify(finalExtraction, null, 2).slice(0, 1000)}
-
-Other documents:
-${otherExtractions.slice(0, 3000)}
-
-Only report genuine contradictions, not acceptable differences (e.g., different dates are normal). Respond JSON only:
-{"contradictions": [{"topic": "what conflicts", "current_claim": "this doc says", "other_filename": "other doc", "other_claim": "other doc says", "severity": "contradiction|discrepancy"}]}`;
-
-              const raw = await provider.generate(prompt, true);
-              const parsed = JSON.parse(raw);
-              contradictions = parsed.contradictions || [];
-            } catch {
-              // Contradiction detection is best-effort
-            }
-          }
-
-          output = {
-            references: resolved,
-            references_resolved: resolved.filter(r => r.resolved).length,
-            references_unresolved: resolved.filter(r => !r.resolved).length,
-            contradictions,
-            group_key: groupKeyVal,
-            docs_in_group: groupDocs.length + 1,
-          };
-
-          // Persist on document row
+          // The one thing test mode does not do: persist on the document row.
           await withRLS(db, tenantId, (tx) =>
             tx.update(schema.documents)
               .set({ referencesJson: output })

@@ -1291,7 +1291,7 @@ async function executeTestStep(
   step: { id: string; type: string; config: Record<string, unknown> },
   docInfo: { filename: string; mimeType: string; fileSize: number; text?: string; pageCount?: number; chunks?: Array<{ index: number; title: string; content: string }>; textMap?: any; parseChunks?: any; fileBuffer?: Buffer; parseProvider?: any; storage?: any },
   priorOutputs: Record<string, unknown>,
-  ctx?: { db: unknown; tenantId: string; projectId?: string | null; pipelineId: string },
+  ctx?: { db: unknown; tenantId: string; projectId?: string | null; pipelineId: string; groupKey?: string | null },
 ): Promise<{ ok: boolean; output: Record<string, unknown>; costUsd: number; error?: string }> {
   const cost = STEP_COSTS[step.type] ?? 0;
   switch (step.type) {
@@ -1515,48 +1515,69 @@ async function executeTestStep(
       return { ok: true, output: { fields, operations_applied: applied, operation_count: applied.length }, costUsd: 0 };
     }
     case "resolve_references": {
-      // In test mode, resolve references using the group key if provided
-      // Test mode can't query the DB for other docs in the group (ephemeral),
-      // but we can show what the step would detect in the current doc
+      // Runs the SAME resolution production runs — against the same group, with
+      // the same LLM contradiction pass. Previously this stamped every hit
+      // `detected_in_test` and returned no contradictions at all, so Test showed
+      // nothing regardless of what the group held (oss-515). The only divergence
+      // left is persistence: nothing is written to the document row.
       const currentChunks = docInfo.chunks || [];
       if (currentChunks.length === 0) {
-        return { ok: true, output: { references: [], note: "No chunks — document wasn't parsed" }, costUsd: 0.02 };
+        return { ok: true, output: { references: [], contradictions: [], note: "No chunks — document wasn't parsed" }, costUsd: cost };
+      }
+      if (!ctx?.db || !ctx.tenantId) {
+        return { ok: true, output: { references: [], contradictions: [], note: "No DB context" }, costUsd: cost };
+      }
+      if (!ctx.groupKey) {
+        return {
+          ok: true,
+          output: {
+            references: [],
+            contradictions: [],
+            note: "No group key — reference resolution needs a group. Re-run the test with a group (the `group` form field or the X-Koji-Group header) to resolve against the other documents in it.",
+          },
+          costUsd: cost,
+        };
       }
 
-      // Regex scan for reference patterns
-      const refPatterns = [
-        /(?:see|refer to|per|pursuant to|in accordance with|as (?:defined|described|set forth) in)\s+(?:the\s+)?(.{3,80}?)(?:\.|,|;|\)|\n|$)/gi,
-        /(?:Section|Article|Exhibit|Schedule|Appendix|Addendum|Amendment)\s+[\d.A-Z]+/gi,
-      ];
-      const detected: Array<{ text: string; source_chunk: string; resolved: boolean; method: string }> = [];
-      for (const chunk of currentChunks) {
-        for (const pattern of refPatterns) {
-          pattern.lastIndex = 0;
-          let match;
-          while ((match = pattern.exec(chunk.content)) !== null) {
-            detected.push({
-              text: match[0].trim(),
-              source_chunk: chunk.title,
-              resolved: false,
-              method: "detected_in_test",
-            });
-          }
-        }
-      }
+      // Contradiction detection compares THIS document's extracted values
+      // against the group's, so reuse whatever a prior extract step produced.
+      const extractedSoFar = Object.values(priorOutputs)
+        .map(o => (o as { fields?: Record<string, unknown> } | null)?.fields)
+        .filter((f): f is Record<string, unknown> => !!f && Object.keys(f).length > 0);
+      const priorExtraction = extractedSoFar.length > 0 ? extractedSoFar[extractedSoFar.length - 1]! : null;
 
-      return {
-        ok: true,
-        output: {
-          references: detected,
-          references_detected: detected.length,
-          chunks_scanned: currentChunks.length,
-          note: detected.length > 0
-            ? `Found ${detected.length} reference(s) in this document. In production with a group key, these would be resolved against other documents in the group.`
-            : "No cross-document references detected in this document.",
-        },
-        costUsd: 0.02,
-      };
+      // Resolved exactly as production does (dag-runner.ts): the pipeline's own
+      // model provider, scoped to the project — not a bare tenant lookup.
+      const { resolveExtractEndpoint } = await import("../extract/resolve-endpoint");
+      const { resolveReferences } = await import("../ingestion/resolve-references");
+      const refPipelineRows = await withRLS(ctx.db as any, ctx.tenantId, (tx: any) =>
+        tx.select({ modelProviderId: schema.pipelines.modelProviderId, projectId: schema.pipelines.projectId })
+          .from(schema.pipelines)
+          .where(eq(schema.pipelines.id, ctx.pipelineId))
+          .limit(1),
+      ) as Array<{ modelProviderId: string | null; projectId: string | null }>;
+      const endpoint = await resolveExtractEndpoint(
+        ctx.db as any,
+        { tenantId: ctx.tenantId, projectId: refPipelineRows[0]?.projectId ?? null },
+        refPipelineRows[0]?.modelProviderId ?? null,
+      );
+
+      const output = await resolveReferences({
+        db: ctx.db as any,
+        tenantId: ctx.tenantId,
+        filename: docInfo.filename,
+        chunks: currentChunks,
+        groupKey: ctx.groupKey,
+        // The document under test was never persisted, so there is no sibling
+        // row to exclude.
+        excludeDocumentId: null,
+        extraction: priorExtraction,
+        endpoint,
+      });
+
+      return { ok: true, output, costUsd: cost };
     }
+
     case "split": {
       const method = (step.config.method as string) || "auto";
       const labels = (step.config.labels as Array<{ id: string; description?: string; keywords?: string[] }>) || [];
@@ -1778,7 +1799,10 @@ pipelinesRouter.post("/:idOrSlug/test", requires("pipeline:write"), async (c) =>
   // that shares memory, which can be detached after the first fetch call consumes it.
   const fileBufferCopy: Buffer = Buffer.from(new Uint8Array(fileBytes));
   const docInfo = { filename, mimeType, fileSize: fileBytes.byteLength, text: docText, pageCount, chunks: docChunks, textMap: docTextMap, parseChunks: docParseChunks, fileBuffer: fileBufferCopy as Buffer<ArrayBuffer>, parseProvider, storage };
-  const testCtx = { db, tenantId, projectId: getProjectId(c), pipelineId: pipelineId! };
+  // Same two sources the real run route accepts, so a test and a run of the
+  // same document resolve against the same group.
+  const testGroupKey = (typeof body.group === "string" ? body.group : null) || c.req.header("X-Koji-Group") || null;
+  const testCtx = { db, tenantId, projectId: getProjectId(c), pipelineId: pipelineId!, groupKey: testGroupKey };
 
   // Parse pipeline steps + edges
   type PStep = { id: string; type: string; config: Record<string, unknown> };
