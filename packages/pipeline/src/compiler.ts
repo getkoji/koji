@@ -6,7 +6,7 @@ import type {
   CompiledEdge,
   ValidationError,
 } from './types.js';
-import { STEP_COSTS, DEFAULT_SETTINGS } from './types.js';
+import { stepCost, DEFAULT_SETTINGS } from './types.js';
 import { expandSugar } from './sugar.js';
 import { validatePipeline } from './validate.js';
 import { parseCondition } from './condition.js';
@@ -63,7 +63,7 @@ export function compilePipeline(yamlSource: string): CompileResult {
     id: s.id,
     type: s.type,
     config: s.config ?? {},
-    costPerDoc: STEP_COSTS[s.type] ?? 0,
+    costPerDoc: stepCost(s.type),
   }));
 
   // Build edge map with parsed conditions

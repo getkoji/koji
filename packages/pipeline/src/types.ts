@@ -12,7 +12,15 @@ export const STEP_TYPES: readonly StepType[] = [
   'compare', 'merge_documents', 'resolve_references',
 ] as const;
 
-// Per-step platform cost (USD per doc)
+// Per-step platform cost (USD per doc).
+//
+// This is the ONE table. It is `Record<StepType, number>` on purpose: adding a
+// StepType without pricing it is a compile error, which is what keeps the number
+// in the estimate equal to the number the runners report. Both the DAG runner
+// and the pipeline test endpoint used to keep private `Record<string, number>`
+// copies, and all three drifted — production was missing every step from
+// `redact` down, so a pipeline was estimated at one price and reported another
+// (oss-518). Read it through `stepCost()`, never by indexing a raw string.
 export const STEP_COSTS: Record<StepType, number> = {
   classify: 0.005,
   extract: 0.08,
@@ -31,6 +39,25 @@ export const STEP_COSTS: Record<StepType, number> = {
   merge_documents: 0,
   resolve_references: 0.02,
 };
+
+/**
+ * Price for a step type, or 0 for one this build doesn't know.
+ *
+ * Callers hold a step type as a plain `string` (it arrives from user YAML), so
+ * they cannot index `STEP_COSTS` directly. This is the sanctioned lookup — it
+ * keeps the unknown-type fallback in one place instead of a `?? 0` at each
+ * call site that silently hid missing entries.
+ */
+export function stepCost(type: string): number {
+  // hasOwnProperty, not `?? 0`: a step type read from user YAML can collide with
+  // an inherited Object member ("constructor", "toString"), and those resolve to
+  // functions rather than undefined — which `?? 0` passes straight through into
+  // a summed cost total as NaN.
+  const table = STEP_COSTS as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(table, type)) return 0;
+  const value = table[type];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Raw YAML input (what the user writes)
