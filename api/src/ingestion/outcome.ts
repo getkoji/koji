@@ -20,6 +20,7 @@
  */
 import { eq, sql } from "drizzle-orm";
 import { schema, withRLS, type Db } from "@koji/db";
+import { jobCounterRecompute } from "./job-counters";
 import {
   resolveFieldConfidences,
   aggregateDocConfidence,
@@ -154,6 +155,7 @@ export async function persistDocumentOutcome(args: {
   if (!jobRow) throw new Error(`persistDocumentOutcome: job ${jobId} not found`);
   const scope = { tenantId, projectId: jobRow.projectId };
 
+
   if (outcome.routeToReview && args.schemaId) {
     const reviewConfidence = outcome.reviewConfidence.toFixed(4);
     await withRLS(db, scope, (tx) =>
@@ -181,8 +183,10 @@ export async function persistDocumentOutcome(args: {
       tx
         .update(schema.jobs)
         .set({
-          docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-          docsReviewing: sql`${schema.jobs.docsReviewing} + 1`,
+          // Counters are a projection of the documents table, not a tally of
+          // events — a rerun moves a document between buckets instead of
+          // adding to the totals (oss-495).
+          ...jobCounterRecompute(jobId),
           completedAt: now,
           status: "complete",
         })
@@ -225,8 +229,10 @@ export async function persistDocumentOutcome(args: {
       tx
         .update(schema.jobs)
         .set({
-          docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-          docsPassed: sql`${schema.jobs.docsPassed} + 1`,
+          // Counters are a projection of the documents table, not a tally of
+          // events — a rerun moves a document between buckets instead of
+          // adding to the totals (oss-495).
+          ...jobCounterRecompute(jobId),
           completedAt: now,
           status: "complete",
         })
@@ -242,6 +248,7 @@ export async function persistDocumentOutcome(args: {
       confidence: docConfidence,
     });
   }
+
 
   return prepared;
 }
