@@ -102,7 +102,12 @@ function createApp(opts: {
       return chain;
     };
 
-    c.set("db", { select } as any);
+    // `update` is a no-op stub purely so the middleware's last_used_at stamp
+    // (oss-496) has something to call. These tests are about project scoping;
+    // the stamp is covered in api-key-last-used.test.ts.
+    const update = () => ({ set: () => ({ where: async () => undefined }) });
+
+    c.set("db", { select, update } as any);
     await next();
   });
 

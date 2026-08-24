@@ -23,6 +23,60 @@ import type { Env } from "../env";
 const DEFAULT_SESSION_COOKIE = "koji_session";
 
 /**
+ * How stale `api_keys.last_used_at` is allowed to get before a request
+ * refreshes it. The column exists to answer "is this key still in use?" —
+ * rotation and offboarding decisions, and spotting a key nobody owns any
+ * more. Minute-level precision is ample for that, and throttling keeps a
+ * high-volume key from adding a row update to every single request.
+ */
+const API_KEY_LAST_USED_THROTTLE_MS = 5 * 60 * 1000;
+
+/**
+ * Stamp `last_used_at` on the key that just authenticated (oss-496).
+ *
+ * The column was read by GET /api/api-keys and rendered in the dashboard as
+ * "used <time ago>", but nothing ever wrote it — so it was NULL on every key
+ * ever issued, including ones driving tens of thousands of jobs a month.
+ *
+ * Two details worth keeping:
+ *  - The write is throttled on the value we already selected, so the common
+ *    case costs nothing beyond the comparison.
+ *  - The UPDATE re-checks staleness in SQL rather than trusting that read.
+ *    Concurrent requests all observe the same stale timestamp and would
+ *    otherwise each issue a write; the predicate means only the first one
+ *    matches a row.
+ *
+ * Failures are swallowed: a telemetry column must never turn a valid API key
+ * into a failed request.
+ */
+async function touchApiKeyLastUsed(
+  db: Env["Variables"]["db"],
+  apiKeyId: string,
+  lastUsedAt: Date | null,
+): Promise<void> {
+  if (lastUsedAt && Date.now() - lastUsedAt.getTime() < API_KEY_LAST_USED_THROTTLE_MS) {
+    return;
+  }
+  const staleBefore = new Date(Date.now() - API_KEY_LAST_USED_THROTTLE_MS);
+  try {
+    await db
+      .update(schema.apiKeys)
+      .set({ lastUsedAt: new Date() })
+      .where(
+        and(
+          eq(schema.apiKeys.id, apiKeyId),
+          sql`(${schema.apiKeys.lastUsedAt} IS NULL OR ${schema.apiKeys.lastUsedAt} < ${staleBefore})`,
+        ),
+      );
+  } catch (err) {
+    console.warn(
+      `[auth] failed to stamp last_used_at for api key ${apiKeyId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
+/**
  * A syntactically-valid project id that can never match a real project (the
  * nil UUID). Used as the resolved project for a restricted member who has NO
  * accessible project, so project-scoped tables return zero rows instead of
@@ -160,6 +214,7 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
           userId: schema.apiKeys.createdBy,
           email: schema.users.email,
           name: schema.users.name,
+          lastUsedAt: schema.apiKeys.lastUsedAt,
         })
         .from(schema.apiKeys)
         .innerJoin(schema.users, eq(schema.users.id, schema.apiKeys.createdBy))
@@ -183,6 +238,8 @@ export function authMiddleware(adapter: AuthAdapter, opts: AuthMiddlewareOptions
         c.set("apiKeyTenantId", row.tenantId);
         c.set("apiKeyProjectId", row.projectId ?? undefined);
         c.set("apiKeyId", row.id);
+
+        await touchApiKeyLastUsed(db, row.id, row.lastUsedAt);
       }
     }
 
