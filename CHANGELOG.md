@@ -2,6 +2,37 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.110.4 — 2026-08-24
+
+**Testing a pipeline now actually resolves cross-document references.** The
+`resolve_references` step ran four things in production — scan the document for
+reference phrases, index every sibling document in the group, resolve each
+reference by section title then by filename, and compare extracted values across
+the group for contradictions. Clicking **Test** ran only the first. Every
+reference came back `resolved: false` with the method `detected_in_test`, the
+`contradictions` key production always returns was missing entirely, and the note
+said the references "would be resolved" in production. So the one step whose
+whole purpose is to look at the rest of the group was the one step Test never
+showed you anything about — however the group was configured, the answer was
+always nothing.
+
+Test mode now runs the same resolution, against the same group, with the same
+model — because both callers now share one implementation instead of carrying
+two. The only remaining difference is the documented one: production stores the
+result on the document row and Test does not.
+
+Two smaller consequences of the shared path:
+
+- **A test run needs a group to resolve against**, the same way a real run does.
+  Pass it as the `group` form field or the `X-Koji-Group` header — the same two
+  sources the run endpoint already accepted. Without one, the step says so and
+  tells you what to pass, rather than reporting zero references as though it had
+  looked.
+- **A section with a blank title no longer swallows every reference.** Matching
+  tested `reference.includes(title)`, which is always true for an empty title, so
+  a single untitled section in a sibling document could claim every reference in
+  the document and report them all resolved to it.
+
 ## 0.110.3 — 2026-08-24
 
 - **Array confidence no longer credits a validation that never ran.** Every
