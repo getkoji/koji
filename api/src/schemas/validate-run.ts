@@ -401,6 +401,9 @@ export async function maybeFinalizeValidateRun(
         startedAt: schema.schemaRuns.startedAt,
         createdAt: schema.schemaRuns.createdAt,
         projectId: schema.schemas.projectId,
+        // The version that is LIVE. Regressions are measured against this, not
+        // against whatever happened to run last (oss-502).
+        releasedVersionId: schema.schemas.currentVersionId,
       })
       .from(schema.schemaRuns)
       .innerJoin(schema.schemas, eq(schema.schemas.id, schema.schemaRuns.schemaId))
@@ -495,24 +498,43 @@ export async function maybeFinalizeValidateRun(
     }
   }
 
-  // Regression baseline: the latest extraction per entry from BEFORE this run
-  // was created — same baseline the old in-request loop captured up front.
+  // Regression baseline: the latest extraction per entry from BEFORE this run,
+  // taken from the schema's RELEASED version (oss-502).
+  //
+  // It used to be the latest extraction from any version at all, so a candidate
+  // was compared against whatever happened to run last — another candidate rc,
+  // a run on a different model, a half-finished experiment. That is a moving
+  // target, and any decline against it counted as a regression: in production
+  // 192 of 298 runs (64.4%) carried at least one, 396 flags in total. A
+  // detector that fires on two runs in three carries no information, and
+  // `routes/schemas.ts` refuses to promote a version whose latest run had any,
+  // so the gate became something to click past.
+  //
+  // Comparing against the released version answers the question promotion
+  // actually asks — "is this worse than what is live?" — and keeps the baseline
+  // homogeneous: one version, not a baseline stitched together from several.
+  // A schema with nothing released yet has no baseline, so `prevAccuracy` stays
+  // null and nothing is flagged; a first-ever run cannot regress.
   const prevExtractedMap = new Map<string, Record<string, unknown>>();
-  for (const entryId of entryIds) {
-    const [prev] = await withRLS(db, tenantId, (tx) =>
-      tx
-        .select({ extractedJson: schema.extractionRuns.extractedJson })
-        .from(schema.extractionRuns)
-        .where(
-          and(
-            eq(schema.extractionRuns.corpusEntryId, entryId),
-            lt(schema.extractionRuns.createdAt, run.createdAt),
-          ),
-        )
-        .orderBy(desc(schema.extractionRuns.createdAt))
-        .limit(1),
-    );
-    if (prev) prevExtractedMap.set(entryId, prev.extractedJson as Record<string, unknown>);
+  const baselineVersionId = run.releasedVersionId;
+  if (baselineVersionId) {
+    for (const entryId of entryIds) {
+      const [prev] = await withRLS(db, tenantId, (tx) =>
+        tx
+          .select({ extractedJson: schema.extractionRuns.extractedJson })
+          .from(schema.extractionRuns)
+          .where(
+            and(
+              eq(schema.extractionRuns.corpusEntryId, entryId),
+              eq(schema.extractionRuns.schemaVersionId, baselineVersionId),
+              lt(schema.extractionRuns.createdAt, run.createdAt),
+            ),
+          )
+          .orderBy(desc(schema.extractionRuns.createdAt))
+          .limit(1),
+      );
+      if (prev) prevExtractedMap.set(entryId, prev.extractedJson as Record<string, unknown>);
+    }
   }
 
   const { results, parseFailures } = assembleValidateInputs(docRows, entryById, extractionByEntry);

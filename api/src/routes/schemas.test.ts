@@ -435,3 +435,92 @@ describe("computeValidateResult — element tallies make array quality legible (
     expect(out.elements).toBeNull();
   });
 });
+
+describe("computeValidateResult — regression needs to clear the noise floor (oss-502)", () => {
+  const schemaFields = { policy_number: { type: "string" }, insured_name: { type: "string" } };
+
+  /** Ten docs; `hits` of them extract correctly, the rest are wrong. */
+  function docs(field: string, hits: number): Result[] {
+    return Array.from({ length: 10 }, (_, i) => ({
+      entryId: `d${i}`,
+      filename: `doc${i}.pdf`,
+      groundTruth: { [field]: "RIGHT" },
+      extracted: { [field]: i < hits ? "RIGHT" : "WRONG" },
+      confidenceScores: { [field]: 0.9 },
+    })) as Result[];
+  }
+
+  /** Baseline map: `hits` of the ten docs were right last time. */
+  function baseline(field: string, hits: number): Map<string, Record<string, unknown>> {
+    return new Map(
+      Array.from({ length: 10 }, (_, i) => [`d${i}`, { [field]: i < hits ? "RIGHT" : "WRONG" }]),
+    );
+  }
+
+  it("does not flag an unchanged accuracy as a regression", () => {
+    const out = computeValidateResult(
+      docs("policy_number", 8),
+      baseline("policy_number", 8),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    const f = out.fields.find((x) => x.name === "policy_number")!;
+    expect(f.accuracy).toBe(80);
+    expect(f.prevAccuracy).toBe(80);
+    expect(f.status).toBe("failing"); // failing, but NOT regressed
+    expect(out.regressions).toHaveLength(0);
+  });
+
+  it("still flags a decline that clears the floor", () => {
+    const out = computeValidateResult(
+      docs("policy_number", 6),
+      baseline("policy_number", 9),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    const f = out.fields.find((x) => x.name === "policy_number")!;
+    expect(f.accuracy).toBe(60);
+    expect(f.prevAccuracy).toBe(90);
+    expect(f.status).toBe("regressed");
+    expect(out.regressions.map((r) => r.name)).toEqual(["policy_number"]);
+  });
+
+  it("does not flag a decline smaller than the floor", () => {
+    // 100 docs so a single flip is a 1-point move — under the 1.5pp floor.
+    const mk = (hits: number) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        entryId: `d${i}`,
+        filename: `doc${i}.pdf`,
+        groundTruth: { insured_name: "RIGHT" },
+        extracted: { insured_name: i < hits ? "RIGHT" : "WRONG" },
+        confidenceScores: { insured_name: 0.9 },
+      })) as Result[];
+    const prev = new Map(
+      Array.from({ length: 100 }, (_, i) => [`d${i}`, { insured_name: i < 96 ? "RIGHT" : "WRONG" }]),
+    );
+    const out = computeValidateResult(mk(95), prev, 1, Date.now(), [], schemaFields);
+    const f = out.fields.find((x) => x.name === "insured_name")!;
+    expect(f.prevAccuracy! - f.accuracy).toBeCloseTo(1, 5); // a 1-point decline
+    expect(f.status).toBe("failing");
+    expect(out.regressions).toHaveLength(0);
+  });
+
+  it("cannot flag a run with no baseline — a first-ever run does not regress", () => {
+    const out = computeValidateResult(
+      docs("policy_number", 3),
+      new Map(),
+      1,
+      Date.now(),
+      [],
+      schemaFields,
+    );
+    const f = out.fields.find((x) => x.name === "policy_number")!;
+    expect(f.prevAccuracy).toBeNull();
+    expect(f.status).toBe("failing");
+    expect(out.regressions).toHaveLength(0);
+  });
+});

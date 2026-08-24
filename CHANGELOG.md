@@ -2,6 +2,21 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.112.1 — 2026-08-24
+
+- **Validate regressions now need a real decline, measured against what's
+  live.** A field was flagged `regressed` on any decline at all, however small,
+  against whatever validate run happened to go last — which could be another
+  candidate, a different model, or a half-finished experiment. Accuracy moves on
+  its own between identical runs, so the detector fired on **192 of 298
+  production runs (64.4%)**, 396 flags in total, and since promotion is blocked
+  on a non-zero regression count the gate stopped carrying information. Two
+  changes: a decline must exceed the 1.5-point replicate-noise floor, and the
+  baseline is the schema's **released** version rather than the previous run. A
+  decline under the floor is still reported as `failing` with its delta —
+  nothing is hidden, it just no longer blocks a promotion. A schema with nothing
+  released has no baseline and cannot be flagged.
+
 ## 0.112.0 — 2026-08-24
 
 **Review items now record whether a human corrected the value or accepted it.**
