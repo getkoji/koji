@@ -676,7 +676,7 @@ function SplitConfig({
                 <input
                   value={label.id}
                   onChange={(e) => updateLabel(i, { id: e.target.value })}
-                  placeholder="e.g. certificate_of_insurance"
+                  placeholder="e.g. signed_contract"
                   style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace", fontSize: "12px" }}
                 />
                 <button

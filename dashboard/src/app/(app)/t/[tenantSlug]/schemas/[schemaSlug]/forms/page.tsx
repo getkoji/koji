@@ -109,7 +109,7 @@ export default function FormsListPage() {
                       setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""));
                     }
                   }}
-                  placeholder="e.g. ACORD 25"
+                  placeholder="e.g. Intake Form A"
                   className="w-full h-[30px] rounded-sm border border-input bg-white px-2.5 text-[13px] outline-none focus:border-ring"
                 />
               </div>
@@ -118,7 +118,7 @@ export default function FormsListPage() {
                 <input
                   value={slug}
                   onChange={(e) => setSlug(e.target.value)}
-                  placeholder="acord-25"
+                  placeholder="intake-form-a"
                   className="w-full h-[30px] rounded-sm border border-input bg-white px-2.5 text-[13px] font-mono outline-none focus:border-ring"
                 />
               </div>
