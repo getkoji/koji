@@ -44,8 +44,10 @@ test.describe("pipelines", () => {
       page.getByRole("heading", { name: "Create pipeline" }),
     ).toBeVisible();
 
-    // Form fields visible in the dialog
-    await expect(page.getByPlaceholder("e.g. Claims Intake")).toBeVisible();
+    // Form fields visible in the dialog. Located by placeholder because the
+    // dialog's <label> isn't associated with its input, so getByLabel can't
+    // find it — which also couples this assertion to example copy (oss-513).
+    await expect(page.getByPlaceholder("e.g. Inbound Documents")).toBeVisible();
     await expect(page.getByPlaceholder("my-pipeline")).toBeVisible();
     await expect(page.getByText("Review threshold")).toBeVisible();
 
