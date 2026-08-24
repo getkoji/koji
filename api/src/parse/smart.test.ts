@@ -245,7 +245,7 @@ describe("SmartParseProvider", () => {
     it("falls back to heavy when lite output looks corrupt", async () => {
       mockClassify.mockResolvedValue("digital_pdf");
       const corrupt: ParseResponse = {
-        // Exact pattern from the Cincinnati CinciPak regression — fragments,
+        // Exact pattern from the commercial-carrier regression — fragments,
         // single chars, no real words. ~70 tokens; all 1-2 chars long.
         markdown: "M: FRO er: y numb Polic d: io y Per Polic rage a G or d / an bile mo uto t A ep exc es erag v l co Al ECP 035 30 58 EBA 035 30 58 FROM: TO: 10 01 24 27 25 a b c d e f g h i j k l m n o p q r s t u v w x y z",
         pages: 1,
@@ -435,7 +435,7 @@ describe("detectCorruption", () => {
     expect(detectCorruption("a b c d e")).toBeNull();
   });
 
-  it("flags the Cincinnati-style fragmented output", () => {
+  it("flags carrier-style fragmented output", () => {
     const fragmented =
       "M: FRO er: y numb Polic d: io y Per Polic rage a G or d / an bile mo uto t A ep exc es erag v l co Al ECP 035 30 58 EBA 035 30 58 FROM: TO: 10 01 24 27 25 a b c d e f g h i j k l m n o p q r s t u v w x y z";
     expect(detectCorruption(fragmented)).toMatch(/1-2 chars/);
@@ -490,15 +490,17 @@ describe("detectCorruption", () => {
     expect(detectCorruption(text)).toBeNull();
   });
 
-  // A verbatim dec-page header pdfjs mangled on a real digital PDF (Cincinnati
-  // Pillar policy). The words are split into 1-2 char fragments with stranded
-  // single letters ("C", "o", "m", "i") — the localized-mangle signature.
+  // A dec-page header of the shape pdfjs mangles on a real digital PDF, with a
+  // fictional carrier standing in for the one that produced the original. The
+  // words are split into 1-2 char fragments with stranded single letters ("o",
+  // "m", "n", "y") — the localized-mangle signature. Token count, median length,
+  // short-token ratio and single-letter diversity match the source document's.
   const mangledDecHeader =
-    "The Ci nc i nn at i I n su ra nc e C o m pa ny " +
+    "The No rt hg at e M ut u al I n su ra nc e C o m pa ny " +
     "A Sto ck In su r a n ce C o m p an y " +
-    "Head qu ar ter s : 62 00 S. G il mor e Ro ad, Fa irf ield , O H 4 50 14 - 514 1 " +
-    "Mai ling ad dr es s : P.O . Box 14 54 96, Cinc in na ti, O H 452 50 - 549 6 " +
-    "www.c infi n.c om n 513 - 870 - 200 0";
+    "Head qu ar ter s : 14 00 N. H ar bor W ay, Br ant ford , O H 4 40 17 - 221 0 " +
+    "Mai ling ad dr es s : P.O . Box 22 01 45, Bra nt ford, O H 440 22 - 014 5 " +
+    "www.n ort hg at em ut u al.c om n 555 - 010 - 420 0";
 
   it("flags a concentrated space-mangle (caught by any arm)", () => {
     // In isolation the mangled block is dense enough to trip the document-level

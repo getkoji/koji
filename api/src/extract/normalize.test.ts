@@ -1020,10 +1020,10 @@ describe("prose transform", () => {
   });
 
   it("leaves a clean string unchanged", () => {
-    const { value, report } = normField("The Cincinnati Insurance Companies", {
+    const { value, report } = normField("The Northgate Insurance Companies", {
       normalize: "prose",
     });
-    expect(value).toBe("The Cincinnati Insurance Companies");
+    expect(value).toBe("The Northgate Insurance Companies");
     expect(report.applied.filter((a) => a.transform === "prose")).toHaveLength(0);
   });
 

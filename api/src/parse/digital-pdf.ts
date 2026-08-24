@@ -4,7 +4,7 @@
  * Mozilla's PDF.js engine plus our `spatialToMarkdown` reconstruction.
  *
  * Replaces the older LiteParse provider, which mis-ordered glyphs on iText-
- * produced commercial PDFs (Cincinnati CinciPak and similar carrier output)
+ * produced commercial PDFs (commercial carrier policy output and similar)
  * and produced scrambled markdown that downstream extraction silently consumed.
  *
  * Scope: PDFs only. Non-PDF inputs (DOCX, HTML, PPTX, images) must be routed

@@ -379,14 +379,14 @@ describe("word-level bbox matching", () => {
   });
 
   it("does not match a multi-word value against a run of bare punctuation segments", () => {
-    // Regression: Cincinnati page-8 premium summary has a column of standalone
+    // Regression: a carrier's page-8 premium summary has a column of standalone
     // "$" text items next to empty premium rows. The matcher used to strip
     // those to "" and then accept them as a match for any needle word via
     // `needleWord.includes("")` (always true). A 4+-word value like the
     // carrier name would land on the dollar-sign column instead of the page-
     // header where it actually appears.
     const carrierHeaderTextMap: TextMap = [
-      { text: "The Cincinnati", page: 1, bbox: { x: 0.1, y: 0.05, w: 0.3, h: 0.02 } },
+      { text: "The Northgate", page: 1, bbox: { x: 0.1, y: 0.05, w: 0.3, h: 0.02 } },
       { text: "Insurance", page: 1, bbox: { x: 0.4, y: 0.05, w: 0.1, h: 0.02 } },
       { text: "Companies", page: 1, bbox: { x: 0.5, y: 0.05, w: 0.1, h: 0.02 } },
       // …intervening pages…
@@ -396,10 +396,10 @@ describe("word-level bbox matching", () => {
       { text: "$", page: 8, bbox: { x: 0.6, y: 0.16, w: 0.01, h: 0.02 } },
       { text: "$", page: 8, bbox: { x: 0.6, y: 0.18, w: 0.01, h: 0.02 } },
     ];
-    const markdown = "The Cincinnati Insurance Companies\nlater text…\n$ $ $ $ $";
+    const markdown = "The Northgate Insurance Companies\nlater text…\n$ $ $ $ $";
 
     const result = resolveProvenance(
-      { carrier: "The Cincinnati Insurance Companies" },
+      { carrier: "The Northgate Insurance Companies" },
       markdown,
       carrierHeaderTextMap,
     );
