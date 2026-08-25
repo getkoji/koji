@@ -30,6 +30,7 @@ import { TerminalError } from "../queue/worker";
 import { readParseProviderPin, markDocFailed, recordDeliveryBillableEvent } from "./process";
 import { resolveParse, parseDocument } from "./seam";
 import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
+import { jobCounterRecompute } from "./job-counters";
 import { enqueueWebhookDeliveries } from "../webhooks/emit";
 
 let _db: Db | null = null;
@@ -1110,6 +1111,7 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
     updates.confidence = String(finalConfidence ?? 0);
   }
 
+
   await withRLS(db, tenantId, (tx) =>
     tx.update(schema.documents).set(updates).where(eq(schema.documents.id, documentId)),
   );
@@ -1120,11 +1122,14 @@ export async function handleDagRun(job: QueuedJob): Promise<void> {
       .where(eq(schema.documents.id, documentId)).limit(1),
   );
   if (jobRow?.jobId) {
+    // A rerun used to increment these again, so the counters drifted above the
+    // number of documents that exist. Recomputing also handles the split
+    // parent correctly: it counts as processed but has no outcome of its own,
+    // since its children each carry theirs (oss-495).
     await withRLS(db, tenantId, (tx) =>
       tx.update(schema.jobs).set({
         status: "complete",
-        docsProcessed: sql`docs_processed + 1`,
-        docsPassed: finalExtraction ? sql`docs_passed + 1` : sql`docs_passed`,
+        ...jobCounterRecompute(jobRow.jobId),
         completedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(schema.jobs.id, jobRow.jobId)),

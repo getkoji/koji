@@ -69,6 +69,7 @@ import { resolveTenantProvider } from "../extract/resolve-endpoint";
 import { checkLegibility, isBadScan, DEFAULT_LEGIBILITY_THRESHOLD } from "../parse/legibility";
 import { visionOcrPages } from "../parse/vision-ocr";
 import { decideDocumentOutcome, persistDocumentOutcome, type OutcomeExtraction } from "./outcome";
+import { jobCounterRecompute } from "./job-counters";
 import { isTransientError } from "./errors";
 import type { BillingAdapter } from "../billing/adapter";
 import { NoOpBillingAdapter } from "../billing/noop";
@@ -1431,8 +1432,9 @@ export async function markDocFailed(
     tx
       .update(schema.jobs)
       .set({
-        docsProcessed: sql`${schema.jobs.docsProcessed} + 1`,
-        docsFailed: sql`${schema.jobs.docsFailed} + 1`,
+        // Recomputed, not incremented: a document that failed, was retried and
+        // failed again must not be counted twice (oss-495).
+        ...jobCounterRecompute(jobId),
         completedAt: now,
         status: "failed",
       })
