@@ -18,6 +18,7 @@ import { snapshotCandidate, graduateCandidate, releaseDirect } from "../schemas/
 import { upsertCorpusDocument } from "../schemas/corpus-pool";
 import { formatSemver, type Bump } from "../schemas/semver";
 import { reactivateRefusalBody } from "../schemas/release-policy";
+import { summarizeRuns } from "../schemas/run-summary";
 import { parseVersionSelector, selectValidateVersion } from "../schemas/version-selector";
 import { parseReleaseInput } from "../schemas/release-input";
 import { resolveMimeType } from "../ingestion/mime";
@@ -312,24 +313,45 @@ schemas.get("/:slug/versions", requires("schema:read"), async (c) => {
       .orderBy(desc(schema.schemaVersions.versionNumber))
   );
 
-  // Enrich each version with its semver label, released/live flags, and latest
-  // validate accuracy — drives both the Build version list and `koji schema versions`.
+  // Every completed run for this schema, in ONE query — the per-version
+  // summary below groups them in memory. This replaces an N+1 that ran a
+  // separate `LIMIT 1` query per version.
+  const runRows = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
+    tx.select({
+      schemaVersionId: schema.schemaRuns.schemaVersionId,
+      accuracy: schema.schemaRuns.accuracy,
+      regressionsCount: schema.schemaRuns.regressionsCount,
+      createdAt: schema.schemaRuns.createdAt,
+    })
+      .from(schema.schemaRuns)
+      .where(and(eq(schema.schemaRuns.schemaId, s.id), eq(schema.schemaRuns.status, "completed")))
+  );
+  const runsByVersion = new Map<string, typeof runRows>();
+  for (const r of runRows) {
+    if (!r.schemaVersionId) continue;
+    const list = runsByVersion.get(r.schemaVersionId);
+    if (list) list.push(r);
+    else runsByVersion.set(r.schemaVersionId, [r]);
+  }
+
+  // Enrich each version with its semver label, released/live flags, and its
+  // validate accuracy — drives both the Build version list and
+  // `koji schema versions`.
+  //
+  // The accuracy is the MEDIAN of that version's completed runs, with `n` and
+  // the observed spread beside it (oss-508). It used to be the single most
+  // recent completed run, so one unlucky draw became the number a customer
+  // reads — and since accuracy varies between identical runs, "most recent"
+  // carried no more information than any other draw.
   const data = [];
   for (const v of rows) {
-    const [run] = await withRLS(db, { tenantId, projectId: getProjectId(c) }, (tx) =>
-      tx.select({ accuracy: schema.schemaRuns.accuracy, regressionsCount: schema.schemaRuns.regressionsCount })
-        .from(schema.schemaRuns)
-        .where(and(eq(schema.schemaRuns.schemaVersionId, v.id), eq(schema.schemaRuns.status, "completed")))
-        .orderBy(desc(schema.schemaRuns.createdAt))
-        .limit(1)
-    );
+    const summary = summarizeRuns(runsByVersion.get(v.id) ?? []);
     data.push({
       ...v,
       version: formatSemver(v),
       released: v.prerelease === null,
       active: v.id === s.currentVersionId,
-      accuracy: run?.accuracy ?? null,
-      regressions: run?.regressionsCount ?? null,
+      ...summary,
     });
   }
   return c.json({ data });

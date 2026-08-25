@@ -2,6 +2,22 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.112.2 — 2026-08-24
+
+- **A schema version's accuracy is now the median of its runs, with n and the
+  spread.** It was the single most recent completed run. Validate accuracy is
+  not deterministic — replicate runs of the same version over the same corpus
+  differ by around 1.5 points, and about 6% of production runs land more than
+  five points from their own group's median — so "most recent" carried no more
+  information than any other draw, and one unlucky run became the number a
+  customer read. In production `policy_generic` displayed version 1 at 67.80%,
+  recorded *after* two version-3 runs in the same minute. `GET
+  /api/schemas/{slug}/versions` now returns `accuracy` (median), `accuracyRuns`,
+  `accuracyMin` and `accuracyMax`, and `koji schema versions` shows Runs and
+  Range alongside the figure — a range wider than the noise floor is
+  highlighted. Runs are never pooled across versions, and the per-version query
+  is now one query instead of one per version.
+
 ## 0.112.0 — 2026-08-24
 
 **Review items now record whether a human corrected the value or accepted it.**

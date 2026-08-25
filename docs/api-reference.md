@@ -1589,7 +1589,11 @@ Each successfully extracted document is persisted as an extraction run linked to
 
 ### `GET /api/schemas/{slug}/versions`
 
-The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), latest `accuracy` and `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
+The released lineage + candidates, each with `version` (semver label), `released`, `active` (is the live release), `accuracy`, `accuracyRuns`, `accuracyMin`, `accuracyMax`, `regressions`, plus `versionNumber`, `commitMessage`, `committedByName`, `createdAt`. Auth: `schema:read`.
+
+`accuracy` is the **median** of that version's completed validate runs (0..1), not its most recent one. Validate accuracy is not deterministic — replicate runs of the same version over the same corpus differ by around 1.5 points — so a single draw is a property of the run, not of the schema. `accuracyRuns` is how many completed runs the median is over (`0` for a version that was never validated, in which case every accuracy field is `null`), and `accuracyMin`/`accuracyMax` are the lowest and highest observed, so the spread behind the median is visible. A version with `accuracyRuns: 1` has a figure with no measured stability at all.
+
+`regressions` is the regression count from the run **at** the median, so the two numbers describe the same run. With an even number of runs the lower middle run is taken rather than averaging the two, because an average is not a run and would have no regression count to report. Runs are never pooled across versions.
 
 ### `POST /api/schemas/{slug}/versions`
 
