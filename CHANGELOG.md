@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.111.2 — 2026-08-24
+
+**API keys now record when they were last used.** The keys list and the
+dashboard have always shown a "used <time ago>" column, but nothing ever wrote
+the underlying timestamp — so it read empty for every key ever issued,
+including keys driving tens of thousands of documents a month. That made
+rotation and offboarding guesswork: a key still in daily use looked exactly
+like one abandoned months ago. A key's timestamp is now stamped when it
+authenticates, throttled to at most one write every five minutes so a
+high-volume key doesn't pay for it on every request.
+
 ## 0.111.1 — 2026-08-24
 
 **Job document counts now describe the present, not everything that ever
