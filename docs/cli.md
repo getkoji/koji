@@ -348,6 +348,24 @@ A field ground truth carries but the scored schema doesn't declare shows as
 `not in schema` rather than 0%: nothing extracted it because nothing asked for
 it. To compare like with like, validate both sides the same way.
 
+**Runs that couldn't have measured anything fail instead of reporting a
+number.** A validate run used to be recorded as successful whenever it finished
+without throwing, so a run that scored nothing at all reported 100% (there is
+nothing failing when nothing is compared), and one that scored a clean 0.0000
+across a large corpus was published as the schema's accuracy. Two cases now
+finalize as **failed**, with the reason on the run:
+
+- **Nothing was scored** — the corpus entries carry no ground truth, or its keys
+  don't match any field the schema declares. Check the ground-truth keys against
+  the schema's field names.
+- **0.0% across a corpus of five documents or more** — scoring awards partial
+  credit, so a clean zero at that size is far more often a run that measured the
+  wrong thing (no extractions, the wrong schema version, mismatched ground-truth
+  keys) than a schema that is perfectly wrong. Re-run to record a real 0% if
+  that is genuinely the result.
+
+A slow run is not gated: taking a long time is not the same as being wrong.
+
 #### Diagnosing failures with `--explain`
 
 A failing field has two very different causes, and telling them apart decides the fix. `--explain` (also present as `routingDiagnosis` on each `fields[].failingDocs[]` entry under `--json`) reports, per failing field, how its chunks were selected (`source`) and whether the ground-truth answer was even present in the chunks the model was shown (`answerInRoutedChunks`):

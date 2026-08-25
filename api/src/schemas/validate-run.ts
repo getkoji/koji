@@ -41,6 +41,7 @@ import { resolveParse, parseDocument } from "../ingestion/seam";
 import { createNotification } from "../notifications/emit";
 import { formatSemver } from "./semver";
 import {
+  checkRunSanity,
   computeValidateResult,
   type RoutingPlan,
   type ValidateDocResult,
@@ -545,6 +546,32 @@ export async function maybeFinalizeValidateRun(
   );
   const versionLabel = version ? formatSemver(version) : null;
   const resultJson = { ...validateResult, version: versionLabel };
+
+  // A run only finalizes as `completed` if its result could plausibly be a
+  // measurement (oss-500). Before this gate, `completed` meant nothing more
+  // than "the runner did not throw", so a run that scored 0.0000 over a
+  // 50-document corpus — or one that scored nothing at all and therefore
+  // reported 100% — was recorded as the schema's accuracy. The result is still
+  // persisted so the failure is diagnosable; it just isn't published as a
+  // number.
+  const insane = checkRunSanity(validateResult);
+  if (insane) {
+    await withRLS(db, tenantId, (tx) =>
+      tx
+        .update(schema.schemaRuns)
+        .set({
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: insane,
+          docsTotal: validateResult.docsTotal,
+          docsPassed: validateResult.docsPassed,
+          durationMs: validateResult.durationMs,
+          resultJson,
+        })
+        .where(eq(schema.schemaRuns.id, schemaRunId)),
+    );
+    return { finalized: true, status: "failed", error: insane, parseFailures };
+  }
 
   await withRLS(db, tenantId, (tx) =>
     tx
