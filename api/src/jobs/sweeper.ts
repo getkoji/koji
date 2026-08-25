@@ -37,6 +37,16 @@ export const NO_PROGRESS_MS = 10 * 60 * 1000;
 /** Default sweep cadence. */
 export const SWEEP_INTERVAL_MS = 60_000;
 
+/**
+ * How long a validate run may sit unfinished before it is swept (oss-497).
+ *
+ * A run fans out one `schema.validate.doc` queue job per corpus entry, so its
+ * wall clock scales with corpus size rather than with a single request. An
+ * hour is far beyond any real run — the largest corpus observed in production
+ * is 50 documents — while still bounding the "wedged forever" case.
+ */
+export const SCHEMA_RUN_MAX_MS = 60 * 60 * 1000;
+
 export interface StuckJobRow {
   id: string;
   tenantId: string;
@@ -66,16 +76,21 @@ export async function sweepStuckJobs(
   // Single UPDATE … RETURNING transitions matching rows AND hands us the
   // payload to emit events with. Two predicates joined by OR mirror the
   // doc above.
+  // Timestamps are bound as ISO strings with an explicit cast. The postgres
+  // driver rejects a raw Date passed through `sql` in `db.execute` — this
+  // query threw `ERR_INVALID_ARG_TYPE` on every sweep until oss-497, which
+  // is why no stuck job was ever actually swept. The unit tests mock
+  // `db.execute`, so they never saw it.
   const stuck = (await db.execute(sql`
     UPDATE jobs
     SET status = 'failed',
-        completed_at = ${now},
-        updated_at = ${now}
+        completed_at = ${now.toISOString()}::timestamptz,
+        updated_at = ${now.toISOString()}::timestamptz
     WHERE status = 'running'
       AND started_at IS NOT NULL
       AND (
-        started_at < ${hardCutoff}
-        OR (started_at < ${noProgressCutoff} AND docs_processed = 0)
+        started_at < ${hardCutoff.toISOString()}::timestamptz
+        OR (started_at < ${noProgressCutoff.toISOString()}::timestamptz AND docs_processed = 0)
       )
     RETURNING id, tenant_id, project_id, slug, started_at, docs_processed, docs_total
   `)) as unknown as Array<{
@@ -83,7 +98,8 @@ export async function sweepStuckJobs(
     tenant_id: string;
     project_id: string;
     slug: string;
-    started_at: Date;
+    /** Raw `execute` bypasses Drizzle's column mapping, so this is a string. */
+    started_at: string;
     docs_processed: number;
     docs_total: number;
   }>;
@@ -91,7 +107,7 @@ export async function sweepStuckJobs(
   if (stuck.length === 0) return 0;
 
   for (const row of stuck) {
-    const ageMs = now.getTime() - row.started_at.getTime();
+    const ageMs = now.getTime() - new Date(row.started_at).getTime();
     const reason =
       row.docs_processed === 0
         ? `Job stuck before making progress (${Math.round(ageMs / 60_000)}m running, 0 of ${row.docs_total} docs processed)`
@@ -131,6 +147,81 @@ export async function sweepStuckJobs(
 }
 
 /**
+ * Sweep validate runs that never reached a terminal state (oss-497).
+ *
+ * `schema_runs` had no reaper of any kind. The jobs sweeper above watches
+ * `jobs`; nothing watched validate runs, so a run whose fan-out died left a
+ * row in 'running' indefinitely. Production carried 15 such rows, started
+ * between 2026-06-30 and 2026-07-23 — up to eight weeks stale, all with
+ * `accuracy` and `completed_at` NULL.
+ *
+ * Two things went wrong because of it:
+ *  - `koji validate` and the Validate UI show a run that never resolves, and
+ *    an unchanged schema reuses the persisted run rather than starting a new
+ *    one — so a wedged run can make a schema look permanently un-validatable.
+ *  - Any query over validation history has to remember to filter on
+ *    `status = 'completed' AND accuracy IS NOT NULL` or it silently averages
+ *    in dead rows.
+ *
+ * `queued` runs are swept too: a run that was enqueued and never picked up is
+ * as stuck as one that started and stalled. Age is measured from `started_at`
+ * when present and `created_at` otherwise, since a queued run has no start.
+ *
+ * The project id comes from the run's schema — `schema_runs` is tenant-scoped
+ * but carries no project column of its own.
+ */
+export async function sweepStuckSchemaRuns(
+  db: Db,
+  now: Date = new Date(),
+  opts: { maxMs?: number } = {},
+): Promise<number> {
+  const maxMs = opts.maxMs ?? SCHEMA_RUN_MAX_MS;
+  const cutoff = new Date(now.getTime() - maxMs);
+
+  // Timestamps are bound as ISO strings with an explicit cast: the postgres
+  // driver rejects a raw Date passed through `sql` in `db.execute`.
+  const stuck = (await db.execute(sql`
+    UPDATE schema_runs AS sr
+    SET status = 'failed',
+        completed_at = ${now.toISOString()}::timestamptz,
+        error_message = COALESCE(sr.error_message, 'Validate run exceeded max running time — swept')
+    FROM schemas s
+    WHERE s.id = sr.schema_id
+      AND sr.status IN ('running', 'queued')
+      AND COALESCE(sr.started_at, sr.created_at) < ${cutoff.toISOString()}::timestamptz
+    RETURNING sr.id, sr.tenant_id, s.project_id, s.slug AS schema_slug,
+              COALESCE(sr.started_at, sr.created_at) AS began_at
+  `)) as unknown as Array<{
+    id: string;
+    tenant_id: string;
+    project_id: string | null;
+    schema_slug: string;
+    /** Raw `execute` bypasses Drizzle's column mapping, so this is a string. */
+    began_at: string;
+  }>;
+
+  if (stuck.length === 0) return 0;
+
+  for (const row of stuck) {
+    const ageMinutes = Math.round(
+      (now.getTime() - new Date(row.began_at).getTime()) / 60_000,
+    );
+    const reason = `Validate run stuck for ${ageMinutes}m without finishing`;
+
+    createNotification({ tenantId: row.tenant_id, projectId: row.project_id }, {
+      type: "validate.failed",
+      title: `Validate run failed: ${row.schema_slug}`,
+      body: reason,
+      data: { schemaRunId: row.id, schemaSlug: row.schema_slug, ageMinutes },
+    });
+
+    console.warn(`[sweeper] Failed stuck schema run ${row.id}: ${reason}`);
+  }
+
+  return stuck.length;
+}
+
+/**
  * Start a sweeper loop. Returns a stop function that ends the loop cleanly.
  *
  * The loop staggers its first run by SWEEP_INTERVAL_MS so newly-booted
@@ -139,7 +230,12 @@ export async function sweepStuckJobs(
  */
 export function startStuckJobSweeper(
   db: Db,
-  opts: { intervalMs?: number; hardMaxMs?: number; noProgressMs?: number } = {},
+  opts: {
+    intervalMs?: number;
+    hardMaxMs?: number;
+    noProgressMs?: number;
+    schemaRunMaxMs?: number;
+  } = {},
 ): () => void {
   const intervalMs = opts.intervalMs ?? SWEEP_INTERVAL_MS;
   let running = true;
@@ -158,6 +254,21 @@ export function startStuckJobSweeper(
       } catch (err) {
         console.error(
           "[sweeper] Sweep failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      // Separate try/catch: a failure sweeping validate runs must not stop
+      // jobs from being swept on the next tick, or vice versa.
+      try {
+        const sweptRuns = await sweepStuckSchemaRuns(db, new Date(), {
+          maxMs: opts.schemaRunMaxMs,
+        });
+        if (sweptRuns > 0) {
+          console.warn(`[sweeper] Swept ${sweptRuns} stuck schema run(s)`);
+        }
+      } catch (err) {
+        console.error(
+          "[sweeper] Schema-run sweep failed:",
           err instanceof Error ? err.message : err,
         );
       }

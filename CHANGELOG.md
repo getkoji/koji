@@ -2,6 +2,23 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.111.3 — 2026-08-24
+
+**Stuck validate runs are now cleaned up — and the stuck-job sweeper actually
+runs.** A validate run whose fan-out died sat in `running` forever: nothing
+watched `schema_runs`. That left the run showing as never-finishing in
+`koji validate` and the Validate UI, and — because an unchanged schema reuses
+its persisted run rather than starting a new one — could make a schema look
+permanently un-validatable. Runs that pass a generous ceiling (one hour) are
+now failed with a reason, keeping any error the run had already recorded.
+Queued runs that were never picked up are swept the same way.
+
+While adding it we found the existing stuck-job sweeper had never worked:
+every sweep threw before touching a row, because its timestamps were bound in
+a form the database driver rejects. Its tests replaced the database with a
+stub, so nothing caught it. Both sweepers now run against a real database in
+the test suite.
+
 ## 0.111.2 — 2026-08-24
 
 **API keys now record when they were last used.** The keys list and the
