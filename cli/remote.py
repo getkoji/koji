@@ -1629,17 +1629,38 @@ def schema_versions(
         return
     table = Table(show_header=True, header_style="bold")
     table.add_column("Version")
+    # Median of that version's completed validate runs — not the latest one.
+    # Accuracy varies between identical runs, so a single draw is not a
+    # property of the schema (oss-508).
     table.add_column("Acc", justify="right")
+    # n, and the observed spread the median hides. "1 run" is a warning as much
+    # as a count: a lone run carries no information about its own stability.
+    table.add_column("Runs", justify="right")
+    table.add_column("Range", justify="right")
     table.add_column("Kind")
     table.add_column("Live", justify="center")
     for v in versions:
         acc = v.get("accuracy")
         acc_disp = f"{float(acc) * 100:.1f}%" if acc is not None else "[dim]—[/dim]"
+        n = v.get("accuracyRuns") or 0
+        n_disp = f"[dim]{n}[/dim]" if n else "[dim]—[/dim]"
+        lo, hi = v.get("accuracyMin"), v.get("accuracyMax")
+        if lo is not None and hi is not None and n > 1:
+            spread = (float(hi) - float(lo)) * 100
+            # Flag a spread wider than the replicate-noise floor: at that point
+            # the median is standing in front of runs that genuinely disagree.
+            colour = "yellow" if spread > 1.5 else "dim"
+            range_disp = f"[{colour}]{float(lo) * 100:.1f}–{float(hi) * 100:.1f}%[/{colour}]"
+        else:
+            range_disp = ""
         kind = "[green]released[/green]" if v.get("released") else "[magenta]candidate[/magenta]"
         live = "[green]●[/green]" if v.get("active") else ""
-        table.add_row(v.get("version", ""), acc_disp, kind, live)
+        table.add_row(v.get("version", ""), acc_disp, n_disp, range_disp, kind, live)
     console.print(table)
-    console.print(f"\n[dim]{len(versions)} version(s)[/dim]")
+    console.print(
+        f"\n[dim]{len(versions)} version(s) · Acc is the median of each version's "
+        f"completed runs; Range is their spread[/dim]"
+    )
 
 
 @schema_app.command("promote")

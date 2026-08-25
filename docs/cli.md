@@ -492,6 +492,23 @@ koji schema release insurance_policy                 # release a schema directly
 koji schema release ./schemas/insurance_policy.yaml  # …from a local file
 ```
 
+**The `Acc` column is a median, not a score.** `koji schema versions` reports
+the median accuracy of each version's completed validate runs, with `Runs` (how
+many) and `Range` (lowest–highest observed) beside it. Validate accuracy is not
+deterministic — replicate runs of the same version over the same corpus differ
+by around 1.5 points — so a single run is a property of that run, not of the
+schema, and reporting the latest one meant an unlucky draw became the number
+everyone read. A `Range` wider than 1.5 points is highlighted: at that point the
+runs genuinely disagree and the median is standing in front of them. `Runs: 1`
+is a warning as much as a count.
+
+```
+Version       Acc   Runs        Range   Kind        Live
+v3.0.0      81.4%      6   79.9–83.1%   released     ●
+v2.1.0-rc.3 74.2%      2   51.0–97.0%   candidate
+v1.0.0      67.8%      1                released
+```
+
 `koji schema release` is the early-stage path: when there's nothing in the corpus to backtest yet, skip candidates and release straight to a full version. All `schema` subcommands accept `--json` and `--profile`.
 
 The full **validate → promote** loop is encoded in the `schema-loop` Claude skill.
