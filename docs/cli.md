@@ -391,6 +391,25 @@ The same counts are on `elements` (run-wide) and `fields[].elements`
 "zero errors anywhere in the document" — it just isn't the number to quote for
 array quality.
 
+**What counts as a regression.** A field is reported `regressed` (rather than
+plain `failing`) only when two things are true: it has at least one failing
+document, **and** its accuracy fell more than **1.5 points** against the
+baseline. The floor is the replicate-noise level — re-running the same version
+over the same corpus does not reproduce the same number, and without a floor the
+detector reports that wobble as a regression. A decline under the floor is still
+shown, with its accuracy and delta; it just doesn't trip anything.
+
+The baseline is the schema's **released** version — the one your pipelines run —
+not whatever validate run happened to go last. That answers the question
+promotion actually asks ("is this candidate worse than what's live?") and keeps
+the comparison against a single fixed version instead of a baseline stitched
+from several. A schema with nothing released yet has no baseline, so nothing can
+be flagged: a first run cannot regress.
+
+This matters beyond the display, because `koji schema promote
+--require-no-regressions` and the dashboard's promote button both refuse a
+version whose latest run carried any regression.
+
 #### Diagnosing failures with `--explain`
 
 A failing field has two very different causes, and telling them apart decides the fix. `--explain` (also present as `routingDiagnosis` on each `fields[].failingDocs[]` entry under `--json`) reports, per failing field, how its chunks were selected (`source`) and whether the ground-truth answer was even present in the chunks the model was shown (`answerInRoutedChunks`):

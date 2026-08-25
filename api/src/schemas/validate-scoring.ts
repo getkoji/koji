@@ -115,6 +115,20 @@ function tallyElements(
   }
 }
 
+/**
+ * Minimum accuracy decline (percentage points) for a field to count as
+ * REGRESSED rather than merely failing (oss-502).
+ *
+ * Set from the replicate-noise floor: re-running the same schema version over
+ * the same corpus does not reproduce the same number, and the trimmed spread
+ * between replicates in production is about 1.5 points. A detector with no
+ * floor reports that noise as a regression.
+ *
+ * A field below this floor is still reported as `failing` with its accuracy and
+ * delta — nothing is hidden. It just doesn't trip the promotion gate.
+ */
+export const REGRESSION_MIN_DELTA = 1.5;
+
 /** Compare extraction results against ground truth and compute accuracy/regressions. */
 export function computeValidateResult(
   results: ValidateDocResult[],
@@ -211,10 +225,19 @@ export function computeValidateResult(
     // declare doesn't look like a −67 point regression (oss-492). Only
     // detectable when the caller passed the schema's field specs.
     const notInSchema = schemaFields !== undefined && fieldSpec === undefined;
+    // A decline only counts as a regression once it clears the replicate-noise
+    // floor (oss-502). The test used to be `prevAccuracy > accuracy` — any
+    // epsilon at all — on a metric that moves on its own between identical
+    // runs: replicate groups in production sit around 1.5pp of trimmed spread.
+    // With no floor the detector fired on 192 of 298 runs (64.4%), 396 flags,
+    // and since `routes/schemas.ts` blocks promotion on a non-zero count, the
+    // gate stopped carrying information and became something to click through.
+    const declined =
+      prevAccuracy !== null && prevAccuracy - accuracy > REGRESSION_MIN_DELTA;
     const status = notInSchema
       ? "not_in_schema"
       : failing.length > 0
-        ? prevAccuracy !== null && prevAccuracy > accuracy
+        ? declined
           ? "regressed"
           : "failing"
         : "pass";
