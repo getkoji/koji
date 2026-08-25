@@ -22,7 +22,28 @@ interface FieldResult {
   /** Present for array fields (F1 scoring): precision/recall as percentages. */
   precision?: number;
   recall?: number;
+  /** Present for array fields: element-status counts across the run (oss-507). */
+  elements?: ElementTally;
   failingDocs: FailingDoc[];
+}
+
+/**
+ * Element-status counts for array fields. `docsPassed` is all-or-nothing per
+ * document — one wrong cell in a ten-row table fails the whole document — so
+ * it saturates exactly where array work happens. These counts separate the
+ * three failure modes it collapses.
+ */
+interface ElementTally {
+  expected: number;
+  got: number;
+  /** Paired with an expected element and identical. */
+  matched: number;
+  /** Paired with an expected element but a sub-field differs. */
+  changed: number;
+  /** Expected but never found — the recall loss. */
+  missing: number;
+  /** Emitted with no expected counterpart — the precision loss. */
+  extra: number;
 }
 
 interface ValidateResult {
@@ -39,6 +60,8 @@ interface ValidateResult {
   version?: string | null;
   ranAt: string;
   regressions: FieldResult[];
+  /** Run-wide element totals over every array field; null when none were scored. */
+  elements: ElementTally | null;
   fields: FieldResult[];
   failingDocs: Array<{ id: string; filename: string; failedFields: string[]; worstConfidence: number }>;
 }
@@ -258,6 +281,16 @@ export default function ValidatePage() {
                 <span>{result.docsTotal} docs</span>
                 <span>·</span>
                 <span>{result.fieldCount} fields</span>
+                {result.elements && result.elements.expected > 0 && (
+                  <>
+                    <span>·</span>
+                    <span
+                      title={`Array elements: ${result.elements.matched} exact, ${result.elements.changed} found with a differing sub-field, ${result.elements.missing} never found (recall), ${result.elements.extra} invented (precision). Document pass/fail is all-or-nothing, so it cannot show this.`}
+                    >
+                      {result.elements.matched}/{result.elements.expected} elements exact
+                    </span>
+                  </>
+                )}
                 <span>·</span>
                 <span>{(result.durationMs / 1000).toFixed(1)}s</span>
                 <span>·</span>

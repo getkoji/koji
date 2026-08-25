@@ -2,6 +2,20 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.111.0 — 2026-08-24
+
+- **Validate reports array quality at the element level.** A document passes a
+  validate run only if every field matched exactly, so a ten-row four-column
+  table extracted at 99% per-cell accuracy was recorded as a flat failure and
+  `docs passed / total` saturated precisely where array work happens — an
+  87%→56% band on that measure is consistent with a large per-cell improvement
+  and with none. Runs now report element counts, run-wide and per field:
+  `exact`, `changed` (row found, a sub-field differs), `missing` (row never
+  found — the recall loss) and `extra` (row invented — the precision loss).
+  Shown on the `koji validate` output and the Validate page, and available as
+  `elements` / `fields[].elements` under `--json`. Document pass/fail is
+  unchanged: it still means "zero errors anywhere in the document".
+
 ## 0.110.7 — 2026-08-24
 
 **Retrying a document on a DAG pipeline now works.** A retry re-walks the

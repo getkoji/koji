@@ -425,6 +425,29 @@ def _render_validate(slug: str, r: dict, explain: bool = False, candidate: bool 
         f"[cyan]{version}[/cyan]{bump_disp}{dedup_disp}\n"
     )
 
+    # Element-level totals for array fields (oss-507). `docs P/T` above is
+    # all-or-nothing per document — one wrong cell in a ten-row table fails the
+    # whole document — so it saturates exactly where array work happens. These
+    # counts separate the three array failure modes it collapses: a row found
+    # with a differing sub-field, a row never found, and a row invented.
+    elements = r.get("elements")
+    if elements and elements.get("expected"):
+        exp = elements["expected"]
+        matched = elements.get("matched", 0)
+        changed = elements.get("changed", 0)
+        missing = elements.get("missing", 0)
+        extra = elements.get("extra", 0)
+        exact = (matched / exp * 100) if exp else 0.0
+        console.print(
+            f"[bold]array elements[/bold]  "
+            f"{matched}/{exp} exact ([bold]{exact:.1f}%[/bold])   "
+            f"[yellow]{changed} changed[/yellow]   "
+            f"[red]{missing} missing[/red]   "
+            f"[magenta]{extra} extra[/magenta]   "
+            f"[dim]changed = row found, sub-field differs; missing = recall; "
+            f"extra = precision[/dim]\n"
+        )
+
     fields = r.get("fields", [])
     if fields:
         table = Table(show_header=True, header_style="bold")
@@ -434,6 +457,9 @@ def _render_validate(slug: str, r: dict, explain: bool = False, candidate: bool 
         # scalars. Lets you read a low array score as "missed elements" (recall)
         # vs "spurious/wrong elements" (precision).
         table.add_column("P/R", justify="right")
+        # Element counts for array fields: exact / changed / missing / extra.
+        # Blank for scalars.
+        table.add_column("Elements", justify="right")
         table.add_column("Δ", justify="right")
         table.add_column("Status")
         for f in fields:
@@ -455,10 +481,20 @@ def _render_validate(slug: str, r: dict, explain: bool = False, candidate: bool 
             prec = f.get("precision")
             rec = f.get("recall")
             pr_disp = "" if (prec is None or rec is None) else f"[dim]{prec:.0f}/{rec:.0f}[/dim]"
+            el = f.get("elements")
+            el_disp = (
+                ""
+                if not el
+                else (
+                    f"[dim]{el.get('matched', 0)}✓ {el.get('changed', 0)}~ "
+                    f"{el.get('missing', 0)}- {el.get('extra', 0)}+[/dim]"
+                )
+            )
             table.add_row(
                 f.get("name", ""),
                 acc_disp,
                 pr_disp,
+                el_disp,
                 f"[{d_color}]{d}[/{d_color}]" if d else "",
                 st_disp,
             )

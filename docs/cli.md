@@ -366,6 +366,31 @@ finalize as **failed**, with the reason on the run:
 
 A slow run is not gated: taking a long time is not the same as being wrong.
 
+**Read array quality off the element line, not off `docs P/T`.** A document is
+counted as passing only if *every* field matched exactly, so a ten-row
+four-column table extracted at 99% per-cell accuracy fails the whole document —
+`docs 3/12` says nothing about how good the arrays were, and it saturates
+exactly where most array work happens. Runs that scored any array field now
+print an element line, and each array field carries its own counts in the table:
+
+```
+array elements  101/120 exact (84.2%)   14 changed   5 missing   3 extra
+```
+
+- **exact** — element paired with an expected one and identical.
+- **changed** (`~`) — the row was found, but a sub-field differs. This is the
+  one `docs P/T` hides most: it fails the document while the row itself was
+  located correctly.
+- **missing** (`-`) — expected but never found. This is the recall loss; check
+  `per_section` / `enumerate_rows` and the field's routing hints.
+- **extra** (`+`) — emitted with no expected counterpart. This is the precision
+  loss; tighten `section_anchor` / `skip_row_when`.
+
+The same counts are on `elements` (run-wide) and `fields[].elements`
+(per field) under `--json`. Document pass/fail is unchanged and still means
+"zero errors anywhere in the document" — it just isn't the number to quote for
+array quality.
+
 #### Diagnosing failures with `--explain`
 
 A failing field has two very different causes, and telling them apart decides the fix. `--explain` (also present as `routingDiagnosis` on each `fields[].failingDocs[]` entry under `--json`) reports, per failing field, how its chunks were selected (`source`) and whether the ground-truth answer was even present in the chunks the model was shown (`answerInRoutedChunks`):
