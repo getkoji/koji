@@ -252,7 +252,7 @@ function QueueRow({ item, tenantSlug }: { item: ReviewRow; tenantSlug: string })
           ? formatRelativeTime(item.resolvedAt)
           : formatRelativeTime(item.createdAt)}
       </span>
-      <ResolutionBadge status={item.status} resolution={item.resolution} />
+      <ResolutionBadge status={item.status} resolution={item.resolution} edited={item.edited} />
     </Link>
   );
 }
@@ -300,9 +300,11 @@ function ConfidenceBar({ confidence }: { confidence: number | null }) {
 function ResolutionBadge({
   status,
   resolution,
+  edited,
 }: {
   status: string;
   resolution: string | null;
+  edited?: boolean;
 }) {
   if (status === "pending") {
     return (
@@ -312,7 +314,14 @@ function ResolutionBadge({
     );
   }
   if (resolution === "approved") {
-    return (
+    // Both accepting a value and correcting it resolve as "approved" — the
+    // endpoints deliberately share it so corrected items stay promotable as
+    // ground truth. `edited` is what tells them apart (oss-494).
+    return edited ? (
+      <span className="inline-flex items-center justify-end font-mono text-[10px] font-medium text-green uppercase tracking-[0.08em]">
+        corrected
+      </span>
+    ) : (
       <span className="inline-flex items-center justify-end font-mono text-[10px] font-medium text-green uppercase tracking-[0.08em]">
         approved
       </span>

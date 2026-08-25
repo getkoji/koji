@@ -197,6 +197,7 @@ review.get("/", requires("review:read"), async (c) => {
         validationRule: schema.reviewItems.validationRule,
         status: schema.reviewItems.status,
         resolution: schema.reviewItems.resolution,
+        edited: schema.reviewItems.edited,
         finalValue: schema.reviewItems.finalValue,
         note: schema.reviewItems.note,
         assignedTo: schema.reviewItems.assignedTo,
@@ -244,6 +245,7 @@ review.get("/:id", requires("review:read"), async (c) => {
         validationRule: schema.reviewItems.validationRule,
         status: schema.reviewItems.status,
         resolution: schema.reviewItems.resolution,
+        edited: schema.reviewItems.edited,
         finalValue: schema.reviewItems.finalValue,
         note: schema.reviewItems.note,
         assignedTo: schema.reviewItems.assignedTo,
@@ -427,6 +429,8 @@ review.post("/:id/accept", requires("review:act"), requireFeature("hitl_review")
   return resolveItem(c, id, {
     resolution: "approved",
     finalValue: item.proposedValue,
+    // Accepted exactly as extracted — the flagged field was not corrected.
+    edited: false,
     note: body.note ?? null,
   }, body.fieldOverrides);
 });
@@ -456,6 +460,11 @@ review.post("/:id/override", requires("review:act"), requireFeature("hitl_review
   return resolveItem(c, id, {
     resolution: "approved",
     finalValue: body.value,
+    // This endpoint exists to submit a corrected value, so reaching it *is*
+    // the correction. `resolution` stays "approved" — promotion, the review
+    // badge and external consumers all key off it, and splitting it would
+    // silently stop corrected items from being promotable as ground truth.
+    edited: true,
     note: body.note ?? null,
   }, body.fieldOverrides, provenance ? buildAnchoredSpan(provenance) : undefined);
 });
@@ -469,6 +478,8 @@ review.post("/:id/reject", requires("review:act"), requireFeature("hitl_review")
   }
   return resolveItem(c, id, {
     resolution: "rejected",
+    // Nothing was accepted, so nothing was corrected either.
+    edited: false,
     note: body.reason,
   });
 });

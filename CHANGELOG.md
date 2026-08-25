@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.112.0 — 2026-08-24
+
+**Review items now record whether a human corrected the value or accepted it.**
+Accepting an extraction and correcting one both resolved as `approved`, so the
+two were indistinguishable in the data — the only way to tell them apart was
+diffing the final value against the proposed one in JSON, which is unreliable
+for lists and objects and impossible to aggregate. That made "how often does
+Koji's output need fixing?" unanswerable, which is the single most useful thing
+a review queue can tell you.
+
+Review items carry a new `edited` field, set by the endpoint that knows the
+answer, and returned by the review list and detail APIs. Existing resolved
+items are backfilled from the value comparison, which reconstructs the
+distinction exactly for them. The review queue now shows *corrected* rather
+than *approved* for those items.
+
+`resolution` deliberately still reads `approved` for both. Promotion to corpus
+gates on it, so splitting it would have quietly stopped corrected items — the
+most valuable ground truth there is — from ever reaching the corpus.
+
 ## 0.111.3 — 2026-08-24
 
 **Stuck validate runs are now cleaned up — and the stuck-job sweeper actually

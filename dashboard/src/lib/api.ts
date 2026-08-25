@@ -825,6 +825,11 @@ export interface ReviewRow {
   validationRule: string | null;
   status: string;
   resolution: string | null;
+  /**
+   * Whether the reviewer corrected the value rather than accepting it.
+   * `resolution` is "approved" for both — see oss-494.
+   */
+  edited: boolean;
   finalValue: unknown;
   note: string | null;
   assignedTo: string | null;

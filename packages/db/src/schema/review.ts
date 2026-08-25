@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   decimal,
   index,
   jsonb,
@@ -38,6 +39,17 @@ export const reviewItems = pgTable(
     assignedTo: uuid("assigned_to").references(() => users.id),
     resolvedBy: uuid("resolved_by").references(() => users.id),
     resolution: varchar("resolution", { length: 16 }),
+    /**
+     * Whether the reviewer changed the value rather than accepting it as-is.
+     *
+     * `resolution` cannot answer this: POST /review/:id/approve and
+     * POST /review/:id/override both write "approved", so an accepted
+     * extraction and a corrected one were indistinguishable without diffing
+     * final_value against proposed_value in jsonb — brittle for arrays and
+     * objects, and impossible to index or aggregate cheaply. Recorded at
+     * write time by the endpoint that knows the answer (oss-494).
+     */
+    edited: boolean("edited").notNull().default(false),
     finalValue: jsonb("final_value"),
     /** JSON map of { fieldName: correctedValue } for non-flagged field edits */
     fieldOverrides: jsonb("field_overrides"),

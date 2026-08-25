@@ -1070,7 +1070,14 @@ List review-queue items, joined with their document/pipeline/schema context.
 | `reason` | string | — | Filter by routing reason (e.g. `low_confidence`, `validation_failed`, `conflicting_values`). |
 | `limit` | number | `100` | Max items returned. |
 
-**Response** `200 OK` — `{ "data": [ … ] }`, each item carrying `id`, `fieldName`, `reason`, `proposedValue`, `confidence`, `status`, `resolution`, `documentId`, `documentFilename`, `schemaSlug`, `pipelineSlug`.
+**Response** `200 OK` — `{ "data": [ … ] }`, each item carrying `id`, `fieldName`, `reason`, `proposedValue`, `confidence`, `status`, `resolution`, `edited`, `documentId`, `documentFilename`, `schemaSlug`, `pipelineSlug`.
+
+`resolution` is the outcome (`approved` / `rejected`); `edited` says whether a
+reviewer changed the value or accepted it as extracted. Both
+[`accept`](#post-apireviewidaccept) and [`override`](#post-apireviewidoverride)
+resolve as `approved` — promotion to corpus gates on that, so a corrected item
+stays promotable — which makes `edited` the field to read when measuring how
+often extractions need human correction.
 
 ### `GET /api/review/__queue/stats`
 
@@ -1118,7 +1125,24 @@ A correction with `provenance` is strictly richer than a typed one: the value
 carries geometry, which flows into the corpus on
 [`promote`](#post-apireviewidpromote) and renders as an exact highlight.
 
-**Response** `200 OK` — the resolved review item row.
+**Response** `200 OK` — the resolved review item row, with `edited: true`.
+
+### `POST /api/review/{id}/accept`
+
+Approve the item exactly as extracted — `finalValue` is set to the proposed
+value and the item resolves with `edited: false`. Use
+[`override`](#post-apireviewidoverride) instead when the value needs changing.
+
+**Auth:** Bearer token. Requires `review:act` permission.
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `note` | string | no | Reviewer note stored on the item. |
+| `fieldOverrides` | object | no | `{ field: value }` corrections for *other* fields edited in the same pass. Does not affect `edited`, which describes the flagged field only. |
+
+**Response** `200 OK` — the resolved review item row, with `edited: false`.
 
 ### `POST /api/review/{id}/promote`
 
