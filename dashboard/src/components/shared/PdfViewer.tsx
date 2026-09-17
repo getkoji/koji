@@ -19,6 +19,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { PDFJS_DOCUMENT_OPTIONS, PDFJS_WORKER_SRC } from "@/lib/pdfjs-assets";
 import {
   sourceConfidence,
   type ResolutionRung,
@@ -53,7 +54,7 @@ export type { Rotation, ViewerTools } from "@/lib/pdf-tools";
 // exist during SSR. Import the entire component client-side only.
 const ReactPdfDocument = dynamic(
   () => import("react-pdf").then((mod) => {
-    mod.pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.mjs";
+    mod.pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
     return { default: mod.Document };
   }),
   { ssr: false },
@@ -1152,6 +1153,7 @@ export function PdfViewer({ url, highlights = [], activeField, onPageChange, tar
       <div ref={containerRef} className={`flex-1 min-h-0 ${overflowClass[overflow]}`}>
         <ReactPdfDocument
           file={file}
+          options={PDFJS_DOCUMENT_OPTIONS}
           // w-max lets a zoomed-in page grow past the container (the container
           // scrolls horizontally); min-w-full + items-center keeps a zoomed-out
           // page centred instead of pinned to the left edge.

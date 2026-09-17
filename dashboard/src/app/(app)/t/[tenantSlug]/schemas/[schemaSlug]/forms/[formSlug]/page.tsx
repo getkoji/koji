@@ -7,6 +7,7 @@ import { Save, Trash2, CheckCircle, Circle, MousePointer2, Play, Upload, Loader2
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { usePageTitle } from "@/lib/use-page-title";
+import { PDFJS_DOCUMENT_OPTIONS } from "@/lib/pdfjs-assets";
 import { parse as parseYaml } from "yaml";
 
 type MappingType = "text" | "checkbox" | "checkbox_group" | "llm_interpret";
@@ -165,7 +166,10 @@ export default function FormAnnotationPage() {
         "pdfjs-dist/build/pdf.worker.mjs",
         import.meta.url,
       ).toString();
-      const doc = await pdfjs.getDocument(sampleUrl).promise;
+      // PDFJS_DOCUMENT_OPTIONS is what makes a scanned sample render at all —
+      // without wasmUrl a JPEG 2000 page decodes to nothing and the canvas
+      // paints blank. See src/lib/pdfjs-assets.ts.
+      const doc = await pdfjs.getDocument({ url: sampleUrl, ...PDFJS_DOCUMENT_OPTIONS }).promise;
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
     });
@@ -180,7 +184,7 @@ export default function FormAnnotationPage() {
         "pdfjs-dist/build/pdf.worker.mjs",
         import.meta.url,
       ).toString();
-      const doc = await pdfjs.getDocument(url).promise;
+      const doc = await pdfjs.getDocument({ url, ...PDFJS_DOCUMENT_OPTIONS }).promise;
       setTestPdfDoc(doc);
     });
     return () => URL.revokeObjectURL(url);
