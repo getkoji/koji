@@ -1036,11 +1036,18 @@ ITP, Chrome). Document-mode auth is the HMAC `documentToken`:
   access another, and the document PDF + provenance are inaccessible without a
   valid, unexpired, correctly-scoped token.
 - **The viewer's own static assets are served unauthenticated.** The PDF.js
-  worker (`/pdf.worker.mjs`), JS/wasm chunks, fonts, and source maps are
-  generic and non-sensitive, so they return `200` to an unauthenticated,
-  cookieless request and never redirect to `/sign-in`. Only the document bytes
-  stay gated by the token. (Previously the worker was auth-gated and 302'd to
-  sign-in, so the PDF never rendered in a cross-origin iframe — that's fixed.)
+  worker (`/pdf.worker.mjs`), the PDF.js runtime assets under `/pdfjs/*`,
+  JS/wasm chunks, fonts, and source maps are generic and non-sensitive, so they
+  return `200` to an unauthenticated, cookieless request and never redirect to
+  `/sign-in`. Only the document bytes stay gated by the token. (Previously the
+  worker was auth-gated and 302'd to sign-in, so the PDF never rendered in a
+  cross-origin iframe — that's fixed.)
+
+  If you front the dashboard with your own auth proxy, **allow `/pdfjs/*` and
+  `/pdf.worker.mjs` through**. PDF.js fetches these while rendering rather than
+  at page load, so gating them does not fail loudly: the worker directory holds
+  the JPEG 2000 / JBIG2 decoders, and without them a *scanned* page renders as a
+  blank white box while text pages next to it look perfectly fine.
 - **`X-Frame-Options` is removed and `Content-Security-Policy: frame-ancestors`
   permits external origins** for `/embed/*`. By default any origin may embed
   (`frame-ancestors *`); self-hosters can restrict it to an allowlist via the

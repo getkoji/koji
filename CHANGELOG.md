@@ -2,6 +2,30 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.112.1 — 2026-09-17
+
+**Scanned pages no longer render blank in the document viewer.** A PDF whose
+pages are JPEG 2000 scans — a large share of carrier-issued policy and
+declaration-page documents — showed as empty white boxes everywhere Koji renders
+a document: the embed viewer, the review queue, the trace page, the form
+annotator. Extraction was unaffected, so a reviewer checking a highlight against
+the page saw the highlight floating on nothing.
+
+PDF.js 5 moved JPEG 2000 decoding into a WASM module it fetches at render time
+from the `wasmUrl` option. That option defaults to `null` and we never set it,
+so the decoder could not initialize — and the pure-JS fallback could not rescue
+it either, because it builds its module specifier by string concatenation and a
+null base asks for the literal `nullopenjpeg_nowasm_fallback.js`. A page whose
+only content was such an image painted nothing, while neighbouring vector-text
+pages rendered fine because they need no decoder. The failure was silent: no
+error surfaced in the UI.
+
+The viewer now serves PDF.js's runtime assets out of `public/pdfjs/` and passes
+all four base URLs (`wasmUrl`, `cMapUrl`, `standardFontDataUrl`, `iccUrl`), which
+also restores non-Latin character maps, the 14 standard fonts when a document
+does not embed them, and ICC colour. The assets are copied out of `pdfjs-dist`
+by a build step so they can no longer drift from the installed version.
+
 ## 0.112.0 — 2026-08-24
 
 **Review items now record whether a human corrected the value or accepted it.**
