@@ -226,6 +226,35 @@ The corpus format is the convention used by [getkoji/corpus](https://github.com/
 
 ---
 
+### `koji score`
+
+Score extracted values against ground truth, offline. No server, no credentials — which is what lets a benchmark or paper script score a run in CI.
+
+This is the same scorer the server uses. It lives in one place (`@koji/score`) and is shared by the API, this command, and any external harness, so a number produced here means the same thing as a number produced by `koji validate`.
+
+```bash
+koji score --expected truth.json --actual extracted.json
+koji score --expected truth.json --actual extracted.json --schema schemas/examples/invoice.yaml
+koji score --expected truth.json --actual extracted.json --json > result.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--expected` | **Required.** JSON file of ground-truth field values (a flat object of `field: value`). |
+| `--actual` | **Required.** JSON file of extracted field values, same shape. |
+| `--schema` | Schema YAML. Supplies per-field specs so arrays match elements by their declared `element_key` and sub-fields marked `informational` are excluded from scoring. |
+| `--json` | Emit the full JSON result, including per-field diffs and `scorer_version`. |
+
+Every key present in either file is compared. Scalars match tolerantly — case and whitespace, numbers with currency and thousands separators to a 0.01 tolerance, dates across formats (`2026-03-26` = `03/26/2026` = `March 26, 2026`), and punctuation-only differences. Arrays score as the F1 of quality-weighted precision and recall; objects score as the mean of their scored keys.
+
+Results carry `scorer_version`, so a run artifact can record which scorer produced it. Numbers from different scorer versions are not comparable.
+
+Exit code is 0 when every field matches, 1 on any mismatch or on a usage error.
+
+The command needs `node` on PATH. Inside a checkout it works with nothing built — it runs the scorer's TypeScript source through the workspace's `tsx`. Building it (`pnpm --filter @koji/score build`) just makes it start faster. Outside a checkout it falls back to `npx @koji/score`. Set `KOJI_SCORE_BIN` to pin a specific build.
+
+---
+
 ## The schema loop (connected platform)
 
 These commands drive the **Build → Validate → Corpus** workflow from the dashboard, but from the terminal. They talk to a running Koji platform (the same API the dashboard uses), so they need credentials: run `koji login` first, or set `KOJI_API_URL` + `KOJI_API_KEY`. Pass `--profile` to target a specific saved profile.

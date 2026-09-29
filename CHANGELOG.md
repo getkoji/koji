@@ -2,6 +2,46 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.113.0 — 2026-09-29
+
+**One scorer, reachable from the command line.** Comparison of an extracted
+value against ground truth had drifted into several independent
+implementations — the server's structural comparator, a Python comparison
+engine in the CLI, and separate copies in the benchmark and paper harnesses.
+They disagreed by construction: one scored pass/fail with set-equality arrays,
+another scored a continuous [0,1] with F1-weighted arrays. Numbers from
+different callers were not comparable, and there was no way to tell whether a
+scoring change was an improvement.
+
+The scorer now lives in one place, `@koji/score`, and is consumed by everything
+that scores. The server imports it directly; the new `koji score` command shells
+out to it; external harnesses can install the package rather than reimplement
+it.
+
+```bash
+koji score --expected truth.json --actual extracted.json
+koji score --expected truth.json --actual extracted.json --schema invoice.yaml --json
+```
+
+The command is offline by design — no server, no credentials — so a benchmark or
+paper script can score a run in CI. Results carry `scorer_version`, so a run
+artifact records which scorer produced it; numbers from different versions are
+not comparable and should not be compared.
+
+Scoring gained date normalization in the move. `2026-03-26`, `03/26/2026`,
+`March 26, 2026`, `26 March 2026` and `3/26/26` now compare equal, which the
+Python scorers already did and the server's did not. Ambiguous numeric dates are
+read month-first; two-digit years use the POSIX pivot (00-68 → 2000s). Impossible
+dates like `02/31/2026` are rejected rather than rolling over into March.
+Existing behaviour is otherwise unchanged — case, whitespace, currency and
+thousands separators, a 0.01 numeric tolerance, and punctuation-only differences
+were already forgiven and still are.
+
+`koji score` needs `node` on PATH. Inside a checkout it works with nothing
+built, running the scorer's source through the workspace's `tsx`; building it
+(`pnpm --filter @koji/score build`) only makes startup faster. Outside a checkout
+it falls back to `npx @koji/score`. `KOJI_SCORE_BIN` pins a specific build.
+
 ## 0.112.1 — 2026-09-17
 
 **Scanned pages no longer render blank in the document viewer.** A PDF whose

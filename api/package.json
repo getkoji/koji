@@ -19,6 +19,7 @@
     "@hono/node-server": "^1.13.0",
     "@koji/db": "workspace:*",
     "@koji/pipeline": "workspace:^",
+    "@koji/score": "workspace:*",
     "@koji/types": "workspace:*",
     "@vercel/functions": "^3.7.4",
     "drizzle-orm": "^0.45.2",
