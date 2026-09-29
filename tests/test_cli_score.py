@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from cli.score import _field_specs, _repo_root, resolve_scorer, run_scorer
+from cli.score import _field_specs, _find_tsx, _repo_root, resolve_scorer, run_scorer
 
 CLI_DIR = Path(__file__).parent.parent / "cli"
 
@@ -62,6 +62,34 @@ class TestResolveScorer:
         built = tmp_path / "packages" / "score" / "dist" / "bin.js"
         built.parent.mkdir(parents=True)
         built.write_text("// stub")
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("cli.score.shutil.which", return_value="/usr/bin/node"):
+                argv = resolve_scorer()
+        assert argv == ["/usr/bin/node", str(built)]
+
+    def test_runs_the_typescript_source_when_nothing_is_built(self, tmp_path, monkeypatch):
+        """A fresh clone must be able to score without anyone running a build."""
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n")
+        source = tmp_path / "packages" / "score" / "src" / "bin.ts"
+        source.parent.mkdir(parents=True)
+        source.write_text("// stub")
+        tsx = tmp_path / "api" / "node_modules" / ".bin" / "tsx"
+        tsx.parent.mkdir(parents=True)
+        tsx.write_text("#!/bin/sh\n")
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, {}, clear=True):
+            argv = resolve_scorer()
+        assert argv == [str(tsx), str(source)]
+
+    def test_prefers_a_build_over_the_source(self, tmp_path, monkeypatch):
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n")
+        built = tmp_path / "packages" / "score" / "dist" / "bin.js"
+        built.parent.mkdir(parents=True)
+        built.write_text("// stub")
+        source = tmp_path / "packages" / "score" / "src" / "bin.ts"
+        source.parent.mkdir(parents=True)
+        source.write_text("// stub")
         monkeypatch.chdir(tmp_path)
         with patch.dict(os.environ, {}, clear=True):
             with patch("cli.score.shutil.which", return_value="/usr/bin/node"):
@@ -164,3 +192,24 @@ class TestFieldSpecs:
         path.write_text("fields:\n  - [unclosed\n")
         with pytest.raises(typer.BadParameter, match="not valid YAML"):
             _field_specs(path)
+
+
+class TestFindTsx:
+    def test_finds_a_non_hoisted_binary(self, tmp_path):
+        """pnpm does not hoist bins to the root, so tsx lives under a package."""
+        tsx = tmp_path / "api" / "node_modules" / ".bin" / "tsx"
+        tsx.parent.mkdir(parents=True)
+        tsx.write_text("#!/bin/sh\n")
+        assert _find_tsx(tmp_path) == tsx
+
+    def test_prefers_the_hoisted_binary(self, tmp_path):
+        hoisted = tmp_path / "node_modules" / ".bin" / "tsx"
+        hoisted.parent.mkdir(parents=True)
+        hoisted.write_text("#!/bin/sh\n")
+        nested = tmp_path / "api" / "node_modules" / ".bin" / "tsx"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("#!/bin/sh\n")
+        assert _find_tsx(tmp_path) == hoisted
+
+    def test_returns_none_when_absent(self, tmp_path):
+        assert _find_tsx(tmp_path) is None

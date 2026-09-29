@@ -37,9 +37,10 @@ Existing behaviour is otherwise unchanged — case, whitespace, currency and
 thousands separators, a 0.01 numeric tolerance, and punctuation-only differences
 were already forgiven and still are.
 
-`koji score` needs `node` on PATH. In a checkout, build the scorer once with
-`pnpm --filter @koji/score build`; outside one it falls back to
-`npx @koji/score`. `KOJI_SCORE_BIN` pins a specific build.
+`koji score` needs `node` on PATH. Inside a checkout it works with nothing
+built, running the scorer's source through the workspace's `tsx`; building it
+(`pnpm --filter @koji/score build`) only makes startup faster. Outside a checkout
+it falls back to `npx @koji/score`. `KOJI_SCORE_BIN` pins a specific build.
 
 ## 0.112.1 — 2026-09-17
 

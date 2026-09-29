@@ -26,14 +26,19 @@ import typer
 
 from .remote import emit_json
 
-# Where to look for the built bin, in order. An explicit env override wins so a
-# harness can point at a specific build; then the workspace build output; then
-# the workspace's node_modules bin shim.
+# Where to look for the scorer, in order. An explicit env override wins so a
+# harness can pin a build; then the workspace build output; then the workspace's
+# node_modules bin shim.
 _BIN_ENV = "KOJI_SCORE_BIN"
 _BIN_CANDIDATES = (
     Path("packages/score/dist/bin.js"),
     Path("node_modules/.bin/koji-score"),
 )
+# In a checkout with nothing built, run the TypeScript source directly. Without
+# this the command would fall through to `npx` and try to fetch a package that
+# may not be published yet, so a fresh clone could not score anything until
+# someone thought to run a build.
+_SOURCE_ENTRY = Path("packages/score/src/bin.ts")
 
 
 def _repo_root(start: Path | None = None) -> Path | None:
@@ -60,9 +65,13 @@ def resolve_scorer() -> list[str]:
             path = root / rel
             if path.is_file():
                 return _with_node(path)
+        source = root / _SOURCE_ENTRY
+        if source.is_file():
+            tsx = _find_tsx(root)
+            if tsx:
+                return [str(tsx), str(source)]
 
-    # Last resort: let npx fetch/resolve the published package. Works outside a
-    # checkout, at the cost of a network hit on first use.
+    # Outside a checkout, let npx resolve the published package.
     if shutil.which("npx"):
         return ["npx", "--yes", "@koji/score"]
 
@@ -71,6 +80,25 @@ def resolve_scorer() -> list[str]:
         "`pnpm --filter @koji/score build`, or set "
         f"{_BIN_ENV}=/path/to/bin.js, or install node so `npx` can fetch it"
     )
+
+
+def _find_tsx(root: Path) -> Path | None:
+    """Locate tsx inside the workspace.
+
+    pnpm does not hoist binaries to the root `.bin` by default, so tsx sits in
+    the `.bin` of whichever package declares it. Resolving the path directly
+    beats `npx tsx`, which cannot see a non-hoisted binary and would otherwise
+    reach for the network.
+    """
+    candidates = (
+        root / "node_modules/.bin/tsx",
+        root / "api/node_modules/.bin/tsx",
+        root / "packages/db/node_modules/.bin/tsx",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _with_node(path: Path) -> list[str]:

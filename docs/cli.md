@@ -251,7 +251,7 @@ Results carry `scorer_version`, so a run artifact can record which scorer produc
 
 Exit code is 0 when every field matches, 1 on any mismatch or on a usage error.
 
-The command needs `node` on PATH and the scorer available. In a checkout, build it once with `pnpm --filter @koji/score build`. Outside a checkout it falls back to `npx @koji/score`. Set `KOJI_SCORE_BIN` to pin a specific build.
+The command needs `node` on PATH. Inside a checkout it works with nothing built — it runs the scorer's TypeScript source through the workspace's `tsx`. Building it (`pnpm --filter @koji/score build`) just makes it start faster. Outside a checkout it falls back to `npx @koji/score`. Set `KOJI_SCORE_BIN` to pin a specific build.
 
 ---
 
