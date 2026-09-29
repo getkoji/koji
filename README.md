@@ -217,6 +217,7 @@ BYO model — local or API. No vendor lock-in.
 | `koji review stats / ls / show / promote` | Triage the review queue (true counts via `stats`) and promote reviewed docs into the corpus |
 | `koji bench` | Benchmark accuracy against a local validation corpus |
 | `koji test` | Run extraction regression tests |
+| `koji score` | Score extracted values against ground truth, offline (same scorer the server uses) |
 | `koji doctor` | Check environment health |
 
 ## Documentation

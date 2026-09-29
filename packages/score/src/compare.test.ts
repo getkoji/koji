@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareValues, formatValue, type ArrayDiff, type ObjectDiff } from "./value-compare";
+import { compareValues, formatValue, type ArrayDiff, type ObjectDiff } from "./compare";
 
 describe("formatValue", () => {
   it("renders scalars plainly", () => {
@@ -318,5 +318,69 @@ describe("compareValues — provenance keys are not scored", () => {
     const r = compareValues(expected, got);
     expect(r.match).toBe(true);
     expect(r.score).toBe(1);
+  });
+});
+
+// ── Date-equivalent scalars ───────────────────────────────────────────
+// Added with the move into @koji/score: the Python scorers this package
+// replaces both normalized dates, so the unified scorer has to as well or
+// unification would be a regression.
+describe("compareValues — dates", () => {
+  const matches: Array<[string, string]> = [
+    ["2026-03-26", "03/26/2026"],
+    ["2026-03-26", "March 26, 2026"],
+    ["2026-03-26", "Mar. 26 2026"],
+    ["2026-03-26", "26 March 2026"],
+    ["2026-03-26", "26th of March, 2026"],
+    ["2026-03-26", "2026/03/26"],
+    ["2026-03-26", "3/26/26"],
+    ["2026-03-26", "26.03.2026"], // day-first only because 26 is not a month
+  ];
+  it.each(matches)("treats %s and %s as the same date", (expected, got) => {
+    expect(compareValues(expected, got).match).toBe(true);
+  });
+
+  const mismatches: Array<[string, string]> = [
+    ["2026-03-26", "2026-03-27"],
+    ["2026-03-26", "March 27, 2026"],
+    ["2026-03-26", "2026-04-26"],
+    ["2026-03-26", "03/26/2025"],
+  ];
+  it.each(mismatches)("keeps %s and %s distinct", (expected, got) => {
+    expect(compareValues(expected, got).match).toBe(false);
+  });
+
+  it("reads ambiguous numeric dates month-first", () => {
+    // 01/02/2026 is 2 January in day-first locales. Month-first is the declared
+    // default; per-field overrides belong in the `match:` policy, not here.
+    expect(compareValues("2026-01-02", "01/02/2026").match).toBe(true);
+    expect(compareValues("2026-02-01", "01/02/2026").match).toBe(false);
+  });
+
+  it("rejects impossible days rather than rolling them over", () => {
+    // new Date(2026, 1, 31) silently becomes 2 March. A non-date must not
+    // compare equal to the date it would roll into.
+    expect(compareValues("2026-03-03", "02/31/2026").match).toBe(false);
+  });
+
+  it("does not read a date out of a non-date string", () => {
+    expect(compareValues("2026-03-26", "Ste 300").match).toBe(false);
+    expect(compareValues("Ste 300", "2026-03-26").match).toBe(false);
+  });
+
+  it("still compares a date against a non-date by the other rules", () => {
+    // One-sided date parse must fall through, not short-circuit to false.
+    expect(compareValues("POLICY-2026", "policy 2026").match).toBe(true);
+  });
+
+  it("does not let the numeric path read a slashed date as a quantity", () => {
+    // parseFloat("03/26/2026") is 3 — without the date branch running first,
+    // this would compare 3 against 3 and wrongly match.
+    expect(compareValues("03/26/2026", "03/27/2026").match).toBe(false);
+  });
+
+  it("expands two-digit years on the POSIX pivot", () => {
+    expect(compareValues("2026-03-26", "03/26/26").match).toBe(true);
+    expect(compareValues("1999-03-26", "03/26/99").match).toBe(true);
   });
 });

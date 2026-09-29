@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.112.1"
+KOJI_VERSION = "0.113.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -1403,8 +1403,10 @@ from .remote import (  # noqa: E402
     schema_app,
     validate,
 )
+from .score import score as score_cmd  # noqa: E402
 
 app.command(name="validate")(validate)
+app.command(name="score")(score_cmd)
 app.command(name="run")(run_doc)
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(review_app, name="review")
