@@ -58,20 +58,35 @@ jobs:
         env:
           DATABASE_URL: postgres://koji:koji@localhost:5434/koji
 
-      - name: Start MinIO
+      # S3 double for document storage.
+      #
+      # This was minio/minio:latest until MinIO withdrew their public images:
+      # the Docker Hub repository now 404s and quay.io/minio/minio requires
+      # authentication, so there is no drop-in MinIO image to pin. Every e2e run
+      # failed at this step (oss-520).
+      #
+      # adobe/s3mock covers the whole S3 surface the API actually uses:
+      # Put/Get/Head/Delete plus presigned URLs. Pinned, not :latest, because a
+      # floating third-party tag is what broke CI in the first place.
+      - name: Start S3 (s3mock)
         run: |
-          docker run -d --name minio \
-            -e MINIO_ROOT_USER=koji \
-            -e MINIO_ROOT_PASSWORD=kojisecret \
-            -p 9415:9000 \
-            minio/minio:latest server /data
-          timeout 30 bash -c 'until curl -sf http://localhost:9415/minio/health/live; do sleep 1; done'
+          docker run -d --name s3mock -p 9415:9090 adobe/s3mock:5.2.3
+          # An unsigned request can answer 403, so `curl -sf` is not a usable
+          # probe. Any HTTP status at all means the server is listening.
+          timeout 60 bash -c 'until [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9415/)" != "000" ]; do sleep 1; done'
 
-      - name: Create MinIO bucket
-        run: |
-          docker run --rm --network host --entrypoint sh \
-            minio/mc:latest \
-            -c "mc alias set koji http://localhost:9415 koji kojisecret && mc mb koji/koji --ignore-existing"
+      # s3mock's `initialBuckets` setting is ignored on 5.2.3, so the bucket is
+      # created explicitly. It cannot be skipped by relying on s3mock's
+      # auto-create-on-PutObject: a presigned PUT against a missing bucket 404s,
+      # and that is the path the dashboard's upload flow takes.
+      - name: Create S3 bucket
+        run: node api/scripts/s3-ensure-bucket.mjs
+        env:
+          KOJI_S3_ENDPOINT: http://localhost:9415
+          KOJI_S3_BUCKET: koji
+          KOJI_S3_ACCESS_KEY: koji
+          KOJI_S3_SECRET_KEY: kojisecret
+          KOJI_S3_REGION: us-east-1
 
       # Start API early so we can call /api/setup to create the first user
       - name: Start API
