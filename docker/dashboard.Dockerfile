@@ -14,6 +14,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/api-spec/package.json packages/api-spec/
 COPY packages/types/package.json packages/types/
 COPY packages/pipeline/package.json packages/pipeline/
+COPY packages/score/package.json packages/score/
 
 RUN pnpm install --frozen-lockfile
 
@@ -22,6 +23,7 @@ RUN pnpm install --frozen-lockfile
 COPY dashboard/ /tmp/dashboard-src/
 RUN cp -r /tmp/dashboard-src/src dashboard/src && \
     cp -r /tmp/dashboard-src/public dashboard/public && \
+    cp -r /tmp/dashboard-src/scripts dashboard/scripts && \
     cp /tmp/dashboard-src/next.config.ts dashboard/ && \
     cp /tmp/dashboard-src/tsconfig.json dashboard/ && \
     cp /tmp/dashboard-src/postcss.config.mjs dashboard/ && \
