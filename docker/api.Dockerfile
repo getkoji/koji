@@ -12,6 +12,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/types/package.json packages/types/
 COPY packages/api-spec/package.json packages/api-spec/
 COPY packages/pipeline/package.json packages/pipeline/
+COPY packages/score/package.json packages/score/
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile --filter @koji/api...
@@ -22,6 +23,10 @@ COPY packages/db/ packages/db/
 COPY packages/types/ packages/types/
 COPY packages/api-spec/ packages/api-spec/
 COPY packages/pipeline/ packages/pipeline/
+# @koji/score holds the extraction scorer. Without it the image still BUILDS —
+# nothing here typechecks or bundles — and then fails at runtime the first time
+# a validate route imports it. Keep this list in step with api/package.json.
+COPY packages/score/ packages/score/
 
 EXPOSE 9401
 
