@@ -283,6 +283,50 @@ def _looks_undecodable(text: str) -> bool:
     return escapes / len(tokens) > 0.10
 
 
+# ---------------------------------------------------------------------------
+# The page contract of parse markdown (mirrors api/src/parse/pages.ts)
+# ---------------------------------------------------------------------------
+
+# A document with N pages comes back as N page pieces joined by this break,
+# piece k being page k; a page with no text is an empty piece that keeps its
+# slot. A one-page document has no break; a document with no text is "".
+PAGE_SEPARATOR = "\n\n---\n\n"
+
+
+def _join_pages(pages: list[str]) -> str:
+    """Join per-page markdown with the page break; "" when no page has text."""
+    if all(not (p or "").strip() for p in pages):
+        return ""
+    return PAGE_SEPARATOR.join(p or "" for p in pages)
+
+
+def _paged_docling_markdown(document, markdown: str, log_prefix: str) -> str:
+    """Docling's whole-document markdown, cut into one piece per page.
+
+    ``export_to_markdown()`` joins every page with a blank line, so a scanned
+    multi-page document came back as one block (every citation on page 1).
+    Each page is exported on its own (``page_no``) and the pages are joined with
+    the page break. The paged result is used only when it carries the same words
+    as the whole-document export — if a per-page export would drop or repeat
+    anything, the whole-document markdown is kept: parsed text is never dropped.
+    """
+    try:
+        page_count = int(document.num_pages())
+    except Exception:
+        return markdown
+    if page_count <= 1:
+        return markdown
+    try:
+        pages = [document.export_to_markdown(page_no=p).strip() for p in range(1, page_count + 1)]
+    except Exception as e:  # docling-core without per-page export, or a bad page
+        print(f"{log_prefix} per-page markdown export failed ({e}); keeping unpaged markdown")
+        return markdown
+    if sorted(" ".join(pages).split()) != sorted(markdown.split()):
+        print(f"{log_prefix} WARNING: per-page markdown differs from the whole export; keeping unpaged markdown")
+        return markdown
+    return _join_pages(pages)
+
+
 def _poppler_extract(file_path: str) -> dict | None:
     """Re-extract text + word bboxes with poppler's ``pdftotext -bbox-layout``.
 
@@ -353,10 +397,10 @@ def _poppler_extract(file_path: str) -> dict | None:
                     )
             if words:
                 page_lines.append(" ".join(words))
-        if page_lines:
-            page_blocks.append("\n".join(page_lines))
+        # Every page holds its slot, text or not (the page contract).
+        page_blocks.append("\n".join(page_lines))
 
-    markdown = "\n\n".join(page_blocks)
+    markdown = _join_pages(page_blocks)
     if not markdown.strip():
         return None
 
@@ -648,8 +692,8 @@ def _raw_text_fallback(file_bytes: bytes, filename: str) -> dict:
 
     Returns the same ``{markdown, pages, ocr_skipped, text_map}`` shape
     the Docling path returns, so the caller can't tell the difference at
-    the wire level. The markdown is a flat "## Page N\\n\\n<text>\\n\\n"
-    per page — no headings, no tables, no layout. text_map is empty
+    the wire level. The markdown is a flat "## Page N\\n\\n<text>" per
+    page, pages joined with the page break — no headings, no tables, no layout. text_map is empty
     (we don't have bounding boxes from raw text extraction).
 
     This path runs ONLY after every Docling attempt has failed. For
@@ -667,8 +711,8 @@ def _raw_text_fallback(file_bytes: bytes, filename: str) -> dict:
         pages = len(doc)
         for i, page in enumerate(doc):
             text = page.get_text("text").strip()
-            parts.append(f"## Page {i + 1}\n\n{text}\n")
-    markdown = "\n".join(parts)
+            parts.append(f"## Page {i + 1}\n\n{text}")
+    markdown = _join_pages(parts)
     print(f"[koji-parse-modal] {filename}: raw-text fallback succeeded — {pages} pages, {len(markdown)} markdown chars")
     return {
         "markdown": markdown,
@@ -708,8 +752,8 @@ def _pdfplumber_fallback(file_bytes: bytes, filename: str) -> dict:
         pages = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
             text = (page.extract_text() or "").strip()
-            parts.append(f"## Page {i + 1}\n\n{text}\n")
-    markdown = "\n".join(parts)
+            parts.append(f"## Page {i + 1}\n\n{text}")
+    markdown = _join_pages(parts)
     print(
         f"[koji-parse-modal] {filename}: pdfplumber fallback succeeded — {pages} pages, {len(markdown)} markdown chars"
     )
@@ -821,6 +865,7 @@ def _convert_bytes(
             print("[koji-parse-modal] WARNING: poppler recovery failed/unavailable; keeping docling output")
 
         pages = result.document.num_pages()
+        markdown = _paged_docling_markdown(result.document, markdown, "[koji-parse-modal]")
         text_map = _build_text_map(result.document)
         # L3 provenance: annotate each segment with its markdown character
         # offset so downstream extraction can resolve bboxes via direct
@@ -876,9 +921,6 @@ def _split_pdf(file_bytes: bytes, chunk_size: int = 50) -> list[tuple[bytes, int
     return chunks
 
 
-_CHUNK_MARKDOWN_SEPARATOR = "\n\n"
-
-
 def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
     """Merge results from parallel parse_chunk calls into a single response.
 
@@ -890,15 +932,15 @@ def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
     Returns:
         A single dict matching the standard parse response shape.
 
+    Chunks are contiguous page ranges, so they join with the page break
+    (``PAGE_SEPARATOR``); each chunk's markdown already carries the breaks
+    between its own pages. A chunk with no text still holds one empty slot per
+    page (``pages`` in its result), so piece k of the merged markdown is page k.
+
     L3 provenance: each chunk's ``text_map`` segments carry ``md_offset``
     values local to that chunk's markdown (annotated in
-    ``_convert_bytes`` via ``_annotate_md_offsets``). When concatenating
-    chunk markdowns with ``"\\n\\n"`` separators, we shift each segment's
-    ``md_offset`` by the cumulative length of preceding chunks' markdown
-    plus the separator length so offsets remain valid against the merged
-    markdown string. Chunks with empty markdown are skipped in both the
-    join and the offset accumulator, matching the pre-L3 behaviour of
-    not introducing blank separators.
+    ``_convert_bytes`` via ``_annotate_md_offsets``). They are shifted by the
+    start of the chunk's piece in the merged markdown.
 
     Segments that lack ``md_offset`` (the annotator couldn't locate them
     in the chunk markdown) pass through unmodified — the legacy fuzzy
@@ -918,25 +960,19 @@ def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
         result["ocr_skipped"] = False  # parallel path = scanned doc = OCR always ran
         return result
 
-    markdowns: list[str] = []
+    pieces: list[str] = []
     all_text_map: list[dict] = []
-    # Running length (in characters) of the merged markdown so far,
-    # including separators between non-empty chunks. Used to shift each
-    # chunk's md_offset values into the merged-document coordinate space.
     running_md_length = 0
-    separator_len = len(_CHUNK_MARKDOWN_SEPARATOR)
+    separator_len = len(PAGE_SEPARATOR)
 
-    for r in chunk_results:
-        md = r.get("markdown", "")
-        chunk_offset = running_md_length
-
-        if md:
-            if markdowns:
-                # We'll prepend a separator before this chunk's markdown
-                # in the final join. Account for it in the offset.
-                chunk_offset += separator_len
-            markdowns.append(md)
-            running_md_length = chunk_offset + len(md)
+    for i, r in enumerate(chunk_results):
+        md = r.get("markdown", "") or ""
+        if not md.strip():
+            # One empty slot per page of a chunk that carried no text.
+            md = PAGE_SEPARATOR.join([""] * max(1, int(r.get("pages") or 1)))
+        chunk_offset = running_md_length + (separator_len if i > 0 else 0)
+        pieces.append(md)
+        running_md_length = chunk_offset + len(md)
 
         for segment in r.get("text_map", []):
             if chunk_offset and segment.get("md_offset") is not None:
@@ -944,8 +980,9 @@ def _merge_chunk_results(chunk_results: list[dict], total_pages: int) -> dict:
                 segment = {**segment, "md_offset": segment["md_offset"] + chunk_offset}
             all_text_map.append(segment)
 
+    markdown = "" if all(not p.strip() for p in pieces) else PAGE_SEPARATOR.join(pieces)
     return {
-        "markdown": _CHUNK_MARKDOWN_SEPARATOR.join(markdowns),
+        "markdown": markdown,
         "pages": total_pages,
         "ocr_skipped": False,
         "text_map": all_text_map,

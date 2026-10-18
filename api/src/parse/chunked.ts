@@ -22,6 +22,7 @@ import type {
 } from "./provider";
 import { slicePdfPages, mapWithConcurrency, probePdf } from "./pdf-slice";
 import { normalizePdfViaService } from "./pdf-normalize";
+import { PAGE_SEPARATOR } from "./pages";
 
 /**
  * Sentinel for pdf-lib slice failures. Wrapping these distinguishes
@@ -214,8 +215,17 @@ export class ChunkedParseProvider implements ParseProvider {
     chunks: Array<{ response: ParseResponse; startPage: number }>,
     totalPages: number,
   ): ParseResponse {
-    // Markdown: concatenate in order
-    const markdown = chunks.map((c) => c.response.markdown).join("\n\n");
+    // Markdown: concatenate in order. A chunk boundary is a page boundary, so
+    // the chunks are joined with the page break (`parse/pages.ts`); a chunk's
+    // own markdown already carries the breaks between its pages, and a chunk
+    // whose pages carried no text still holds one slot per page.
+    const pieces = chunks.map((c, i) => {
+      if (c.response.markdown.trim().length > 0) return c.response.markdown;
+      const end = i + 1 < chunks.length ? chunks[i + 1]!.startPage - 1 : totalPages;
+      const span = Math.max(1, end - c.startPage + 1);
+      return new Array<string>(span).fill("").join(PAGE_SEPARATOR);
+    });
+    const markdown = pieces.every((p) => p.trim().length === 0) ? "" : pieces.join(PAGE_SEPARATOR);
 
     // OCR skipped: true only if ALL chunks skipped
     const ocr_skipped = chunks.every((c) => c.response.ocr_skipped);
@@ -231,7 +241,7 @@ export class ChunkedParseProvider implements ParseProvider {
     // Text map: concatenate with page offset. When a chunk carries L3 offset
     // annotations (md_offset), those are relative to that chunk's own markdown,
     // so they must also shift by the chunk's start position in the concatenated
-    // markdown (cumulative prior lengths + the "\n\n" separators). mdCursor
+    // markdown (cumulative prior lengths + the page-break separators). mdCursor
     // advances for every chunk — even those without a text_map — because the
     // markdown join above includes every chunk's markdown.
     let text_map: TextMapSegment[] | undefined;
@@ -239,7 +249,7 @@ export class ChunkedParseProvider implements ParseProvider {
     if (hasAnyTextMap) {
       text_map = [];
       let mdCursor = 0;
-      for (const chunk of chunks) {
+      for (const [i, chunk] of chunks.entries()) {
         const mdBase = mdCursor;
         const offset = chunk.startPage - 1;
         for (const seg of chunk.response.text_map ?? []) {
@@ -247,7 +257,7 @@ export class ChunkedParseProvider implements ParseProvider {
           if (seg.md_offset != null) shifted.md_offset = seg.md_offset + mdBase;
           text_map.push(shifted);
         }
-        mdCursor += chunk.response.markdown.length + 2; // +2 for the "\n\n" join
+        mdCursor += pieces[i]!.length + PAGE_SEPARATOR.length;
       }
     }
 

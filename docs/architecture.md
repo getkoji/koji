@@ -110,7 +110,9 @@ Table- vs text-heaviness is a **geometric** signal (the fraction of lines that r
 
 - Accepts file uploads at `/parse`
 - Runs Docling conversion in a thread pool to avoid blocking the event loop
-- Returns markdown text, page count, and a `text_map` of word-level bounding boxes
+- Returns markdown text, page count, and a `text_map` of word-level bounding boxes.
+  The markdown is one piece per page, joined by a page break (`\n\n---\n\n`) —
+  the shape every parse provider returns (see `api/src/parse/pages.ts`)
 - Caches Hugging Face and Torch model weights in Docker volumes for fast restarts
 - Also exposes `/normalize-pdf`: a pypdfium2 re-save (with security removal)
   for PDFs the API's local pdf-lib tooling can't slice faithfully. Two classes

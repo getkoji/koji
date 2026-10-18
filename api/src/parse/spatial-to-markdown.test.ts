@@ -417,3 +417,20 @@ describe("spatialToMarkdownWithOffsets", () => {
     expect(offsets).toEqual([]);
   });
 });
+
+describe("spatialToMarkdown — page slots", () => {
+  it("keeps a slot for a page with no text, so piece k is page k", () => {
+    const blank: ParsedPage = { pageNum: 2, width: 612, height: 792, text: "", textItems: [] };
+    const md = spatialToMarkdown([
+      page([item("First page", 72, 72)], 1),
+      blank,
+      page([item("Third page", 72, 72)], 3),
+    ]);
+    expect(md.split("\n\n---\n\n")).toEqual(["First page", "", "Third page"]);
+  });
+
+  it("is empty when no page has text", () => {
+    const blank = (n: number): ParsedPage => ({ pageNum: n, width: 612, height: 792, text: "", textItems: [] });
+    expect(spatialToMarkdown([blank(1), blank(2)])).toBe("");
+  });
+});

@@ -110,7 +110,7 @@ export class TextractProvider implements ParseProvider {
       (chunks.length ? Math.max(...chunks.map((c) => c.page)) : null);
 
     return {
-      markdown: chunksToMarkdown(chunks),
+      markdown: chunksToMarkdown(chunks, pages),
       pages,
       ocr_skipped: false,
       // "docling" is the canonical label for the heavy/OCR path in ParseEngine;

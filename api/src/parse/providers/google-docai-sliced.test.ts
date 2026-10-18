@@ -158,7 +158,14 @@ describe("GoogleDocAiProvider.parse — slice → parallel → merge (default >1
     // pages 1, 16, 31 after renumbering by the running page offset.
     expect(res.chunks?.map((c) => c.page)).toEqual([1, 16, 31]);
     expect(res.pages).toBe(40);
-    expect(res.markdown).toBe("SLICE\n\nSLICE\n\nSLICE");
+    // One page piece per page 1..40: each slice's text on its own page, the
+    // pages without text holding their slot.
+    const pieces = res.markdown.split("\n\n---\n\n");
+    expect(pieces).toHaveLength(40);
+    expect(pieces[0]).toBe("SLICE");
+    expect(pieces[15]).toBe("SLICE");
+    expect(pieces[30]).toBe("SLICE");
+    expect(pieces.filter((p) => p !== "")).toHaveLength(3);
   });
 
   it("honors a configurable slice size", async () => {

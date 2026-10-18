@@ -239,14 +239,14 @@ class TestMergeChunkResults:
         assert len(result["text_map"]) == 1
 
     def test_markdown_concatenation_order(self):
-        """Markdown from multiple chunks is joined with double newlines in order."""
+        """Markdown from multiple chunks is joined with the page break in order."""
         chunks = [
             {"markdown": "# Chunk 1", "pages": 50, "ocr_skipped": False, "text_map": []},
             {"markdown": "# Chunk 2", "pages": 50, "ocr_skipped": False, "text_map": []},
             {"markdown": "# Chunk 3", "pages": 2, "ocr_skipped": False, "text_map": []},
         ]
         result = _merge_chunk_results(chunks, total_pages=102)
-        assert result["markdown"] == "# Chunk 1\n\n# Chunk 2\n\n# Chunk 3"
+        assert result["markdown"] == "# Chunk 1\n\n---\n\n# Chunk 2\n\n---\n\n# Chunk 3"
 
     def test_text_map_concatenation(self):
         """Text maps from all chunks are concatenated in order."""
@@ -320,15 +320,19 @@ class TestMergeChunkResults:
         assert result["text_map"] == []
         assert result["ocr_skipped"] is False
 
-    def test_empty_markdown_skipped_in_join(self):
-        """Chunks with empty markdown don't produce extra blank separators."""
+    def test_empty_markdown_keeps_page_slots(self):
+        """A chunk with no text holds one empty slot per page, so piece k is page k."""
         chunks = [
             {"markdown": "A", "pages": 50, "ocr_skipped": False, "text_map": []},
             {"markdown": "", "pages": 50, "ocr_skipped": False, "text_map": []},
             {"markdown": "C", "pages": 2, "ocr_skipped": False, "text_map": []},
         ]
         result = _merge_chunk_results(chunks, total_pages=102)
-        assert result["markdown"] == "A\n\nC"
+        pieces = result["markdown"].split("\n\n---\n\n")
+        assert len(pieces) == 52
+        assert pieces[0] == "A"
+        assert all(p == "" for p in pieces[1:51])
+        assert pieces[51] == "C"
 
     def test_response_shape(self):
         """The merged result has exactly the expected keys."""
@@ -457,7 +461,7 @@ class TestPageOffsetArithmetic:
         result = _merge_chunk_results(chunk_results, total_pages=120)
 
         assert result["pages"] == 120
-        assert result["markdown"] == "Chunk 1 content\n\nChunk 2 content\n\nChunk 3 content"
+        assert result["markdown"] == "Chunk 1 content\n\n---\n\nChunk 2 content\n\n---\n\nChunk 3 content"
         assert len(result["text_map"]) == 6
 
         # Verify page numbers are in ascending order
@@ -835,14 +839,14 @@ class TestMergeChunkResultsMdOffset:
         result = _merge_chunk_results([chunk_a, chunk_b], total_pages=100)
 
         merged_md = result["markdown"]
-        assert merged_md == "Hello world\n\nFoo bar"  # 11 + 2 + 7 = 20 chars
+        assert merged_md == "Hello world\n\n---\n\nFoo bar"  # 11 + 7 + 7 = 25 chars
 
         # Chunk A offsets unchanged
         assert result["text_map"][0]["md_offset"] == 0
         assert result["text_map"][1]["md_offset"] == 6
-        # Chunk B offsets shifted by 13 (11 + separator len 2)
-        assert result["text_map"][2]["md_offset"] == 13
-        assert result["text_map"][3]["md_offset"] == 17
+        # Chunk B offsets shifted by 18 (11 + page-break len 7)
+        assert result["text_map"][2]["md_offset"] == 18
+        assert result["text_map"][3]["md_offset"] == 22
 
         # And each shifted offset must point at the right substring
         for seg in result["text_map"]:
@@ -873,12 +877,12 @@ class TestMergeChunkResultsMdOffset:
         ]
         result = _merge_chunk_results(chunks, total_pages=150)
 
-        # Merged: "AAAA\n\nBB\n\nCCC"
-        # Offsets: A=0, B=4+2=6, C=4+2+2+2=10
-        assert result["markdown"] == "AAAA\n\nBB\n\nCCC"
+        # Merged: "AAAA\n\n---\n\nBB\n\n---\n\nCCC"
+        # Offsets: A=0, B=4+7=11, C=4+7+2+7=20
+        assert result["markdown"] == "AAAA\n\n---\n\nBB\n\n---\n\nCCC"
         assert result["text_map"][0]["md_offset"] == 0
-        assert result["text_map"][1]["md_offset"] == 6
-        assert result["text_map"][2]["md_offset"] == 10
+        assert result["text_map"][1]["md_offset"] == 11
+        assert result["text_map"][2]["md_offset"] == 20
         for seg in result["text_map"]:
             o, n = seg["md_offset"], seg["md_length"]
             assert result["markdown"][o : o + n] == seg["text"]
@@ -908,13 +912,12 @@ class TestMergeChunkResultsMdOffset:
         # fuzzy match. We MUST NOT invent an offset for it.
         assert "md_offset" not in result["text_map"][1]
 
-    def test_empty_chunk_does_not_consume_offset_budget(self):
-        """Chunks with empty markdown contribute zero to the running offset.
+    def test_empty_chunk_offsets_count_its_page_slots(self):
+        """An empty chunk's page slots advance the running offset exactly.
 
-        Empty-markdown chunks are skipped in the join (no separator
-        added either — see existing test_empty_markdown_skipped_in_join)
-        so they must also not advance the offset accumulator. Otherwise
-        the next chunk's segments would shift too far.
+        A chunk with no text holds one empty slot per page (see
+        test_empty_markdown_keeps_page_slots), so the next chunk's segments
+        shift past those slots and still point at their text.
         """
         chunks = [
             {
@@ -937,11 +940,13 @@ class TestMergeChunkResultsMdOffset:
             },
         ]
         result = _merge_chunk_results(chunks, total_pages=102)
-        # Merged: "Hello\n\nworld" — empty chunk did not introduce a separator
-        assert result["markdown"] == "Hello\n\nworld"
-        # "world" lives at offset 7 in the merged markdown
-        assert result["text_map"][1]["md_offset"] == 7
-        assert result["markdown"][7:12] == "world"
+        # Merged: "Hello" + 50 empty page slots + "world" (51 page breaks)
+        md = result["markdown"]
+        assert md.startswith("Hello") and md.endswith("world")
+        assert md.count("\n\n---\n\n") == 51
+        o = result["text_map"][1]["md_offset"]
+        assert o == 5 + 51 * 7
+        assert md[o : o + 5] == "world"
 
     def test_does_not_mutate_input_segments(self):
         """The shift creates new dicts rather than mutating chunk inputs.

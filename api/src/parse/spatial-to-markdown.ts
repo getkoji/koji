@@ -9,6 +9,8 @@
  * consumers (extractFields, provenance matching, the parse UI) work unchanged.
  */
 
+import { PAGE_SEPARATOR } from "./pages";
+
 export interface TextItem {
   text: string;
   x: number;
@@ -113,8 +115,10 @@ export function spatialToMarkdownWithOffsets(
   for (const page of pages) {
     if (page.textItems.length === 0) {
       // Empty page — use the raw text fallback if available. No item geometry
-      // to map, so this fragment carries no spans.
-      if (page.text.trim()) parts.push({ text: page.text.trim(), spans: [] });
+      // to map, so this fragment carries no spans. A page with no text at all
+      // still holds its slot (an empty piece), so the k-th piece is page k
+      // (`parse/pages.ts`).
+      parts.push({ text: page.text.trim(), spans: [] });
       continue;
     }
 
@@ -125,7 +129,9 @@ export function spatialToMarkdownWithOffsets(
     parts.push(blocks);
   }
 
-  const joined = concatSegs(parts, "\n\n---\n\n"); // page breaks
+  // A document with no text at all is empty markdown, not a run of breaks.
+  if (parts.every((p) => p.text.trim().length === 0)) return { markdown: "", offsets: [] };
+  const joined = concatSegs(parts, PAGE_SEPARATOR); // page breaks
   return { markdown: joined.text, offsets: joined.spans };
 }
 

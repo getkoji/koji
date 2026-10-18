@@ -17,7 +17,8 @@ describe("visionOcrPages", () => {
     const res = await visionOcrPages(["A", "B", "C"], provider, { concurrency: 2 });
     expect(res.pages).toBe(3);
     // Order preserved despite concurrency.
-    expect(res.markdown).toBe("text for A\n\ntext for B\n\ntext for C");
+    // One page piece per image, joined by the page break.
+    expect(res.markdown).toBe("text for A\n\n---\n\ntext for B\n\n---\n\ntext for C");
     expect(provider.generateWithImage).toHaveBeenCalledTimes(3);
   });
 

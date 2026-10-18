@@ -338,3 +338,40 @@ describe("GoogleDocAiCanonicalizer — two-column reading order (oss-437)", () =
     expect(md.indexOf("INSURED")).toBeLessThan(md.indexOf("EDINBOROUGH HOA"));
   });
 });
+
+describe("GoogleDocAiProvider — multi-page markdown carries page breaks", () => {
+  // A scanned multi-page document read by Document AI used to come back as one
+  // block of text (every page joined by a blank line), so every citation landed
+  // on page 1 and a bundle could not be split by page.
+  function threePageDoc(): GoogleDocument {
+    let text = "";
+    const seg = (s: string) => {
+      const start = text.length;
+      text += s + "\n";
+      return { startIndex: String(start), endIndex: String(start + s.length) };
+    };
+    const para = (s: string) => ({ layout: { textAnchor: { textSegments: [seg(s)] } } });
+    const pages = [
+      { pageNumber: 1, paragraphs: [para("Page one heading"), para("Page one body")] },
+      { pageNumber: 2, paragraphs: [] },
+      { pageNumber: 3, paragraphs: [para("Page three body")] },
+    ];
+    return { text, pages } as GoogleDocument;
+  }
+
+  it("projects one page piece per page, a blank page holding its slot", () => {
+    const provider = new GoogleDocAiProvider({
+      provider: "google-docai",
+      api_key: "ya29.token",
+      config: { project_id: "proj-123", processor_id: "proc-abc" },
+      region: "us",
+    });
+    const res = provider.buildResponse(threePageDoc());
+    expect(res.pages).toBe(3);
+    expect(res.markdown.split("\n\n---\n\n")).toEqual([
+      "Page one heading\n\nPage one body",
+      "",
+      "Page three body",
+    ]);
+  });
+});

@@ -253,7 +253,7 @@ Plain-text and markdown files (`.txt`, `.md`, `.markdown`) are returned verbatim
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `markdown` | string | The document converted to markdown. |
+| `markdown` | string | The document converted to markdown, one piece per page: the pages of a multi-page document are joined by a page break (`\n\n---\n\n`), piece *k* being page *k*. A page with no text is an empty piece that keeps its place. A one-page document has no page break; a document with no text is an empty string. Every parse provider returns this shape. |
 | `pages` | integer | Page count of the source document. |
 | `text_map` | array | Word-level bounding boxes mapping text to positions in the source document. Used by the extraction pipeline to resolve provenance highlights. See [Provenance](#provenance). |
 | `elapsed_seconds` | number | Parse time in seconds. |

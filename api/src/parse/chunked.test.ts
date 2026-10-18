@@ -115,7 +115,31 @@ describe("ChunkedParseProvider", () => {
 
     const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
-    expect(result.markdown).toBe("# Part 1\n\n# Part 2\n\n# Part 3");
+    // A chunk boundary is a page boundary: chunks join with the page break.
+    expect(result.markdown).toBe("# Part 1\n\n---\n\n# Part 2\n\n---\n\n# Part 3");
+  });
+
+  // 4b. A chunk whose pages had no text still holds one slot per page.
+  it("keeps one page slot per page of a chunk with no text", async () => {
+    __pageCount = 150;
+    const inner = makeMockProvider({
+      parseResponses: [
+        makeParseResponse({ markdown: "# Part 1" }),
+        makeParseResponse({ markdown: "" }),
+        makeParseResponse({ markdown: "# Part 3" }),
+      ],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    const pieces = result.markdown.split("\n\n---\n\n");
+    // Chunk 1 (one piece here: the mock's own markdown), 50 empty slots for
+    // chunk 2's pages 51-100, then chunk 3.
+    expect(pieces).toHaveLength(52);
+    expect(pieces[0]).toBe("# Part 1");
+    expect(pieces.slice(1, 51).every((p) => p === "")).toBe(true);
+    expect(pieces[51]).toBe("# Part 3");
   });
 
   // 5. Text map offset
@@ -145,7 +169,8 @@ describe("ChunkedParseProvider", () => {
   it("shifts md_offset by each chunk's start in the merged markdown", async () => {
     __pageCount = 100;
     // Two chunks, each with markdown of length 6 ("abcdef"). Merged markdown is
-    // "abcdef\n\nabcdef", so chunk 2's content starts at offset 8 (6 + "\n\n").
+    // "abcdef\n\n---\n\nabcdef", so chunk 2's content starts at offset 13
+    // (6 + the 7-character page break).
     const inner = makeMockProvider({
       parseResponses: [
         makeParseResponse({
@@ -162,10 +187,10 @@ describe("ChunkedParseProvider", () => {
 
     const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
 
-    expect(result.markdown).toBe("abcdef\n\nabcdef");
-    // Chunk 1 offset unchanged; chunk 2 offset shifted by 6 + 2 (the "\n\n").
+    expect(result.markdown).toBe("abcdef\n\n---\n\nabcdef");
+    // Chunk 1 offset unchanged; chunk 2 offset shifted by 6 + 7 (the page break).
     expect(result.text_map![0]!.md_offset).toBe(0);
-    expect(result.text_map![1]!.md_offset).toBe(8);
+    expect(result.text_map![1]!.md_offset).toBe(13);
     // The shifted offset still slices back to the right text in merged markdown.
     const seg = result.text_map![1]!;
     expect(result.markdown.slice(seg.md_offset!, seg.md_offset! + seg.md_length!)).toBe("abc");

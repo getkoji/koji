@@ -64,7 +64,7 @@ describe("MistralOcrProvider", () => {
     expect(result.ocr_skipped).toBe(false);
     // Pages stitched in ascending index order regardless of array order.
     expect(result.markdown).toBe(
-      "# Page one\n\nFirst page body.\n\n## Page two\n\nSecond page body.",
+      "# Page one\n\nFirst page body.\n\n---\n\n## Page two\n\nSecond page body.",
     );
   });
 

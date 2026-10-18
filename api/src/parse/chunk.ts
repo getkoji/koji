@@ -26,6 +26,8 @@
  * wiring (PB-11) implement against this seam in later tasks.
  */
 
+import { pagesFromPieces } from "./pages";
+
 /**
  * THE CANONICAL BOUNDING-BOX COORDINATE CONVENTION — the single source of truth
  * for every parse provider in Koji. If you emit geometry from a parser, it MUST
@@ -205,13 +207,18 @@ export function renderTableGrid(
  * Project a parse spine to a single markdown document — markdown demoted to a
  * *projection* of the spine (`docs/parse-spine-model.md`). Contiguous
  * `table_cell` units sharing a `tableId` are reassembled into one markdown grid
- * via {@link renderTableGrid}; every other unit contributes its text. Blocks are
- * joined with a blank line, exactly as the pre-spine `chunks.map(text).join`
- * did, so the projected markdown is byte-identical for non-table content and
- * reconstructs the same table a single markdown-table chunk used to hold.
+ * via {@link renderTableGrid}; every other unit contributes its text. Blocks on
+ * one page are joined with a blank line; pages are joined with the page break
+ * ({@link PAGE_SEPARATOR}, see `parse/pages.ts`), one piece per page 1..N with
+ * empty pages keeping their slot. A one-page spine projects byte-identically to
+ * the pre-paging `chunks.map(text).join("\n\n")`.
+ *
+ * `pageCount` is the document's page count when the provider knows it, so
+ * trailing pages with no text still hold their place; it defaults to the
+ * highest page a unit is on.
  */
-export function spineToMarkdown(units: readonly ParseUnit[]): string {
-  const blocks: string[] = [];
+export function spineToMarkdown(units: readonly ParseUnit[], pageCount?: number | null): string {
+  const blocks: { page: number; text: string }[] = [];
   let i = 0;
   while (i < units.length) {
     const u = units[i]!;
@@ -225,13 +232,13 @@ export function spineToMarkdown(units: readonly ParseUnit[]): string {
         i++;
       }
       const md = renderTableGrid(cells);
-      if (md) blocks.push(md);
+      if (md) blocks.push({ page: u.page, text: md });
       continue;
     }
-    blocks.push(u.text);
+    blocks.push({ page: u.page, text: u.text });
     i++;
   }
-  return blocks.join("\n\n");
+  return pagesFromPieces(blocks, pageCount);
 }
 
 /**
