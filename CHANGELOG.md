@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.113.3 — 2026-10-18
+
+**Digital parses cached before 0.113.1 get their blank pages back.** The
+digital-PDF path used to drop pages with no text, so a cached parse's piece k
+was not always page k — a 2-page notice whose second page is blank came back as
+one piece, and a 34-page document as 22. Cached digital parses are now served
+with each piece on its page and empty slots for blank pages, placed by the
+parse's own word map (its offsets move with their pieces). No re-parse; used
+only when the result carries exactly the cached text.
+
 ## 0.113.2 — 2026-10-18
 
 **The OCR fallback never replaces a digital read with less text.** When the
