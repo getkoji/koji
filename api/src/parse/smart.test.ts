@@ -291,6 +291,51 @@ describe("SmartParseProvider", () => {
       expect(result.markdown.length).toBeGreaterThan(0);
     });
 
+    it("keeps the pdf.js text when the OCR fallback returns less (River Run: 46 pages, Document AI empty)", async () => {
+      // Shaped like River Run's flood policy: an encrypted-but-readable digital
+      // PDF whose pdf.js read carries text on all 46 pages, flagged by the
+      // corruption check (single-letter fragments in a header block), sent to
+      // Document AI, which answered with no text at all. Koji kept the empty
+      // answer and dropped 109k characters of parsed text.
+      mockClassify.mockResolvedValue("digital_pdf");
+      const header = "R * * 12/30/2021 * IMP 1039379 21 00 a b c d e f g h i j k l m n o p q r s t";
+      const body =
+        "Claims Handling Procedures. An important value of your insurance coverage is the " +
+        "service you receive when you report a claim. Please read the policy carefully.";
+      const pages = Array.from({ length: 46 }, (_, i) => `${header}\n\n## Page ${i + 1}\n\n${body}`);
+      const liteRead: ParseResponse = {
+        markdown: pages.join("\n\n---\n\n"),
+        pages: 46,
+        ocr_skipped: true,
+        engine: "pdfjs",
+      };
+      expect(detectCorruption(liteRead.markdown)).not.toBeNull();
+      const ocrEmpty: ParseResponse = { markdown: "", pages: 46, ocr_skipped: false, engine: "google-docai" };
+      const lite = mockProvider(liteRead);
+      const heavy = mockProvider(ocrEmpty);
+      const smart = new SmartParseProvider(lite, heavy);
+
+      const result = await smart.parse(input);
+
+      expect(heavy.parse).toHaveBeenCalled();
+      expect(result).toBe(liteRead);
+      expect(result.markdown.split("\n\n---\n\n")).toHaveLength(46);
+    });
+
+    it("keeps the pdf.js text when the OCR fallback reads fewer characters", async () => {
+      mockClassify.mockResolvedValue("digital_pdf");
+      const corrupt: ParseResponse = {
+        markdown:
+          "M: FRO er: y numb Polic d: io y Per Polic rage a G or d / an bile mo uto t A ep exc es erag v l co Al ECP 035 30 58 EBA 035 30 58 FROM: TO: 10 01 24 27 25 a b c d e f g h i j k l m n o p q r s t u v w x y z",
+        pages: 1,
+        ocr_skipped: true,
+        engine: "pdfjs",
+      };
+      const shorter: ParseResponse = { markdown: "Policy Period", pages: 1, ocr_skipped: false, engine: "docling" };
+      const smart = new SmartParseProvider(mockProvider(corrupt), mockProvider(shorter));
+      expect(await smart.parse(input)).toBe(corrupt);
+    });
+
     it("still surfaces the heavy failure when there is no lite parse to keep", async () => {
       // Distinct from the case above: pdfjs itself threw, so nothing was
       // salvaged and the error must propagate rather than yield a silent empty.

@@ -2,6 +2,16 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.113.2 — 2026-10-18
+
+**The OCR fallback never replaces a digital read with less text.** When the
+digital-PDF read looks corrupt, Koji re-parses with the OCR provider. It used to
+take whatever the OCR provider returned, even an empty answer: a 46-page,
+encrypted-but-readable policy came back from Document AI with no text while
+pdf.js had read 109k characters, and Koji stored the empty parse. The fallback
+now replaces the pdf.js read only when it carries at least as many letters and
+digits; otherwise the pdf.js read is kept and the reason is logged.
+
 ## 0.113.1 — 2026-10-17
 
 **Every multi-page parse comes back split into pages.** Parse markdown had two
