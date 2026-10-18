@@ -196,8 +196,9 @@ export class SmartParseProvider implements ParseProvider {
       console.warn(
         `[smart-parse] pdfjs output for ${input.filename} looks corrupt (${corruption}), falling back to heavy provider`,
       );
+      let heavyResult: ParseResponse;
       try {
-        return await this.heavy.parse(input);
+        heavyResult = await this.heavy.parse(input);
       } catch (err) {
         // The heavy provider is an *upgrade* attempt here, not a requirement:
         // we already hold a parse that produced text, just fragmented-looking
@@ -215,10 +216,31 @@ export class SmartParseProvider implements ParseProvider {
         );
         return liteResult;
       }
+      // Koji never drops parsed text: the fallback is an upgrade attempt, so it
+      // replaces the pdf.js read only when it carries at least as much text.
+      // An OCR answer with less — River Run's 46-page policy came back from
+      // Document AI empty while pdf.js held 109k characters — keeps the pdf.js
+      // read. Letters and digits are counted, so spacing fixes (space-mangled
+      // text) and stripped garbage glyphs (undecodable layers) still upgrade.
+      const liteChars = textChars(liteResult.markdown);
+      const heavyChars = textChars(heavyResult.markdown);
+      if (heavyChars < liteChars) {
+        console.warn(
+          `[smart-parse] heavy provider read less text for ${input.filename} ` +
+            `(${heavyChars} vs pdfjs ${liteChars} letters/digits); keeping the pdfjs parse despite ${corruption}.`,
+        );
+        return liteResult;
+      }
+      return heavyResult;
     }
 
     return liteResult;
   }
+}
+
+/** Letters and digits in parsed markdown — the measure of how much text a parse carries. */
+export function textChars(markdown: string): number {
+  return (markdown.match(/[\p{L}\p{N}]/gu) ?? []).length;
 }
 
 /**
