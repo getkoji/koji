@@ -21,6 +21,7 @@
  */
 
 import type { ParseProvider, ParseResponse } from "../provider";
+import { pagesFromPieces } from "../pages";
 import type { ParseEndpointPayload } from "../resolve-tenant-parse";
 
 const DEFAULT_BASE_URL = "https://api.mistral.ai";
@@ -125,13 +126,13 @@ export class MistralOcrProvider implements ParseProvider {
       throw new Error("MistralOcrProvider: OCR response contained no pages");
     }
 
-    // Markdown-native pass-through: stitch per-page markdown in page order.
-    const markdown = pages
-      .slice()
-      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
-      .map((p) => p.markdown ?? "")
-      .join("\n\n")
-      .trim();
+    // Markdown-native pass-through: stitch per-page markdown in page order,
+    // one page piece per page (`parse/pages.ts`). Mistral's `index` is 0-based;
+    // a page without one takes its position in the response.
+    const markdown = pagesFromPieces(
+      pages.map((p, i) => ({ page: (p.index ?? i) + 1, text: (p.markdown ?? "").trim() })),
+      pages.length,
+    );
 
     if (!markdown) {
       throw new Error("MistralOcrProvider: OCR response contained no markdown");

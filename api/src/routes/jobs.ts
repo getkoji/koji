@@ -10,6 +10,8 @@ import { formatSemverLabel } from "../schemas/semver";
 import { locateWordsByRegion } from "../extract/region";
 import { toProvenanceTextMap, type BBox, type FlatTextMapSegment } from "../extract/provenance";
 import { parseOverrideProvenance, buildAnchoredSpan, type AnchoredProvenance } from "./review";
+import { pagedCachedMarkdown } from "../parse/cached-markdown";
+import type { ParseChunk } from "../parse/chunk";
 import { jobCounterRecompute } from "../ingestion/job-counters";
 
 export const jobs = new Hono<Env>();
@@ -1649,7 +1651,7 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
     return c.json({ error: "Cache blob missing from storage" }, 404);
   }
 
-  let payload: { markdown?: string; pages?: number; ocr_skipped?: boolean; engine?: string };
+  let payload: { markdown?: string; pages?: number; ocr_skipped?: boolean; engine?: string; chunks?: ParseChunk[] };
   try {
     payload = JSON.parse(blob.data.toString());
   } catch {
@@ -1657,7 +1659,9 @@ jobs.get("/:slug/documents/:docId/markdown", requires("job:read"), async (c) => 
   }
 
   return c.json({
-    markdown: payload.markdown ?? "",
+    // One page piece per page (`parse/pages.ts`); a parse cached before every
+    // provider marked pages is re-paged from its cached spine.
+    markdown: pagedCachedMarkdown({ ...payload, pages: payload.pages ?? cached.pages ?? null }),
     pages: payload.pages ?? cached.pages ?? null,
     ocrSkipped:
       typeof payload.ocr_skipped === "boolean"

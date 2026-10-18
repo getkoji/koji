@@ -281,3 +281,37 @@ def test_parse_scanned_pdf_uses_ocr(mock_info, mock_convert):
     assert resp.json()["ocr_skipped"] is False
     _, kwargs = mock_convert.call_args
     assert kwargs["skip_ocr"] is False
+
+
+# ── page contract: one markdown piece per page ──────────────────────────
+
+from services.parse.main import PAGE_SEPARATOR, _join_pages, _paged_docling_markdown  # noqa: E402
+
+
+class _FakeDoclingDoc:
+    def __init__(self, pages: list[str]):
+        self._pages = pages
+
+    def num_pages(self) -> int:
+        return len(self._pages)
+
+    def export_to_markdown(self, page_no: int | None = None) -> str:
+        if page_no is None:
+            return "\n\n".join(p for p in self._pages if p)
+        return self._pages[page_no - 1]
+
+
+def test_docling_markdown_comes_back_one_piece_per_page():
+    doc = _FakeDoclingDoc(["Page one", "", "Page three"])
+    md = _paged_docling_markdown(doc, doc.export_to_markdown(), "[test]")
+    assert md.split(PAGE_SEPARATOR) == ["Page one", "", "Page three"]
+
+
+def test_docling_markdown_kept_whole_rather_than_drop_text():
+    doc = _FakeDoclingDoc(["Page one", "Page two"])
+    whole = "Page one\n\nPage two\n\nText no page export carries"
+    assert _paged_docling_markdown(doc, whole, "[test]") == whole
+
+
+def test_join_pages_empty_document_is_empty():
+    assert _join_pages(["", ""]) == ""

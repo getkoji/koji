@@ -29,6 +29,7 @@
  * failure shape are explicit rather than fetch's default redirect behavior.
  */
 
+import { joinPages } from "../pages";
 import type { ParseProvider, ParseResponse } from "../provider";
 
 /** Default model: the layout model is the markdown-native one. */
@@ -64,8 +65,45 @@ interface AnalyzeOperationResult {
   error?: { code?: string; message?: string };
   analyzeResult?: {
     content?: string;
-    pages?: unknown[];
+    pages?: Array<{ pageNumber?: number; spans?: Array<{ offset?: number; length?: number }> }>;
   };
+}
+
+/**
+ * Cut Azure's whole-document `content` into its pages (`parse/pages.ts`).
+ * Each page's `spans` locate its text in `content`; page k runs from its first
+ * span to the next page's first span, so every character of `content` lands on
+ * exactly one page — nothing between pages (Azure's `<!-- PageBreak -->`
+ * comments included) is dropped. Without usable spans the content is returned
+ * unchanged.
+ */
+export function pageAzureContent(
+  content: string,
+  pages: Array<{ spans?: Array<{ offset?: number; length?: number }> }> | undefined,
+): string {
+  if (!Array.isArray(pages) || pages.length < 2) return content;
+  if (!pages.some((p) => (p.spans ?? []).some((sp) => typeof sp.offset === "number"))) return content;
+  const starts: number[] = [];
+  for (const page of pages) {
+    const offsets = (page.spans ?? [])
+      .map((sp) => sp.offset)
+      .filter((o): o is number => typeof o === "number" && o >= 0 && o <= content.length);
+    // A page with no span has no text of its own; it takes the previous
+    // page's end (an empty piece). Spans must not run backwards.
+    const prev = starts.length > 0 ? starts[starts.length - 1]! : 0;
+    const start = offsets.length > 0 ? Math.min(...offsets) : null;
+    if (start !== null && start < prev) return content;
+    starts.push(start ?? -1);
+  }
+  // Resolve span-less pages to the next page's start (empty piece).
+  for (let i = starts.length - 1; i >= 0; i--) {
+    if (starts[i]! < 0) starts[i] = i + 1 < starts.length ? starts[i + 1]! : content.length;
+  }
+  starts[0] = 0;
+  const pieces = starts.map((start, i) =>
+    content.slice(start, i + 1 < starts.length ? starts[i + 1]! : content.length),
+  );
+  return joinPages(pieces);
 }
 
 export class AzureDocIntelProvider implements ParseProvider {
@@ -129,7 +167,7 @@ export class AzureDocIntelProvider implements ParseProvider {
     // 2. Poll until the operation settles or we exceed the timeout.
     const result = await this.poll(operationLocation);
 
-    const markdown = result.analyzeResult?.content ?? "";
+    const markdown = pageAzureContent(result.analyzeResult?.content ?? "", result.analyzeResult?.pages);
     if (!markdown) {
       throw new Error("azure-document-intel: analyze succeeded but returned no markdown content");
     }

@@ -13,13 +13,12 @@
  */
 
 import type { ModelProvider } from "../extract/providers";
+import { joinPages } from "./pages";
 
 const PAGE_PROMPT = `You are transcribing a scanned document page. Output ALL text exactly as it appears,
 preserving reading order and structure as Markdown (headings, lists, and tables where present).
 Do not summarize, correct, translate, or add commentary. If a word is genuinely unreadable, write
 [illegible]. Output only the transcription.`;
-
-const PAGE_SEPARATOR = "\n\n";
 
 export interface VisionOcrResult {
   markdown: string;
@@ -60,5 +59,6 @@ export async function visionOcrPages(
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-  return { markdown: out.join(PAGE_SEPARATOR).trim(), pages: images.length };
+  // One page piece per image, in page order (`parse/pages.ts`).
+  return { markdown: joinPages(out), pages: images.length };
 }

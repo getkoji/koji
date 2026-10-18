@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import { AzureDocIntelProvider } from "./azure-doc-intel";
+import { AzureDocIntelProvider, pageAzureContent } from "./azure-doc-intel";
 import { createParseDriver, hasParseDriver } from "../drivers";
 
 const ENDPOINT = "https://my-di.cognitiveservices.azure.com";
@@ -165,5 +165,41 @@ describe("driver registry — azure-document-intel", () => {
       config: { api_version: "2024-11-30" },
     });
     expect(driver).not.toBeNull();
+  });
+});
+
+describe("pageAzureContent — Azure's whole-document content cut into pages", () => {
+  it("cuts content at each page's first span, keeping every character", () => {
+    const content = "# One\n\nBody one\n<!-- PageBreak -->\n# Two\nBody two\n<!-- PageBreak -->\n# Three";
+    const two = content.indexOf("# Two");
+    const three = content.indexOf("# Three");
+    const md = pageAzureContent(content, [
+      { spans: [{ offset: 0, length: two }] },
+      { spans: [{ offset: two, length: three - two }] },
+      { spans: [{ offset: three, length: content.length - three }] },
+    ]);
+    const pages = md.split("\n\n---\n\n");
+    expect(pages).toHaveLength(3);
+    expect(pages[0]).toContain("Body one");
+    expect(pages[1]).toContain("Body two");
+    expect(pages[2]).toBe("# Three");
+    expect(pages.join("")).toBe(content);
+  });
+
+  it("gives a page without spans an empty slot", () => {
+    const content = "First page text. Third page text.";
+    const third = content.indexOf("Third");
+    const md = pageAzureContent(content, [
+      { spans: [{ offset: 0, length: third }] },
+      { spans: [] },
+      { spans: [{ offset: third, length: content.length - third }] },
+    ]);
+    expect(md.split("\n\n---\n\n")).toEqual(["First page text. ", "", "Third page text."]);
+  });
+
+  it("returns content unchanged when there are no spans or one page", () => {
+    expect(pageAzureContent("abc", [{}, {}])).toBe("abc");
+    expect(pageAzureContent("abc", [{ spans: [{ offset: 0, length: 3 }] }])).toBe("abc");
+    expect(pageAzureContent("abc", undefined)).toBe("abc");
   });
 });

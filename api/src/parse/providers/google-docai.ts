@@ -1191,7 +1191,7 @@ export class GoogleDocAiProvider implements ParseProvider {
     const merged = mergeShardChunks(shards);
     const totalPages = shards.reduce((sum, s) => sum + s.pageCount, 0);
     return {
-      markdown: spineToMarkdown(merged),
+      markdown: spineToMarkdown(merged, totalPages),
       pages: totalPages || null,
       ocr_skipped: false,
       engine: "google-docai",
@@ -1438,7 +1438,7 @@ export class GoogleDocAiProvider implements ParseProvider {
    */
   buildResponse(document: GoogleDocument): ParseResponse {
     const chunks = this.canonicalizer.toChunks(document);
-    const markdown = spineToMarkdown(chunks);
+    const markdown = spineToMarkdown(chunks, document.pages?.length ?? null);
     return {
       markdown,
       pages: document.pages?.length ?? null,
@@ -1469,7 +1469,7 @@ export class GoogleDocAiProvider implements ParseProvider {
     const merged = mergeShardChunks(shards);
     const totalPages = shards.reduce((sum, s) => sum + s.pageCount, 0);
     return {
-      markdown: spineToMarkdown(merged),
+      markdown: spineToMarkdown(merged, totalPages),
       pages: totalPages || null,
       ocr_skipped: false,
       engine: "google-docai",

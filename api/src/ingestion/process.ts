@@ -36,6 +36,7 @@ import {
 } from "../parse/cache-fingerprint";
 import { resolveParse, parseDocument } from "./seam";
 import { PARSE_VERSION, isParseCacheFresh } from "./parse-version";
+import { pagedCachedMarkdown } from "../parse/cached-markdown";
 import { mimeTypeFor, normalizeMimeType } from "./mime";
 
 // Re-exported so existing import sites (routes/*, tests) that pull these from
@@ -1071,7 +1072,10 @@ export async function getOrParse(
             // OCR overlay Inngest function — it checks the cache and copies
             // to the per-doc storage key as its first step. Doing it again
             // here would race for no benefit.
-            return { markdown: payload.markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks, pages: payload.pages, ocr_skipped: payload.ocr_skipped, cached: true };
+            // A parse cached before every provider marked pages is served
+            // paged, re-projected from its cached spine (no re-parse).
+            const markdown = pagedCachedMarkdown(payload);
+            return { markdown, textMap: payload.text_map, engine: payload.engine, chunks: payload.chunks, pages: payload.pages, ocr_skipped: payload.ocr_skipped, cached: true };
           }
         } catch {
           // Corrupt cache entry — fall through to live parse and overwrite.

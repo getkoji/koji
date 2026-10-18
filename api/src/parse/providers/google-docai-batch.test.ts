@@ -279,7 +279,7 @@ describe("GoogleDocAiProvider.parse — full batch flow", () => {
       ["Page one body", 1],
       ["Page two body", 2],
     ]);
-    expect(result.markdown).toBe("Page one body\n\nPage two body");
+    expect(result.markdown).toBe("Page one body\n\n---\n\nPage two body");
 
     // Verify the call sequence hit batch, not online.
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));

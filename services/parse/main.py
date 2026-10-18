@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-KOJI_PARSE_VERSION = "0.113.0"
+KOJI_PARSE_VERSION = "0.113.1"
 
 app = FastAPI(title="Koji Parse Service", version=KOJI_PARSE_VERSION)
 
@@ -146,6 +146,50 @@ def _looks_undecodable(text: str) -> bool:
     return escapes / len(tokens) > 0.10
 
 
+# ---------------------------------------------------------------------------
+# The page contract of parse markdown (mirrors api/src/parse/pages.ts)
+# ---------------------------------------------------------------------------
+
+# A document with N pages comes back as N page pieces joined by this break,
+# piece k being page k; a page with no text is an empty piece that keeps its
+# slot. A one-page document has no break; a document with no text is "".
+PAGE_SEPARATOR = "\n\n---\n\n"
+
+
+def _join_pages(pages: list[str]) -> str:
+    """Join per-page markdown with the page break; "" when no page has text."""
+    if all(not (p or "").strip() for p in pages):
+        return ""
+    return PAGE_SEPARATOR.join(p or "" for p in pages)
+
+
+def _paged_docling_markdown(document, markdown: str, log_prefix: str) -> str:
+    """Docling's whole-document markdown, cut into one piece per page.
+
+    ``export_to_markdown()`` joins every page with a blank line, so a scanned
+    multi-page document came back as one block (every citation on page 1).
+    Each page is exported on its own (``page_no``) and the pages are joined with
+    the page break. The paged result is used only when it carries the same words
+    as the whole-document export — if a per-page export would drop or repeat
+    anything, the whole-document markdown is kept: parsed text is never dropped.
+    """
+    try:
+        page_count = int(document.num_pages())
+    except Exception:
+        return markdown
+    if page_count <= 1:
+        return markdown
+    try:
+        pages = [document.export_to_markdown(page_no=p).strip() for p in range(1, page_count + 1)]
+    except Exception as e:  # docling-core without per-page export, or a bad page
+        print(f"{log_prefix} per-page markdown export failed ({e}); keeping unpaged markdown")
+        return markdown
+    if sorted(" ".join(pages).split()) != sorted(markdown.split()):
+        print(f"{log_prefix} WARNING: per-page markdown differs from the whole export; keeping unpaged markdown")
+        return markdown
+    return _join_pages(pages)
+
+
 def _poppler_extract(file_path: str) -> dict | None:
     """Re-extract text + word bboxes with poppler's ``pdftotext -bbox-layout``.
 
@@ -217,10 +261,10 @@ def _poppler_extract(file_path: str) -> dict | None:
                     )
             if words:
                 page_lines.append(" ".join(words))
-        if page_lines:
-            page_blocks.append("\n".join(page_lines))
+        # Every page holds its slot, text or not (the page contract).
+        page_blocks.append("\n".join(page_lines))
 
-    markdown = "\n\n".join(page_blocks)
+    markdown = _join_pages(page_blocks)
     if not markdown.strip():
         return None
 
@@ -466,6 +510,7 @@ def _convert_sync(file_path: str, skip_ocr: bool = False) -> dict:
             return recovered
         print("[koji-parse] WARNING: poppler recovery failed/unavailable; keeping docling output")
 
+    markdown = _paged_docling_markdown(result.document, markdown, "[koji-parse]")
     text_map = _build_text_map(result.document)
     _annotate_md_offsets(markdown, text_map)
 

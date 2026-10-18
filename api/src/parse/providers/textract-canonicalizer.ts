@@ -266,6 +266,6 @@ export class TextractCanonicalizer implements ChunkCanonicalizer<TextractBlocks>
  * is a projection of the spine: `table_cell` runs are reassembled into a grid,
  * every other unit is joined as a paragraph (see {@link spineToMarkdown}).
  */
-export function chunksToMarkdown(chunks: ParseChunk[]): string {
-  return spineToMarkdown(chunks);
+export function chunksToMarkdown(chunks: ParseChunk[], pageCount?: number | null): string {
+  return spineToMarkdown(chunks, pageCount);
 }

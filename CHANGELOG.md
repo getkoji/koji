@@ -2,6 +2,29 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.113.1 — 2026-10-17
+
+**Every multi-page parse comes back split into pages.** Parse markdown had two
+shapes. The in-process digital-PDF path joined pages with a page break
+(`\n\n---\n\n`); every OCR path — Google Document AI, AWS Textract, Mistral
+OCR, Azure Document Intelligence, Docling (Modal and Docker), the vision-OCR
+re-read, and the chunked large-document merge — joined pages with a blank line.
+A scanned or OCR-routed multi-page document therefore came back as one block of
+text: every citation landed on page 1 and a bundle could not be split by page.
+
+All of them now return one shape: N pages are N pieces joined by the page
+break, piece *k* being page *k*. A page with no text keeps its slot as an empty
+piece (the digital path used to drop blank pages, shifting every later page
+number). No parsed text is dropped: where a provider's per-page view would not
+carry exactly the text of its whole-document view, the whole-document text is
+kept.
+
+Parses already cached from structured providers (Document AI, Textract) are
+served paged with no re-parse: their cached parse spine records each unit's
+page, so the markdown is re-projected from it — on the next run of the document
+and from `GET /api/jobs/:slug/documents/:docId/markdown` — and used only when it
+carries exactly the cached text.
+
 ## 0.113.0 — 2026-09-29
 
 **One scorer, reachable from the command line.** Comparison of an extracted

@@ -21,6 +21,7 @@
 
 import { resolveVocab } from "./schema-tree";
 import type { ParseChunk } from "../parse/chunk";
+import { PAGE_SEPARATOR } from "../parse/pages";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -629,8 +630,6 @@ function findNumber(haystack: string, value: number): { offset: number; length: 
 // Page estimation from markdown offset
 // ---------------------------------------------------------------------------
 
-/** Page break separator used when joining pages into markdown. */
-const PAGE_SEPARATOR = "\n\n---\n\n";
 
 /**
  * Estimate the 1-indexed page number for a character offset in the markdown.

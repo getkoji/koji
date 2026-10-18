@@ -273,3 +273,37 @@ describe("renderTableGrid + spineToMarkdown", () => {
     );
   });
 });
+
+describe("spineToMarkdown — page breaks", () => {
+  const u = (page: number, i: number, text: string, extra: Partial<ParseUnit> = {}): ParseUnit => ({
+    id: `p${page}-u${i}`,
+    page,
+    text,
+    ...extra,
+  });
+
+  it("joins pages with the page break and keeps blank pages' slots", () => {
+    const md = spineToMarkdown(
+      [
+        u(1, 0, "one a"),
+        u(1, 1, "one b"),
+        u(2, 0, "A", { role: "table_cell", table: { tableId: "p2-t0", row: 1, col: 1 } }),
+        u(2, 1, "B", { role: "table_cell", table: { tableId: "p2-t0", row: 1, col: 2 } }),
+        u(4, 0, "four"),
+      ],
+      5,
+    );
+    expect(md.split("\n\n---\n\n")).toEqual([
+      "one a\n\none b",
+      "| A | B |\n| --- | --- |",
+      "",
+      "four",
+      "",
+    ]);
+  });
+
+  it("projects a one-page spine exactly as before (no break)", () => {
+    expect(spineToMarkdown([u(1, 0, "a"), u(1, 1, "b")], 1)).toBe("a\n\nb");
+    expect(spineToMarkdown([u(1, 0, "a"), u(1, 1, "b")])).toBe("a\n\nb");
+  });
+});
