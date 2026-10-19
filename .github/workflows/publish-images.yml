@@ -4,6 +4,22 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Build (but never push) on PRs that can break an image.
+  #
+  # Without this the images were only ever built AFTER merge, so a Dockerfile
+  # that had fallen out of step with the workspace shipped to main before
+  # anyone found out. That is exactly how #618 landed an api image missing
+  # packages/score: every PR check was green because no PR check built an
+  # image. A validation build costs a few minutes and catches it at review.
+  pull_request:
+    paths:
+      - "docker/**"
+      - "api/**"
+      - "dashboard/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/publish-images.yml"
   workflow_dispatch:
     inputs:
       build_parse_base:
@@ -70,9 +86,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: detect-base-changes
     if: >-
-      needs.detect-base-changes.outputs.changed == 'true' ||
+      github.event_name != 'pull_request' &&
+      (needs.detect-base-changes.outputs.changed == 'true' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.build_parse_base == 'true') ||
-      startsWith(github.ref, 'refs/tags/v')
+      startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,7 +142,7 @@ jobs:
   # already on ghcr.io.
   # ---------------------------------------------------------------------------
   build-and-push:
-    name: Build & Push ${{ matrix.name }}
+    name: Build${{ github.event_name == 'pull_request' && '' || ' & Push' }} ${{ matrix.name }}
     runs-on: ubuntu-latest
     needs: [publish-parse-base]
     if: always() && (needs.publish-parse-base.result == 'success' || needs.publish-parse-base.result == 'skipped')
@@ -175,14 +192,19 @@ jobs:
             type=semver,pattern={{major}}
             # Raw tag value (e.g. v1.2.3) for traceability
             type=ref,event=tag
+            # PR builds are never pushed; this only gives the build a name.
+            type=ref,event=pr
 
-      - name: Build and push ${{ matrix.name }}
+      - name: Build${{ github.event_name == 'pull_request' && '' || ' and push' }} ${{ matrix.name }}
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # arm64 goes through QEMU and dominates the build time. A PR only
+          # needs to prove the image still assembles, so it builds amd64 only;
+          # main and tags still get both.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
