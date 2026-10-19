@@ -59,6 +59,19 @@ def _resolve_master_key() -> str:
 # Registry for pre-built Koji images. Override the tag via cluster.version.
 GHCR_NAMESPACE = "ghcr.io/getkoji"
 
+# S3-compatible object store for local clusters. Pinned deliberately: this
+# replaced minio/minio:latest after MinIO withdrew their public images, and a
+# floating third-party tag is exactly what made that an outage rather than a
+# planned upgrade.
+#
+# SeaweedFS rather than the s3mock the e2e workflow uses, because a local
+# cluster has to keep its documents. `koji stop` runs `docker compose down`,
+# which destroys containers, and s3mock ignores every persistence setting it
+# documents — it writes to a random /tmp directory, so every stop would discard
+# every stored document. s3mock is right for CI precisely because it is
+# ephemeral; it is wrong here for the same reason.
+S3_IMAGE = "chrislusf/seaweedfs:4.48"
+
 
 def _image_or_build(
     service_name: str,
@@ -136,8 +149,8 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "PORT": "9401",
                 "KOJI_PARSE_URL": f"http://koji-{project}-parse:9410",
                 "KOJI_MASTER_KEY": _resolve_master_key(),
-                "KOJI_S3_ENDPOINT": f"http://koji-{project}-minio:9000",
-                "KOJI_S3_PUBLIC_ENDPOINT": f"http://localhost:{cluster.minio_port}",
+                "KOJI_S3_ENDPOINT": f"http://koji-{project}-s3:8333",
+                "KOJI_S3_PUBLIC_ENDPOINT": f"http://localhost:{cluster.s3_port}",
                 "KOJI_S3_ACCESS_KEY": config.storage.access_key,
                 "KOJI_S3_SECRET_KEY": config.storage.secret_key,
                 "KOJI_S3_BUCKET": config.storage.bucket,
@@ -148,7 +161,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             },
             "depends_on": {
                 "koji-db": {"condition": "service_healthy"},
-                "koji-minio": {"condition": "service_started"},
+                "koji-s3-init": {"condition": "service_completed_successfully"},
             },
             "healthcheck": {
                 "test": ["CMD", "wget", "-q", "--spider", "http://localhost:9401/health"],
@@ -211,57 +224,64 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
             "networks": [net],
         }
 
-    # ── MinIO (S3-compatible object storage) ──
-    minio_secret = config.storage.secret_key
-    services["koji-minio"] = {
-        "image": "minio/minio:latest",
-        "container_name": f"koji-{project}-minio",
-        "command": "server /data --console-address :9001",
+    # ── S3-compatible object storage ──
+    #
+    # This was MinIO until MinIO withdrew their public container images: the
+    # Docker Hub repository 404s and quay.io/minio/minio requires auth, so
+    # `koji start` could not pull an image on any machine without a warm cache.
+    #
+    # s3mock covers the entire S3 surface Koji uses — Put/Get/Head/Delete plus
+    # presigned URLs — and is pinned rather than tracking :latest, because a
+    # floating third-party tag is what broke this to begin with. It has no
+    # console UI, which is the one thing lost in the swap.
+    s3_secret = config.storage.secret_key
+    services["koji-s3"] = {
+        "image": S3_IMAGE,
+        "container_name": f"koji-{project}-s3",
+        # `server` runs master, volume, filer and the S3 gateway in one process,
+        # which is what a single-node local cluster wants. -dir is the only
+        # persistence knob needed: everything lives under it.
+        "command": "server -dir=/data -s3 -s3.port=8333 -ip=0.0.0.0",
         "ports": [
-            f"127.0.0.1:{cluster.minio_port}:9000",
-            f"127.0.0.1:{cluster.minio_console_port}:9001",
+            f"127.0.0.1:{cluster.s3_port}:8333",
         ],
-        "environment": {
-            "MINIO_ROOT_USER": config.storage.access_key,
-            "MINIO_ROOT_PASSWORD": minio_secret,
-        },
         "volumes": [
-            f"koji-{project}-minio-data:/data",
+            f"koji-{project}-s3-data:/data",
         ],
-        "healthcheck": {
-            "test": ["CMD", "mc", "ready", "local"],
-            "interval": "10s",
-            "timeout": "5s",
-            "retries": 5,
-        },
         "restart": "unless-stopped",
         "networks": [net],
     }
 
-    # MinIO init — create the default bucket on first boot
-    services["koji-minio-init"] = {
-        "image": "minio/mc:latest",
-        "container_name": f"koji-{project}-minio-init",
-        "depends_on": {
-            "koji-minio": {"condition": "service_healthy"},
+    # Bucket init. Reuses the api image rather than pulling another one: it
+    # already carries node, the AWS SDK and the script.
+    #
+    # The script retries a cold endpoint, which is why koji-s3 needs no
+    # healthcheck — the init container is the readiness gate, and the API waits
+    # for it to exit successfully.
+    services["koji-s3-init"] = {
+        **_image_or_build("api", "docker/api.Dockerfile", version, project_dir, dev_mode),
+        "container_name": f"koji-{project}-s3-init",
+        "depends_on": ["koji-s3"],
+        "command": ["node", "api/scripts/s3-ensure-bucket.mjs"],
+        "environment": {
+            "KOJI_S3_ENDPOINT": f"http://koji-{project}-s3:8333",
+            "KOJI_S3_BUCKET": config.storage.bucket,
+            "KOJI_S3_ACCESS_KEY": config.storage.access_key,
+            "KOJI_S3_SECRET_KEY": s3_secret,
+            "KOJI_S3_REGION": config.storage.region,
         },
-        "entrypoint": "/bin/sh -c",
-        "command": [
-            f"mc alias set koji http://koji-{project}-minio:9000 {config.storage.access_key} {minio_secret} && "
-            f"mc mb koji/{config.storage.bucket} --ignore-existing"
-        ],
+        "restart": "no",
         "networks": [net],
     }
 
-    # Wire S3 env vars into the API server
-    services["koji-api"]["environment"]["KOJI_S3_ENDPOINT"] = f"http://koji-{project}-minio:9000"
+    services["koji-api"]["environment"]["KOJI_S3_ENDPOINT"] = f"http://koji-{project}-s3:8333"
     services["koji-api"]["environment"]["KOJI_S3_BUCKET"] = config.storage.bucket
     services["koji-api"]["environment"]["KOJI_S3_ACCESS_KEY"] = config.storage.access_key
-    services["koji-api"]["environment"]["KOJI_S3_SECRET_KEY"] = minio_secret
+    services["koji-api"]["environment"]["KOJI_S3_SECRET_KEY"] = s3_secret
     services["koji-api"]["environment"]["KOJI_S3_REGION"] = config.storage.region
     services["koji-api"]["environment"]["KOJI_S3_FORCE_PATH_STYLE"] = str(config.storage.force_path_style).lower()
-    services["koji-api"]["environment"]["KOJI_S3_PUBLIC_ENDPOINT"] = f"http://127.0.0.1:{cluster.minio_port}"
-    services["koji-api"]["depends_on"]["koji-minio"] = {"condition": "service_healthy"}
+    services["koji-api"]["environment"]["KOJI_S3_PUBLIC_ENDPOINT"] = f"http://127.0.0.1:{cluster.s3_port}"
+    services["koji-api"]["depends_on"]["koji-s3-init"] = {"condition": "service_completed_successfully"}
 
     # Wire parse as API dependency
     if svc_cfg.parse:
@@ -306,7 +326,7 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
     # ── Volumes ──
     volumes: dict = {
         f"koji-{project}-pgdata": {},
-        f"koji-{project}-minio-data": {},
+        f"koji-{project}-s3-data": {},
     }
     if svc_cfg.ollama:
         volumes[f"koji-{project}-ollama-data"] = {}

@@ -46,12 +46,12 @@ class ClusterConfig(BaseModel):
         return self.base_port + 14
 
     @property
-    def minio_port(self) -> int:
+    def s3_port(self) -> int:
         return self.base_port + 15
 
-    @property
-    def minio_console_port(self) -> int:
-        return self.base_port + 16
+    # base_port + 16 was the MinIO console. s3mock has no console, so the port
+    # is unused — left unallocated rather than reassigned, so an existing
+    # cluster's port map does not shift under it.
 
     @property
     def db_port(self) -> int:

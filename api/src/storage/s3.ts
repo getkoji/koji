@@ -38,11 +38,22 @@ export class S3Storage implements StorageProvider {
     const region = config.region ?? "us-east-1";
     const forcePathStyle = config.forcePathStyle ?? false;
 
+    // AWS SDK v3.729+ adds a checksum header to PutObject by default. Real S3
+    // understands it; most S3-COMPATIBLE stores do not, and a presigned PUT
+    // then fails with `BadDigest: The Content-Md5 you specified did not match
+    // what we received` — the browser never sends a header the signature
+    // assumed was there. Since users point Koji at their own object storage,
+    // and the local cluster runs SeaweedFS, checksums are emitted only where
+    // the operation actually requires them. This is the SDK's pre-3.729
+    // behaviour and is correct against real S3 too.
+    const checksumCompat = { requestChecksumCalculation: "WHEN_REQUIRED" } as const;
+
     this.client = new S3Client({
       endpoint: config.endpoint || undefined,
       credentials,
       region,
       forcePathStyle,
+      ...checksumCompat,
     });
 
     // Separate client for generating browser-reachable signed URLs
@@ -52,6 +63,7 @@ export class S3Storage implements StorageProvider {
           credentials,
           region,
           forcePathStyle,
+          ...checksumCompat,
         })
       : null;
   }
