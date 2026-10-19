@@ -2,6 +2,44 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.114.0 — 2026-10-19
+
+**`koji start` works again.** MinIO withdrew their public container images —
+the Docker Hub repository 404s and quay.io/minio/minio now requires
+authentication — so `koji start` could not pull an image on any machine without
+a warm cache. New installs failed outright; existing ones kept working only
+until someone pruned their image cache.
+
+Local clusters now run SeaweedFS in place of MinIO.
+
+**Your existing local documents are not carried over.** The old
+`koji-<project>-minio-data` volume is left untouched on disk, but MinIO's
+on-disk format cannot be read by anything else, and MinIO can no longer be
+started to export it. Anything stored in a local cluster has to be re-ingested.
+Nothing in a hosted or BYO-S3 deployment is affected — this is the local dev
+cluster only.
+
+**The MinIO console is gone.** SeaweedFS has no equivalent browser UI, so the
+console port (`base_port + 16`) is no longer mapped. It is left unallocated
+rather than reassigned, so the rest of an existing cluster's port map does not
+shift. The S3 endpoint stays on `base_port + 15`.
+
+Alongside it, a compatibility fix that matters to anyone pointing Koji at their
+own object storage: AWS SDK v3.729+ adds a checksum header to `PutObject` by
+default. Real S3 understands it; most S3-compatible stores do not, and a
+presigned PUT then fails with `BadDigest: The Content-Md5 you specified did not
+match what we received` — the browser never sends a header the signature
+assumed was there. Koji now emits checksums only where the operation requires
+them, which is the SDK's pre-3.729 behaviour and correct against real S3. If
+dashboard uploads were failing against R2, Wasabi, self-hosted MinIO or similar,
+this is why.
+
+CI uses a different S3 double (s3mock) because it wants the opposite trade: a
+one-second start and no state at all. `koji stop` runs `docker compose down`,
+which destroys containers, so a local cluster needs a store that survives that —
+and s3mock ignores every persistence setting it documents, writing to a random
+temporary directory instead.
+
 ## 0.113.3 — 2026-10-18
 
 **Digital parses cached before 0.113.1 get their blank pages back.** The

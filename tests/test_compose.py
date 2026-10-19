@@ -191,7 +191,7 @@ class TestDevMode:
 
     def test_dev_arg_produces_build_blocks(self):
         compose = generate_compose(KojiConfig(project="test"), PROJECT_DIR, dev=True)
-        # Only Koji-built services have build blocks (not koji-db, koji-minio, koji-mailpit, koji-minio-init)
+        # Only Koji-built services have build blocks (not koji-db, koji-s3, koji-mailpit)
         buildable = ["koji-api", "koji-dashboard", "koji-parse"]
         for name in buildable:
             svc = compose["services"][name]
