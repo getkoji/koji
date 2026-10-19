@@ -176,8 +176,181 @@ function toIsoDate(raw: string): string | null {
   return null;
 }
 
-/** Normalize a scalar for tolerant equality (trim, case-fold, number/currency, date). */
-function scalarMatch(expected: unknown, got: unknown): boolean {
+// ── Declared equivalence policy ──
+
+/**
+ * How a field's values are compared. Declared per field as `match:` in the
+ * schema, so "is 'Delaware' the same as 'State of Delaware'?" is a visible
+ * decision an author makes and a customer can argue with, rather than a
+ * behaviour buried in the scorer.
+ *
+ *   normalized  case, whitespace and punctuation differences forgiven, plus
+ *               date and quantity equivalence. THE DEFAULT for every type.
+ *   exact       byte-for-byte. Nothing is forgiven.
+ *   contains    `normalized`, and additionally equal when one side contains
+ *               the other. For values the document states with a wrapper the
+ *               schema does not want: "Delaware" vs "State of Delaware".
+ *   numeric     both sides must parse as quantities; compared within
+ *               `tolerance` (default 0.01). A non-numeric value fails.
+ *   date        both sides must parse as dates; compared as calendar days.
+ *               A non-date value fails.
+ *   enum        must resolve to the same member of the schema's `options` or
+ *               `mappings`, case-insensitively.
+ *
+ * `normalized` is the default for EVERY type, not a per-type default. That
+ * keeps this purely additive: declaring nothing scores exactly as it did
+ * before this policy existed, so adopting it cannot silently move a number.
+ * Tightening a field is an explicit act.
+ */
+export type MatchMode = "normalized" | "exact" | "contains" | "numeric" | "date" | "enum";
+
+const MATCH_MODES: readonly MatchMode[] = [
+  "normalized",
+  "exact",
+  "contains",
+  "numeric",
+  "date",
+  "enum",
+];
+
+export interface MatchPolicy {
+  mode: MatchMode;
+  /** `numeric` only. Absolute tolerance; defaults to 0.01. */
+  tolerance: number;
+}
+
+const DEFAULT_POLICY: MatchPolicy = { mode: "normalized", tolerance: 0.01 };
+
+/**
+ * Read a field's declared policy.
+ *
+ * An unrecognised mode throws rather than falling back. A typo in `match:`
+ * would otherwise change how a field is scored while looking like it had been
+ * configured, which is the exact class of silent disagreement this policy
+ * exists to end.
+ */
+export function matchPolicy(spec?: CompareSpec): MatchPolicy {
+  const declared = (spec as Record<string, unknown> | undefined)?.match;
+  if (declared === undefined || declared === null) return DEFAULT_POLICY;
+
+  const raw =
+    typeof declared === "string"
+      ? { mode: declared }
+      : (declared as Record<string, unknown>);
+  const mode = raw.mode;
+
+  if (typeof mode !== "string" || !MATCH_MODES.includes(mode as MatchMode)) {
+    throw new Error(
+      `unknown match mode ${JSON.stringify(mode)} — expected one of ${MATCH_MODES.join(", ")}`,
+    );
+  }
+
+  let tolerance = DEFAULT_POLICY.tolerance;
+  if (raw.tolerance !== undefined) {
+    const parsed = Number(raw.tolerance);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`match tolerance must be a non-negative number, got ${JSON.stringify(raw.tolerance)}`);
+    }
+    tolerance = parsed;
+  }
+
+  return { mode: mode as MatchMode, tolerance };
+}
+
+/** Collapse every run of non-alphanumerics to one space. */
+function punct(s: string): string {
+  return s.replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Parse a quantity, tolerating currency symbols and thousands separators. */
+function toQuantity(s: string): number | null {
+  if (!/^[$,\d.\s-]+$/.test(s)) return null;
+  const n = parseFloat(s.replace(/[$,]/g, ""));
+  return Number.isNaN(n) ? null : n;
+}
+
+/** The canonical members of a field's vocabulary, from `options` or `mappings`. */
+function enumMembers(spec?: CompareSpec): string[] {
+  const raw = spec as Record<string, unknown> | undefined;
+  const options = raw?.options;
+  if (Array.isArray(options)) return options.map((o) => String(o));
+  const mappings = raw?.mappings;
+  if (mappings && typeof mappings === "object" && !Array.isArray(mappings)) {
+    return Object.keys(mappings as Record<string, unknown>);
+  }
+  return [];
+}
+
+/**
+ * Resolve a value to its canonical vocabulary member, or null.
+ *
+ * Checks the canonical names first, then the aliases a `mappings` entry lists,
+ * so a schema that maps synonyms onto a canonical value scores them as equal.
+ */
+function toEnumMember(value: string, spec?: CompareSpec): string | null {
+  const needle = punct(value.toLowerCase());
+  for (const member of enumMembers(spec)) {
+    if (punct(member.toLowerCase()) === needle) return member;
+  }
+  const mappings = (spec as Record<string, unknown> | undefined)?.mappings;
+  if (mappings && typeof mappings === "object" && !Array.isArray(mappings)) {
+    for (const [canonical, aliases] of Object.entries(mappings as Record<string, unknown>)) {
+      const list = Array.isArray(aliases) ? aliases : [aliases];
+      for (const alias of list) {
+        if (alias != null && punct(String(alias).toLowerCase()) === needle) return canonical;
+      }
+    }
+  }
+  return null;
+}
+
+/** Compare two scalars under a field's declared policy. */
+function scalarMatch(expected: unknown, got: unknown, spec?: CompareSpec): boolean {
+  const policy = matchPolicy(spec);
+
+  if (policy.mode === "exact") {
+    return String(expected) === String(got ?? "");
+  }
+
+  const e = String(expected).trim().toLowerCase();
+  const a = String(got ?? "").trim().toLowerCase();
+
+  if (policy.mode === "numeric") {
+    const eq = toQuantity(e);
+    const aq = toQuantity(a);
+    if (eq === null || aq === null) return false;
+    return Math.abs(eq - aq) <= policy.tolerance;
+  }
+
+  if (policy.mode === "date") {
+    const ed = toIsoDate(e);
+    const ad = toIsoDate(a);
+    if (ed === null || ad === null) return false;
+    return ed === ad;
+  }
+
+  if (policy.mode === "enum") {
+    const em = toEnumMember(e, spec);
+    const am = toEnumMember(a, spec);
+    // With no declared vocabulary there is nothing to resolve against, so fall
+    // through to a normalized comparison rather than failing every value.
+    if (enumMembers(spec).length === 0) return normalizedMatch(expected, got, policy);
+    return em !== null && em === am;
+  }
+
+  if (normalizedMatch(expected, got, policy)) return true;
+
+  if (policy.mode === "contains") {
+    const ep = punct(e);
+    const ap = punct(a);
+    if (ep.length > 0 && ap.length > 0 && (ep.includes(ap) || ap.includes(ep))) return true;
+  }
+
+  return false;
+}
+
+/** The default comparison: case, whitespace, punctuation, dates and quantities. */
+function normalizedMatch(expected: unknown, got: unknown, policy: MatchPolicy): boolean {
   if (expected === got) return true;
   const e = String(expected).trim().toLowerCase();
   const a = String(got ?? "").trim().toLowerCase();
@@ -198,14 +371,10 @@ function scalarMatch(expected: unknown, got: unknown): boolean {
   // falls through to the punctuation check below (so "704-376-9896" vs
   // "704.376.9896", which parseFloat reads as 704 vs 704.376, isn't rejected
   // here as a number when it's really a formatting-only phone difference).
-  const eNum = parseFloat(e.replace(/[$,]/g, ""));
-  const aNum = parseFloat(a.replace(/[$,]/g, ""));
-  if (!Number.isNaN(eNum) && !Number.isNaN(aNum)) {
-    // Only treat as numeric match when the whole string is numeric-ish,
-    // otherwise "3 cats" would equal "3 dogs".
-    if (/^[$,\d.\s-]+$/.test(e) && /^[$,\d.\s-]+$/.test(a) && Math.abs(eNum - aNum) < 0.01) {
-      return true;
-    }
+  const eNum = toQuantity(e);
+  const aNum = toQuantity(a);
+  if (eNum !== null && aNum !== null && Math.abs(eNum - aNum) <= policy.tolerance) {
+    return true;
   }
 
   // Punctuation-insensitive comparison: collapse every run of non-alphanumeric
@@ -215,7 +384,6 @@ function scalarMatch(expected: unknown, got: unknown): boolean {
   // alphanumerics must still be identical in the same order, it never masks a
   // content difference (a missing "Ste 300", a different PO box number, or a
   // dropped "Company" all still fail).
-  const punct = (s: string) => s.replace(/[^a-z0-9]+/g, " ").trim();
   const ep = punct(e);
   if (ep.length > 0 && ep === punct(a)) return true;
 
@@ -257,7 +425,7 @@ export function compareValues(expected: unknown, got: unknown, spec?: CompareSpe
   }
 
   // Scalar path (and type-mismatch fallback, e.g. expected array but got null).
-  const match = scalarMatch(expected, got);
+  const match = scalarMatch(expected, got, spec);
   return {
     score: match ? 1 : 0,
     match,

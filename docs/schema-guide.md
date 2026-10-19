@@ -1479,6 +1479,71 @@ status:
     - Other
 ```
 
+## Scoring equivalence (`match:`)
+
+Validation compares an extracted value against ground truth. Whether two values
+count as the same is a judgement call, and `match:` is where you make it
+explicitly rather than leaving it to the scorer.
+
+The canonical case: a contract says *"governed by the laws of the State of
+Delaware"*. Ground truth records `State of Delaware`; extraction returns
+`Delaware`. Is that right? There is no universal answer — it depends what the
+field is for. So the schema decides.
+
+```yaml
+fields:
+  governing_law:
+    type: string
+    match: contains          # "Delaware" counts as "State of Delaware"
+
+  policy_number:
+    type: string
+    match: exact             # a policy number is wrong if a character is wrong
+
+  premium:
+    type: number
+    match:
+      mode: numeric
+      tolerance: 0.5         # cents of rounding are not an extraction error
+```
+
+| Mode | Two values are the same when… |
+|------|-------------------------------|
+| `normalized` | **The default.** Case, whitespace and punctuation differences are forgiven, and dates and quantities compare by value (`2026-03-26` = `03/26/2026`, `1250` = `$1,250.00`). |
+| `exact` | They are byte-for-byte identical. Nothing is forgiven. |
+| `contains` | `normalized`, or one value contains the other. |
+| `numeric` | Both parse as quantities and differ by no more than `tolerance` (default `0.01`). A non-numeric value **fails**. |
+| `date` | Both parse as dates and land on the same calendar day. A non-date value **fails**. |
+| `enum` | Both resolve to the same member of the field's `options` or `mappings`, case-insensitively. |
+
+**`normalized` is the default for every type**, not a per-type default. Declaring
+nothing scores exactly as it did before `match:` existed, so adopting it on one
+field cannot quietly move the numbers on the others. Tightening or loosening a
+field is always a deliberate act.
+
+A few things worth knowing before you reach for these:
+
+- **`contains` is permissive on purpose.** It will accept `Dela` for
+  `Delaware`. Use it where the document wraps a value in boilerplate the schema
+  does not want, not as a general-purpose loosener.
+- **`numeric` and `date` are stricter than the default**, not looser. They
+  *fail* a value that cannot be parsed, where `normalized` would have compared
+  it as text. That is the point: declaring `numeric` on a money field means
+  `n/a` is an extraction failure rather than a string that happens to match.
+- **A typo is an error, not a fallback.** `match: noramlized` fails the run
+  instead of silently reverting to the default — a misspelled policy that
+  looked configured while scoring differently is the problem this feature
+  exists to remove.
+
+`match:` is read by `koji validate` and by `koji score`, which share one scorer,
+so a field scores the same whichever you run:
+
+```bash
+koji score --expected truth.json --actual extracted.json --schema schema.yaml
+```
+
+---
+
 ## Tips and patterns
 
 ### Invoices

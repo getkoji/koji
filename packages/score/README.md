@@ -34,6 +34,27 @@ const result = compareValues("2026-03-26", "03/26/2026");
 The optional `spec` is the field's schema entry. Without it you still get F1
 array scoring with greedy matching.
 
+## Declared equivalence (`match:`)
+
+Whether two values count as the same is a schema decision, not a scorer
+default. A field's `spec` can declare it:
+
+```ts
+compareValues("State of Delaware", "Delaware", { match: "contains" }); // match
+compareValues(1250, 1250.4, { match: { mode: "numeric", tolerance: 0.5 } }); // match
+compareValues("ABC-1", "abc-1", { match: "exact" }); // no match
+```
+
+Modes: `normalized` (the default — case, whitespace, punctuation, dates and
+quantities), `exact`, `contains`, `numeric` (with `tolerance`, default 0.01),
+`date`, `enum` (against the spec's `options` or `mappings`).
+
+`normalized` is the default for every type, so a spec that declares nothing
+scores exactly as it did before this existed. `numeric` and `date` are
+*stricter* than the default: they fail an unparseable value rather than
+comparing it as text. An unrecognised mode throws, so a typo cannot look
+configured while scoring differently.
+
 ## Use it from the command line
 
 ```bash

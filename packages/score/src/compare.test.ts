@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareValues, formatValue, type ArrayDiff, type ObjectDiff } from "./compare";
+import { compareValues, formatValue, matchPolicy, type ArrayDiff, type ObjectDiff } from "./compare";
 
 describe("formatValue", () => {
   it("renders scalars plainly", () => {
@@ -382,5 +382,153 @@ describe("compareValues — dates", () => {
   it("expands two-digit years on the POSIX pivot", () => {
     expect(compareValues("2026-03-26", "03/26/26").match).toBe(true);
     expect(compareValues("1999-03-26", "03/26/99").match).toBe(true);
+  });
+});
+
+
+// ── Declared equivalence policy (`match:`) ────────────────────────────
+
+describe("matchPolicy", () => {
+  it("defaults to normalized when nothing is declared", () => {
+    expect(matchPolicy(undefined)).toEqual({ mode: "normalized", tolerance: 0.01 });
+    expect(matchPolicy({ type: "string" })).toEqual({ mode: "normalized", tolerance: 0.01 });
+  });
+
+  it("accepts a bare mode string", () => {
+    expect(matchPolicy({ match: "contains" }).mode).toBe("contains");
+  });
+
+  it("accepts an object with a tolerance", () => {
+    expect(matchPolicy({ match: { mode: "numeric", tolerance: 0.5 } })).toEqual({
+      mode: "numeric",
+      tolerance: 0.5,
+    });
+  });
+
+  it("throws on an unknown mode rather than falling back", () => {
+    // A typo that silently reverted to the default would look configured while
+    // scoring differently — the exact failure this policy exists to prevent.
+    expect(() => matchPolicy({ match: "noramlized" })).toThrow(/unknown match mode/);
+    expect(() => matchPolicy({ match: { mode: 42 } })).toThrow(/unknown match mode/);
+  });
+
+  it("throws on a nonsensical tolerance", () => {
+    expect(() => matchPolicy({ match: { mode: "numeric", tolerance: -1 } })).toThrow(/tolerance/);
+    expect(() => matchPolicy({ match: { mode: "numeric", tolerance: "soon" } })).toThrow(/tolerance/);
+  });
+});
+
+describe("compareValues — match: exact", () => {
+  const spec = { match: "exact" };
+  it("forgives nothing", () => {
+    expect(compareValues("ABC-1", "ABC-1", spec).match).toBe(true);
+    expect(compareValues("ABC-1", "abc-1", spec).match).toBe(false);
+    expect(compareValues("ABC-1", " ABC-1 ", spec).match).toBe(false);
+    expect(compareValues("2026-03-26", "03/26/2026", spec).match).toBe(false);
+  });
+});
+
+describe("compareValues — match: contains", () => {
+  const spec = { match: "contains" };
+  it("accepts a value the document wraps", () => {
+    // The governing_law class: 33% of this corpus's scored "errors".
+    expect(compareValues("State of Delaware", "Delaware", spec).match).toBe(true);
+    expect(compareValues("Delaware", "State of Delaware", spec).match).toBe(true);
+    expect(compareValues("The laws of the State of New York", "New York", spec).match).toBe(true);
+  });
+
+  it("still rejects a different value", () => {
+    expect(compareValues("State of Delaware", "State of Hawaii", spec).match).toBe(false);
+    expect(compareValues("Delaware", "Dela", spec).match).toBe(true); // substring by design
+    expect(compareValues("Delaware", "Wisconsin", spec).match).toBe(false);
+  });
+
+  it("does not treat an empty value as contained in everything", () => {
+    expect(compareValues("Delaware", "", spec).match).toBe(false);
+    expect(compareValues("Delaware", "   ", spec).match).toBe(false);
+  });
+});
+
+describe("compareValues — match: numeric", () => {
+  it("compares quantities within tolerance", () => {
+    const spec = { match: "numeric" };
+    expect(compareValues(1250, "$1,250.00", spec).match).toBe(true);
+    expect(compareValues(1250, 1250.005, spec).match).toBe(true);
+    expect(compareValues(1250, 1251, spec).match).toBe(false);
+  });
+
+  it("honours a declared tolerance", () => {
+    expect(compareValues(1250, 1250.4, { match: { mode: "numeric", tolerance: 0.5 } }).match).toBe(true);
+    expect(compareValues(1250, 1250.6, { match: { mode: "numeric", tolerance: 0.5 } }).match).toBe(false);
+  });
+
+  it("fails a non-quantity instead of forgiving it", () => {
+    // This is the point of declaring `numeric`: "n/a" is not a number, and a
+    // normalized comparison would have called it equal to itself and moved on.
+    const spec = { match: "numeric" };
+    expect(compareValues("n/a", "n/a", spec).match).toBe(false);
+    expect(compareValues(1250, "twelve fifty", spec).match).toBe(false);
+  });
+});
+
+describe("compareValues — match: date", () => {
+  const spec = { match: "date" };
+  it("compares calendar days across formats", () => {
+    expect(compareValues("2026-03-26", "March 26, 2026", spec).match).toBe(true);
+    expect(compareValues("2026-03-26", "2026-03-27", spec).match).toBe(false);
+  });
+
+  it("fails a non-date rather than falling back to text equality", () => {
+    expect(compareValues("not a date", "not a date", spec).match).toBe(false);
+  });
+});
+
+describe("compareValues — match: enum", () => {
+  const spec = { match: "enum", options: ["Occurrence", "Claims Made"] };
+  it("resolves to the canonical member", () => {
+    expect(compareValues("Occurrence", "occurrence", spec).match).toBe(true);
+    expect(compareValues("Claims Made", "claims-made", spec).match).toBe(true);
+    expect(compareValues("Occurrence", "Claims Made", spec).match).toBe(false);
+  });
+
+  it("rejects a value outside the vocabulary", () => {
+    expect(compareValues("Occurrence", "Something Else", spec).match).toBe(false);
+  });
+
+  it("resolves aliases declared in mappings", () => {
+    const mapped = { match: "enum", mappings: { Occurrence: ["occ", "per occurrence"] } };
+    expect(compareValues("Occurrence", "per occurrence", mapped).match).toBe(true);
+    expect(compareValues("Occurrence", "aggregate", mapped).match).toBe(false);
+  });
+
+  it("falls back to a normalized comparison with no declared vocabulary", () => {
+    // Declaring `enum` on a field with no options would otherwise fail every
+    // value, including a value identical to the expected one.
+    expect(compareValues("Occurrence", "occurrence", { match: "enum" }).match).toBe(true);
+  });
+});
+
+describe("the policy is opt-in", () => {
+  it("scores identically with and without an undeclared spec", () => {
+    // Adopting this policy must not move an existing number. Everything the
+    // default forgives, it forgave before.
+    const cases: Array<[unknown, unknown]> = [
+      ["ABC-1", "abc 1"],
+      ["2026-03-26", "03/26/2026"],
+      [1250, "$1,250.00"],
+      ["CHARLOTTE, NC", "CHARLOTTE NC"],
+      ["Acme Co", "Acme Corporation"],
+      ["State of Delaware", "Delaware"],
+    ];
+    for (const [expected, got] of cases) {
+      expect(compareValues(expected, got).match).toBe(
+        compareValues(expected, got, { type: "string" }).match,
+      );
+    }
+  });
+
+  it("leaves the governing_law class failing until contains is declared", () => {
+    expect(compareValues("State of Delaware", "Delaware").match).toBe(false);
+    expect(compareValues("State of Delaware", "Delaware", { match: "contains" }).match).toBe(true);
   });
 });
