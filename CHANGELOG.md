@@ -2,6 +2,48 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.115.0 — 2026-10-19
+
+**Schemas can now declare how a field's values are compared.** Whether
+`Delaware` counts as `State of Delaware` is a judgement call with no universal
+answer — it depends what the field is for — so the schema makes it instead of
+the scorer:
+
+```yaml
+fields:
+  governing_law:
+    type: string
+    match: contains          # the document's wrapper is not the value
+  policy_number:
+    type: string
+    match: exact             # one wrong character is a wrong policy number
+  premium:
+    type: number
+    match: { mode: numeric, tolerance: 0.5 }
+```
+
+Modes are `normalized`, `exact`, `contains`, `numeric` (with `tolerance`),
+`date` and `enum`. `koji validate` and `koji score` share one scorer, so a
+field scores the same whichever you run.
+
+**`normalized` is the default for every type**, and it is exactly the behaviour
+that was already there — case, whitespace and punctuation forgiven, dates and
+quantities compared by value. Verified across all 7,121 fields of the
+validation corpus: the new scorer and the old one return an identical verdict on
+every one. Declaring `match:` on one field cannot move the numbers on any other,
+and adopting this changes nothing until you opt a field in.
+
+Worth knowing: `numeric` and `date` are *stricter* than the default, not looser
+— they fail a value that will not parse, where the default compared it as text.
+That is the point of declaring them. And an unrecognised mode fails the run
+rather than reverting to the default, because a misspelled policy that looks
+configured while scoring differently is the problem this replaces.
+
+For scale, on this corpus `match: contains` recovers 30 of the 44 failing
+`governing_law` fields (56/100 to 86/100). It is permissive by design — it will
+accept `Dela` for `Delaware` — so it belongs on fields where the document wraps
+a value in boilerplate, not as a general loosener.
+
 ## 0.114.0 — 2026-10-19
 
 **`koji start` works again.** MinIO withdrew their public container images —

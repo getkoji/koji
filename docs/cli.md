@@ -245,7 +245,9 @@ koji score --expected truth.json --actual extracted.json --json > result.json
 | `--schema` | Schema YAML. Supplies per-field specs so arrays match elements by their declared `element_key` and sub-fields marked `informational` are excluded from scoring. |
 | `--json` | Emit the full JSON result, including per-field diffs and `scorer_version`. |
 
-Every key present in either file is compared. Scalars match tolerantly — case and whitespace, numbers with currency and thousands separators to a 0.01 tolerance, dates across formats (`2026-03-26` = `03/26/2026` = `March 26, 2026`), and punctuation-only differences. Arrays score as the F1 of quality-weighted precision and recall; objects score as the mean of their scored keys.
+Every key present in either file is compared. By default scalars match tolerantly — case and whitespace, numbers with currency and thousands separators to a 0.01 tolerance, dates across formats (`2026-03-26` = `03/26/2026` = `March 26, 2026`), and punctuation-only differences. Arrays score as the F1 of quality-weighted precision and recall; objects score as the mean of their scored keys.
+
+A field can declare its own equivalence rule with `match:` in the schema — `exact`, `contains`, `numeric` with a tolerance, `date` or `enum`. Pass `--schema` for those to apply. See [Scoring equivalence](schema-guide.md#scoring-equivalence-match) in the schema guide.
 
 Results carry `scorer_version`, so a run artifact can record which scorer produced it. Numbers from different scorer versions are not comparable.
 
