@@ -73,6 +73,25 @@ describe("normalizeConfig", () => {
     expect(cfg.classes[1]!.excludeKeywords).toEqual(["x"]);
   });
 
+  it("parses require_keywords / require_patterns (snake and camel case)", () => {
+    const cfg = normalizeConfig({
+      classes: {
+        a: { require_keywords: ["paid"], require_patterns: ["receipt\\s*#"] },
+        b: { requireKeywords: ["x"], requirePatterns: ["y+"] },
+      },
+    });
+    expect(cfg.classes[0]!.requireKeywords).toEqual(["paid"]);
+    expect(cfg.classes[0]!.requirePatterns).toEqual(["receipt\\s*#"]);
+    expect(cfg.classes[1]!.requireKeywords).toEqual(["x"]);
+    expect(cfg.classes[1]!.requirePatterns).toEqual(["y+"]);
+  });
+
+  it("rejects an invalid require_pattern regex at config time", () => {
+    expect(() => normalizeConfig({ classes: { a: { require_patterns: ["(unclosed"] } } })).toThrow(
+      /invalid pattern/,
+    );
+  });
+
   it("rejects an invalid exclude_pattern regex at config time", () => {
     expect(() =>
       normalizeConfig({ classes: { a: { exclude_patterns: ["(unclosed"] } } }),
