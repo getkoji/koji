@@ -30,6 +30,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      # The CLI no longer compares values itself — `koji test`, `koji bench`
+      # and `koji score` all shell out to @koji/score. Without a build here,
+      # every test that scores anything would fall through to `npx` and try to
+      # fetch an unpublished package, so the suite would only ever exercise
+      # mocks.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @koji/score
+      - run: pnpm --filter @koji/score build
+
       - run: pip install -e ".[dev]"
       - run: pytest -v --cov --cov-report=term-missing -m "not slow"
       - name: Upload coverage

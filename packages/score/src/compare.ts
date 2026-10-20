@@ -89,6 +89,27 @@ function isNullish(v: unknown): boolean {
 }
 
 /**
+ * Empty in the "there is no data here" sense: nullish, plus `[]` and `{}`.
+ *
+ * Ground truth records an absent field as `null` or omits it; extraction
+ * returns `[]` for an empty collection and `{}` for an empty object. Both say
+ * the same thing, and scoring them against each other as a mismatch invents a
+ * failure out of a representation difference — which also breaks the
+ * adversarial case where a fixture asserts a field should NOT be extracted and
+ * the model correctly declines with an empty array.
+ *
+ * Narrow on purpose: only *both* sides being empty is forgiven. An empty
+ * expected against a populated got is still a fabrication, and a populated
+ * expected against an empty got is still a miss.
+ */
+function isEmptyValue(v: unknown): boolean {
+  if (isNullish(v)) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (isPlainObject(v)) return Object.keys(v).length === 0;
+  return false;
+}
+
+/**
  * Compact, human-readable rendering of a value for diff display.
  * Objects → `{ key: val, key2: val2 }`, arrays → `[a, b, …+n]`, depth-limited.
  */
@@ -281,6 +302,12 @@ function enumMembers(spec?: CompareSpec): string[] {
   return [];
 }
 
+/** Does the field declare synonym mappings (as opposed to a bare option list)? */
+function hasMappings(spec?: CompareSpec): boolean {
+  const mappings = (spec as Record<string, unknown> | undefined)?.mappings;
+  return !!mappings && typeof mappings === "object" && !Array.isArray(mappings);
+}
+
 /**
  * Resolve a value to its canonical vocabulary member, or null.
  *
@@ -336,6 +363,19 @@ function scalarMatch(expected: unknown, got: unknown, spec?: CompareSpec): boole
     // through to a normalized comparison rather than failing every value.
     if (enumMembers(spec).length === 0) return normalizedMatch(expected, got, policy);
     return em !== null && em === am;
+  }
+
+  // A declared `mappings:` block is the author stating, in the schema, that
+  // these spellings ARE the same value — "Employer's First Report of Injury"
+  // is "Employer's First Report". Extraction already folds through it
+  // (`foldVocabValue`), so scoring that ignores it marks a correct extraction
+  // wrong. It applies under every mode except `exact` (where nothing is
+  // forgiven) and `numeric` / `date` (which have already returned above), and
+  // it is purely additive: it can only turn a mismatch into a match, and only
+  // for pairs the schema named.
+  if (hasMappings(spec)) {
+    const em = toEnumMember(e, spec);
+    if (em !== null && em === toEnumMember(a, spec)) return true;
   }
 
   if (normalizedMatch(expected, got, policy)) return true;
@@ -411,8 +451,10 @@ function isInformational(subSpec: Record<string, unknown> | undefined): boolean 
 }
 
 export function compareValues(expected: unknown, got: unknown, spec?: CompareSpec): CompareResult {
-  // Both empty → full match (a field with no expected array is not a failure).
-  if (isNullish(expected) && isNullish(got)) {
+  // Both empty → full match. "Empty" includes `[]` / `{}`, because ground
+  // truth writes an absent field as null while extraction returns an empty
+  // collection, and a field with no data on either side is not a failure.
+  if (isEmptyValue(expected) && isEmptyValue(got)) {
     return { score: 1, match: true, diff: { kind: "scalar", expected: "—", got: "—", match: true } };
   }
 
@@ -454,7 +496,7 @@ function compareObjects(
     // shouldn't drag an element's accuracy down.
     if (isInformational(specs?.[key])) continue;
     // Skip keys absent (or empty) on both sides — they carry no signal.
-    if (isNullish(expected[key]) && isNullish(got[key])) continue;
+    if (isEmptyValue(expected[key]) && isEmptyValue(got[key])) continue;
     const sub = compareValues(expected[key], got[key], specs?.[key]);
     sum += sub.score;
     n += 1;

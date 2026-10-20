@@ -1521,6 +1521,13 @@ nothing scores exactly as it did before `match:` existed, so adopting it on one
 field cannot quietly move the numbers on the others. Tightening or loosening a
 field is always a deliberate act.
 
+**A `mappings:` block applies whether or not you declare `match: enum`.** Writing
+the synonyms down is the declaration — extraction already folds values through
+them, so scoring does too. `match: enum` goes further: it *requires* both values
+to resolve to a vocabulary member, so a value outside the vocabulary fails
+instead of falling through to a normalized comparison. The one mode that ignores
+`mappings` is `exact`, where nothing is forgiven.
+
 A few things worth knowing before you reach for these:
 
 - **`contains` is permissive on purpose.** It will accept `Dela` for
@@ -1535,12 +1542,38 @@ A few things worth knowing before you reach for these:
   looked configured while scoring differently is the problem this feature
   exists to remove.
 
-`match:` is read by `koji validate` and by `koji score`, which share one scorer,
-so a field scores the same whichever you run:
+`match:` is read by every scoring path — `koji validate`, `koji score`,
+`koji test`, `koji bench` and `koji pipeline-bench` — because they all call the
+same scorer. A field scores the same number whichever you run:
 
 ```bash
 koji score --expected truth.json --actual extracted.json --schema schema.yaml
 ```
+
+### Replacing a legacy `compare: fuzzy_threshold`
+
+Before 0.120.0 `koji test` and `koji bench` had their own comparison engine with
+a schema-level knob:
+
+```yaml
+compare:
+  fuzzy_threshold: 0.85      # removed — ignored, with a warning
+```
+
+It accepted any string within 85% Levenshtein similarity, everywhere in the
+schema at once, which meant `TEO HENG` and `TED HENG` scored as the same
+company and nobody could see which fields that was load-bearing for. The
+replacement is per-field and explicit:
+
+| What the threshold was covering | Declare instead |
+|---|---|
+| Values the document wraps in boilerplate (`State of Delaware` vs `Delaware`) | `match: contains` |
+| Money or quantities that round (`1250` vs `1250.004`) | `match: {mode: numeric, tolerance: 0.01}` |
+| Synonyms and alternate spellings of a fixed vocabulary | a `mappings:` block (no `match:` needed); add `match: enum` to also reject values outside it |
+| OCR noise in a free-text name | nothing — a wrong character is a wrong value. Fix the parse, or mark the field `hints: {informational: true}` if it genuinely should not be scored. |
+
+Leaving `compare.fuzzy_threshold` in a schema is harmless but does nothing; the
+CLI prints a one-line notice on stderr the first time it sees it.
 
 ---
 

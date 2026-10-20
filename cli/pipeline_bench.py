@@ -13,8 +13,9 @@ It scores two things per document:
    belongs to, so the expected route is that schema's slug and the actual route
    is the terminal extract step's `output.schema`.
 2. **Extraction** — do the fields extracted at that terminal schema match the
-   document's `.expected.json`? Scored with the same field comparator as
-   `koji bench` (`compare_results`).
+   document's `.expected.json`? Scored by `@koji/score` — the single scorer the
+   server, `koji bench`, `koji test` and `koji score` all share — so a field
+   scores the same number whichever one you run.
 
 Extraction is only scored when routing passed — a mis-route makes field scores
 meaningless, so a mis-routed doc counts as a routing failure and is excluded from
@@ -392,7 +393,8 @@ def bench_document(
         expected_schema=schema_slug(entry.schema_path),
     )
 
-    # Load the local schema (for mappings/fuzzy config) and ground truth up front.
+    # Load the local schema (for `match:` policies, element keys, informational
+    # sub-fields) and ground truth up front.
     try:
         schema_dict = yaml.safe_load(entry.schema_path.read_text())
         if not isinstance(schema_dict, dict):
@@ -401,9 +403,6 @@ def bench_document(
     except Exception as e:
         result.error = f"setup: {e}"
         return result
-
-    compare_config = schema_dict.get("compare") or {}
-    fuzzy_threshold = float(compare_config.get("fuzzy_threshold", 0.0))
 
     mime = _guess_mime(entry.document_path)
     started = time.time()
@@ -448,9 +447,12 @@ def bench_document(
     # route makes field comparison meaningless, so we leave field_results empty
     # and let routing_ok=False carry the failure.
     if result.routing_ok and isinstance(fields, dict):
-        result.field_results = compare_results(
-            expected, fields, fuzzy_threshold=fuzzy_threshold, schema_def=schema_dict
-        )
+        # Scoring runs out of process (`@koji/score`). A missing or broken
+        # scorer becomes this document's error rather than killing the run.
+        try:
+            result.field_results = compare_results(expected, fields, schema_dict)
+        except (FileNotFoundError, RuntimeError) as e:
+            result.error = f"score: {e}"
 
     return result
 

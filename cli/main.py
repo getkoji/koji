@@ -22,7 +22,7 @@ from .init import run_init, run_list_templates
 from .logs import tail_logs
 from .process import process_file
 
-KOJI_VERSION = "0.119.0"
+KOJI_VERSION = "0.120.0"
 
 
 def _version_callback(value: bool) -> None:
@@ -419,7 +419,19 @@ def test(
             continue
 
         expected = json_mod.loads(expected_path.read_text())
-        field_results = compare_results(expected, actual)
+
+        # Scoring is `@koji/score`, out of process. A missing scorer is this
+        # fixture's error, with the message that says how to fix it, rather
+        # than a traceback after N extractions have already been paid for.
+        try:
+            field_results = compare_results(expected, actual, schema_def)
+        except (FileNotFoundError, RuntimeError) as exc:
+            fixture_result.error = f"score: {exc}"
+            suite.fixture_results.append(fixture_result)
+            if not json_output:
+                console.print(f"  [red]x[/red] {md_path.name} — score: {exc}")
+            continue
+
         fixture_result.field_results = field_results
         suite.fixture_results.append(fixture_result)
 
@@ -446,6 +458,17 @@ def test(
             f"\n{suite.total_fixtures} fixtures, {suite.total_fields} fields checked, "
             f"{suite.total_passed} passed, {suite.total_failed} regressions\n"
         )
+        # The same four metrics `koji bench` and `koji score` report, for the
+        # same reason: `passed` counts a correctly-absent field, so a schema
+        # whose fixtures are mostly "must NOT be extracted" scores well for
+        # extracting nothing. And the scorer stamp, because a verdict means
+        # nothing without knowing which scorer produced it.
+        from .bench import format_metrics
+        from .metrics import SCORER_NAME, scorer_version
+
+        for line in format_metrics(suite.metric_counts):
+            console.print(line)
+        console.print(f"Scorer: {SCORER_NAME} {scorer_version()}\n")
 
     if not suite.all_passed:
         raise SystemExit(1)

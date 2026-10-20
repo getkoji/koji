@@ -195,9 +195,17 @@ koji test --schema schemas/invoice.yaml --json             # machine-readable ou
 | `--json` | Output machine-readable JSON results. |
 | `--strategy` | Extraction strategy. |
 
-`koji test` looks for fixture files alongside your schema. Place markdown documents in `<schema>.fixtures/` and corresponding `<name>.expected.json` files for ground truth. Field-level comparison: numbers and dates are matched semantically, strings case- and punctuation-insensitively (a formatting-only difference like `CHARLOTTE, NC` vs `CHARLOTTE NC` or `704-376-9896` vs `704.376.9896` is a match; a content difference still fails), arrays order-insensitively. Exit code is 0 on full pass, 1 on any regression.
+`koji test` looks for fixture files alongside your schema. Place markdown documents in `<schema>.fixtures/` and corresponding `<name>.expected.json` files for ground truth. Results are reported as the [four metrics](#the-four-metrics), with the scorer version that produced them. Exit code is 0 on full pass, 1 on any regression.
 
-**Adversarial fixtures (`expected: null`)**: a field in the expected JSON that's explicitly set to `null` (or an empty string / empty list / empty dict) asserts that the model should **not** extract that field — either because the value isn't in the document or because the document is a trap meant to measure hallucination resistance. Both empty → pass ("correctly absent"); expected empty but actual populated → fail ("hallucinated"); expected populated but actual empty → fail ("missing"). Use this to build a trap corpus of documents where the right answer is "I don't know" and grade models on how often they correctly decline — the **fabrication rate** and **null agreement** in the [four metrics](#the-four-metrics) are exactly that grade, and are reported separately from accuracy so a trap corpus cannot inflate it.
+**Scoring is [`koji score`](#koji-score)'s scorer.** Since 0.120.0 `koji test` calls `@koji/score` — the same implementation the server, `koji validate`, `koji bench` and `koji score` use — instead of its own comparison code. A field that passes in the dashboard passes here.
+
+By default (`match: normalized`) numbers and dates match by value, strings match case-, whitespace- and punctuation-insensitively (`CHARLOTTE, NC` = `CHARLOTTE NC`, `704-376-9896` = `704.376.9896`; a content difference still fails), and arrays match order-insensitively. **There is no fuzzy string matching**: a one-character content difference is a difference. Where a field needs more or less latitude, declare it with [`match:`](schema-guide.md#scoring-equivalence-match) in the schema — `exact`, `contains`, `numeric` with a tolerance, `date`, or `enum`.
+
+**Partial credit.** Every field carries a score in `[0,1]`, not just a verdict: an array scores the F1 of quality-weighted precision and recall over matched elements, and an object scores the mean of its scored keys. `passed` still counts only exact matches; the fractional scores are what `value_accuracy` averages, and each one appears per field in the `--json` output. A 4-of-5 array is not the same result as an empty one, and only that number says so.
+
+Scoring runs the scorer out of process, so `koji test` needs `node` on PATH (see [`koji score`](#koji-score) for how it's located). A fixture whose scoring fails is reported as that fixture's error with a message saying how to fix it — the run doesn't die partway through.
+
+**Adversarial fixtures (`expected: null`)**: a field in the expected JSON that's explicitly set to `null` (or an empty string / empty list / empty dict) asserts that the model should **not** extract that field — either because the value isn't in the document or because the document is a trap meant to measure hallucination resistance. Both empty → pass ("correctly absent"); expected empty but actual populated → fail ("hallucinated"); expected populated but actual empty → fail ("missing from actual"). `null`, `""`, `[]` and `{}` all count as empty on either side, so a model that declines with an empty array scores the same as one that declines with `null`. Use this to build a trap corpus of documents where the right answer is "I don't know" and grade models on how often they correctly decline — the **fabrication rate** and **null agreement** in the [four metrics](#the-four-metrics) are exactly that grade, and are reported separately from accuracy so a trap corpus cannot inflate it.
 
 ---
 
@@ -225,6 +233,11 @@ koji bench --corpus ./corpus --model openai/gpt-4o --output bench.json
 The corpus format is the convention used by [getkoji/corpus](https://github.com/getkoji/corpus). Results are reported per-category, per-document, and in aggregate, as the [four metrics](#the-four-metrics). Exit code is 0 on full pass, 1 on any regression or error.
 
 The JSON artifact (`--json` / `--output`) carries `scorer` and `scorer_version` plus a `metrics` block at every level — run, category and document — alongside the legacy `accuracy` field. **`accuracy` is deprecated**: it is `passed_fields / total_fields`, and a correctly-absent field counts as passed, so a document that extracts nothing scores whatever fraction of its fields are legitimately empty. Read `metrics`.
+
+Scoring is the same shared scorer `koji test` and `koji validate` use, with the same consequences — no fuzzy string matching, tolerance declared per field with `match:`, fractional per-field scores. A document whose scoring fails (no `node`, no built scorer) is recorded as that document's error rather than killing the run.
+
+!!! warning "Numbers from before 0.120.0 are not comparable"
+    Up to 0.119.x `koji test` and `koji bench` scored with a separate Python comparison engine that used Levenshtein string similarity and a schema-level `compare: fuzzy_threshold`. That engine is gone. A schema that still declares `compare.fuzzy_threshold` gets a one-line notice on stderr saying the key is ignored; move the intent to a per-field [`match:`](schema-guide.md#replacing-a-legacy-compare-fuzzy_threshold) policy. `scorer_version` changed with it, so re-run any baseline you intend to compare against rather than diffing an old report.
 
 ---
 

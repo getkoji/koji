@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from cli.pipeline_bench import (
     PipelineBenchResult,
@@ -501,8 +501,10 @@ from cli.test_runner import FieldResult  # noqa: E402
 
 
 class TestF1Aggregation:
-    """The bench aggregate sums element-wise field scores, not exact-pass
-    booleans — a doc with a 4-of-5 coverages array is no longer scored 0."""
+    """The bench aggregate sums the scorer's fractional field scores, not
+    exact-pass booleans — a doc with a 4-of-5 coverages array is no longer
+    scored 0. Hand-built `FieldResult`s here; the scores themselves come from
+    `@koji/score` and are tested in `packages/score`."""
 
     def _doc(self, field_results):
         d = PipelineDocResult("d.pdf", "policies", expected_schema="policy", routed_schema="policy")
@@ -544,3 +546,67 @@ class TestF1Aggregation:
         assert abs(d["extraction"]["field_credit"] - 0.8) < 1e-9
         assert d["extraction"]["passed_fields"] == 0  # no exact matches
         assert d["documents"][0]["failures"][0]["score"] == 0.8
+
+
+# ── Scoring goes through @koji/score ──────────────────────────────────
+
+
+class TestScorerIntegration:
+    """Extraction scoring is the shared scorer, run out of process."""
+
+    def _entry(self, corpus: Path):
+        from cli.bench import discover_documents
+
+        return discover_documents(corpus, "invoices")[0]
+
+    def test_a_dead_scorer_is_the_documents_error(self, tmp_path):
+        corpus = _make_mixed_corpus(tmp_path)
+        client = _mock_client(
+            [
+                _classify_response(
+                    [{"stepId": "c", "label": "inv", "method": "llm"}],
+                    routed_schema="invoice_basic",
+                    fields={"merchant_name": "Acme Corp"},
+                )
+            ]
+        )
+        with patch("cli.pipeline_bench.compare_results", side_effect=RuntimeError("scorer exited 1")):
+            doc = bench_document(self._entry(corpus), "p", "http://x", {}, client)
+        assert doc.error == "score: scorer exited 1"
+        assert doc.field_results == []
+
+    def test_a_mis_routed_doc_is_never_scored(self, tmp_path):
+        """Field scores are meaningless when the doc reached the wrong schema,
+        so the scorer is never even called."""
+        corpus = _make_mixed_corpus(tmp_path)
+        client = _mock_client(
+            [
+                _classify_response(
+                    [{"stepId": "c", "label": "rec", "method": "llm"}],
+                    routed_schema="receipt_basic",
+                    fields={"merchant_name": "Acme Corp"},
+                )
+            ]
+        )
+        with patch("cli.pipeline_bench.compare_results") as scored:
+            doc = bench_document(self._entry(corpus), "p", "http://x", {}, client)
+        scored.assert_not_called()
+        assert not doc.routing_ok
+        assert doc.field_results == []
+
+    def test_legacy_fuzzy_threshold_is_reported_as_ignored(self, tmp_path, capsys):
+        corpus = _make_mixed_corpus(tmp_path)
+        (corpus / "invoices" / "schemas" / "invoice_basic.yaml").write_text(
+            "name: invoice_basic\ncompare:\n  fuzzy_threshold: 0.7\nfields:\n  merchant_name:\n    type: string\n"
+        )
+        client = _mock_client(
+            [
+                _classify_response(
+                    [{"stepId": "c", "label": "inv", "method": "llm"}],
+                    routed_schema="invoice_basic",
+                    fields={"merchant_name": "Acme Corp"},
+                )
+            ]
+        )
+        bench_document(self._entry(corpus), "p", "http://x", {}, client)
+        assert "compare.fuzzy_threshold" in capsys.readouterr().err

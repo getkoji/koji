@@ -68,6 +68,81 @@ describe("compareValues — scalars", () => {
     expect(compareValues(null, undefined).match).toBe(true);
     expect(compareValues(null, "").match).toBe(true);
   });
+
+  it("treats an empty collection as the same absence as null", () => {
+    // Ground truth writes an absent field as null; extraction returns [] for
+    // an empty collection and {} for an empty object. Scoring those against
+    // each other as a mismatch invents a failure out of a representation
+    // difference, and breaks the adversarial case where a fixture asserts a
+    // field should NOT be extracted and the model correctly declines with [].
+    expect(compareValues(null, []).match).toBe(true);
+    expect(compareValues([], null).match).toBe(true);
+    expect(compareValues(null, {}).match).toBe(true);
+    expect(compareValues({}, null).match).toBe(true);
+    expect(compareValues("", []).match).toBe(true);
+    expect(compareValues(undefined, {}).match).toBe(true);
+  });
+
+  it("still fails when only one side is empty", () => {
+    expect(compareValues(null, [{ a: 1 }]).match).toBe(false);
+    expect(compareValues([{ a: 1 }], null).match).toBe(false);
+    expect(compareValues(null, { a: 1 }).match).toBe(false);
+    expect(compareValues({ a: 1 }, null).match).toBe(false);
+    expect(compareValues([], [{ a: 1 }]).match).toBe(false);
+    expect(compareValues([{ a: 1 }], []).match).toBe(false);
+  });
+
+  it("honours a declared `mappings:` block without `match: enum`", () => {
+    // The author wrote the synonyms down in the schema, and extraction already
+    // folds values through them. Scoring that ignored them marked a correct
+    // extraction wrong.
+    const spec = {
+      type: "string",
+      mappings: {
+        "Employer's First Report": ["First Report of Injury", "Employer's First Report of Injury"],
+        "Proof of Loss": ["Sworn Statement in Proof of Loss"],
+      },
+    };
+    expect(compareValues("Employer's First Report", "Employer's First Report of Injury", spec).match).toBe(true);
+    expect(compareValues("First Report of Injury", "Employer's First Report", spec).match).toBe(true);
+    // Different canonical members are still different values.
+    expect(compareValues("Employer's First Report", "Sworn Statement in Proof of Loss", spec).match).toBe(false);
+    // A value outside the vocabulary falls through to the normal comparison.
+    expect(compareValues("Acme Corp", "ACME CORP", spec).match).toBe(true);
+    expect(compareValues("Acme Corp", "Widget Inc", spec).match).toBe(false);
+    // Without the mappings the two spellings are not the same value.
+    expect(compareValues("Employer's First Report", "Employer's First Report of Injury").match).toBe(false);
+  });
+
+  it("does not let mappings loosen `match: exact`", () => {
+    const spec = {
+      match: "exact",
+      mappings: { "Employer's First Report": ["Employer's First Report of Injury"] },
+    };
+    expect(compareValues("Employer's First Report", "Employer's First Report of Injury", spec).match).toBe(false);
+  });
+
+  it("does not apply a bare `options:` list as a synonym table", () => {
+    // `options` lists the allowed values; it says nothing about two of them
+    // being equivalent. Only `mappings` declares equivalence.
+    const spec = { type: "string", options: ["gold", "silver"] };
+    expect(compareValues("gold", "silver", spec).match).toBe(false);
+    expect(compareValues("gold", "GOLD", spec).match).toBe(true);
+  });
+
+  it("does not score an object key that is empty on both sides", () => {
+    // `{coverages: []}` vs `{coverages: null}` carries no signal, so it must
+    // neither help nor hurt the object's score.
+    const r = compareValues({ name: "Acme", coverages: [] }, { name: "Acme", coverages: null });
+    expect(r.match).toBe(true);
+    expect(r.score).toBe(1);
+    const half = compareValues(
+      { name: "Acme", city: "Davidson", notes: [] },
+      { name: "Acme", city: "Charlotte", notes: null },
+    );
+    // Only `name` and `city` are scored: 1 of 2, not 2 of 3.
+    expect(half.score).toBeCloseTo(0.5, 9);
+  });
 });
 
 describe("compareValues — arrays", () => {

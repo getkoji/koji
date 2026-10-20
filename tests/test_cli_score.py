@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from cli.score import _field_specs, _find_tsx, _repo_root, resolve_scorer, run_scorer
+from cli.score import _candidate_roots, _field_specs, _find_tsx, _repo_root, resolve_scorer, run_scorer
 
 CLI_DIR = Path(__file__).parent.parent / "cli"
 
@@ -96,8 +96,27 @@ class TestResolveScorer:
                 argv = resolve_scorer()
         assert argv == ["/usr/bin/node", str(built)]
 
+    def test_searches_the_modules_own_checkout_when_cwd_is_elsewhere(self, tmp_path, monkeypatch):
+        """`koji bench --corpus ~/corpus` is run from the corpus directory, not
+        the repo. Falling through to `npx` there would try to fetch a package
+        that is not published yet, so the CLI's own checkout is searched too."""
+        root = tmp_path / "checkout"
+        built = root / "packages" / "score" / "dist" / "bin.js"
+        built.parent.mkdir(parents=True)
+        built.write_text("// stub")
+        (root / "pnpm-workspace.yaml").write_text("packages:\n")
+        elsewhere = tmp_path / "corpus"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setattr("cli.score.__file__", str(root / "cli" / "score.py"))
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("cli.score.shutil.which", return_value="/usr/bin/node"):
+                argv = resolve_scorer()
+        assert argv == ["/usr/bin/node", str(built)]
+
     def test_falls_back_to_npx_outside_a_checkout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("cli.score._candidate_roots", lambda: [])
         with patch.dict(os.environ, {}, clear=True):
             with patch("cli.score.shutil.which", side_effect=lambda c: "/usr/bin/npx" if c == "npx" else None):
                 argv = resolve_scorer()
@@ -105,6 +124,7 @@ class TestResolveScorer:
 
     def test_actionable_error_when_nothing_is_available(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("cli.score._candidate_roots", lambda: [])
         with patch.dict(os.environ, {}, clear=True):
             with patch("cli.score.shutil.which", return_value=None):
                 with pytest.raises(FileNotFoundError) as exc:
@@ -127,6 +147,19 @@ class TestResolveScorer:
         with patch.dict(os.environ, {"KOJI_SCORE_BIN": str(shim)}):
             argv = resolve_scorer()
         assert argv == [str(shim)]
+
+
+class TestCandidateRoots:
+    def test_includes_the_cwd_checkout_first(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        root.mkdir()
+        (root / "pnpm-workspace.yaml").write_text("packages:\n")
+        monkeypatch.chdir(root)
+        assert _candidate_roots()[0] == root.resolve()
+
+    def test_deduplicates_when_cwd_is_the_modules_checkout(self, monkeypatch):
+        roots = _candidate_roots()
+        assert len(roots) == len(set(roots))
 
 
 class TestRepoRoot:

@@ -15,10 +15,16 @@ Expected corpus layout (per category):
         manifests/      # per-document metadata (.json)
 
 Each document's manifest points at a schema path (relative to the corpus
-root). The bencher calls Koji's /api/extract endpoint, compares the
-actual output against the expected JSON using the same field-level
-comparison as `koji test`, and produces both human-readable and
-machine-readable reports.
+root). The bencher calls Koji's extract endpoint, scores the actual output
+against the expected JSON with `@koji/score` — the single scorer the server,
+`koji test`, `koji validate` and `koji score` all use — and produces both
+human-readable and machine-readable reports.
+
+Since 0.120.0 the scoring is literally that scorer, not a Python
+reimplementation of it, so a field scores the same number here as it does in
+the dashboard. Numbers from before 0.120.0 came from a different comparison
+engine and are not comparable; every report carries `scorer_version` so a
+reader can tell.
 """
 
 from __future__ import annotations
@@ -380,9 +386,6 @@ def benchmark_document(
         result.error = f"setup: {e}"
         return result
 
-    compare_config = schema_dict.get("compare") or {} if isinstance(schema_dict, dict) else {}
-    fuzzy_threshold = float(compare_config.get("fuzzy_threshold", 0.0))
-
     payload: dict = {"markdown": markdown, "schema_def": schema_dict}
     if model:
         payload["model"] = model
@@ -423,7 +426,13 @@ def benchmark_document(
         result.error = f"extracted is not an object: {type(actual).__name__}"
         return result
 
-    result.field_results = compare_results(expected, actual, fuzzy_threshold=fuzzy_threshold, schema_def=schema_dict)
+    # Scoring goes through `@koji/score`, which runs out of process. A missing
+    # or broken scorer is recorded as this document's error — a 1000-document
+    # bench must not die on its first field, and the message says how to fix it.
+    try:
+        result.field_results = compare_results(expected, actual, schema_dict if isinstance(schema_dict, dict) else None)
+    except (FileNotFoundError, RuntimeError) as e:
+        result.error = f"score: {e}"
     return result
 
 

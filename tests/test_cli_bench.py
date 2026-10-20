@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from cli.bench import (
     DocumentEntry,
@@ -318,7 +318,7 @@ class TestBenchmarkDocument:
         result = benchmark_document(entry, "http://test", None, client)
         assert result.elapsed_ms >= 0
 
-    def test_fuzzy_number_match(self, tmp_path):
+    def test_quantity_equivalence(self, tmp_path):
         entry = self._make_entry(tmp_path)
         # 100 vs 100.00 should pass
         client = _make_mock_client(
@@ -326,6 +326,53 @@ class TestBenchmarkDocument:
         )
         result = benchmark_document(entry, "http://test", None, client)
         assert result.passed == 2
+
+    def test_a_dead_scorer_is_this_documents_error_not_a_crash(self, tmp_path):
+        """A 1000-document bench must not die on its first field because node
+        is missing — it records the fixable message per document."""
+        entry = self._make_entry(tmp_path)
+        client = _make_mock_client(
+            [_make_mock_response(200, {"extracted": {"merchant_name": "Acme Corp", "total_amount": 100.00}})]
+        )
+        with patch("cli.bench.compare_results", side_effect=FileNotFoundError("`node` is not on PATH")):
+            result = benchmark_document(entry, "http://test", None, client)
+        assert result.error is not None
+        assert "score:" in result.error
+        assert "node" in result.error
+        assert result.field_results == []
+
+    def test_array_field_earns_partial_credit(self, tmp_path):
+        """A 2-of-3 array is not an exact match, but it is not a zero either:
+        the scorer's fractional score reaches `value_accuracy`."""
+        root = _make_corpus(tmp_path)
+        inv = root / "invoices"
+        (inv / "expected" / "sample_01.expected.json").write_text(
+            json.dumps({"merchant_name": "Acme Corp", "tags": ["a", "b", "c"]})
+        )
+        entry = discover_documents(root, "invoices")[0]
+        client = _make_mock_client(
+            [_make_mock_response(200, {"extracted": {"merchant_name": "Acme Corp", "tags": ["a", "b"]}})]
+        )
+        result = benchmark_document(entry, "http://test", None, client)
+        assert result.passed == 1
+        counts = result.metric_counts
+        assert counts.found == 2
+        assert abs(counts.credit - 1.8) < 1e-6
+
+    def test_legacy_fuzzy_threshold_is_reported_as_ignored(self, tmp_path, capsys):
+        """9 corpus schemas still declare `compare.fuzzy_threshold`. The scorer
+        has no fuzzy mode, so the run says so rather than quietly dropping it."""
+        root = _make_corpus(tmp_path)
+        schema = root / "invoices" / "schemas" / "invoice_basic.yaml"
+        schema.write_text(
+            "name: legacy_fuzzy_demo\ncompare:\n  fuzzy_threshold: 0.85\nfields:\n  merchant_name:\n    type: string\n"
+        )
+        entry = discover_documents(root, "invoices")[0]
+        client = _make_mock_client(
+            [_make_mock_response(200, {"extracted": {"merchant_name": "Acme Corp", "total_amount": 100.00}})]
+        )
+        benchmark_document(entry, "http://test", None, client)
+        assert "compare.fuzzy_threshold" in capsys.readouterr().err
 
 
 # ── Classify-wrapped response shape (oss-54) ────────────────────────
@@ -671,6 +718,8 @@ class TestFormatReport:
         assert "openai/gpt-4o-mini" in report
         assert "TOTAL" in report
         assert "100.0%" in report or "100%" in report
+        assert "exact" in report
+        assert "Scorer: @koji/score" in report
 
     def test_shows_failures(self, tmp_path):
         root = _make_corpus(tmp_path)
@@ -734,6 +783,8 @@ class TestToDict:
         assert decoded["model"] == "test-model"
         assert decoded["total_documents"] == 2
         assert decoded["accuracy"] == 1.0
+        assert decoded["scorer"] == "@koji/score"
+        assert decoded["scorer_version"]
         assert len(decoded["categories"]) == 1
         assert decoded["categories"][0]["category"] == "invoices"
 

@@ -22,20 +22,20 @@ describe("SCORER_VERSION", () => {
 
 describe("scorerVersionsComparable", () => {
   it("accepts identical versions", () => {
-    expect(scorerVersionsComparable("0.2.0", "0.2.0")).toBe(true);
+    expect(scorerVersionsComparable("0.3.0", "0.3.0")).toBe(true);
   });
 
   it("rejects different versions, including a patch apart", () => {
     // Patch-level changes move numbers (a date-parsing fix is a patch), so
     // "patches are comparable" is exactly the wrong rule.
-    expect(scorerVersionsComparable("0.2.0", "0.2.1")).toBe(false);
-    expect(scorerVersionsComparable("0.1.0", "0.2.0")).toBe(false);
+    expect(scorerVersionsComparable("0.3.0", "0.2.1")).toBe(false);
+    expect(scorerVersionsComparable("0.1.0", "0.3.0")).toBe(false);
   });
 
   it("rejects an unrecorded version", () => {
-    expect(scorerVersionsComparable(undefined, "0.2.0")).toBe(false);
-    expect(scorerVersionsComparable(null, "0.2.0")).toBe(false);
-    expect(scorerVersionsComparable("", "0.2.0")).toBe(false);
+    expect(scorerVersionsComparable(undefined, "0.3.0")).toBe(false);
+    expect(scorerVersionsComparable(null, "0.3.0")).toBe(false);
+    expect(scorerVersionsComparable("", "0.3.0")).toBe(false);
   });
 });
 

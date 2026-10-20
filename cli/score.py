@@ -50,6 +50,23 @@ def _repo_root(start: Path | None = None) -> Path | None:
     return None
 
 
+def _candidate_roots() -> list[Path]:
+    """Checkouts to look for a built scorer in, nearest-intent first.
+
+    The working directory wins, so a harness run inside a checkout scores with
+    that checkout's scorer. Failing that, the tree this module itself lives in:
+    `koji bench --corpus ~/corpus` is normally run from the corpus directory,
+    and falling through to `npx` there would try to fetch a package that is not
+    published yet. Returns [] for an installed wheel, which has no checkout.
+    """
+    roots: list[Path] = []
+    for start in (None, Path(__file__).resolve().parent):
+        root = _repo_root(start)
+        if root is not None and root not in roots:
+            roots.append(root)
+    return roots
+
+
 def resolve_scorer() -> list[str]:
     """Build the argv that runs the scorer, or raise with a fixable message."""
     override = os.environ.get(_BIN_ENV)
@@ -59,8 +76,7 @@ def resolve_scorer() -> list[str]:
             raise FileNotFoundError(f"{_BIN_ENV} points at {override}, which does not exist")
         return _with_node(path)
 
-    root = _repo_root()
-    if root is not None:
+    for root in _candidate_roots():
         for rel in _BIN_CANDIDATES:
             path = root / rel
             if path.is_file():
