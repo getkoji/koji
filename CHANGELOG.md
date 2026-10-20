@@ -2,6 +2,163 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.120.0 — 2026-10-19
+
+**`koji test`, `koji bench` and `koji pipeline-bench` now score with
+`@koji/score`.** They were the last callers with their own comparison engine —
+`cli/test_runner.py` carried its own Levenshtein string similarity, date
+parser, number coercion, emptiness rule and array-of-dicts structural
+similarity — and it disagreed with the scorer the server uses *by
+construction*. Same corpus, same extraction, two different numbers depending on
+which command you ran. That engine is deleted; the module now shapes a payload
+and calls the one scorer, the same way `koji score` does.
+
+**This changes the numbers. Do not compare a new run against an old one.**
+Re-run the baseline. Every report now carries `scorer_version`, which moved
+`0.2.0` → `0.3.0`, so the mismatch is visible rather than silent.
+
+### What changed, concretely
+
+**Fuzzy string matching is gone.** A schema-level `compare: fuzzy_threshold`
+accepted any string within *N*% Levenshtein similarity, across every field at
+once. The scorer has no fuzzy mode: a one-character content difference is a
+content difference.
+
+```
+expected "TEO HENG STATIONERY"   actual "TED HENG STATIONERY"
+  before (fuzzy_threshold: 0.85)  pass — "fuzzy match (95% similar)"
+  after                           fail — expected 'TEO HENG STATIONERY', got 'TED HENG STATIONERY'
+```
+
+The nine corpus schemas that still declare `compare.fuzzy_threshold` now get a
+one-line notice on stderr saying the key is ignored. The replacement is
+per-field and explicit — `match: contains` for values the document wraps in
+boilerplate, `match: {mode: numeric, tolerance: …}` for rounding, `match: enum`
+plus `mappings:` for synonyms. See "Replacing a legacy `compare:
+fuzzy_threshold`" in the schema guide.
+
+**Fuzzy *array* matching is gone too, and this is where the real movement is.**
+The old engine had two tolerant array paths that could pass an array with a
+fabricated element in it:
+
+```
+parties  expected ["Genworth Financial, Inc."]
+         actual   ["Genworth Financial, Inc.", "[Optionee]"]
+  before  pass — "fuzzy array match (1/1 items, 100%)"   ← the extra is invisible
+  after   fail — array length: expected 1, got 2 (67% element F1, P 50% / R 100%)
+```
+
+Recall was 100% and precision 50%; the old path only looked at recall, so a
+hallucinated element scored a clean pass. The same applies to the
+"fuzzy structural match (83% similarity)" path on arrays of objects.
+
+**Punctuation is now forgiven inside array elements**, the way it already was
+for scalars. The old engine's set-comparison keys were punctuation-sensitive,
+so a trailing period on every element zeroed the field:
+
+```
+procedures  expected ["Chest x-ray", "Wound consult", …]
+            actual   ["Chest x-ray.", "Wound consult.", …]
+  before  fail — array items differ (0% element F1)
+  after   pass
+```
+
+**`[]` and `{}` count as absent, on either side.** Ground truth writes a field
+with no value as `null`; extraction returns `[]` for an empty collection. The
+scorer scored those against each other as a mismatch, which invented a failure
+out of a representation difference and broke the adversarial case where a
+fixture asserts a field must NOT be extracted and the model correctly declines
+with an empty array. This is a fix in `@koji/score` itself, so `koji validate`
+and the dashboard get it as well.
+
+**Element matching, declared policies and informational sub-fields now apply.**
+`koji test` and the benches had no concept of `hints.element_key`,
+`hints.informational`, or the `match:` policy added in 0.115.0 — the Python
+engine predated all three. They now work everywhere, which is most of the point
+of having one scorer.
+
+**A declared `mappings:` block now applies without `match: enum`.** The Python
+engine resolved schema synonyms on every string field; the scorer only did it
+under `match: enum`, so migrating would have dropped a declared schema feature
+on the floor:
+
+```
+form_type  expected "Employer's First Report"
+           actual   "Employer's First Report of Injury"    ← a declared alias
+  before   pass (mappings resolved)
+  after    pass — fixed here; without this it would have failed
+```
+
+Extraction already folds values through `mappings` (`foldVocabValue`), so
+scoring that ignored them marked a correct extraction wrong. This is a fix in
+`@koji/score`, so `koji validate` and the dashboard get it too. It is purely
+additive — it can only turn a mismatch into a match, and only for pairs the
+schema names — and it does not loosen `match: exact`.
+
+**Every field carries a fractional score**, not only arrays. An object-valued
+field used to be pass/fail; a half-right address now scores 0.5, and that
+credit is what `value_accuracy` averages. Each field's `score` appears in the
+`--json` output, and `koji test`'s human summary now prints the four metrics
+and the scorer stamp that `koji bench` and `koji score` already printed.
+
+### Measured on the corpus
+
+1,302 fields over 198 documents (10 categories, gpt-4o-mini), scored by both
+engines on *identical* extraction output, so every difference is a scoring
+difference and not model variance:
+
+| | old engine | `@koji/score` |
+|---|---|---|
+| exact-match verdicts | 1127/1302 (86.6%) | 1107/1302 (85.0%) |
+| field credit | 1129.12 (86.7%) | 1126.05 (86.5%) |
+
+**24 of 1,302 field verdicts changed (1.8%)**, and every one traces to a
+mechanism the old engine had and the scorer does not:
+
+| | count | old mechanism | fields |
+|---|---|---|---|
+| now fails | 12 | `fuzzy structural match` | `policies` |
+| now fails | 4 | `fuzzy array match` | `parties`, `policies` |
+| now fails | 6 | `fuzzy match` (scalar Levenshtein) | `employer_name` ×5, `producer_phone` |
+| now passes | 1 | punctuation inside array elements | `procedures` |
+| now passes | 1 | malformed ground-truth date | `date` |
+
+The five `employer_name` cases are the clearest argument for the change: those
+fixtures differ only by a trailing index digit, and the old engine passed
+`Structural Test Corp` against `Structural Test Corp 4` at 91% similarity — it
+would have scored employer 4's name as correct while extraction returned
+employer 1's.
+
+One case is a genuine loss: `producer_phone` expected `(316) 555-0155` against
+`3165550155`, which is formatting-only. The scorer collapses punctuation to a
+space rather than removing it, so the two do not match. That is pre-existing
+scorer behaviour shared with `koji validate`, tracked as oss-555. The
+`date` case that now passes is the mirror image — a malformed ground-truth
+value (`2017-28-12`) read as a quantity rather than rejected as a date, tracked
+as oss-556.
+
+A 36-document `koji bench` run before and after produces identical totals and
+identical per-field verdicts (164/176 exact fields, and the same four metrics);
+the only output differences are the scorer stamp and precision/recall now
+appearing alongside element F1 in a failing array's detail line.
+
+### Operational notes
+
+- Scoring runs out of process, so these commands need `node` on PATH. In a
+  checkout they work with nothing built (the scorer's TypeScript source runs
+  through the workspace `tsx`); `pnpm --filter @koji/score build` just makes
+  them start faster.
+- A document or fixture whose scoring fails is recorded as *that document's*
+  error with a message saying how to fix it. A 1000-document bench does not die
+  on its first field.
+- The scorer is now located from the CLI's own checkout as well as the working
+  directory, so `koji bench --corpus ~/corpus` run from the corpus directory
+  finds it instead of reaching for `npx`.
+- Scoring costs one scorer invocation per document, not per field: about 140ms
+  of process startup per document, measured over a 223-document bench. Against
+  seconds of extraction per document that is noise, but it is visible on a run
+  whose extraction is cached or replayed.
+
 ## 0.119.0 — 2026-10-19
 
 **`select`, `adjudicate` and `review` are now pluggable capabilities, and the

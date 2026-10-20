@@ -1,47 +1,51 @@
-"""Extraction regression test runner — field-level comparison engine."""
+"""Extraction regression test runner — fixture discovery, scoring, reporting.
+
+Scoring is NOT implemented here. There is ONE scorer, and it lives in
+`@koji/score` (TypeScript); this module shapes a payload for it, calls it
+through `cli.score.run_scorer`, and renders the result for `koji test`,
+`koji bench`, and `koji pipeline-bench`.
+
+Until 0.120.0 this file carried a second, independent comparison engine — its
+own Levenshtein string similarity, date parser, number coercion, emptiness
+rule, and array-of-dicts structural similarity. It disagreed with the scorer
+the server uses *by construction*: it decided pass/fail with fuzzy string
+similarity where the scorer scores a continuous [0,1] with F1-weighted arrays
+and `element_key` element matching. Two different numbers for the same run on
+the same corpus is the divergence `@koji/score` exists to end, so the engine is
+gone and this module delegates.
+
+Consequences worth knowing:
+
+- Tolerance is **declared, not guessed**. The scorer reads a per-field `match:`
+  policy (`exact | normalized | contains | numeric | date | enum`) from the
+  schema; `normalized` is the default and is what every field gets unless the
+  schema says otherwise. A schema's legacy `compare: fuzzy_threshold` block is
+  ignored, and saying so out loud is the job of `warn_legacy_compare` below.
+- Every field carries a fractional `score`, not just arrays. Objects score the
+  mean of their scored keys; scalars are still 1.0 / 0.0.
+- Scoring needs `node` and the built scorer (or `npx`). `koji test` and
+  `koji bench` surface a missing scorer as a per-fixture / per-document error
+  with a fixable message rather than crashing mid-run.
+"""
 
 from __future__ import annotations
 
-import json
-import re
-from collections import Counter
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .metrics import MetricCounts, counts_from_field_results, metrics_from_counts, scorer_stamp
+from .score import run_scorer
 
+# Keys of the pre-0.120.0 `compare:` block that the unified scorer has no
+# equivalent for. Declaring one used to move the numbers; now it does nothing,
+# so it earns a one-line notice rather than silent indifference.
+_LEGACY_COMPARE_KEYS = ("fuzzy_threshold",)
 
-def _levenshtein(a: str, b: str) -> int:
-    """Compute the Levenshtein edit distance between two strings."""
-    if len(a) < len(b):
-        return _levenshtein(b, a)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a):
-        curr = [i + 1]
-        for j, cb in enumerate(b):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
-        prev = curr
-    return prev[-1]
-
-
-def string_similarity(a: str, b: str) -> float:
-    """Normalized string similarity ratio (0.0 = completely different, 1.0 = identical).
-
-    Uses Levenshtein distance normalized by the longer string's length.
-    Case-insensitive after stripping whitespace, matching the existing
-    string comparison convention.
-    """
-    a = a.strip().lower()
-    b = b.strip().lower()
-    if a == b:
-        return 1.0
-    max_len = max(len(a), len(b))
-    if max_len == 0:
-        return 1.0
-    return 1.0 - _levenshtein(a, b) / max_len
+#: Schemas already warned about, so a 1000-document bench prints one line per
+#: schema instead of one per document.
+_warned_schemas: set[str] = set()
 
 
 @dataclass
@@ -53,11 +57,11 @@ class FieldResult:
     expected: Any = None
     actual: Any = None
     detail: str = ""
-    # Partial credit in [0,1]. None means "derive from `passed`" (1.0/0.0) —
-    # the case for every scalar field. Array fields set an explicit element-wise
-    # F1 so a 4-of-5 array scores ~0.8 instead of collapsing to pass/fail.
-    # Consumers that want partial credit read `weighted_score`; `passed` stays
-    # a strict boolean so exact-match counts and displays are unchanged.
+    # Partial credit in [0,1] from the scorer. None means "derive from
+    # `passed`" (1.0/0.0) — the case for hand-built results and for fields that
+    # never reached the scorer. Consumers that want partial credit read
+    # `weighted_score`; `passed` stays a strict boolean so exact-match counts
+    # and displays are unchanged.
     score: float | None = None
 
     @property
@@ -146,6 +150,10 @@ class TestSuiteResult:
                         {
                             "field": r.field_name,
                             "passed": r.passed,
+                            # Fractional credit from the scorer. A 4-of-5 array
+                            # is not the same result as an empty one, and only
+                            # this number says so.
+                            "score": round(r.weighted_score, 4),
                             "expected": r.expected,
                             "actual": r.actual,
                             "detail": r.detail,
@@ -158,496 +166,176 @@ class TestSuiteResult:
         }
 
 
-# ── Normalization helpers ─────────────────────────────────────────────
+# ── Legacy config notices ─────────────────────────────────────────────
 
 
-def _normalize_date(value: Any) -> str | None:
-    """Try to normalize a value to YYYY-MM-DD. Returns None if not a date."""
-    if not isinstance(value, str):
-        return None
+def warn_legacy_compare(schema_def: dict | None, stream: Any = None) -> list[str]:
+    """Report (once per schema) any legacy `compare:` keys that are now ignored.
 
-    s = value.strip()
+    Returns the keys found, so callers can assert on it. Writes to stderr, not
+    stdout, so `--json` output stays machine-readable.
+    """
+    if not isinstance(schema_def, dict):
+        return []
+    compare = schema_def.get("compare")
+    if not isinstance(compare, dict):
+        return []
+    stale = sorted(k for k in _LEGACY_COMPARE_KEYS if k in compare)
+    if not stale:
+        return []
 
-    # YYYY-MM-DD already
-    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
-    if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-
-    # MM/DD/YYYY
-    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
-    if m:
-        return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
-
-    # DD-MM-YYYY or DD.MM.YYYY  (ambiguous, but try)
-    m = re.match(r"^(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})$", s)
-    if m:
-        return f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
-
-    return None
-
-
-def _to_number(value: Any) -> float | None:
-    """Try to coerce a value to a float."""
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        cleaned = value.replace("$", "").replace(",", "").strip()
-        try:
-            return float(cleaned)
-        except ValueError:
-            return None
-    return None
+    name = str(schema_def.get("name") or "<unnamed schema>")
+    memo = f"{name}:{','.join(stale)}"
+    if memo not in _warned_schemas:
+        _warned_schemas.add(memo)
+        keys = ", ".join(f"compare.{k}" for k in stale)
+        print(
+            f"warning: schema {name!r} declares {keys}, which the scorer ignores. "
+            "Fuzzy string similarity is gone — declare per-field tolerance with "
+            "`match:` instead (see docs/schema-guide.md, 'Scoring equivalence').",
+            file=stream or sys.stderr,
+        )
+    return stale
 
 
-def _is_empty(value: Any) -> bool:
-    """Treat None, empty string, empty list, and empty dict as 'no value'.
+# ── Rendering the scorer's verdict ────────────────────────────────────
 
-    This makes comparison forgiving about how 'no data' is represented.
-    Extraction tools often return `[]` for empty collections while expected
-    JSON often just omits the field. Both mean 'no data' and should compare
-    as equivalent.
+
+def _absent(value: Any) -> bool:
+    """Is this value 'no data' in the shapes ground truth and extraction use?
+
+    Presentation only — it picks the *wording* of a detail line ("correctly
+    absent" / "hallucinated" / "missing from actual"). The verdict itself
+    always comes from the scorer, never from here.
     """
     if value is None:
         return True
-    if isinstance(value, str) and value.strip() == "":
-        return True
-    if isinstance(value, (list, dict)) and len(value) == 0:
-        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
     return False
 
 
-def _normalize_value_for_compare(value: Any) -> Any:
-    """Canonicalize a value for equality comparison.
+def _pct(value: Any) -> str:
+    try:
+        return f"{float(value):.0%}"
+    except (TypeError, ValueError):
+        return "?"
 
-    - None, empty string, empty list, empty dict: all → None (semantically 'no value')
-    - Numbers: cast to float so 200 and 200.0 compare equal
-    - Strings: strip whitespace and lowercase
-    - Dates: normalize to YYYY-MM-DD if parseable
-    - Dicts: recurse into values, drop keys whose values normalize to None
-    - Lists: recurse into elements, drop elements that normalize to None
+
+def _detail(expected: Any, actual: Any, scored: dict) -> str:
+    """Human-readable explanation of one scored field, from the scorer's diff."""
+    match = bool(scored.get("match"))
+    raw_diff = scored.get("diff")
+    diff = raw_diff if isinstance(raw_diff, dict) else {}
+    kind = diff.get("kind")
+
+    if match:
+        # The adversarial-corpus case: the fixture says the field is not in the
+        # document and extraction agreed. Worth naming, so a passing run shows
+        # *why* it passed.
+        if _absent(expected) and _absent(actual):
+            return "correctly absent"
+        return ""
+
+    # Which side was empty decides the wording before the value's shape does.
+    # "hallucinated" and "missing" are the two failure modes a trap corpus is
+    # built to measure, and they read the same whether the field is a scalar,
+    # an array or an object — an `[]` expected against a populated array is
+    # still a fabrication, not an interesting F1.
+    if _absent(expected) and not _absent(actual):
+        return f"hallucinated: expected null, got {actual!r}"
+    if _absent(actual) and not _absent(expected):
+        return "missing from actual"
+
+    if kind == "array":
+        shape = f"{_pct(diff.get('score'))} element F1, P {_pct(diff.get('precision'))} / R {_pct(diff.get('recall'))}"
+        exp_n, got_n = diff.get("expectedCount"), diff.get("gotCount")
+        if exp_n != got_n:
+            return f"array length: expected {exp_n}, got {got_n} ({shape})"
+        return f"array items differ ({shape})"
+
+    if kind == "object":
+        keys = [f.get("key") for f in (diff.get("fields") or []) if isinstance(f, dict)]
+        named = ", ".join(str(k) for k in keys if k)
+        where = f" on {named}" if named else ""
+        return f"object differs{where} ({_pct(diff.get('score'))} of keys matched)"
+
+    return f"expected {expected!r}, got {actual!r}"
+
+
+# ── Scoring ───────────────────────────────────────────────────────────
+
+
+def compare_results(
+    expected: dict,
+    actual: dict,
+    schema_def: dict | None = None,
+) -> list[FieldResult]:
+    """Score expected fields against actual extraction output, via `@koji/score`.
+
+    Only fields present in *expected* are scored (partial expectations); fields
+    in *actual* but not in *expected* are ignored. One scorer invocation covers
+    the whole document.
+
+    When ``schema_def`` is provided, each field's spec is forwarded so the
+    scorer can apply the declared `match:` policy, match array elements by
+    `hints.element_key`, and skip sub-fields marked `hints.informational`.
+
+    Raises:
+        FileNotFoundError: the scorer could not be located (the message says
+            how to fix it).
+        RuntimeError: the scorer ran but failed, or answered with something
+            other than a result for every field.
     """
-    if _is_empty(value):
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        # Try date normalization first
-        normalized_date = _normalize_date(value)
-        if normalized_date is not None:
-            return normalized_date
-        # Try number coercion (e.g., "200.00" → 200.0)
-        num = _to_number(value)
-        if num is not None:
-            return num
-        return value.strip().lower()
-    if isinstance(value, dict):
-        # Drop keys whose values are empty — {"a": 1} and {"a": 1, "b": []}
-        # are semantically equivalent for comparison purposes.
-        normalized = {}
-        for k, v in value.items():
-            # Drop `__`-prefixed provenance metadata (`__source_text`,
-            # `__source_context`). The model emits these inline on extracted
-            # objects; ground truth never carries them, so scoring them as
-            # unexpected keys silently caps every array item and nested object.
-            if isinstance(k, str) and k.startswith("__"):
-                continue
-            nv = _normalize_value_for_compare(v)
-            if nv is not None:
-                normalized[k] = nv
-        return normalized if normalized else None
-    if isinstance(value, list):
-        normalized = [_normalize_value_for_compare(v) for v in value]
-        normalized = [v for v in normalized if v is not None]
-        if not normalized:
-            return None
-        # Sort lists of dicts by canonical JSON so order doesn't matter
-        # at any nesting depth. A limits array like [{name: B}, {name: A}]
-        # and [{name: A}, {name: B}] should compare equal — the extraction
-        # order is an implementation detail, not semantic content.
-        if all(isinstance(v, dict) for v in normalized):
-            normalized.sort(key=lambda v: json.dumps(v, sort_keys=True))
-        return normalized
-    return value
+    warn_legacy_compare(schema_def)
 
-
-def _dict_key_overlap(a: dict, b: dict) -> float:
-    """Fraction of key-value pairs that match between two normalized dicts.
-
-    Recursively normalizes values before comparing. Keys present in one
-    dict but not the other count as mismatches. Returns 0.0..1.0.
-    """
-    na = _normalize_value_for_compare(a)
-    nb = _normalize_value_for_compare(b)
-    if not isinstance(na, dict) or not isinstance(nb, dict):
-        return (
-            1.0 if json.dumps(na, sort_keys=True, default=str) == json.dumps(nb, sort_keys=True, default=str) else 0.0
-        )
-    all_keys = set(list(na.keys()) + list(nb.keys()))
-    if not all_keys:
-        return 1.0
-    matches = 0
-    for k in all_keys:
-        va = na.get(k)
-        vb = nb.get(k)
-        if json.dumps(va, sort_keys=True, default=str) == json.dumps(vb, sort_keys=True, default=str):
-            matches += 1
-    return matches / len(all_keys)
-
-
-def _array_of_dicts_similarity(expected: list, actual: list) -> float:
-    """Compute structural similarity between two arrays of dicts.
-
-    Pairs items by best key-value overlap (greedy), then returns the
-    average similarity across all pairs. Handles the case where complex
-    objects (like insurance policies with nested limits) differ on a
-    few sub-fields but are otherwise identical.
-    """
     if not expected:
-        return 1.0 if not actual else 0.0
+        return []
 
-    # Greedy matching: for each expected item, find the best-matching
-    # actual item (by key overlap), pair them, and remove from pool.
-    remaining = list(range(len(actual)))
-    total_sim = 0.0
-    for exp_item in expected:
-        best_sim = 0.0
-        best_idx = -1
-        for j in remaining:
-            sim = _dict_key_overlap(exp_item, actual[j])
-            if sim > best_sim:
-                best_sim = sim
-                best_idx = j
-        total_sim += best_sim
-        if best_idx >= 0:
-            remaining.remove(best_idx)
+    fields_spec = (schema_def or {}).get("fields")
+    if not isinstance(fields_spec, dict):
+        fields_spec = {}
 
-    return total_sim / len(expected)
+    names = list(expected)
+    payload = {
+        "fields": {name: {"expected": expected[name], "got": actual.get(name)} for name in names},
+        "specs": {name: fields_spec[name] for name in names if isinstance(fields_spec.get(name), dict)},
+    }
 
+    result = run_scorer(payload)
+    raw_fields = result.get("fields")
+    scored_fields = raw_fields if isinstance(raw_fields, dict) else {}
 
-def _array_f1(expected: list, actual: list) -> float:
-    """Element-wise F1 for an array field, in [0,1].
-
-    Partial credit so a `coverages` array with 4 of 5 elements right scores
-    ~0.8 instead of collapsing to 0. Mirrors the semantics of validate's
-    server-side scorer (``value-compare.ts``): the F1 of quality-weighted
-    precision and recall over greedily-matched elements.
-
-    - Arrays of dicts: recall is the mean best-match similarity of each expected
-      element against the actual pool; precision is the same in reverse.
-    - Scalar (or mixed) arrays: precision/recall over the multiset intersection
-      of normalized element keys, so duplicates and order don't distort it.
-    """
-    if not expected and not actual:
-        return 1.0
-    if not expected or not actual:
-        return 0.0
-
-    if all(isinstance(v, dict) for v in expected) and all(isinstance(v, dict) for v in actual):
-        recall = _array_of_dicts_similarity(expected, actual)
-        precision = _array_of_dicts_similarity(actual, expected)
-    else:
-        exp_c = Counter(_normalize_for_set_compare(expected))
-        act_c = Counter(_normalize_for_set_compare(actual))
-        matched = sum((exp_c & act_c).values())
-        recall = matched / len(expected)
-        precision = matched / len(actual)
-
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
-
-
-def _normalize_for_set_compare(items: list) -> list[str]:
-    """Produce canonical string keys for order-insensitive comparison.
-
-    Normalizes numbers, strings, and dates so semantically-equal values
-    compare as equal even if they differ in type or formatting.
-    """
-    keys = []
-    for item in items:
-        normalized = _normalize_value_for_compare(item)
-        if isinstance(normalized, dict):
-            keys.append(json.dumps(normalized, sort_keys=True))
-        else:
-            keys.append(json.dumps(normalized))
-    return keys
-
-
-def _resolve_mapping(value: str, mappings: dict) -> str:
-    """Normalize a string value through schema-declared mappings.
-
-    Mappings map canonical values to lists of aliases:
-        {"10-K/A": ["10-K/A", "10K/A", "10-KA"], ...}
-
-    If `value` matches any alias (case-insensitive, whitespace-normalized), the
-    canonical form is returned. If no match, the original value passes through.
-    Mirrors the extraction-time `foldVocabValue` (api pipeline.ts) so scoring and
-    extraction canonicalize identically.
-    """
-
-    def fold(s: object) -> str:
-        return re.sub(r"\s+", " ", str(s).strip().lower())
-
-    v_norm = fold(value)
-    for canonical, aliases in mappings.items():
-        if v_norm == fold(canonical):
-            return canonical
-        if isinstance(aliases, list):
-            for alias in aliases:
-                if v_norm == fold(alias):
-                    return canonical
-    return value
-
-
-# ── Core comparison ───────────────────────────────────────────────────
+    field_results: list[FieldResult] = []
+    for name in names:
+        scored = scored_fields.get(name)
+        if not isinstance(scored, dict):
+            raise RuntimeError(f"scorer returned no result for field {name!r}")
+        exp_value = expected[name]
+        act_value = actual.get(name)
+        field_results.append(
+            FieldResult(
+                field_name=name,
+                passed=bool(scored.get("match")),
+                expected=exp_value,
+                actual=act_value,
+                detail=_detail(exp_value, act_value, scored),
+                score=float(scored.get("score") or 0.0),
+            )
+        )
+    return field_results
 
 
 def compare_field(
     field_name: str,
     expected: Any,
     actual: Any,
-    fuzzy_threshold: float = 0.0,
-    mappings: dict | None = None,
-) -> FieldResult:
-    """Compare a single expected value against the actual extraction output.
-
-    Null / empty handling drives four cases, in order:
-
-    1. Both empty (None, "", [], {}) → PASS with detail "correctly absent".
-       Used for adversarial-corpus fixtures that assert a field should NOT
-       be extracted — the model is supposed to decline and return null.
-
-    2. Expected empty, actual non-empty → FAIL with detail "hallucinated".
-       The fixture says the value isn't in the document, but the model
-       produced one anyway. This is hallucination-resistance testing.
-
-    3. Expected non-empty, actual empty → FAIL with detail "missing".
-       The standard failure mode: the model couldn't find a value that
-       the fixture says is present.
-
-    4. Both non-empty → fall through to the existing type-aware
-       comparison logic (date / number / array / string).
-    """
-    exp_empty = _is_empty(expected)
-    act_empty = _is_empty(actual)
-
-    if exp_empty and act_empty:
-        return FieldResult(
-            field_name=field_name,
-            passed=True,
-            expected=expected,
-            actual=actual,
-            detail="correctly absent",
-        )
-
-    if exp_empty and not act_empty:
-        return FieldResult(
-            field_name=field_name,
-            passed=False,
-            expected=expected,
-            actual=actual,
-            detail=f"hallucinated: expected null, got {actual!r}",
-        )
-
-    if act_empty:
-        return FieldResult(
-            field_name=field_name,
-            passed=False,
-            expected=expected,
-            actual=actual,
-            detail="missing from actual",
-        )
-
-    # Date comparison
-    exp_date = _normalize_date(expected)
-    act_date = _normalize_date(actual)
-    if exp_date is not None and act_date is not None:
-        ok = exp_date == act_date
-        return FieldResult(
-            field_name=field_name,
-            passed=ok,
-            expected=expected,
-            actual=actual,
-            detail="" if ok else f"expected {exp_date}, got {act_date}",
-        )
-
-    # Number comparison (tolerance 0.01)
-    exp_num = _to_number(expected)
-    act_num = _to_number(actual)
-    if exp_num is not None and act_num is not None:
-        ok = round(abs(exp_num - act_num), 10) <= 0.01
-        return FieldResult(
-            field_name=field_name,
-            passed=ok,
-            expected=expected,
-            actual=actual,
-            detail="" if ok else f"expected {expected}, got {actual}",
-        )
-
-    # Array comparison
-    if isinstance(expected, list) and isinstance(actual, list):
-        exp_keys = sorted(_normalize_for_set_compare(expected))
-        act_keys = sorted(_normalize_for_set_compare(actual))
-        # Element-wise F1 — the partial-credit score every array-field result
-        # below carries, so the aggregate isn't dominated by all-or-nothing
-        # arrays. `passed` stays a strict/threshold boolean; only `score` is
-        # fractional.
-        f1 = _array_f1(expected, actual)
-        if exp_keys == act_keys:
-            return FieldResult(
-                field_name=field_name,
-                passed=True,
-                expected=expected,
-                actual=actual,
-                score=1.0,
-            )
-        # Tolerant mode: when fuzzy_threshold is set, score by fraction
-        # of expected items that have a match in actual. Handles the
-        # common case where the model gets 4/5 line items right but
-        # misparses one, or extracts items in a different order with
-        # minor value diffs.
-        if fuzzy_threshold > 0 and expected:
-            matched = sum(1 for k in exp_keys if k in act_keys)
-            ratio = matched / len(exp_keys)
-            if ratio >= fuzzy_threshold:
-                return FieldResult(
-                    field_name=field_name,
-                    passed=True,
-                    expected=expected,
-                    actual=actual,
-                    detail=f"fuzzy array match ({matched}/{len(exp_keys)} items, {ratio:.0%})",
-                    score=f1,
-                )
-            # For arrays of dicts (like policies), exact JSON matching is
-            # too strict — a single different limit name makes the entire
-            # serialized dict miss. Fall back to structural similarity:
-            # normalize both lists, pair items by best overlap, and score
-            # by the fraction of matching key-value pairs across all pairs.
-            if (
-                len(expected) == len(actual)
-                and all(isinstance(v, dict) for v in expected)
-                and all(isinstance(v, dict) for v in actual)
-            ):
-                sim = _array_of_dicts_similarity(expected, actual)
-                if sim >= fuzzy_threshold:
-                    return FieldResult(
-                        field_name=field_name,
-                        passed=True,
-                        expected=expected,
-                        actual=actual,
-                        detail=f"fuzzy structural match ({sim:.0%} similarity)",
-                        score=f1,
-                    )
-        if len(expected) != len(actual):
-            detail = f"array length: expected {len(expected)}, got {len(actual)} ({f1:.0%} element F1)"
-        else:
-            detail = f"array items differ ({f1:.0%} element F1)"
-        return FieldResult(
-            field_name=field_name,
-            passed=False,
-            expected=expected,
-            actual=actual,
-            detail=detail,
-            score=f1,
-        )
-
-    # String comparison: case-insensitive after trimming whitespace.
-    # Extraction from real documents often preserves the source's casing
-    # ("AMAZONA PARTS SUPPLY CO." vs "Amazona Parts Supply Co."), which is
-    # the same data by any reasonable definition. If you need strict case
-    # matching, use an enum field with explicit options instead.
-    if isinstance(expected, str) and isinstance(actual, str):
-        # Resolve enum aliases before comparing — "First Report of Injury"
-        # and "Employer's First Report" can be declared as equivalent via
-        # schema mappings so both pass.
-        if mappings:
-            expected = _resolve_mapping(expected, mappings)
-            actual = _resolve_mapping(actual, mappings)
-        if expected.strip().lower() == actual.strip().lower():
-            return FieldResult(
-                field_name=field_name,
-                passed=True,
-                expected=expected,
-                actual=actual,
-            )
-        # Punctuation-insensitive match: collapse every run of non-alphanumeric
-        # characters to a single space so a formatting-only difference is not a
-        # failure — "CHARLOTTE, NC" vs "CHARLOTTE NC", "704-376-9896" vs
-        # "704.376.9896". Forgives punctuation/whitespace ONLY: the alphanumerics
-        # must still match in order, so it never masks a content difference.
-        _ep = re.sub(r"[^a-z0-9]+", " ", expected.lower()).strip()
-        _ea = re.sub(r"[^a-z0-9]+", " ", actual.lower()).strip()
-        if _ep and _ep == _ea:
-            return FieldResult(
-                field_name=field_name,
-                passed=True,
-                expected=expected,
-                actual=actual,
-            )
-        # Fuzzy match: when the exact check fails and a threshold is set,
-        # accept strings that are "close enough" — catches OCR typos like
-        # "TEO HENG" vs "TED HENG" or "SDN BHD" vs "SON BHD" on degraded
-        # scans where the extraction is substantively correct.
-        if fuzzy_threshold > 0:
-            sim = string_similarity(expected, actual)
-            if sim >= fuzzy_threshold:
-                return FieldResult(
-                    field_name=field_name,
-                    passed=True,
-                    expected=expected,
-                    actual=actual,
-                    detail=f"fuzzy match ({sim:.0%} similar)",
-                )
-        return FieldResult(
-            field_name=field_name,
-            passed=False,
-            expected=expected,
-            actual=actual,
-            detail=f"expected {expected!r}, got {actual!r}",
-        )
-
-    # Other types (e.g. object-valued fields): structural comparison via the same
-    # normalization used for arrays — order-insensitive and strips `__` provenance
-    # keys — instead of a brittle str(expected) == str(actual) that fails on key
-    # ordering or an inline `__source_text`. Matches the canonical scorer.
-    ne = _normalize_value_for_compare(expected)
-    na = _normalize_value_for_compare(actual)
-    ok = json.dumps(ne, sort_keys=True, default=str) == json.dumps(na, sort_keys=True, default=str)
-    return FieldResult(
-        field_name=field_name,
-        passed=ok,
-        expected=expected,
-        actual=actual,
-        detail="" if ok else f"expected {expected!r}, got {actual!r}",
-    )
-
-
-def compare_results(
-    expected: dict,
-    actual: dict,
-    fuzzy_threshold: float = 0.0,
     schema_def: dict | None = None,
-) -> list[FieldResult]:
-    """Compare expected fields against actual extraction output.
-
-    Only fields present in *expected* are checked (partial expectations).
-    Fields in actual but not in expected are ignored.
-
-    When ``fuzzy_threshold`` > 0, string fields that fail exact match
-    are re-checked with Levenshtein similarity.
-
-    When ``schema_def`` is provided, per-field ``mappings`` are read
-    from the schema and used to normalize enum aliases before comparing.
-    """
-    fields_spec = (schema_def or {}).get("fields") or {}
-    results = []
-    for field_name, exp_value in expected.items():
-        act_value = actual.get(field_name)
-        field_mappings = (fields_spec.get(field_name) or {}).get("mappings")
-        results.append(compare_field(field_name, exp_value, act_value, fuzzy_threshold, mappings=field_mappings))
-    return results
+) -> FieldResult:
+    """Score one field. A thin convenience wrapper over `compare_results`."""
+    return compare_results({field_name: expected}, {field_name: actual}, schema_def)[0]
 
 
 # ── Fixture discovery ─────────────────────────────────────────────────

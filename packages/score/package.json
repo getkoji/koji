@@ -1,6 +1,6 @@
 {
   "name": "@koji/score",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Koji's extraction scorer \u2014 the single implementation of expected-vs-extracted comparison, shared by the API, the CLI, and external benchmark harnesses.",
   "license": "Apache-2.0",
   "type": "module",

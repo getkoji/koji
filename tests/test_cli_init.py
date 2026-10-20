@@ -12,6 +12,22 @@ from rich.console import Console
 from cli.init import list_templates, run_init, run_list_templates
 
 
+@pytest.fixture(autouse=True)
+def _restore_cwd():
+    """These tests `chdir` into a tmp dir; put the process back afterwards.
+
+    A leaked cwd is invisible here but breaks any later test that resolves a
+    path relative to the repo root — `cli/score.py` locating the built scorer,
+    for one. Leaking it made 25 tests in other files fail depending on
+    collection order.
+    """
+    before = os.getcwd()
+    try:
+        yield
+    finally:
+        os.chdir(before)
+
+
 def _console() -> Console:
     return Console(quiet=True)
 

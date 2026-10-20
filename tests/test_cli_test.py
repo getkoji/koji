@@ -1,9 +1,29 @@
-"""Tests for the extraction regression test runner (comparison engine)."""
+"""Tests for the extraction regression test runner (`koji test`'s engine room).
+
+Comparison semantics are NOT tested here — they live in `@koji/score` and are
+covered by `packages/score/src/compare.test.ts`. What lives in Python, and so
+what this file covers, is:
+
+* the anti-divergence guard (no comparison helper may creep back in),
+* the payload handed to the scorer,
+* how a scorer verdict is rendered as a human-readable detail line,
+* aggregation over fields and fixtures,
+* fixture discovery.
+
+Plus one block (`TestScoringSemanticsEndToEnd`) that runs the **real** scorer to
+pin the semantics `koji test` / `koji bench` now report, including the places
+they deliberately disagree with the pre-0.120.0 Python engine.
+"""
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
+
+from cli.score import _repo_root
 from cli.test_runner import (
     FieldResult,
     FixtureResult,
@@ -11,379 +31,467 @@ from cli.test_runner import (
     compare_field,
     compare_results,
     discover_fixtures,
+    warn_legacy_compare,
 )
 
-# ── Number tolerance ──────────────────────────────────────────────────
+CLI_DIR = Path(__file__).parent.parent / "cli"
 
 
-class TestNumberComparison:
-    def test_exact_integers(self):
-        r = compare_field("amount", 4250, 4250)
-        assert r.passed
+# ── The anti-divergence guard ─────────────────────────────────────────
 
-    def test_integer_vs_float_within_tolerance(self):
-        r = compare_field("amount", 4250, 4250.00)
-        assert r.passed
 
-    def test_integer_vs_float_just_within_tolerance(self):
-        r = compare_field("amount", 100, 100.01)
-        assert r.passed
+def test_test_runner_does_not_reimplement_comparison():
+    """`cli/test_runner.py` must delegate to `@koji/score`, not compare values.
 
-    def test_integer_vs_float_just_outside_tolerance(self):
-        r = compare_field("amount", 100, 100.02)
+    This file used to be a full second comparison engine that disagreed with
+    the server's scorer by construction. The same guard protects `cli/score.py`
+    (see `test_cli_score.py`); any of these names reappearing here means the
+    divergence is back.
+    """
+    source = (CLI_DIR / "test_runner.py").read_text()
+    banned = (
+        "def _levenshtein",
+        "def string_similarity",
+        "def _normalize_date",
+        "def _to_number",
+        "def _is_empty",
+        "def _normalize_value_for_compare",
+        "def _dict_key_overlap",
+        "def _array_of_dicts_similarity",
+        "def _array_f1",
+        "def _normalize_for_set_compare",
+        "def _resolve_mapping",
+    )
+    offenders = [name for name in banned if name in source]
+    assert not offenders, (
+        "cli/test_runner.py must delegate to @koji/score, not compare values itself; found: " + ", ".join(offenders)
+    )
+
+
+# ── The payload handed to the scorer ──────────────────────────────────
+
+
+def _stub_result(fields: dict, version: str = "9.9.9") -> dict:
+    return {"scorer": "@koji/score", "scorer_version": version, "fields": fields}
+
+
+def _match(score: float = 1.0) -> dict:
+    return {"score": score, "match": True, "diff": {"kind": "scalar", "expected": "x", "got": "x", "match": True}}
+
+
+def _miss(score: float = 0.0) -> dict:
+    return {"score": score, "match": False, "diff": {"kind": "scalar", "expected": "x", "got": "y", "match": False}}
+
+
+class TestScorerPayload:
+    def test_scores_only_fields_present_in_expected(self):
+        """Partial expectations: a key only in `actual` is not scored."""
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({"a": _match(), "b": _match()})
+            results = compare_results({"a": 1, "b": 2}, {"a": 1, "b": 2, "ignored": 3})
+        payload = run.call_args.args[0]
+        assert set(payload["fields"]) == {"a", "b"}
+        assert [r.field_name for r in results] == ["a", "b"]
+
+    def test_missing_actual_key_is_sent_as_none(self):
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({"a": _miss()})
+            compare_results({"a": "INV-1"}, {})
+        assert run.call_args.args[0]["fields"]["a"] == {"expected": "INV-1", "got": None}
+
+    def test_field_specs_are_forwarded_for_declared_fields_only(self):
+        """The scorer needs the schema node to honour `match:`, `element_key`
+        and informational sub-fields — but only for fields being scored."""
+        schema = {
+            "fields": {
+                "a": {"type": "string", "match": "exact"},
+                "unrelated": {"type": "number"},
+            }
+        }
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({"a": _match(), "b": _match()})
+            compare_results({"a": "x", "b": "y"}, {"a": "x", "b": "y"}, schema)
+        specs = run.call_args.args[0]["specs"]
+        assert specs == {"a": {"type": "string", "match": "exact"}}
+
+    def test_non_dict_fields_block_is_ignored(self):
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({"a": _match()})
+            compare_results({"a": "x"}, {"a": "x"}, {"fields": "not a mapping"})
+        assert run.call_args.args[0]["specs"] == {}
+
+    def test_one_invocation_per_document(self):
+        """A 40-field document costs one subprocess, not 40."""
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({f"f{i}": _match() for i in range(40)})
+            compare_results({f"f{i}": i for i in range(40)}, {f"f{i}": i for i in range(40)})
+        assert run.call_count == 1
+
+    def test_empty_expected_never_calls_the_scorer(self):
+        with patch("cli.test_runner.run_scorer") as run:
+            assert compare_results({}, {"a": 1}) == []
+        run.assert_not_called()
+
+    def test_a_field_the_scorer_skipped_is_an_error_not_a_silent_pass(self):
+        with patch("cli.test_runner.run_scorer") as run:
+            run.return_value = _stub_result({"a": _match()})
+            with pytest.raises(RuntimeError, match="no result for field 'b'"):
+                compare_results({"a": 1, "b": 2}, {"a": 1, "b": 2})
+
+    def test_scorer_failures_propagate(self):
+        """Callers decide what to do with a dead scorer — bench records it as a
+        per-document error — so this must not be swallowed here."""
+        with patch("cli.test_runner.run_scorer", side_effect=FileNotFoundError("no node")):
+            with pytest.raises(FileNotFoundError):
+                compare_results({"a": 1}, {"a": 1})
+
+
+# ── Rendering a verdict as a detail line ──────────────────────────────
+
+
+def _detail_for(expected, actual, scored: dict) -> str:
+    with patch("cli.test_runner.run_scorer", return_value=_stub_result({"f": scored})):
+        return compare_field("f", expected, actual).detail
+
+
+class TestDetailRendering:
+    def test_a_match_has_no_detail(self):
+        assert _detail_for("Acme", "ACME", _match()) == ""
+
+    def test_both_absent_is_named_correctly_absent(self):
+        """Adversarial fixtures assert a field should NOT be extracted; a pass
+        there deserves to say why."""
+        assert _detail_for(None, None, _match()) == "correctly absent"
+        assert _detail_for(None, [], _match()) == "correctly absent"
+        assert _detail_for("", None, _match()) == "correctly absent"
+
+    def test_expected_absent_but_extracted_is_hallucination(self):
+        detail = _detail_for(None, "Made Up Corp", _miss())
+        assert "hallucinated" in detail
+        assert "Made Up Corp" in detail
+
+    def test_expected_present_but_absent_in_actual_is_missing(self):
+        assert _detail_for("INV-001", None, _miss()) == "missing from actual"
+
+    def test_absence_wording_wins_over_the_values_shape(self):
+        """An `[]` expected against a populated array is a fabrication, not an
+        interesting F1 — and the reverse is a miss. A trap corpus is read for
+        exactly these two words, so they must not depend on the field's type."""
+        array_diff = {
+            "score": 0.0,
+            "match": False,
+            "diff": {"kind": "array", "expectedCount": 0, "gotCount": 1, "score": 0.0, "precision": 0.0, "recall": 1.0},
+        }
+        detail = _detail_for([], ["ghost"], array_diff)
+        assert detail.startswith("hallucinated")
+        assert "ghost" in detail
+        assert _detail_for(["real"], [], array_diff) == "missing from actual"
+
+    def test_scalar_mismatch_shows_both_values(self):
+        detail = _detail_for("Acme Corp", "Widget Inc", _miss())
+        assert "Acme Corp" in detail and "Widget Inc" in detail
+
+    def test_array_length_mismatch_names_the_counts_and_f1(self):
+        scored = {
+            "score": 0.8,
+            "match": False,
+            "diff": {
+                "kind": "array",
+                "expectedCount": 3,
+                "gotCount": 2,
+                "score": 0.8,
+                "precision": 1.0,
+                "recall": 0.667,
+            },
+        }
+        detail = _detail_for([1, 2, 3], [1, 2], scored)
+        assert "length" in detail
+        assert "expected 3, got 2" in detail
+        assert "80% element F1" in detail
+        assert "P 100% / R 67%" in detail
+
+    def test_equal_length_array_mismatch_says_items_differ(self):
+        scored = {
+            "score": 0.5,
+            "match": False,
+            "diff": {"kind": "array", "expectedCount": 2, "gotCount": 2, "score": 0.5, "precision": 0.5, "recall": 0.5},
+        }
+        detail = _detail_for([1, 2], [1, 9], scored)
+        assert "array items differ" in detail
+        assert "length" not in detail
+
+    def test_object_mismatch_names_the_offending_keys(self):
+        scored = {
+            "score": 0.5,
+            "match": False,
+            "diff": {"kind": "object", "score": 0.5, "fields": [{"key": "street"}]},
+        }
+        detail = _detail_for({"street": "100 Main"}, {"street": "200 Main"}, scored)
+        assert "object differs on street" in detail
+        assert "50% of keys matched" in detail
+
+    def test_a_malformed_diff_does_not_crash_rendering(self):
+        detail = _detail_for("a", "b", {"score": 0.0, "match": False, "diff": None})
+        assert "expected 'a'" in detail
+
+
+# ── Legacy `compare:` config ──────────────────────────────────────────
+
+
+class TestLegacyCompareWarning:
+    @pytest.fixture(autouse=True)
+    def _forget_warned_schemas(self):
+        """The notice is memoised per schema name for the life of the process,
+        so these tests must not inherit another file's warnings."""
+        import cli.test_runner as runner
+
+        before = set(runner._warned_schemas)
+        runner._warned_schemas.clear()
+        try:
+            yield
+        finally:
+            runner._warned_schemas.clear()
+            runner._warned_schemas.update(before)
+
+    def test_fuzzy_threshold_is_reported_as_ignored(self):
+        """9 corpus schemas still declare it. Silently ignoring it would move
+        their numbers with no explanation."""
+        buf = io.StringIO()
+        found = warn_legacy_compare({"name": "invoice_basic", "compare": {"fuzzy_threshold": 0.85}}, stream=buf)
+        assert found == ["fuzzy_threshold"]
+        text = buf.getvalue()
+        assert "invoice_basic" in text
+        assert "compare.fuzzy_threshold" in text
+        assert "match:" in text
+
+    def test_warns_once_per_schema(self):
+        schema = {"name": "warn-once-demo", "compare": {"fuzzy_threshold": 0.7}}
+        first, second = io.StringIO(), io.StringIO()
+        warn_legacy_compare(schema, stream=first)
+        warn_legacy_compare(schema, stream=second)
+        assert first.getvalue() != ""
+        assert second.getvalue() == ""
+
+    def test_schema_without_a_compare_block_is_silent(self):
+        buf = io.StringIO()
+        assert warn_legacy_compare({"name": "x", "fields": {}}, stream=buf) == []
+        assert buf.getvalue() == ""
+
+    def test_tolerates_a_missing_or_malformed_schema(self):
+        buf = io.StringIO()
+        assert warn_legacy_compare(None, stream=buf) == []
+        assert warn_legacy_compare({"compare": "nonsense"}, stream=buf) == []
+        assert buf.getvalue() == ""
+
+
+# ── End-to-end against the real scorer ────────────────────────────────
+
+
+def _scorer_is_built() -> bool:
+    """Is a local `@koji/score` build (or source + tsx) reachable?
+
+    Deliberately does not accept the `npx` fallback — that would reach the
+    network mid-test-run.
+    """
+    root = _repo_root()
+    if root is None:
+        return False
+    return (root / "packages/score/dist/bin.js").is_file() or (root / "node_modules/.bin/koji-score").is_file()
+
+
+requires_scorer = pytest.mark.skipif(
+    not _scorer_is_built(),
+    reason="needs a built @koji/score (`pnpm --filter @koji/score build`)",
+)
+
+
+@requires_scorer
+class TestScoringSemanticsEndToEnd:
+    """What `koji test` and `koji bench` now report, run through the real bin.
+
+    These are the semantics of record. Where a case changed at 0.120.0 the
+    docstring says what the old Python engine did, because a reader comparing
+    an old run to a new one needs to know which cases moved.
+    """
+
+    def test_quantities_and_dates_still_compare_by_value(self):
+        results = {
+            r.field_name: r
+            for r in compare_results(
+                {"a": 4250, "b": "$4,250.00", "c": "03/15/2025", "d": "2025-3-5", "e": 100},
+                {"a": 4250.00, "b": 4250, "c": "2025-03-15", "d": "2025-03-05", "e": 100.02},
+            )
+        }
+        assert results["a"].passed
+        assert results["b"].passed
+        assert results["c"].passed
+        assert results["d"].passed
+        assert not results["e"].passed  # outside the 0.01 default tolerance
+
+    def test_case_whitespace_and_punctuation_are_still_forgiven(self):
+        results = {
+            r.field_name: r
+            for r in compare_results(
+                {"a": "Acme", "b": "Acme Corp", "c": "CHARLOTTE, NC", "d": "704-376-9896"},
+                {"a": "acme", "b": "  Acme Corp  ", "c": "CHARLOTTE NC", "d": "704.376.9896"},
+            )
+        }
+        assert all(r.passed for r in results.values())
+
+    def test_fuzzy_ocr_typos_now_fail(self):
+        """CHANGED at 0.120.0. The Python engine accepted these at
+        `compare.fuzzy_threshold: 0.85` via Levenshtein similarity. The scorer
+        has no fuzzy mode: a one-character content difference is a difference.
+        A schema that wants latitude declares it per field with `match:`."""
+        r = compare_field("name", "TEO HENG STATIONERY", "TED HENG STATIONERY")
         assert not r.passed
+        assert r.weighted_score == 0.0
 
-    def test_float_vs_float(self):
-        r = compare_field("rate", 3.14, 3.14)
-        assert r.passed
-
-    def test_float_mismatch(self):
-        r = compare_field("rate", 3.14, 3.20)
-        assert not r.passed
-
-    def test_string_number_vs_int(self):
-        """String that looks like a number should be coerced."""
-        r = compare_field("amount", "4250", 4250)
-        assert r.passed
-
-    def test_dollar_string_vs_number(self):
-        r = compare_field("premium", "$4,250.00", 4250)
-        assert r.passed
-
-    def test_zero_values(self):
-        r = compare_field("amount", 0, 0.0)
-        assert r.passed
-
-    def test_negative_numbers(self):
-        r = compare_field("amount", -100, -100.005)
-        assert r.passed
-
-
-# ── Date normalization ────────────────────────────────────────────────
-
-
-class TestDateComparison:
-    def test_iso_dates_match(self):
-        r = compare_field("date", "2025-03-15", "2025-03-15")
-        assert r.passed
-
-    def test_iso_date_padding(self):
-        r = compare_field("date", "2025-3-5", "2025-03-05")
-        assert r.passed
-
-    def test_us_format_vs_iso(self):
-        """MM/DD/YYYY should normalize to match YYYY-MM-DD."""
-        r = compare_field("date", "03/15/2025", "2025-03-15")
-        assert r.passed
-
-    def test_iso_vs_us_format(self):
-        r = compare_field("date", "2025-01-15", "01/15/2025")
-        assert r.passed
-
-    def test_date_mismatch(self):
-        r = compare_field("date", "2025-03-15", "2025-03-16")
-        assert not r.passed
-
-    def test_both_us_format(self):
-        r = compare_field("date", "01/15/2025", "01/15/2025")
-        assert r.passed
-
-
-# ── String comparison ─────────────────────────────────────────────────
-
-
-class TestStringComparison:
-    def test_exact_match(self):
-        r = compare_field("name", "Acme Corp", "Acme Corp")
-        assert r.passed
-
-    def test_mismatch(self):
-        r = compare_field("name", "Acme Corp", "Acme Corporation")
-        assert not r.passed
-
-    def test_case_insensitive(self):
-        """Strings are compared case-insensitively — extracted text often
-        preserves the source's casing, which is the same data."""
-        r = compare_field("name", "Acme", "acme")
-        assert r.passed
-
-    def test_all_caps_matches_title_case(self):
-        """Real-world scenario from invoice extraction."""
-        r = compare_field("name", "Amazona Parts Supply Co.", "AMAZONA PARTS SUPPLY CO.")
-        assert r.passed
-
-    def test_leading_trailing_whitespace_ignored(self):
-        r = compare_field("name", "Acme Corp", "  Acme Corp  ")
-        assert r.passed
-
-    def test_different_words_still_fail(self):
-        r = compare_field("name", "Acme Inc", "Widget Inc")
-        assert not r.passed
-
-    def test_empty_string(self):
-        r = compare_field("name", "", "")
-        assert r.passed
-
-
-# ── Missing fields ────────────────────────────────────────────────────
-
-
-class TestMissingFields:
-    def test_missing_from_actual(self):
-        r = compare_field("invoice_number", "INV-001", None)
-        assert not r.passed
-        assert "missing" in r.detail
-
-    def test_null_actual(self):
-        r = compare_field("field", "expected_value", None)
-        assert not r.passed
-
-
-# ── Graceful-failure / hallucination-resistance ──────────────────────
-
-
-class TestGracefulFailure:
-    """Adversarial fixtures use expected:null to assert 'the model should NOT
-    extract this field' — both to catch hallucination and to reward models
-    that correctly decline when the data isn't in the document."""
-
-    def test_both_none_passes(self):
-        r = compare_field("field", None, None)
-        assert r.passed
-        assert "correctly absent" in r.detail
-
-    def test_expected_none_actual_string_fails_as_hallucination(self):
-        r = compare_field("filer_name", None, "Made Up Corp")
-        assert not r.passed
-        assert "hallucinated" in r.detail
-        assert "Made Up Corp" in r.detail
-
-    def test_expected_none_actual_number_fails_as_hallucination(self):
-        r = compare_field("amount", None, 4250)
-        assert not r.passed
-        assert "hallucinated" in r.detail
-        assert "4250" in r.detail
-
-    def test_expected_none_actual_empty_list_passes(self):
-        """Extraction returned an empty list — semantically the same as null."""
-        r = compare_field("items", None, [])
-        assert r.passed
-
-    def test_expected_none_actual_populated_list_fails(self):
-        r = compare_field("items", None, [{"name": "ghost"}])
-        assert not r.passed
-        assert "hallucinated" in r.detail
-
-    def test_expected_none_actual_empty_string_passes(self):
-        """Model returned '' which normalizes to null — graceful failure."""
-        r = compare_field("field", None, "")
-        assert r.passed
-
-    def test_expected_none_actual_whitespace_passes(self):
-        r = compare_field("field", None, "   ")
-        assert r.passed
-
-    def test_expected_empty_string_actual_none_passes(self):
-        """Both normalize to null via _is_empty — they're equivalent."""
-        r = compare_field("field", "", None)
-        assert r.passed
-
-    def test_expected_empty_list_actual_none_passes(self):
-        r = compare_field("items", [], None)
-        assert r.passed
-
-    def test_compare_results_handles_null_expected_with_missing_actual(self):
-        """A fixture that declares expected:null for a field which the actual
-        dict doesn't even contain — standard partial-output case — should pass."""
-        results = compare_results({"filer_name": None}, {})
-        assert len(results) == 1
-        assert results[0].passed
-        assert "correctly absent" in results[0].detail
-
-    def test_compare_results_catches_hallucination(self):
-        """Expected null but actual has a value for that key — hallucination."""
-        results = compare_results(
-            {"filer_name": None},
-            {"filer_name": "Hallucinated Corp"},
+    def test_declared_contains_replaces_fuzzy_for_wrapper_text(self):
+        strict = compare_field("governing_law", "State of Delaware", "Delaware")
+        assert not strict.passed
+        loose = compare_field(
+            "governing_law",
+            "State of Delaware",
+            "Delaware",
+            {"fields": {"governing_law": {"type": "string", "match": "contains"}}},
         )
-        assert len(results) == 1
-        assert not results[0].passed
-        assert "hallucinated" in results[0].detail
+        assert loose.passed
 
-
-# ── Array comparison ──────────────────────────────────────────────────
-
-
-class TestArrayComparison:
-    def test_same_arrays(self):
-        r = compare_field("items", [1, 2, 3], [1, 2, 3])
-        assert r.passed
-
-    def test_different_length(self):
-        r = compare_field("items", [1, 2, 3], [1, 2])
-        assert not r.passed
-        assert "length" in r.detail
-
-    def test_order_insensitive_objects(self):
-        """Objects in arrays should match regardless of order."""
-        expected = [
-            {"name": "A", "value": 1},
-            {"name": "B", "value": 2},
-        ]
-        actual = [
-            {"name": "B", "value": 2},
-            {"name": "A", "value": 1},
-        ]
-        r = compare_field("items", expected, actual)
-        assert r.passed
-
-    def test_different_object_content(self):
-        expected = [{"name": "A", "value": 1}]
-        actual = [{"name": "A", "value": 999}]
-        r = compare_field("items", expected, actual)
+    def test_declared_exact_tightens_a_field(self):
+        assert compare_field("policy_number", "ABC-1", "abc 1").passed
+        r = compare_field(
+            "policy_number",
+            "ABC-1",
+            "abc 1",
+            {"fields": {"policy_number": {"type": "string", "match": "exact"}}},
+        )
         assert not r.passed
 
-    def test_empty_arrays(self):
-        r = compare_field("items", [], [])
-        assert r.passed
+    def test_declared_numeric_fails_an_unparseable_value(self):
+        spec = {"fields": {"premium": {"type": "number", "match": {"mode": "numeric", "tolerance": 0.5}}}}
+        assert compare_field("premium", 1000, 1000.4, spec).passed
+        assert not compare_field("premium", 1000, "n/a", spec).passed
 
-    def test_string_arrays(self):
-        r = compare_field("tags", ["a", "b"], ["b", "a"])
-        assert r.passed
-
-    def test_mixed_primitives(self):
-        r = compare_field("tags", ["a", "b"], ["a", "c"])
-        assert not r.passed
-
-    def test_int_vs_float_in_objects(self):
-        """Real bug from invoice corpus: expected 200.0, actual 200 (same value)."""
-        expected = [{"name": "Workshop", "quantity": 8, "unit_price": 200.0, "amount": 1600.0}]
-        actual = [{"name": "Workshop", "quantity": 8, "unit_price": 200, "amount": 1600}]
-        r = compare_field("items", expected, actual)
-        assert r.passed
-
-    def test_string_case_in_object_values(self):
-        """Case differences in string fields of array objects should pass."""
-        expected = [{"name": "Acme Corp", "tier": "gold"}]
-        actual = [{"name": "ACME CORP", "tier": "GOLD"}]
-        r = compare_field("items", expected, actual)
-        assert r.passed
-
-    def test_date_format_in_object_values(self):
-        """Different date formats in array object fields should still match."""
-        expected = [{"item": "A", "date": "2025-01-15"}]
-        actual = [{"item": "A", "date": "01/15/2025"}]
-        r = compare_field("items", expected, actual)
-        assert r.passed
-
-    def test_number_string_vs_numeric_in_objects(self):
-        """'$200.00' and 200 are the same value."""
-        expected = [{"price": 200.0}]
-        actual = [{"price": "$200.00"}]
-        r = compare_field("items", expected, actual)
-        assert r.passed
-
-
-# ── Partial expectations ──────────────────────────────────────────────
-
-
-class TestPartialExpectations:
-    def test_extra_actual_fields_ignored(self):
-        expected = {"name": "Acme", "amount": 100}
-        actual = {"name": "Acme", "amount": 100, "extra_field": "ignored"}
-        results = compare_results(expected, actual)
-        assert all(r.passed for r in results)
-        assert len(results) == 2  # Only expected fields checked
-
-    def test_missing_expected_field_is_regression(self):
-        expected = {"name": "Acme", "amount": 100}
-        actual = {"name": "Acme"}
-        results = compare_results(expected, actual)
-        name_result = next(r for r in results if r.field_name == "name")
-        amount_result = next(r for r in results if r.field_name == "amount")
-        assert name_result.passed
-        assert not amount_result.passed
-
-
-# ── compare_results integration ───────────────────────────────────────
-
-
-class TestCompareResults:
-    def test_full_comparison(self):
-        expected = {
-            "invoice_number": "INV-001",
-            "date": "2025-03-15",
-            "total_amount": 4250,
-            "vendor_name": "Acme Corp",
+    def test_declared_enum_resolves_mappings(self):
+        spec = {
+            "fields": {
+                "form_type": {
+                    "type": "string",
+                    "match": "enum",
+                    "mappings": {"10-K/A": ["10K/A", "10-KA"]},
+                }
+            }
         }
-        actual = {
-            "invoice_number": "INV-001",
-            "date": "2025-03-15",
-            "total_amount": 4250.00,
-            "vendor_name": "Acme Corp",
+        assert compare_field("form_type", "10-K/A", "10-KA", spec).passed
+        assert not compare_field("form_type", "10-K/A", "10-Q", spec).passed
+
+    def test_an_unknown_match_mode_fails_the_run(self):
+        """A typo must not silently revert to the default."""
+        with pytest.raises(RuntimeError, match="unknown match mode"):
+            compare_field("f", "a", "a", {"fields": {"f": {"match": "noramlized"}}})
+
+    def test_arrays_earn_partial_credit_and_report_precision_recall(self):
+        r = compare_field("tags", ["a", "b", "c"], ["a", "b"])
+        assert not r.passed
+        assert abs(r.weighted_score - 0.8) < 1e-6  # P 1.0, R 2/3
+        r = compare_field("tags", ["a", "b", "c"], ["a", "b", "c", "z"])
+        assert abs(r.weighted_score - (2 * 1.0 * 0.75 / 1.75)) < 1e-6
+
+    def test_arrays_are_order_insensitive(self):
+        assert compare_field("tags", ["a", "b"], ["b", "a"]).passed
+        assert compare_field(
+            "items",
+            [{"name": "A", "value": 1}, {"name": "B", "value": 2}],
+            [{"name": "B", "value": 2}, {"name": "A", "value": 1}],
+        ).passed
+
+    def test_array_of_objects_scores_sub_field_credit(self):
+        exp = [{"code": c, "limit": 100} for c in "abcd"] + [{"code": "e", "limit": 500}]
+        act = [{"code": c, "limit": 100} for c in "abcd"] + [{"code": "e", "limit": 999}]
+        r = compare_field("coverages", exp, act)
+        assert not r.passed
+        assert 0.8 < r.weighted_score < 1.0
+
+    def test_element_key_pins_identity_instead_of_best_overlap(self):
+        """Declared `element_key` makes a wrong sub-field a wrong element rather
+        than a mispairing — one of the reasons the unified scorer is not
+        reproducible by the old Python engine, which had no such concept."""
+        spec = {
+            "fields": {
+                "coverages": {
+                    "type": "array",
+                    "hints": {"element_key": "code"},
+                    "items": {"properties": {"code": {}, "limit": {}}},
+                }
+            }
         }
-        results = compare_results(expected, actual)
-        assert all(r.passed for r in results)
-
-    def test_mixed_pass_fail(self):
-        expected = {"a": "hello", "b": 100}
-        actual = {"a": "world", "b": 100}
-        results = compare_results(expected, actual)
-        a = next(r for r in results if r.field_name == "a")
-        b = next(r for r in results if r.field_name == "b")
-        assert not a.passed
-        assert b.passed
-
-    def test_empty_expected(self):
-        results = compare_results({}, {"a": 1, "b": 2})
-        assert results == []
-
-
-class TestFuzzyStringComparison:
-    def test_exact_match_still_works_with_threshold(self):
-        r = compare_field("name", "Acme Corp", "Acme Corp", fuzzy_threshold=0.85)
-        assert r.passed
-        assert "fuzzy" not in (r.detail or "")
-
-    def test_case_insensitive_still_works_with_threshold(self):
-        r = compare_field("name", "ACME CORP", "acme corp", fuzzy_threshold=0.85)
-        assert r.passed
-        assert "fuzzy" not in (r.detail or "")
-
-    def test_ocr_typo_passes_with_threshold(self):
-        r = compare_field("name", "TEO HENG STATIONERY", "TED HENG STATIONERY", fuzzy_threshold=0.85)
-        assert r.passed
-        assert "fuzzy" in r.detail
-
-    def test_ocr_typo_fails_without_threshold(self):
-        r = compare_field("name", "TEO HENG STATIONERY", "TED HENG STATIONERY", fuzzy_threshold=0.0)
+        exp = [{"code": "gl", "limit": 100}, {"code": "auto", "limit": 200}]
+        act = [{"code": "gl", "limit": 100}, {"code": "umbrella", "limit": 200}]
+        r = compare_field("coverages", exp, act, spec)
         assert not r.passed
+        assert 0.0 < r.weighted_score < 1.0
 
-    def test_completely_different_string_fails_even_with_threshold(self):
-        r = compare_field("name", "ASIA MART", "123 JALAN KAPAR KLANG SELANGOR", fuzzy_threshold=0.85)
+    def test_informational_sub_fields_are_excluded(self):
+        spec = {
+            "fields": {
+                "coverages": {
+                    "type": "array",
+                    "items": {"properties": {"code": {}, "note": {"hints": {"informational": True}}}},
+                }
+            }
+        }
+        exp = [{"code": "gl", "note": "see page 3"}]
+        act = [{"code": "gl", "note": "whatever"}]
+        assert compare_field("coverages", exp, act, spec).passed
+
+    def test_provenance_keys_do_not_penalise_an_element(self):
+        exp = [{"coverage": "each_occurrence", "limit": 1000000}]
+        act = [
+            {
+                "coverage": "each_occurrence",
+                "limit": 1000000,
+                "__source_text": "Each Occurrence $1,000,000",
+                "__source_context": "Limits of Insurance",
+            }
+        ]
+        assert compare_field("coverages", exp, act).passed
+
+    def test_empty_and_null_are_the_same_absence(self):
+        """`[]` from extraction and `null` in ground truth both mean 'no data'.
+        Scoring them as a mismatch would invent a failure out of a
+        representation difference and break every adversarial fixture whose
+        model correctly declined with an empty array."""
+        for expected, actual in ((None, []), ([], None), (None, {}), ({}, None), (None, ""), ([], [])):
+            assert compare_field("items", expected, actual).passed, (expected, actual)
+
+    def test_absence_on_one_side_only_still_fails(self):
+        assert not compare_field("items", None, [{"name": "ghost"}]).passed
+        assert not compare_field("items", [{"name": "real"}], []).passed
+        assert not compare_field("items", {}, {"a": 1}).passed
+
+    def test_objects_score_the_mean_of_their_keys(self):
+        """CHANGED at 0.120.0: an object-valued field used to be pass/fail.
+        Now a half-right address scores 0.5."""
+        r = compare_field(
+            "address", {"street": "100 Main St", "city": "Charlotte"}, {"street": "200 Main St", "city": "Charlotte"}
+        )
         assert not r.passed
+        assert abs(r.weighted_score - 0.5) < 1e-6
+        assert compare_field(
+            "address", {"street": "100 Main St", "city": "Charlotte"}, {"city": "Charlotte", "street": "100 Main St"}
+        ).passed
 
-    def test_sdn_bhd_variant_passes(self):
-        r = compare_field("name", "MR D.I.Y. (M) SDN BHD", "MR D.I.Y. (M) SON BHD", fuzzy_threshold=0.85)
-        assert r.passed
+    def test_the_bin_and_the_python_stamp_agree_on_the_version(self):
+        """`cli/metrics.scorer_version()` reads package.json; the bin reports
+        its own literal. A drift between them would stamp artifacts with a
+        version that did not score them."""
+        from cli.metrics import scorer_version
+        from cli.score import run_scorer
 
-    def test_threshold_boundary(self):
-        from cli.test_runner import string_similarity
-
-        sim = string_similarity("BOOK TA .K", "BOOK TA -K")
-        assert sim > 0.85
-        r = compare_field("name", "BOOK TA .K", "BOOK TA -K", fuzzy_threshold=0.85)
-        assert r.passed
-
-    def test_compare_results_passes_threshold(self):
-        expected = {"name": "TEO HENG", "total": 9.0}
-        actual = {"name": "TED HENG", "total": 9.0}
-        results = compare_results(expected, actual, fuzzy_threshold=0.85)
-        assert all(r.passed for r in results)
-
-    def test_non_string_fields_unaffected_by_threshold(self):
-        r = compare_field("amount", 100.0, 200.0, fuzzy_threshold=0.99)
-        assert not r.passed
+        result = run_scorer({"fields": {"a": {"expected": 1, "got": 1}}})
+        assert result["scorer"] == "@koji/score"
+        assert result["scorer_version"] == scorer_version()
 
 
 # ── Fixture discovery ─────────────────────────────────────────────────
@@ -472,6 +580,28 @@ class TestDataClasses:
         assert suite.total_failed == 1
         assert not suite.all_passed
 
+    def test_partial_credit_reaches_the_metrics(self):
+        """A 4-of-5 array contributes ~0.8 of credit and 0 exact matches, so
+        `value_accuracy` lands between the two readings."""
+        fr = FixtureResult(
+            fixture_name="a.md",
+            field_results=[
+                FieldResult("carrier", passed=True, expected="Acme", actual="Acme", score=1.0),
+                FieldResult("coverages", passed=False, expected=[1, 2], actual=[1], score=0.8),
+            ],
+        )
+        suite = TestSuiteResult(schema_name="test", fixture_results=[fr])
+        counts = suite.metric_counts
+        assert suite.total_passed == 1
+        assert counts.found == 2
+        assert abs(counts.credit - 1.8) < 1e-9
+        assert abs(suite.to_dict()["metrics"]["value_accuracy"] - 0.9) < 1e-6
+
+    def test_weighted_score_falls_back_to_the_boolean(self):
+        assert FieldResult("x", passed=True).weighted_score == 1.0
+        assert FieldResult("x", passed=False).weighted_score == 0.0
+        assert FieldResult("x", passed=False, score=0.25).weighted_score == 0.25
+
     def test_suite_all_passed(self):
         fr = FixtureResult(
             fixture_name="a.md",
@@ -489,7 +619,8 @@ class TestDataClasses:
         fr = FixtureResult(
             fixture_name="a.md",
             field_results=[
-                FieldResult("x", passed=True, expected="val", actual="val"),
+                FieldResult("x", passed=True, expected="val", actual="val", score=1.0),
+                FieldResult("y", passed=False, expected=[1, 2], actual=[1], score=0.67, detail="array length"),
             ],
         )
         suite = TestSuiteResult(schema_name="myschema", fixture_results=[fr])
@@ -497,255 +628,10 @@ class TestDataClasses:
         assert d["schema"] == "myschema"
         assert d["fixtures"] == 1
         assert d["passed"] == 1
-        assert d["regressions"] == 0
+        assert d["regressions"] == 1
+        assert d["scorer"] == "@koji/score"
+        assert d["scorer_version"]
         assert d["results"][0]["fixture"] == "a.md"
         assert d["results"][0]["fields"][0]["passed"] is True
-
-
-# ── Structural similarity for array-of-objects ────────────────────────
-
-
-class TestArrayOfDictsStructuralSimilarity:
-    """The structural-similarity comparator handles arrays where each item
-    is a dict and exact JSON equality is too strict (e.g. one nested field
-    differs between runs)."""
-
-    def _two_records(self, actual_carrier: str):
-        """Two-record dataset where each record has 4 top-level keys and
-        the actual differs from expected on one key (carrier_name). Per-
-        item structural similarity = 3/4 = 75%.
-
-        Tests the realistic case: same row count, same key set, the LLM
-        got most of them right but flubbed one string per row."""
-        expected = [
-            {
-                "policy_number": "GL-001",
-                "type": "general_liability",
-                "carrier_name": "Acme Insurance",
-                "limit": 1000000,
-            },
-            {"policy_number": "AUTO-002", "type": "commercial_auto", "carrier_name": "Acme Insurance", "limit": 500000},
-        ]
-        actual = [
-            {"policy_number": "GL-001", "type": "general_liability", "carrier_name": actual_carrier, "limit": 1000000},
-            {"policy_number": "AUTO-002", "type": "commercial_auto", "carrier_name": actual_carrier, "limit": 500000},
-        ]
-        return expected, actual
-
-    def test_passes_when_one_top_level_key_differs_with_fuzzy_threshold(self):
-        expected, actual = self._two_records("Acme")  # "Acme" vs "Acme Insurance"
-        r = compare_field("policies", expected, actual, fuzzy_threshold=0.7)
-        assert r.passed
-        assert "fuzzy structural match" in (r.detail or "")
-
-    def test_fails_when_similarity_below_threshold(self):
-        expected, actual = self._two_records("Acme")
-        # Per-item similarity 3/4 = 75%. Threshold 0.9 should reject.
-        r = compare_field("policies", expected, actual, fuzzy_threshold=0.9)
-        assert not r.passed
-
-    def test_only_engages_when_both_arrays_are_dicts(self):
-        # Arrays of strings should NOT trip the structural path even with
-        # a low threshold — the existing key-overlap fuzzy match owns it.
-        r = compare_field(
-            "tags",
-            ["a", "b", "c"],
-            ["a", "b", "different"],
-            fuzzy_threshold=0.1,
-        )
-        # Behavior: exact-match fails, key-overlap fuzzy fails at 2/3, but
-        # structural is NOT invoked (items aren't dicts). Net: not passed
-        # via the structural path.
-        if r.passed:
-            assert "structural" not in (r.detail or "")
-
-    def test_only_engages_when_lengths_match(self):
-        # Length mismatch short-circuits structural similarity — that's
-        # a different signal (missing/extra items) and we don't want to
-        # paper over it. Use a tight threshold so the upstream key-overlap
-        # fuzzy array match doesn't pass on partial coverage.
-        expected = [
-            {"a": 1, "b": 2},
-            {"a": 3, "b": 4},
-        ]
-        actual = [
-            {"a": 1, "b": 2},
-        ]
-        r = compare_field("items", expected, actual, fuzzy_threshold=1.0)
-        assert not r.passed
-        assert "structural" not in (r.detail or "")
-        assert "length" in (r.detail or "").lower()
-
-    def test_greedy_pairing_picks_best_match_not_positional(self):
-        # actual is in REVERSED order — greedy pairing should still pair
-        # each expected with its best-matching actual (and pass), instead
-        # of comparing position-by-position.
-        expected = [
-            {"id": "A", "label": "alpha", "n": 1},
-            {"id": "B", "label": "beta", "n": 2},
-        ]
-        actual = [
-            {"id": "B", "label": "beta", "n": 2},
-            {"id": "A", "label": "alpha", "n": 1},
-        ]
-        r = compare_field("items", expected, actual, fuzzy_threshold=0.9)
-        assert r.passed
-
-    def test_empty_arrays_match(self):
-        r = compare_field("items", [], [], fuzzy_threshold=0.7)
-        assert r.passed
-
-    def test_extra_items_in_actual_does_not_falsely_pass(self):
-        # Length-equal arrays — actual has a junk item not in expected.
-        # Structural runs; second pair has 0% overlap → average ~50%.
-        expected = [
-            {"a": 1, "b": 2},
-            {"a": 3, "b": 4},
-        ]
-        actual = [
-            {"a": 1, "b": 2},
-            {"junk": "nothing useful here"},
-        ]
-        r = compare_field("items", expected, actual, fuzzy_threshold=0.7)
-        assert not r.passed
-
-
-class TestProvenanceKeysExcludedFromScoring:
-    """`__`-prefixed provenance keys (`__source_text`, `__source_context`) are
-    emitted inline by the extraction model but never appear in ground truth.
-    Scoring them as unexpected keys silently caps every array item and nested
-    object below its true accuracy — so the comparator drops them."""
-
-    def test_provenance_keys_do_not_penalize_array_items(self):
-        expected = [
-            {"coverage": "each_occurrence", "limit": 1000000},
-            {"coverage": "aggregate", "limit": 2000000},
-        ]
-        # Same correct data plus the two inline provenance keys per item.
-        actual = [
-            {
-                "coverage": "each_occurrence",
-                "limit": 1000000,
-                "__source_text": "Each Occurrence $1,000,000",
-                "__source_context": "Limits of Insurance — Each Occurrence $1,000,000",
-            },
-            {
-                "coverage": "aggregate",
-                "limit": 2000000,
-                "__source_text": "Aggregate $2,000,000",
-                "__source_context": "Limits of Insurance — General Aggregate $2,000,000",
-            },
-        ]
-        # 100% correct data must score a full structural match, not 2/4 per item.
-        r = compare_field("coverages", expected, actual, fuzzy_threshold=0.95)
-        assert r.passed
-
-    def test_provenance_keys_stripped_at_nested_depth(self):
-        expected = [{"coverage": "GL", "limits": [{"name": "each_occurrence", "amount": 1000000}]}]
-        actual = [
-            {
-                "coverage": "GL",
-                "__source_text": "COMMERCIAL GENERAL LIABILITY",
-                "limits": [
-                    {"name": "each_occurrence", "amount": 1000000, "__source_text": "Each Occurrence $1,000,000"},
-                ],
-            }
-        ]
-        r = compare_field("coverages", expected, actual, fuzzy_threshold=0.95)
-        assert r.passed
-
-
-class TestObjectValuedFieldComparison:
-    """A top-level object-valued field (not inside an array) is compared
-    structurally — order-insensitive and provenance-stripped — not via a
-    brittle str(expected) == str(actual). Conforms to the canonical scorer."""
-
-    def test_object_field_ignores_provenance_key(self):
-        expected = {"street": "100 Main St", "city": "Charlotte"}
-        actual = {"street": "100 Main St", "city": "Charlotte", "__source_text": "100 Main St, Charlotte"}
-        assert compare_field("address", expected, actual).passed
-
-    def test_object_field_key_order_insensitive(self):
-        expected = {"street": "100 Main St", "city": "Charlotte"}
-        actual = {"city": "Charlotte", "street": "100 Main St"}
-        assert compare_field("address", expected, actual).passed
-
-    def test_object_field_real_difference_still_fails(self):
-        expected = {"street": "100 Main St", "city": "Charlotte"}
-        actual = {"street": "200 Main St", "city": "Charlotte"}
-        assert not compare_field("address", expected, actual).passed
-
-
-# ── Element-wise array F1 (partial credit) ────────────────────────────
-
-
-class TestArrayF1Scoring:
-    """Array fields carry a fractional `weighted_score` (element-wise F1) so the
-    bench aggregate isn't dominated by all-or-nothing arrays. `passed` stays a
-    strict boolean — these two must not be conflated."""
-
-    def test_exact_array_scores_one(self):
-        r = compare_field("tags", ["a", "b", "c"], ["a", "b", "c"])
-        assert r.passed
-        assert r.weighted_score == 1.0
-
-    def test_scalar_array_partial_credit(self):
-        # 2 of 3 expected present, no extras: P=2/2? no — actual has 2 items both
-        # correct → precision 1.0, recall 2/3 → F1 = 0.8.
-        r = compare_field("tags", ["a", "b", "c"], ["a", "b"])
-        assert not r.passed  # not an exact match
-        assert abs(r.weighted_score - 0.8) < 1e-6
-
-    def test_scalar_array_with_extra_hallucination(self):
-        # All 3 expected present but one spurious extra: recall 1.0, precision 3/4.
-        r = compare_field("tags", ["a", "b", "c"], ["a", "b", "c", "z"])
-        assert abs(r.weighted_score - (2 * 1.0 * 0.75 / 1.75)) < 1e-6
-
-    def test_disjoint_array_scores_zero(self):
-        r = compare_field("tags", ["a", "b"], ["x", "y"])
-        assert r.weighted_score == 0.0
-
-    def test_empty_vs_empty_scores_one(self):
-        # Handled by the empty-vs-empty branch before array logic.
-        r = compare_field("tags", [], [])
-        assert r.passed
-        assert r.weighted_score == 1.0
-
-    def test_array_of_dicts_partial_credit(self):
-        # 5 coverages, 4 identical, 1 with a wrong sub-field. Should land well
-        # above 0 and below 1 — the coverages case the bench used to zero out.
-        exp = [{"code": c, "limit": 100} for c in ("a", "b", "c", "d")] + [{"code": "e", "limit": 500}]
-        act = [{"code": c, "limit": 100} for c in ("a", "b", "c", "d")] + [{"code": "e", "limit": 999}]
-        r = compare_field("coverages", exp, act)
-        assert not r.passed
-        assert 0.8 < r.weighted_score < 1.0
-
-    def test_scalar_field_weighted_score_is_boolean(self):
-        # Non-array fields: weighted_score derives from passed (1.0 / 0.0).
-        assert compare_field("n", 100.0, 100.0).weighted_score == 1.0
-        assert compare_field("n", 100.0, 200.0).weighted_score == 0.0
-
-
-# ── Mapping alias folding (case + whitespace) ─────────────────────────
-
-
-class TestResolveMappingFolding:
-    def test_case_and_whitespace_folded(self):
-        from cli.test_runner import _resolve_mapping
-
-        m = {"each_occurrence": ["Each Occurrence"], "general_aggregate": ["General Aggregate"]}
-        for raw in ["each occurrence", "EACH OCCURRENCE", "  each   occurrence ", "Each\nOccurrence"]:
-            assert _resolve_mapping(raw, m) == "each_occurrence"
-
-    def test_unmatched_passes_through(self):
-        from cli.test_runner import _resolve_mapping
-
-        assert _resolve_mapping("nope", {"a": ["x"]}) == "nope"
-
-    def test_value_equal_to_canonical_code_is_kept(self):
-        from cli.test_runner import _resolve_mapping
-
-        # `building` is a real code; it must not be rewritten to blanket_building
-        # just because that code lists "Building" as an alias.
-        m = {"building": ["Building Limit"], "blanket_building": ["Blanket Building", "Building"]}
-        assert _resolve_mapping("building", m) == "building"
+        # Per-field fractional credit, new in 0.120.0.
+        assert d["results"][0]["fields"][1]["score"] == 0.67
