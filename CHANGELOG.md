@@ -2,6 +2,40 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.118.0 — 2026-10-19
+
+**Table-heavy documents can be parsed into cells instead of flattened
+markdown.** Set `KOJI_PARSE_STRUCTURED=positional`:
+
+```bash
+KOJI_PARSE_STRUCTURED=positional
+```
+
+A document whose layout reads as a grid is then parsed into **table cells** —
+each one carrying its 1-based `(row, col)`, its table id, and its own bounding
+box — and the markdown the model reads is rebuilt from those cells. Previously
+every parser produced markdown by flattening the page in reading order, which
+loses column association: a row with a blank cell slides its remaining values
+left, under the wrong header.
+
+It needs no credentials and no extra service — it reads the geometry the PDF
+reader already extracts. It applies to PDFs with a text layer, and only to
+documents whose layout is actually grid-like (a geometric measure, never a
+document-type rule). Prose documents keep the existing path. Off by default,
+and while it is off the layout check never runs.
+
+**Fixed: a configured Google Document AI or AWS Textract parse endpoint was
+never used for PDFs with a text layer.** Both drivers return cell structure, but
+neither was classified as a structured provider, so both were placed in the slot
+that only ever sees scanned/image/non-PDF input. Document AI and Textract
+endpoints now serve table-heavy documents of any kind, including digital PDFs.
+
+**Fixed: cell and word geometry was dropped from documents large enough to be
+parsed in shards** (over `KOJI_CHUNK_PARSE_THRESHOLD` pages, 40 by default). The
+shard merge rebuilt the markdown but discarded the per-unit geometry entirely,
+so provenance boxes and cell coordinates silently vanished on exactly the long
+documents they matter most on. The merge now carries every unit over with
+corrected page numbers, markdown offsets and table ids.
 ## 0.116.0 — 2026-10-19
 
 **One accuracy number is gone. Four are reported instead.** A single number

@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  PositionalCellCanonicalizer,
   PositionalChunkCanonicalizer,
   reconstructTable,
 } from "./positional-chunks";
+import { spineToMarkdown } from "./chunk";
 import {
   buildLines,
   type ParsedPage,
@@ -194,5 +196,141 @@ describe("PositionalChunkCanonicalizer — non-table content", () => {
     const [chunk] = new PositionalChunkCanonicalizer().toChunks([empty]);
     expect(chunk!.text).toBe("Scanned cover page");
     expect(chunk!.bbox).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cell-granular canonicalizer (oss-536) — the structured view. Same geometry,
+// same x-clustering, but one unit per cell with (row, col) + its own box.
+// ---------------------------------------------------------------------------
+
+describe("reconstructTable — per-cell boxes", () => {
+  const lines = buildLines(tableItems, PAGE_H);
+  const table = reconstructTable(lines, { width: PAGE_W, height: PAGE_H });
+
+  it("returns one box slot per column, in column order", () => {
+    for (const row of table.rows) {
+      expect(row.cellBoxes).toHaveLength(table.columns.length);
+      expect(row.cellBoxes).toHaveLength(row.cells.length);
+    }
+  });
+
+  it("leaves a blank cell's box undefined (no text, no geometry)", () => {
+    // The Umbrella row has no Limit cell — slot 1 is blank, so it has no box
+    // rather than borrowing the row's.
+    const gapRow = table.rows[3]!;
+    expect(gapRow.cells[1]).toBe("");
+    expect(gapRow.cellBoxes[1]).toBeUndefined();
+    expect(gapRow.cellBoxes[0]).toBeDefined();
+    expect(gapRow.cellBoxes[2]).toBeDefined();
+  });
+
+  it("gives each populated cell a box narrower than, and inside, the row box", () => {
+    const row = table.rows[1]!;
+    for (const box of row.cellBoxes) {
+      expect(box).toBeDefined();
+      expect(box!.w).toBeLessThan(row.bbox!.w);
+      expect(box!.x).toBeGreaterThanOrEqual(row.bbox!.x - 1e-9);
+      expect(box!.x + box!.w).toBeLessThanOrEqual(row.bbox!.x + row.bbox!.w + 1e-9);
+    }
+  });
+
+  it("orders cell boxes left to right, matching the column order", () => {
+    const xs = table.rows[1]!.cellBoxes.map((b) => b!.x);
+    expect(xs).toEqual([...xs].sort((a, b) => a - b));
+  });
+});
+
+describe("PositionalCellCanonicalizer — table page", () => {
+  const chunks = new PositionalCellCanonicalizer().toChunks([page(tableItems)]);
+  const cells = chunks.filter((c) => c.role === "table_cell");
+
+  it("emits one unit per populated cell, not per row", () => {
+    // 4 rows x 3 cols with one blank slot (the Umbrella row's Limit) = 11.
+    expect(cells).toHaveLength(11);
+    expect(cells.map((c) => c.text)).toEqual([
+      "Coverage",
+      "Limit",
+      "Premium",
+      "Liability",
+      "$1,000,000",
+      "$5,000",
+      "Property",
+      "$500,000",
+      "$2,500",
+      "Umbrella",
+      "$1,200",
+    ]);
+  });
+
+  it("carries 1-based (row, col) and a parse-scoped tableId on every cell", () => {
+    for (const c of cells) {
+      expect(c.table).toBeDefined();
+      expect(c.table!.tableId).toBe("p1-t0");
+      expect(c.table!.row).toBeGreaterThanOrEqual(1);
+      expect(c.table!.col).toBeGreaterThanOrEqual(1);
+    }
+    const byText = new Map(cells.map((c) => [c.text, c.table!]));
+    expect(byText.get("Coverage")).toMatchObject({ row: 1, col: 1 });
+    expect(byText.get("Premium")).toMatchObject({ row: 1, col: 3 });
+    expect(byText.get("$500,000")).toMatchObject({ row: 3, col: 2 });
+  });
+
+  it("keeps the gap row's value in column 3 — no left-slide into the blank", () => {
+    const gap = cells.find((c) => c.text === "$1,200")!;
+    expect(gap.table).toMatchObject({ row: 4, col: 3 });
+    // And nothing was emitted at (4, 2) at all.
+    expect(cells.some((c) => c.table!.row === 4 && c.table!.col === 2)).toBe(false);
+  });
+
+  it("gives every cell its own bbox inside the unit square", () => {
+    for (const c of cells) {
+      expect(c.bbox).toBeDefined();
+      const { x, y, w, h } = c.bbox!;
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + w).toBeLessThanOrEqual(1);
+      expect(y + h).toBeLessThanOrEqual(1);
+    }
+    // Cells in the same row sit at different x — the whole point of cell
+    // geometry over row geometry.
+    const row2 = cells.filter((c) => c.table!.row === 2).map((c) => c.bbox!.x);
+    expect(new Set(row2).size).toBe(row2.length);
+  });
+
+  it("projects back to the same markdown grid the row view produced", () => {
+    expect(spineToMarkdown(chunks)).toBe(
+      [
+        "| Coverage | Limit | Premium |",
+        "| --- | --- | --- |",
+        "| Liability | $1,000,000 | $5,000 |",
+        "| Property | $500,000 | $2,500 |",
+        "| Umbrella |  | $1,200 |",
+      ].join("\n"),
+    );
+  });
+
+  it("numbers tables per page and leaves non-table lines as lines", () => {
+    // Far below the table so the vertical gap ends the table region.
+    const prose = item("A sentence of ordinary prose on its own line.", 72, 420);
+    const chunks2 = new PositionalCellCanonicalizer().toChunks([
+      page([...tableItems, prose]),
+    ]);
+    const lineUnits = chunks2.filter((c) => c.role === "line");
+    expect(lineUnits.length).toBeGreaterThanOrEqual(1);
+    expect(lineUnits[0]!.table).toBeUndefined();
+    expect(lineUnits[0]!.bbox).toBeDefined();
+    const tableIds = new Set(
+      chunks2.filter((c) => c.table).map((c) => c.table!.tableId),
+    );
+    expect([...tableIds]).toEqual(["p1-t0"]);
+  });
+
+  it("stamps deterministic reading-order ids", () => {
+    const again = new PositionalCellCanonicalizer().toChunks([page(tableItems)]);
+    expect(again.map((c) => c.id)).toEqual(chunks.map((c) => c.id));
+    expect(chunks.map((c) => c.id)).toEqual(
+      chunks.map((_, i) => `p1-u${i}`),
+    );
   });
 });

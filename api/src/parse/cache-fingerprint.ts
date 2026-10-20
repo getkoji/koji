@@ -15,6 +15,7 @@
 import crypto from "node:crypto";
 
 import type { ResolvedTenantParse } from "./resolve-tenant-parse";
+import type { StructuredParseBackend } from "./factory";
 
 /** Stable fingerprint for the system default heavy provider (no BYO endpoint). */
 export const DEFAULT_PARSE_FINGERPRINT = "default";
@@ -24,15 +25,29 @@ export const DEFAULT_PARSE_FINGERPRINT = "default";
  *
  * Captures what affects parse output:
  *   - the provider slug,
- *   - the source endpoint id, and
- *   - the endpoint's `updatedAt` (so editing the endpoint's config re-parses).
+ *   - the source endpoint id,
+ *   - the endpoint's `updatedAt` (so editing the endpoint's config re-parses),
+ *     and
+ *   - the deployment's structured-parse backend (`ParseConfig.structured`),
+ *     because turning it on changes the output for table-heavy documents —
+ *     cells and a grid projection instead of a reading-order flatten. Without
+ *     it in the key, enabling `KOJI_PARSE_STRUCTURED` would keep serving the
+ *     flattened markdown that was cached before, with no cells, and look like
+ *     the feature simply did not work.
  *
  * Returns {@link DEFAULT_PARSE_FINGERPRINT} when no tenant endpoint resolved
- * (the system default heavy provider is used unchanged).
+ * and no structured backend is enabled (the system default heavy provider is
+ * used unchanged), which is what keeps historical cache keys readable.
  */
-export function parseCacheFingerprint(resolved: ResolvedTenantParse | null): string {
-  if (!resolved || !resolved.endpointId) return DEFAULT_PARSE_FINGERPRINT;
-  return [resolved.providerSlug ?? "", resolved.endpointId, resolved.endpointUpdatedAt ?? ""].join(":");
+export function parseCacheFingerprint(
+  resolved: ResolvedTenantParse | null,
+  structured: StructuredParseBackend = "off",
+): string {
+  const base =
+    !resolved || !resolved.endpointId
+      ? DEFAULT_PARSE_FINGERPRINT
+      : [resolved.providerSlug ?? "", resolved.endpointId, resolved.endpointUpdatedAt ?? ""].join(":");
+  return structured === "off" ? base : `${base}+structured:${structured}`;
 }
 
 /**

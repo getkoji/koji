@@ -2,20 +2,20 @@
  * BYO-parse driver registry.
  *
  * Maps a tenant-configured `parse_endpoints.provider` value to a concrete
- * `ParseProvider` implementation. This is the seam where the actual vendor
- * drivers plug in over the next waves:
+ * `ParseProvider` implementation. This is the seam where the vendor drivers
+ * plug in:
  *
  *   "mistral-ocr"          → MistralOcrProvider          (near pass-through)
  *   "azure-document-intel" → AzureDocIntelProvider       (markdown via prebuilt-layout)
  *   "textract"             → TextractProvider            (JSON→markdown linearizer)
  *   "google-docai"         → GoogleDocAiProvider         (JSON→markdown linearizer)
  *
- * The registry is intentionally EMPTY today: PB-2 (this change) wires the
- * full resolve → decrypt → create cycle and the factory hook, but ships no
- * drivers. With no registered driver, `createParseDriver` returns null, the
- * resolver returns null, and the parse factory falls back to the system
- * default heavy provider — so production behavior is unchanged until a driver
- * lands. This keeps the BYO-parse surface additive and dormant.
+ * All four drivers are registered. With no *configured endpoint*, the resolver
+ * still returns null and the parse factory falls back to the system default
+ * heavy provider, so a deployment that configures nothing behaves exactly as
+ * before — the surface is additive, not dormant.
+ *
+ * Two output classes matter to routing: see {@link parseDriverKind}.
  */
 
 import type { ParseProvider } from "./provider";
@@ -28,9 +28,11 @@ import { TextractProvider } from "./providers/textract";
 export type ParseDriverFactory = (payload: ParseEndpointPayload) => ParseProvider;
 
 /**
- * Provider slug → driver factory. Populated in later waves (one PR per
- * vendor driver). Each driver implements the existing `ParseProvider`
- * interface so the consumer (`SmartParseProvider`) needs no changes.
+ * Provider slug → driver factory. Each driver implements the existing
+ * `ParseProvider` interface so the consumer (`SmartParseProvider`) needs no
+ * changes. Vendor drivers only — the credential-free in-process structured
+ * path is not a BYO endpoint and is wired through `ParseConfig.structured`
+ * instead (see `parse/factory.ts`).
  */
 const PARSE_DRIVERS: Record<string, ParseDriverFactory> = {
   "mistral-ocr": (payload) => new MistralOcrProvider(payload),
@@ -90,14 +92,35 @@ export function hasParseDriver(provider: string): boolean {
 export type ParseDriverKind = "markdown" | "structured";
 
 /**
- * Provider slugs whose drivers produce structured (row/column) output. Future
- * structured drivers (PB-6 positional, PB-7 Google Doc AI, PB-8 Textract)
- * register their slug here so doc-type routing places them in the structured
- * slot. Empty-but-named today, matching the dormant driver registry above.
+ * Provider slugs whose drivers produce structured (row/column) output, i.e.
+ * whose canonicalizer emits `role: "table_cell"` units carrying
+ * `table: { tableId, row, col }` and per-cell geometry.
+ *
+ * **This set was empty from PB-10 until oss-536** — a staged-rollout placeholder
+ * ("empty-but-named, matching the dormant driver registry") that was never
+ * filled in once PB-7 (#370, Google Doc AI) and PB-8 (#371, AWS Textract)
+ * actually shipped their cell-level canonicalizers. The consequence was not a
+ * dormant feature but a silently broken one: `parseDriverKind` returned
+ * `markdown` for *every* provider, so a tenant who configured Document AI or
+ * Textract had it placed in the `heavy` slot. The heavy slot only ever sees
+ * non-digital input (source-type routing sends digital PDFs to pdfjs first), so
+ * a digital PDF never reached the vendor, doc-type routing never activated, and
+ * the whole table path was dead code. Membership here is now derived from one
+ * fact about each driver — does its canonicalizer emit cells? — and must be
+ * updated in the same PR as any new structured driver.
  */
 const STRUCTURED_PROVIDERS = new Set<string>([
-  // "google-docai",
-  // "textract",
+  // Cell-granular canonicalizers: `providers/google-docai.ts#tableCells` and
+  // `providers/textract-canonicalizer.ts#tableToCells`.
+  "google-docai",
+  "textract",
+  // Credential-free, in-process cell geometry from pdfjs (see
+  // `positional-structured.ts`). Not a vendor endpoint — it fills the
+  // structured slot from `ParseConfig.structured`, so it has no slug in
+  // `PARSE_DRIVERS` and no `parse_endpoints` row. Listed here so
+  // `parseDriverKind("positional")` answers correctly for callers that classify
+  // an engine/provider name.
+  "positional",
 ]);
 
 /**

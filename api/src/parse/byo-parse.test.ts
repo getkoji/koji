@@ -193,4 +193,21 @@ describe("parseDriverKind — output-class seam", () => {
     expect(parseDriverKind("azure-document-intel")).toBe("markdown");
     expect(parseDriverKind("something-new")).toBe("markdown");
   });
+
+  // oss-536: this set was empty, so EVERY provider classified as markdown and
+  // the structured slot could never be filled — doc-type routing was dead code.
+  it("classifies the cell-emitting drivers as structured", () => {
+    expect(parseDriverKind("google-docai")).toBe("structured");
+    expect(parseDriverKind("textract")).toBe("structured");
+    expect(parseDriverKind("positional")).toBe("structured");
+  });
+
+  it("keeps a structured driver out of the markdown slot", () => {
+    // The regression guard: a structured provider landing in the `heavy` slot
+    // means a digital PDF never reaches it (source-type routing sends digital
+    // PDFs to pdfjs first), which is exactly how the table path went dark.
+    for (const slug of ["google-docai", "textract"]) {
+      expect(parseDriverKind(slug)).not.toBe("markdown");
+    }
+  });
 });

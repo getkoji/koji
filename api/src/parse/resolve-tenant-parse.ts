@@ -9,12 +9,11 @@
  * Returns null when:
  *   - The tenant has no active parse endpoint configured.
  *   - The endpoint exists but has no `auth_json`, or decryption fails.
- *   - No driver is registered for the endpoint's provider (the current state
- *     for every provider — drivers land in later waves).
+ *   - No driver is registered for the endpoint's provider.
  *
- * A null return is the safe, dormant path: the parse factory falls back to
- * the system default heavy provider (docling sidecar / Modal), so production
- * behavior is unchanged until both a driver and a configured endpoint exist.
+ * A null return is the safe path: the parse factory falls back to the system
+ * default heavy provider (docling sidecar / Modal), so a deployment with no
+ * parse endpoint configured behaves exactly as it did before BYO parse.
  */
 
 import { and, eq, isNull, sql } from "drizzle-orm";

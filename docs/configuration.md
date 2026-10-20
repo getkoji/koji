@@ -479,6 +479,46 @@ These environment variables affect Koji at runtime:
 | `KOJI_CONFIG_PATH` | Path to `koji.yaml` inside the server container. | `/etc/koji/koji.yaml` |
 | `KOJI_SCHEMAS_DIR` | Directory where schema YAML files are stored. | `./schemas/` |
 | `OPENAI_API_KEY` | OpenAI API key. Must be set before `koji start` to pass through to containers. | -- |
+| `KOJI_PARSE_STRUCTURED` | Structured parse provider for table-heavy documents: `positional` or `off`. See below. | `off` |
+
+### `KOJI_PARSE_STRUCTURED`
+
+Set `KOJI_PARSE_STRUCTURED=positional` to parse **table-heavy** documents into
+table cells instead of flattened markdown.
+
+By default Koji routes a document by its source type: a PDF with a text layer
+goes to the in-process pdfjs reader, everything else to the heavy parser. Both
+produce markdown, and flattening a grid to markdown loses which value belongs to
+which column — the row with a blank cell slides its remaining values left, under
+the wrong header.
+
+With `positional` enabled, a second routing dimension is added. Documents whose
+layout reads as a grid (a **geometric** measure — the fraction of lines that are
+multi-column; never a document-type rule) are parsed with the same pdfjs
+geometry Koji already has, but into **cells**: each cell carries its 1-based
+`(row, col)`, its table id, and its own bounding box. The markdown handed to the
+model is then rebuilt from those cells, so column association survives. Prose
+documents are untouched and keep the normal path.
+
+```bash
+# docker compose / .env
+KOJI_PARSE_STRUCTURED=positional
+```
+
+Notes:
+
+- **No credentials, no extra service, no extra cost.** It reads the geometry
+  pdfjs already extracted; nothing leaves the machine.
+- **PDFs with a text layer only.** A scanned PDF, an image, or a DOCX is never
+  routed here — the content-shape check reports anything it cannot sample
+  geometrically as text-heavy.
+- **Inferred, not authoritative.** Columns are recovered by clustering text
+  x-positions. That fixes column association; it does not read ruling lines or
+  merged-cell spans. A tenant that configures Google Document AI or AWS Textract
+  as a parse endpoint gets cells from the vendor's own table model instead, and
+  that endpoint takes precedence.
+- **Off by default**, and when it is off the content-shape check never runs, so
+  the default path pays nothing.
 
 Use `${VAR_NAME}` syntax anywhere in `koji.yaml` to reference environment variables:
 

@@ -24,6 +24,16 @@
  * by `spatialToMarkdown` (one x-clustering implementation, not two). It is
  * additive: the markdown output of the digital path is unchanged; chunks are an
  * extra, parallel view on `ParseResponse.chunks`.
+ *
+ * Two canonicalizers share that reconstruction, differing only in granularity
+ * inside a table region:
+ *
+ *   - {@link PositionalChunkCanonicalizer} — one unit per table *row*. The
+ *     default digital-PDF view (`DigitalPdfProvider`), unchanged.
+ *   - {@link PositionalCellCanonicalizer} — one unit per table *cell*, carrying
+ *     `role: "table_cell"`, `table: { tableId, row, col }` and the cell's own
+ *     box. The credential-free structured view (`PositionalStructuredProvider`),
+ *     i.e. the same cell shape the JSON-native vendors emit, with no cloud call.
  */
 
 import {
@@ -59,6 +69,14 @@ export interface ReconstructedRow {
    * under the wrong header.
    */
   cells: string[];
+  /**
+   * Per-cell bounding boxes, same length and order as {@link cells}, in
+   * normalized page coordinates. `undefined` for a column the row has no text
+   * in (a blank cell has no geometry) or when the page reports no usable size.
+   * This is what lets a consumer address an individual (row, col) cell by its
+   * own box rather than the whole row's.
+   */
+  cellBoxes: (BBox | undefined)[];
   /** Bounding box enclosing the row's text, in normalized page coordinates. */
   bbox?: BBox;
 }
@@ -99,7 +117,8 @@ function lineBBox(line: Line, page: PageDims): BBox | undefined {
  * for the wrong-column failure on dec pages and similar grids.
  *
  * Returns columns plus per-row cell arrays (length === columns.length, blanks
- * preserved) and a normalized row bbox.
+ * preserved), a per-cell box array in the same order, and a normalized row
+ * bbox.
  */
 export function reconstructTable(
   tableLines: Line[],
@@ -122,7 +141,15 @@ export function reconstructTable(
         .join(" ")
         .trim(),
     );
-    rows.push({ cells, bbox: lineBBox(line, page) });
+    // One box per column slot: the union of the boxes of the items that landed
+    // in that slot. An empty slot has no geometry, so it stays undefined rather
+    // than borrowing the row's box.
+    const cellBoxes = buckets.map((items) =>
+      unionBBox(
+        items.map((i) => itemBox(i, page)).filter((b): b is BBox => b !== undefined),
+      ),
+    );
+    rows.push({ cells, cellBoxes, bbox: lineBBox(line, page) });
   }
 
   return { columns, rows };
@@ -204,6 +231,90 @@ export class PositionalChunkCanonicalizer
     }
 
     // Stamp parse-scoped, reading-order ids in one deterministic pass.
+    return assignUnitIds(drafts);
+  }
+}
+
+/**
+ * Cell-granular canonicalizer for the digital-positional path — the
+ * credential-free structured parse view.
+ *
+ * Same geometry source and the same x-clustering as
+ * {@link PositionalChunkCanonicalizer}, but it emits **one unit per table
+ * cell** instead of one per table row: `role: "table_cell"`,
+ * `table: { tableId, row, col }`, and the cell's own bounding box. That is the
+ * shape a consumer needs to address a value at a known (row, col) and resolve
+ * it to an exact box — the same shape the JSON-native vendors (Google Document
+ * AI, AWS Textract) produce, reached without a cloud call.
+ *
+ * `tableId` is parse-scoped (`p<page>-t<index>`), `row`/`col` are 1-based, and
+ * the first row of a detected table region is conventionally the header. Cells
+ * of one table are emitted as a contiguous run in row-major order, so
+ * `spineToMarkdown` reassembles exactly that grid. Blank column slots carry no
+ * text and no geometry, so no unit is emitted for them — the grid projection
+ * re-inserts them as empty cells from the surviving `row`/`col` numbers.
+ *
+ * Non-table lines are emitted exactly as the row-granular canonicalizer emits
+ * them (`role: "line"` with the line's box), so the two differ only inside
+ * table regions.
+ */
+export class PositionalCellCanonicalizer
+  implements ChunkCanonicalizer<ParsedPage[]>
+{
+  toChunks(pages: ParsedPage[]): ParseChunk[] {
+    const drafts: ParseUnitDraft[] = [];
+
+    for (const page of pages) {
+      if (page.textItems.length === 0) {
+        const fallback = page.text.trim();
+        if (fallback) drafts.push({ text: fallback, page: page.pageNum, role: "line" });
+        continue;
+      }
+
+      const lines = buildLines(page.textItems, page.height);
+      let tableIndex = 0;
+
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i]!;
+        if (!line.text) {
+          i++;
+          continue;
+        }
+
+        const tableEnd = detectTableRegion(lines, i, page.width);
+        if (tableEnd > i + 1) {
+          const tableLines = lines.slice(i, tableEnd + 1);
+          const { columns, rows } = reconstructTable(tableLines, page);
+          if (columns.length >= 2) {
+            const tableId = `p${page.pageNum}-t${tableIndex++}`;
+            rows.forEach((row, rowIdx) => {
+              row.cells.forEach((text, colIdx) => {
+                if (!text) return; // blank slot: no text, no geometry, no unit
+                drafts.push({
+                  text,
+                  page: page.pageNum,
+                  bbox: row.cellBoxes[colIdx],
+                  role: "table_cell",
+                  table: { tableId, row: rowIdx + 1, col: colIdx + 1 },
+                });
+              });
+            });
+            i = tableEnd + 1;
+            continue;
+          }
+        }
+
+        drafts.push({
+          text: line.text,
+          page: page.pageNum,
+          bbox: lineBBox(line, page),
+          role: "line",
+        });
+        i++;
+      }
+    }
+
     return assignUnitIds(drafts);
   }
 }
