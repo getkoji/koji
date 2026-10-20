@@ -91,6 +91,8 @@ Each entry under `classes` is a label you can receive back. A class may declare:
 | `patterns` | Regular-expression signals for the keyword tier (case-insensitive). |
 | `exclude_keywords` | Disqualifying keywords. If **any** appears in the window text, this class is ruled out — it can't win the keyword tier and is removed from the LLM/vision candidate list. |
 | `exclude_patterns` | Disqualifying regexes, same rule-out semantics as `exclude_keywords`. |
+| `require_keywords` | Required keywords. When a class declares any `require_keywords`/`require_patterns`, it stays a candidate only if **at least one** appears in the window text; otherwise it is ruled out exactly as an excluded class is. |
+| `require_patterns` | Required regexes, same semantics as `require_keywords`. |
 | `window` | Per-class override of how many leading pages to consider. |
 
 #### Disqualifying signals
@@ -110,7 +112,23 @@ classes:
     description: A commercial package policy with its own property/GL coverage parts
 ```
 
-Disqualification needs textual evidence: a scanned PDF with no text layer that reaches the vision tier has nothing to match, so no class is excluded there. The engine only matches the strings — which strings rule out which class is entirely your configuration, so nothing document-type-specific lives in the engine.
+#### Required signals
+
+`require_keywords`/`require_patterns` are the mirror image: "this document is *never* class X unless it says one of these." They matter at the model tiers. Asked to choose between two look-alike classes, an LLM will sometimes pick the one the document never names — a statement called a receipt, a draft called a signed contract. A class that requires one of its own words can't be chosen for a document that doesn't contain any of them:
+
+```yaml
+classes:
+  receipt:
+    description: Proof that a payment was made
+    require_keywords: ["receipt", "paid"]
+    require_patterns: ["payment\\s+(received|confirmed)"]
+  statement:
+    description: A billing statement — amounts due, not yet paid
+```
+
+A document whose window text has none of the required signals is never labelled `receipt`, by any tier. When both apply, an exclude signal wins: a present required signal does not rescue a class whose `exclude_keywords` also appear.
+
+Disqualification needs textual evidence: a scanned PDF with no text layer that reaches the vision tier has nothing to match, so no class is excluded there — and no required signal is enforced either. The engine only matches the strings — which strings rule out which class is entirely your configuration, so nothing document-type-specific lives in the engine.
 
 `unknown` is reserved — you can't name a class `unknown`, because it's the label
 returned when nothing matches.

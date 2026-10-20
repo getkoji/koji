@@ -2,6 +2,27 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.121.0 — 2026-10-20
+
+**Feature: classifier classes can require a signal — `require_keywords` /
+`require_patterns`.**
+
+The mirror of `exclude_keywords`: a class that declares required signals stays
+a candidate only when at least one of them appears in the window text. If none
+does, the class is ruled out of every tier — it can't win the keyword tier and
+is not offered to the LLM or vision model.
+
+This closes a gap the exclude rules can't: a model choosing between look-alike
+classes sometimes picks one the document never names. In a production backtest
+of a classifier that added a class for one such look-alike, the LLM tier gave
+that label to 7 of 90 documents of a neighbouring class, none of which contained
+any of the class's words. A required signal makes that answer impossible
+without touching the prompt.
+
+A window with no text (a scanned PDF headed for vision) enforces nothing, as
+with exclusions. When a class's exclude and require signals both match, the
+exclusion wins. See [Classifiers](docs/classifiers.md#required-signals).
+
 ## 0.120.1 — 2026-10-20
 
 **Fix: a tenant's Doc AI or Textract endpoint stopped receiving scanned

@@ -36,6 +36,17 @@ export interface ClassifierClass {
   excludeKeywords?: string[];
   /** Disqualifying regex signals. Same rule-out semantics as {@link excludeKeywords}. */
   excludePatterns?: string[];
+  /**
+   * Required keyword signals: the mirror of {@link excludeKeywords}. When a
+   * class declares any `requireKeywords`/`requirePatterns`, it stays a
+   * candidate only if AT LEAST ONE of them appears in the window text;
+   * otherwise it is ruled out of every tier exactly as an excluded class is.
+   * Lets a class say "never me unless the page says X" — a model asked to pick
+   * between look-alikes can't then choose a class the document never names.
+   */
+  requireKeywords?: string[];
+  /** Required regex signals. Same semantics as {@link requireKeywords}. */
+  requirePatterns?: string[];
   /** Per-class page-window override — the cost dial for this class. */
   window?: number;
 }
@@ -156,8 +167,16 @@ export function normalizeConfig(raw: unknown): ClassifierConfig {
       rec.exclude_patterns ?? rec.excludePatterns,
       `class "${id}" exclude_patterns`,
     );
+    const requireKeywords = asStringArray(
+      rec.require_keywords ?? rec.requireKeywords,
+      `class "${id}" require_keywords`,
+    );
+    const requirePatterns = asStringArray(
+      rec.require_patterns ?? rec.requirePatterns,
+      `class "${id}" require_patterns`,
+    );
     // Compile patterns eagerly so a bad regex fails at config time, not runtime.
-    for (const p of [...(patterns ?? []), ...(excludePatterns ?? [])]) {
+    for (const p of [...(patterns ?? []), ...(excludePatterns ?? []), ...(requirePatterns ?? [])]) {
       try {
         new RegExp(p, "i");
       } catch {
@@ -171,6 +190,8 @@ export function normalizeConfig(raw: unknown): ClassifierConfig {
       patterns,
       excludeKeywords,
       excludePatterns,
+      requireKeywords,
+      requirePatterns,
       window: asWindow(rec.window, `class "${id}" window`),
     };
   });

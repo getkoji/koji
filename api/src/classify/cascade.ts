@@ -60,34 +60,44 @@ function validIdSet(classes: ClassifierClass[]): Set<string> {
   return new Set(classes.map((c) => c.id));
 }
 
+/** Whether any keyword (substring) or regex pattern appears in `hay` (lowercased). */
+function anySignal(hay: string, keywords: string[] | undefined, patterns: string[] | undefined): boolean {
+  const kwHit = (keywords ?? []).some((k) => {
+    const kw = k.toLowerCase().trim();
+    return kw.length > 0 && hay.includes(kw);
+  });
+  if (kwHit) return true;
+  return (patterns ?? []).some((p) => {
+    try {
+      return new RegExp(p, "i").test(hay);
+    } catch {
+      return false; // rejected at config-compile time; ignore defensively
+    }
+  });
+}
+
 /**
- * Class ids ruled out by their own `excludeKeywords`/`excludePatterns` appearing
- * in the window text. An excluded class is a hard, deterministic gate: it can't
- * win the keyword tier and is dropped from the LLM/vision candidate list, so no
- * tier can pick it. Requires textual evidence — with no window text (a scanned
- * PDF headed for the vision tier) nothing is excluded, since there's nothing to
- * disqualify on. Generic: the engine matches the strings; which strings rule out
- * which class is entirely user config.
+ * Class ids ruled out of every tier by the window text: a class whose own
+ * `excludeKeywords`/`excludePatterns` appear, or a class that declares
+ * `requireKeywords`/`requirePatterns` none of which appear. A ruled-out class
+ * is a hard, deterministic gate: it can't win the keyword tier and is dropped
+ * from the LLM/vision candidate list, so no tier can pick it. Requires textual
+ * evidence — with no window text (a scanned PDF headed for the vision tier)
+ * nothing is ruled out either way, since there's nothing to read. Generic: the
+ * engine matches the strings; which strings gate which class is user config.
  */
 function excludedClassIds(classes: ClassifierClass[], pages: PageText[]): Set<string> {
   const out = new Set<string>();
   if (pages.length === 0) return out;
   const hay = pages.map((p) => p.text).join("\n").toLowerCase();
+  if (!hay.trim()) return out;
   for (const c of classes) {
-    const kwHit = (c.excludeKeywords ?? []).some((k) => {
-      const kw = k.toLowerCase().trim();
-      return kw.length > 0 && hay.includes(kw);
-    });
-    const patHit =
-      !kwHit &&
-      (c.excludePatterns ?? []).some((p) => {
-        try {
-          return new RegExp(p, "i").test(hay);
-        } catch {
-          return false; // rejected at config-compile time; ignore defensively
-        }
-      });
-    if (kwHit || patHit) out.add(c.id);
+    if (anySignal(hay, c.excludeKeywords, c.excludePatterns)) {
+      out.add(c.id);
+      continue;
+    }
+    const requires = (c.requireKeywords?.length ?? 0) + (c.requirePatterns?.length ?? 0);
+    if (requires > 0 && !anySignal(hay, c.requireKeywords, c.requirePatterns)) out.add(c.id);
   }
   return out;
 }

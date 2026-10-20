@@ -370,3 +370,105 @@ describe("runCascade — disqualifying signals (exclude_keywords / exclude_patte
     expect(out.label).toBe("umbrella");
   });
 });
+
+describe("runCascade — required signals (require_keywords / require_patterns)", () => {
+  const llm = (label: string) =>
+    vi.fn(async (_prompt: string, _json?: boolean) => JSON.stringify({ label, confidence: 0.9, evidence_page: 1 }));
+
+  it("never offers the LLM a class whose required signal is absent", async () => {
+    // The model would say 'receipt', but the page never says paid/receipt, so
+    // the class is not a candidate and its answer is rejected.
+    const generate = llm("receipt");
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "Statement for March. Amount due $120 by the 30th." }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+      provider: { generate } as unknown as ModelProvider,
+    };
+    const config = normalizeConfig({
+      classes: {
+        receipt: { description: "proof that a payment was made", require_keywords: ["receipt", "paid"] },
+        statement: { description: "a billing statement" },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).not.toBe("receipt");
+    const promptArg = generate.mock.calls[0]?.[0] ?? "";
+    expect(promptArg).toContain("a billing statement");
+    expect(promptArg).not.toContain("proof that a payment was made");
+  });
+
+  it("keeps the class a candidate when one required signal is present", async () => {
+    const generate = llm("receipt");
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "Thank you. Your order was PAID in full on March 3." }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+      provider: { generate } as unknown as ModelProvider,
+    };
+    const config = normalizeConfig({
+      classes: {
+        receipt: { description: "proof that a payment was made", require_keywords: ["receipt", "paid"] },
+        statement: { description: "a billing statement" },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("receipt");
+    expect(out.method).toBe("llm");
+  });
+
+  it("supports require_patterns (regex), and gates the keyword tier too", async () => {
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "order confirmation total amount due" }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+    };
+    const config = normalizeConfig({
+      classes: {
+        // Would win the keyword tier on 'total' alone — but its required
+        // pattern (a receipt number) is not on the page.
+        receipt: { keywords: ["total"], require_patterns: ["receipt\\s*(no\\.?|#)\\s*\\d+"] },
+        statement: { keywords: ["amount due"] },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("statement");
+  });
+
+  it("rules nothing out when the window has no text (the vision tail decides)", async () => {
+    const generateWithImage = vi.fn(async () => JSON.stringify({ label: "receipt", confidence: 0.8 }));
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "   " }]),
+      classifyDocType: fakeDocType("scanned_pdf"),
+      provider: { generate: vi.fn(), generateWithImage } as unknown as ModelProvider,
+      renderPageImages: vi.fn(async () => ["img"]),
+    };
+    const config = normalizeConfig({
+      classes: {
+        receipt: { description: "proof that a payment was made", require_keywords: ["receipt"] },
+        statement: { description: "a billing statement" },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).toBe("receipt");
+    expect(out.method).toBe("vision");
+  });
+
+  it("lets an exclude signal win over a present required signal", async () => {
+    const generate = llm("receipt");
+    const deps: CascadeDeps = {
+      getPageTexts: fakePages([{ page: 1, text: "This is not a receipt. Amount due $40." }]),
+      classifyDocType: fakeDocType("digital_pdf"),
+      provider: { generate } as unknown as ModelProvider,
+    };
+    const config = normalizeConfig({
+      classes: {
+        receipt: {
+          description: "proof that a payment was made",
+          require_keywords: ["receipt"],
+          exclude_keywords: ["not a receipt"],
+        },
+        statement: { description: "a billing statement" },
+      },
+    });
+    const out = await runCascade(input, config, deps);
+    expect(out.label).not.toBe("receipt");
+  });
+});
