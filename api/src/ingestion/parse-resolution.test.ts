@@ -22,6 +22,12 @@ const dockerConfig: ParseConfig = { backend: "docker", dockerUrl: "http://parse:
 const defaultProvider: ParseProvider = { parse: async () => ({ markdown: "", pages: 0, ocr_skipped: false, engine: "docling" }) };
 const tenantProvider: ParseProvider = { parse: async () => ({ markdown: "", pages: 0, ocr_skipped: false, engine: "docling" }) };
 
+/** Providers that announce which slot served a document, so a test can tell
+ *  the tenant's vendor apart from the deployment default. */
+const namedProvider = (engine: string): ParseProvider => ({
+  parse: async () => ({ markdown: `parsed by ${engine}`, pages: 1, ocr_skipped: false, engine }),
+});
+
 beforeEach(() => {
   // Skip the chunk wrapper so the returned provider is the SmartParseProvider.
   process.env.KOJI_CHUNK_PARSE_THRESHOLD = "0";
@@ -74,5 +80,55 @@ describe("buildEffectiveParseProvider — slot selection", () => {
     });
     expect(result).not.toBe(defaultProvider);
     expect(typeof result.parse).toBe("function");
+  });
+
+  // ── oss-560: a structured endpoint must not vacate the heavy slot ──
+  //
+  // oss-536 reclassified the cell-emitting drivers (Doc AI, Textract) from
+  // `markdown` to `structured`. That moved a configured endpoint out of
+  // `tenantHeavy`, and an empty heavy slot falls back to the deployment
+  // default — Modal on the hosted platform. Scanned documents a tenant had
+  // been sending to their own vendor silently started billing through the
+  // platform's backend instead. The assertions above could not catch it:
+  // "not the default provider" is true either way.
+  it("routes a SCANNED document to the tenant's structured endpoint, not the deployment default", async () => {
+    const tenantVendor = namedProvider("tenant-docai");
+    const deploymentDefault = namedProvider("deployment-default-modal");
+
+    const result = await buildEffectiveParseProvider(dockerConfig, deploymentDefault, {
+      provider: tenantVendor,
+      kind: "structured",
+    });
+
+    // A non-PDF is unambiguously heavy-path: no text layer to route digitally.
+    const parsed = await result.parse({
+      filename: "scan.png",
+      mimeType: "image/png",
+      fileBuffer: Buffer.from("not-a-pdf"),
+    });
+
+    expect(parsed.engine).toBe("tenant-docai");
+    expect(parsed.engine).not.toBe("deployment-default-modal");
+  });
+
+  it("still routes a scanned document to a markdown tenant endpoint", async () => {
+    const tenantVendor = namedProvider("tenant-markdown");
+    const result = await buildEffectiveParseProvider(dockerConfig, namedProvider("deployment-default-modal"), {
+      provider: tenantVendor,
+      kind: "markdown",
+    });
+    const parsed = await result.parse({
+      filename: "scan.png",
+      mimeType: "image/png",
+      fileBuffer: Buffer.from("not-a-pdf"),
+    });
+    expect(parsed.engine).toBe("tenant-markdown");
+  });
+
+  it("leaves the deployment default serving scans when NO tenant endpoint resolves", async () => {
+    // The dormant guarantee: an unconfigured tenant keeps the default backend.
+    const deploymentDefault = namedProvider("deployment-default-modal");
+    const result = await buildEffectiveParseProvider(dockerConfig, deploymentDefault, null);
+    expect(result).toBe(deploymentDefault);
   });
 });
