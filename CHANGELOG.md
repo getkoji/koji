@@ -2,6 +2,33 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.120.1 — 2026-10-20
+
+**Fix: a tenant's Doc AI or Textract endpoint stopped receiving scanned
+documents in 0.118.0, and that traffic silently moved to the deployment's
+default parse backend.**
+
+0.118.0 corrected a real misclassification — the cell-emitting drivers were
+labelled `markdown`, so a configured Doc AI endpoint sat in the heavy slot and
+digital PDFs never reached it. Reclassifying them as `structured` fixed that
+and introduced a worse problem: it moved the endpoint *out* of the heavy slot,
+and an empty heavy slot falls back to the deployment default. On the hosted
+platform that default is Modal. Scanned, image and non-PDF documents a tenant
+had been sending to the vendor they configured started being parsed — and
+billed — through the platform backend instead, with nothing in the product
+indicating a change.
+
+These drivers are full document parsers, not table-only add-ons, so a
+structured tenant endpoint now fills **both** slots: it serves scanned input as
+it did before 0.118.0, and table-heavy digital PDFs still get the cell path
+0.118.0 added. That is strictly better than either side of the regression.
+
+A deployment-level structured backend (`KOJI_PARSE_STRUCTURED=positional`)
+deliberately does not do this — it is pdfjs geometry and cannot parse a scan.
+
+If you run the hosted platform or set a default parse backend, check your
+backend's usage for the window between 0.118.0 and this release.
+
 ## 0.120.0 — 2026-10-19
 
 **`koji test`, `koji bench` and `koji pipeline-bench` now score with

@@ -154,8 +154,26 @@ export function readParseProviderPin(configJson: unknown): string | null {
  *
  * When a provider resolves, it fills the matching factory slot: `markdown`
  * providers replace the default heavy (text path); `structured` providers
- * enable PB-10 doc-type routing for table-heavy docs while the default heavy
- * still serves text-heavy docs.
+ * additionally enable PB-10 doc-type routing for table-heavy docs.
+ *
+ * A structured tenant endpoint fills **both** slots, and that is not a
+ * convenience — it is the difference between a tenant's documents going to the
+ * vendor they configured and going to the deployment's default backend.
+ *
+ * Until oss-536 the cell-emitting drivers were misclassified as `markdown`, so
+ * a configured Doc AI or Textract endpoint landed in `tenantHeavy` and served
+ * every scanned, image and non-PDF document. Reclassifying them as
+ * `structured` moved them to `tenantStructured` and left heavy empty, which
+ * falls back to the deployment default — Modal on the hosted platform. The
+ * effect was silent and billable: the tenant kept paying their vendor nothing
+ * and the platform started paying per page for work the vendor had been doing.
+ *
+ * These drivers are full document parsers, not table-only add-ons, so filling
+ * both slots restores the previous routing for scanned input while keeping the
+ * new cell path for table-heavy digital PDFs. It is strictly better than either
+ * side of that regression. A deployment-level structured backend
+ * (`ParseConfig.structured`, e.g. `positional`) deliberately does NOT do this:
+ * it is pdfjs geometry and cannot parse a scan.
  *
  * Exported for unit testing the dormant guarantee + slot selection without a DB.
  */
@@ -167,7 +185,7 @@ export async function buildEffectiveParseProvider(
   if (!resolved || !parseConfig) return defaultProvider;
   const opts: ParseProviderOptions =
     resolved.kind === "structured"
-      ? { tenantStructured: resolved.provider }
+      ? { tenantStructured: resolved.provider, tenantHeavy: resolved.provider }
       : { tenantHeavy: resolved.provider };
   return createParseProvider(parseConfig, opts);
 }
