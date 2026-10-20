@@ -15,33 +15,49 @@
  *       "effective_date": { "expected": "2026-03-26", "got": "03/26/2026" }
  *     },
  *     "specs": {                       // optional: schema spec per field, for
- *       "line_items": { ... }          // element_key matching + informational
- *     }                                // sub-field exclusion
+ *       "line_items": { ... }          // element_key matching, informational
+ *     }                                // sub-fields, and declared `match:`
  *   }
  *
  * Output is a JSON object on stdout:
  *
  *   {
  *     "scorer": "@koji/score",
- *     "scorer_version": "0.1.0",
- *     "total": 2, "matched": 2, "score": 1,
- *     "fields": { "policy_number": { "score": 1, "match": true, "diff": {...} } }
+ *     "scorer_version": "0.2.0",
+ *     "total": 2, "matched": 2,
+ *     "metrics": {
+ *       "presence_recall": 1, "value_accuracy": 1,
+ *       "fabrication_rate": null, "null_agreement": null,
+ *       "counts": { "present": 2, "found": 2, ... }
+ *     },
+ *     "fields": {
+ *       "policy_number": {
+ *         "score": 1, "match": true, "bucket": "found",
+ *         "expected_present": true, "got_present": true, "diff": {...}
+ *       }
+ *     }
  *   }
  *
- * `scorer_version` is stamped on every result so run artifacts can record which
- * scorer produced them and refuse cross-version comparison.
+ * There is deliberately no single `score`. It used to be the mean of every
+ * field's credit, which counted a correctly-declined field as a pass and so
+ * gave a document that extracted nothing a floor of whatever fraction of its
+ * fields are legitimately empty (19.2% on the reference corpus run). The four
+ * metrics in `metrics` replace it; `metrics.ts` explains why each is separate,
+ * and per-field `bucket` / `expected_present` / `got_present` let an external
+ * harness recompute them over any slice it likes.
+ *
+ * `scorer_version` is stamped on every result so run artifacts record which
+ * scorer produced them and can refuse cross-version comparison.
  *
  * Exit codes: 0 scored (whatever the result), 1 bad usage or malformed input.
  * A mismatch is not an error — callers read the JSON.
  */
 
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 
-import { compareValues, type CompareSpec } from "./compare.js";
-
-const require = createRequire(import.meta.url);
-const { version: SCORER_VERSION } = require("../package.json") as { version: string };
+import { type CompareSpec } from "./compare.js";
+import { emptyCounts, fieldOutcome, metricsFromCounts, tally } from "./metrics.js";
+import { SCORER_NAME, SCORER_VERSION } from "./version.js";
 
 interface FieldInput {
   expected?: unknown;
@@ -60,7 +76,11 @@ const USAGE = `koji-score — score extracted values against ground truth
   koji-score --version
 
 Input:  {"fields": {"<name>": {"expected": …, "got": …}}, "specs": {"<name>": {…}}}
-Output: {"scorer_version": …, "total": …, "matched": …, "score": …, "fields": {…}}
+Output: {"scorer_version": …, "total": …, "matched": …, "metrics": {…}, "fields": {…}}
+
+Reports four metrics, never one accuracy number: presence_recall and
+value_accuracy over the fields ground truth has a value for, fabrication_rate
+and null_agreement over the fields it leaves empty.
 `;
 
 function fail(message: string): never {
@@ -84,6 +104,11 @@ function readInput(argv: string[]): string {
   } catch (err) {
     fail(`cannot read stdin: ${(err as Error).message}`);
   }
+}
+
+/** Round a metric for output, or pass `null` through untouched. */
+function round(v: number | null): number | null {
+  return v === null ? null : Math.round(v * 1e6) / 1e6;
 }
 
 function main(argv: string[]): void {
@@ -113,30 +138,49 @@ function main(argv: string[]): void {
 
   const specs = parsed.specs ?? {};
   const results: Record<string, unknown> = {};
+  const counts = emptyCounts();
   let matched = 0;
-  let scoreSum = 0;
   let total = 0;
 
   for (const [name, field] of Object.entries(fields)) {
     if (field === null || typeof field !== "object" || Array.isArray(field)) {
       fail(`field ${JSON.stringify(name)} must be an object with expected/got`);
     }
-    const result = compareValues(field.expected, field.got, specs[name]);
-    results[name] = result;
+    const outcome = fieldOutcome(field.expected, field.got, specs[name]);
+    // Per-field bucket and presence flags travel with the result so a harness
+    // can recompute the metrics over its own slices (per category, per field
+    // type) without reimplementing the classification.
+    results[name] = {
+      score: outcome.score,
+      match: outcome.match,
+      bucket: outcome.bucket,
+      expected_present: outcome.expectedPresent,
+      got_present: outcome.gotPresent,
+      diff: outcome.result.diff,
+    };
     total += 1;
-    scoreSum += result.score;
-    if (result.match) matched += 1;
+    if (outcome.match) matched += 1;
+    tally(counts, outcome);
   }
+
+  const metrics = metricsFromCounts(counts);
 
   process.stdout.write(
     `${JSON.stringify({
-      scorer: "@koji/score",
+      scorer: SCORER_NAME,
       scorer_version: SCORER_VERSION,
       total,
+      // Exact-match field count over EVERY field, including correctly-absent
+      // ones. A count, not a rate — `matched / total` is the ratio that had the
+      // all-null floor, which is why no such ratio is emitted here.
       matched,
-      // Mean of per-field scores. Callers that need presence recall /
-      // fabrication rate split out (A3) compute them from `fields`.
-      score: total > 0 ? scoreSum / total : 1,
+      metrics: {
+        presence_recall: round(metrics.presenceRecall),
+        value_accuracy: round(metrics.valueAccuracy),
+        fabrication_rate: round(metrics.fabricationRate),
+        null_agreement: round(metrics.nullAgreement),
+        counts: { ...metrics.counts, credit: round(metrics.counts.credit) },
+      },
       fields: results,
     })}\n`,
   );

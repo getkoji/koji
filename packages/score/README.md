@@ -55,6 +55,68 @@ scores exactly as it did before this existed. `numeric` and `date` are
 comparing it as text. An unrecognised mode throws, so a typo cannot look
 configured while scoring differently.
 
+## The four metrics
+
+There is no single accuracy number, by design. One number folded four different
+things into one average, and one of them was "correctly absent" — a field ground
+truth says has no value, which the extraction also left empty. Counting that as
+a pass gives an extraction of **nothing at all** a non-zero floor (19.2% on the
+reference corpus run — 1,365 of 7,121 fields), and tightening a prompt until the
+model declines more often can push the number *up* while the extraction gets
+less useful.
+
+So four are reported, over two disjoint populations of fields:
+
+| metric | population | question |
+|---|---|---|
+| `presenceRecall` | ground truth HAS a value | did we produce a value at all? |
+| `valueAccuracy` | …of those, the ones we produced | is it right? (partial credit) |
+| `fabricationRate` | ground truth has NO value | how often did we invent one? |
+| `nullAgreement` | …the same population | how often did we correctly decline? |
+
+```ts
+import { summarizeFields } from "@koji/score";
+
+const { metrics } = summarizeFields({
+  filer: { expected: "Acme Corp", got: null },
+  auditor: { expected: null, got: null },
+});
+// presenceRecall: 0, valueAccuracy: null, fabricationRate: 0, nullAgreement: 1
+```
+
+A document that extracts nothing scores **0 presence recall**. `nullAgreement`
+is reported separately and never folded into any other number — folding it in is
+what produced the floor.
+
+Each metric is `null` when its population is empty, not 0 or 1. A run with no
+empty-ground-truth fields has no fabrication rate; reporting 0 would read as "it
+never fabricates", which is a claim the run did not test.
+
+`fieldOutcome(expected, got, spec?)` classifies a single field as `found` /
+`missed` / `fabricated` / `agreed` and carries its `CompareResult`;
+`tally` + `metricsFromCounts` aggregate over any slice, because `MetricCounts`
+is additive.
+
+## `scorer_version`
+
+Every result is stamped with `SCORER_VERSION`. A score is only meaningful
+relative to the code that produced it: the difference between two runs scored by
+different versions includes whatever the scorer changed, and the two are not
+separable after the fact.
+
+```ts
+import { assertComparableScorerVersion, scorerVersionMismatch } from "@koji/score";
+
+assertComparableScorerVersion(artifact.scorer_version, "baseline run"); // throws
+const warning = scorerVersionMismatch(stored.scorerVersion, "run abc");  // or returns a message
+```
+
+Use `assertComparableScorerVersion` where the whole operation IS a comparison (a
+regression gate, a baseline diff) and `scorerVersionMismatch` where an old
+artifact is merely being displayed. Comparability is string equality, not
+semver-aware: a patch-level date-parsing fix moves numbers, which is exactly the
+case the guard exists to catch.
+
 ## Use it from the command line
 
 ```bash
@@ -71,8 +133,11 @@ Input is a JSON object on stdin (or `--input file.json`):
 }
 ```
 
-Output carries `scorer_version` so a run artifact can record which scorer
-produced it. **Numbers from different scorer versions are not comparable.**
+Output carries `scorer_version`, the `metrics` block, and per-field `bucket` /
+`expected_present` / `got_present` so an external harness can recompute the four
+metrics over its own slices without reimplementing the classification. There is
+deliberately no single `score` key. **Numbers from different scorer versions are
+not comparable.**
 
 Exit code is 0 whenever scoring completed — a mismatch is a result, not an
 error — and 1 on bad usage or malformed input.

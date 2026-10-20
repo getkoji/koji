@@ -7,6 +7,16 @@
  * outside routes/schemas.ts so the finalizer can import it without a cycle.
  */
 
+import {
+  emptyCounts,
+  fieldOutcome,
+  metricsFromCounts,
+  SCORER_VERSION,
+  tally,
+  type MetricCounts,
+  type ScoreMetrics,
+} from "@koji/score";
+
 import { compareValues, type ArrayElemDiff, type ValueDiff } from "../extract/value-compare";
 
 /** Per-field chunk-routing record produced by the intelligent pipeline. */
@@ -141,7 +151,7 @@ export function computeValidateResult(
     for (const k of Object.keys(r.groundTruth)) allFields.add(k);
   }
 
-  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; elements?: ElementTally; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
+  const fieldResults: Array<{ name: string; accuracy: number; prevAccuracy: number | null; status: string; precision?: number; recall?: number; elements?: ElementTally; metrics: ScoreMetrics; failingDocs: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> }> = [];
   let totalScore = 0;
   let totalChecked = 0;
   // Run-wide element tally across every array field (oss-507). A document is
@@ -149,6 +159,11 @@ export function computeValidateResult(
   // wrong cell fails the whole document — `docsPassed` cannot express array
   // quality, and it saturates exactly where most of the work happens.
   const runElements = emptyTally();
+  // Run-wide presence/fabrication counts (oss-523). Accumulated over every
+  // (field, doc) pair INCLUDING the ones whose ground truth is empty — those
+  // are skipped by the accuracy path below, which is why fabrication was
+  // previously unmeasurable from a validate run.
+  const runCounts = emptyCounts();
   const failingDocsMap = new Map<string, { id: string; filename: string; failedFields: string[]; worstConfidence: number }>();
 
   for (const fieldName of allFields) {
@@ -158,13 +173,33 @@ export function computeValidateResult(
     // array, so array fields can report both alongside the F1 accuracy.
     let precSum = 0, recSum = 0, arrChecked = 0;
     const fieldElements = emptyTally();
+    const fieldCounts: MetricCounts = emptyCounts();
     const failing: Array<{ id: string; filename: string; diff: ValueDiff; score: number; confidence: number; routingDiagnosis?: RoutingDiagnosis }> = [];
 
     for (const r of results) {
       const expected = r.groundTruth[fieldName];
+
+      // Classify the pair before the accuracy path's null check (oss-523).
+      // `fieldOutcome` buckets it as found / missed / fabricated / agreed and
+      // carries the comparison result, so the four metrics see every pair —
+      // including the ones ground truth leaves empty, which `overallAccuracy`
+      // skips and therefore can never report a fabrication rate from.
+      //
+      // Presence is judged by the scorer's `hasValue` ("", [], {} and an
+      // object of nothing but `__` provenance keys all count as empty), which
+      // is deliberately wider than the `=== null` test below. The two are
+      // independent on purpose: widening the accuracy denominator here would
+      // silently move `overallAccuracy` on every existing schema.
+      const outcome = fieldOutcome(expected, r.extracted[fieldName], fieldSpec);
+      tally(fieldCounts, outcome);
+      tally(runCounts, outcome);
+
       if (expected === undefined || expected === null) continue;
       checked++;
-      const cmp = compareValues(expected, r.extracted[fieldName], fieldSpec);
+      // Same `compareValues(expected, got, fieldSpec)` call the accuracy path
+      // has always made — reused from the outcome rather than repeated, so a
+      // big array corpus isn't scored twice per field.
+      const cmp = outcome.result;
       scoreSum += cmp.score;
       if (cmp.diff.kind === "array") {
         precSum += cmp.diff.precision;
@@ -232,6 +267,11 @@ export function computeValidateResult(
       status,
       ...prAgg,
       ...(arrChecked > 0 ? { elements: fieldElements } : {}),
+      // The four metrics for this field across every doc (oss-523). Ratios in
+      // [0,1], not percentages — these are the numbers that must agree with
+      // `koji-score`'s output and an external harness's, so they carry the
+      // scorer's units rather than the dashboard's.
+      metrics: metricsFromCounts(fieldCounts),
       failingDocs: failing,
     });
   }
@@ -240,7 +280,51 @@ export function computeValidateResult(
   const overallAccuracy = totalChecked > 0 ? (totalScore / totalChecked) * 100 : 100;
 
   return {
+    /**
+     * Mean per-field credit over the (field, doc) pairs whose ground truth
+     * carries a value. Equivalently `presenceRecall × valueAccuracy` on this
+     * run's population, as a percentage.
+     *
+     * Kept because a great deal reads it — the DB column, the dashboard, the
+     * tune loops, `checkRunSanity` — and because, unlike the benchmark number
+     * oss-523 removed, it has never counted a correctly-absent field as a
+     * pass, so it carries no all-null floor. What it cannot tell you is WHICH
+     * of the two halves moved, or whether the run fabricated anything at all.
+     * That is what `metrics` is for; prefer it.
+     */
     overallAccuracy,
+    /**
+     * The four reported metrics (oss-523), as ratios in [0,1] with `null` for a
+     * population this run never tested:
+     *
+     *   presenceRecall    of the fields ground truth has a value for, how many
+     *                     we produced any value for
+     *   valueAccuracy     of the ones we produced, how much credit they earned
+     *   fabricationRate   of the fields ground truth leaves empty, how many we
+     *                     invented a value for
+     *   nullAgreement     of those, how many we correctly left empty — reported
+     *                     separately and never folded into a headline number
+     *
+     * Computed over EVERY (field, doc) pair, including the empty-ground-truth
+     * ones `overallAccuracy` skips, so fabrication is measurable from a
+     * validate run for the first time.
+     */
+    metrics: metricsFromCounts(runCounts),
+    /**
+     * Which scorer produced every number above (oss-525).
+     *
+     * A score is only meaningful relative to the code that produced it: the
+     * difference between two runs scored by different versions includes
+     * whatever the scorer changed, and the two are not separable afterwards.
+     * The stamp rides along in `result_json`, so a stored run can be refused —
+     * or loudly flagged — as a baseline for a run scored by a newer version.
+     *
+     * Note that `prevAccuracy` and `regressions` are NOT exposed to this: they
+     * are recomputed here from the previous run's raw extractions using the
+     * scorer in this process, so both sides of that comparison are always the
+     * same version by construction.
+     */
+    scorerVersion: SCORER_VERSION,
     /**
      * How many field-value comparisons this run actually made. Zero means
      * nothing was scored — and `overallAccuracy` reports 100 in that case,

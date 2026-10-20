@@ -31,6 +31,14 @@ from typing import Any
 
 import yaml
 
+from .metrics import (
+    SCORER_NAME,
+    MetricCounts,
+    counts_from_field_results,
+    metrics_from_counts,
+    scorer_stamp,
+    scorer_version,
+)
 from .test_runner import FieldResult, compare_results
 
 # ── Data model ────────────────────────────────────────────────────────
@@ -62,6 +70,11 @@ class DocumentBenchResult:
     @property
     def all_passed(self) -> bool:
         return self.error is None and self.passed == self.total
+
+    @property
+    def metric_counts(self) -> MetricCounts:
+        """Presence / fabrication counts for this document (oss-523)."""
+        return counts_from_field_results(self.field_results)
 
 
 @dataclass
@@ -95,6 +108,14 @@ class CategoryBenchResult:
     def mean_elapsed_ms(self) -> float:
         valid = [d.elapsed_ms for d in self.document_results if d.error is None]
         return sum(valid) / len(valid) if valid else 0.0
+
+    @property
+    def metric_counts(self) -> MetricCounts:
+        """Presence / fabrication counts rolled up from this category's docs."""
+        total = MetricCounts()
+        for d in self.document_results:
+            total.merge(d.metric_counts)
+        return total
 
 
 @dataclass
@@ -131,17 +152,40 @@ class BenchResult:
     def all_passed(self) -> bool:
         return self.error_count == 0 and self.passed_fields == self.total_fields
 
+    @property
+    def metric_counts(self) -> MetricCounts:
+        """Presence / fabrication counts rolled up across every category."""
+        total = MetricCounts()
+        for c in self.category_results:
+            total.merge(c.metric_counts)
+        return total
+
     def to_dict(self) -> dict:
-        """Machine-readable JSON output, suitable for CI and accuracy dashboards."""
+        """Machine-readable JSON output, suitable for CI and accuracy dashboards.
+
+        Carries the four metrics (oss-523) and the scorer stamp (oss-525)
+        alongside the legacy `accuracy`. `accuracy` is retained because
+        published numbers reference it, but it counts a correctly-absent field
+        as a pass and so has an all-null floor — read `metrics` instead, and
+        see `cli/metrics.py` for why there is no longer one number.
+        """
         return {
             "model": self.model,
             "corpus_path": self.corpus_path,
             "started_at": self.started_at,
             "elapsed_ms": self.elapsed_ms,
+            # Which scorer produced every number below. Two runs scored by
+            # different versions are not comparable (oss-525).
+            **scorer_stamp(),
             "total_documents": self.total_documents,
             "total_fields": self.total_fields,
             "passed_fields": self.passed_fields,
+            # DEPRECATED: passed_fields / total_fields, where "correctly
+            # absent" counts as passed. A document that extracts nothing
+            # scores whatever fraction of its fields are legitimately empty
+            # (19.2% on the reference corpus run). Use `metrics`.
             "accuracy": self.accuracy,
+            "metrics": metrics_from_counts(self.metric_counts),
             "error_count": self.error_count,
             "categories": [
                 {
@@ -150,6 +194,7 @@ class BenchResult:
                     "fields_checked": c.total_fields,
                     "passed": c.passed_fields,
                     "accuracy": c.accuracy,
+                    "metrics": metrics_from_counts(c.metric_counts),
                     "errors": c.error_count,
                     "mean_elapsed_ms": c.mean_elapsed_ms,
                     "documents_detail": [
@@ -159,6 +204,7 @@ class BenchResult:
                             "passed": d.passed,
                             "total": d.total,
                             "accuracy": d.accuracy,
+                            "metrics": metrics_from_counts(d.metric_counts),
                             "elapsed_ms": d.elapsed_ms,
                             "error": d.error,
                             "failures": [
@@ -514,11 +560,16 @@ def format_report(result: BenchResult) -> str:
             lines.append(f"[{cat.category}] no documents found")
             continue
 
-        accuracy_pct = cat.accuracy * 100
+        cat_counts = cat.metric_counts
+        cat_metrics = metrics_from_counts(cat_counts)
+        recall = cat_metrics["presence_recall"]
+        value = cat_metrics["value_accuracy"]
         lines.append(
             f"[{cat.category}] {cat.total_documents} docs, "
-            f"{cat.passed_fields}/{cat.total_fields} fields "
-            f"({accuracy_pct:.1f}%, avg {cat.mean_elapsed_ms / 1000:.1f}s/doc)"
+            f"{cat.passed_fields}/{cat.total_fields} exact fields, "
+            f"recall {'n/a' if recall is None else f'{recall * 100:.1f}%'} / "
+            f"value {'n/a' if value is None else f'{value * 100:.1f}%'}, "
+            f"avg {cat.mean_elapsed_ms / 1000:.1f}s/doc"
         )
 
         for doc in cat.document_results:
@@ -536,15 +587,41 @@ def format_report(result: BenchResult) -> str:
 
     lines.append("")
     lines.append("=" * 60)
-    accuracy_pct = result.accuracy * 100
     lines.append(
-        f"TOTAL: {result.passed_fields}/{result.total_fields} fields "
-        f"across {result.total_documents} documents "
-        f"({accuracy_pct:.1f}%)"
+        f"TOTAL: {result.passed_fields}/{result.total_fields} exact fields across {result.total_documents} documents"
     )
+    lines.append("")
+    lines.extend(format_metrics(result.metric_counts))
     if result.error_count > 0:
         lines.append(f"Errors: {result.error_count} documents failed to extract")
     lines.append(f"Elapsed: {result.elapsed_ms / 1000:.1f}s")
+    lines.append(f"Scorer: {SCORER_NAME} {scorer_version()}")
     lines.append("")
 
     return "\n".join(lines)
+
+
+def format_metrics(counts: MetricCounts) -> list[str]:
+    """Render the four metrics as report lines (oss-523).
+
+    Reported as four, never folded into one, and with the population each is
+    computed over spelled out — "94.0%" means nothing without "of 1,431
+    fields ground truth has a value for". See `cli/metrics.py`.
+    """
+    m = metrics_from_counts(counts)
+
+    def pct(key: str) -> str:
+        v = m[key]
+        # `None` is not 0: it means the run had no fields in that population,
+        # so the metric was never measured. Saying 0% would be a claim.
+        return "  n/a" if v is None else f"{v * 100:5.1f}%"
+
+    return [
+        f"  presence recall   {pct('presence_recall')}   "
+        f"({counts.found}/{counts.present} fields ground truth has a value for)",
+        f"  value accuracy    {pct('value_accuracy')}   (credit over the {counts.found} we produced a value for)",
+        f"  fabrication rate  {pct('fabrication_rate')}   "
+        f"({counts.fabricated}/{counts.absent} fields ground truth leaves empty)",
+        f"  null agreement    {pct('null_agreement')}   ({counts.agreed}/{counts.absent} correctly declined)",
+        "",
+    ]

@@ -425,6 +425,29 @@ def _render_validate(slug: str, r: dict, explain: bool = False, candidate: bool 
         f"[cyan]{version}[/cyan]{bump_disp}{dedup_disp}\n"
     )
 
+    # The four metrics (oss-523). `overall` above is the mean credit over the
+    # fields ground truth has a value for — one number that cannot say whether
+    # a move came from finding fewer values or getting more of them wrong, and
+    # that reports nothing at all about fabrication.
+    metrics = r.get("metrics")
+    if metrics:
+        counts = metrics.get("counts") or {}
+
+        def _pct(key: str) -> str:
+            v = metrics.get(key)
+            # None is not 0: the run had no fields in that population, so the
+            # metric was never measured. "0.0%" would be a claim.
+            return "[dim]n/a[/dim]" if v is None else f"{v * 100:.1f}%"
+
+        console.print(
+            f"[bold]presence[/bold] {_pct('presenceRecall')} "
+            f"[dim]({counts.get('found', 0)}/{counts.get('present', 0)} found)[/dim]   "
+            f"[bold]value[/bold] {_pct('valueAccuracy')}   "
+            f"[bold]fabrication[/bold] {_pct('fabricationRate')} "
+            f"[dim]({counts.get('fabricated', 0)}/{counts.get('absent', 0)} invented)[/dim]   "
+            f"[bold]null agreement[/bold] {_pct('nullAgreement')}\n"
+        )
+
     # Element-level totals for array fields (oss-507). `docs P/T` above is
     # all-or-nothing per document — one wrong cell in a ten-row table fails the
     # whole document — so it saturates exactly where array work happens. These
@@ -727,6 +750,14 @@ def _poll_validate_run(
                     progress.stop()
                     console.print("[red]✗[/red] validate run completed but returned no result payload.")
                     raise typer.Exit(1)
+                # A stored run carries the numbers the scorer produced WHEN IT
+                # RAN. If the server's scorer has changed since, the delta
+                # against a fresh run includes whatever the scorer changed, and
+                # the two parts cannot be separated afterwards (oss-525).
+                warning = data.get("scorerVersionWarning")
+                if warning:
+                    progress.stop()
+                    console.print(f"[yellow]![/yellow] {warning}")
                 return result
             if status == "failed":
                 progress.stop()

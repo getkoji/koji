@@ -11,6 +11,7 @@
  * empty `fields: []` when no committed YAML exists yet.
  */
 import { describe, it, expect } from "vitest";
+import { assertComparableScorerVersion, scorerVersionMismatch, SCORER_VERSION } from "@koji/score";
 import { resolvePermissions } from "../auth/roles";
 import { extractFieldMetas } from "../schemas/field-meta";
 import { computeValidateResult, answerPresentInText } from "./schemas";
@@ -433,5 +434,163 @@ describe("computeValidateResult — element tallies make array quality legible (
       { policy_number: { type: "string" } },
     );
     expect(out.elements).toBeNull();
+  });
+});
+
+describe("computeValidateResult — the four metrics replace one accuracy number (oss-523)", () => {
+  const doc = (
+    groundTruth: Record<string, unknown>,
+    extracted: Record<string, unknown>,
+  ): Result => ({
+    entryId: "d1",
+    filename: "filing.pdf",
+    groundTruth,
+    extracted,
+    confidenceScores: {},
+  });
+
+  it("a document that extracts NOTHING scores 0 presence recall", () => {
+    // The all-null floor. Four fields with values, three legitimately empty:
+    // a single folded number counted the three empties as passes and reported
+    // a non-zero score for an extraction that produced nothing.
+    const out = computeValidateResult(
+      [
+        doc(
+          {
+            filer_name: "Acme Corp",
+            form_type: "10-K",
+            filing_date: "2026-03-26",
+            total_assets: 1250,
+            auditor: null,
+            restatement: null,
+            subsidiary: null,
+          },
+          {},
+        ),
+      ],
+      new Map(),
+      1,
+      Date.now(),
+    );
+
+    expect(out.metrics.presenceRecall).toBe(0);
+    expect(out.metrics.valueAccuracy).toBeNull();
+    expect(out.metrics.fabricationRate).toBe(0);
+    expect(out.metrics.nullAgreement).toBe(1);
+    expect(out.metrics.counts).toMatchObject({ present: 4, found: 0, missed: 4, absent: 3, agreed: 3 });
+  });
+
+  it("adding correctly-empty fields cannot lift any reported metric", () => {
+    const bare = computeValidateResult([doc({ a: "x" }, {})], new Map(), 1, Date.now());
+    const padded = computeValidateResult(
+      [doc({ a: "x", b: null, c: null, d: null, e: null, f: null }, {})],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(bare.metrics.presenceRecall).toBe(0);
+    expect(padded.metrics.presenceRecall).toBe(0);
+    expect(padded.metrics.valueAccuracy).toBeNull();
+    // Null agreement is where the empties land, and only there.
+    expect(padded.metrics.nullAgreement).toBe(1);
+  });
+
+  it("separates finding a value from getting it right", () => {
+    const out = computeValidateResult(
+      [doc({ a: "PA", b: "NC", c: "SC" }, { a: "LA", b: "NC" })],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(out.metrics.presenceRecall).toBeCloseTo(2 / 3);
+    expect(out.metrics.valueAccuracy).toBeCloseTo(1 / 2);
+  });
+
+  it("measures fabrication, which overallAccuracy structurally cannot", () => {
+    // `overallAccuracy` skips every field whose ground truth is null, so a run
+    // that invented values for all of them scored 100% before oss-523.
+    const out = computeValidateResult(
+      [doc({ a: "real", b: null, c: null }, { a: "real", b: "invented", c: null })],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(out.overallAccuracy).toBe(100);
+    expect(out.metrics.fabricationRate).toBeCloseTo(0.5);
+    expect(out.metrics.nullAgreement).toBeCloseTo(0.5);
+  });
+
+  it("reports metrics per field as well as per run", () => {
+    const out = computeValidateResult(
+      [
+        doc({ a: "x", b: "y" }, { a: "x", b: null }),
+        doc({ a: "x", b: "y" }, { a: "wrong", b: "y" }),
+      ],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    const a = out.fields.find((f) => f.name === "a")!;
+    const b = out.fields.find((f) => f.name === "b")!;
+    expect(a.metrics.presenceRecall).toBe(1);
+    expect(a.metrics.valueAccuracy).toBe(0.5);
+    expect(b.metrics.presenceRecall).toBe(0.5);
+    expect(b.metrics.valueAccuracy).toBe(1);
+  });
+
+  it("leaves overallAccuracy exactly where it was", () => {
+    // The split is additive. Anything reading `overallAccuracy` — the DB
+    // column, the dashboard, the tune loops, the sanity gate — must see the
+    // same number it saw before.
+    const out = computeValidateResult(
+      [doc({ a: "x", b: "y", c: null }, { a: "x", b: "wrong", c: "fabricated" })],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(out.overallAccuracy).toBe(50);
+    expect(out.scoredCount).toBe(2);
+  });
+
+  it("is null for a population the run never tested", () => {
+    const noAbsent = computeValidateResult([doc({ a: "x" }, { a: "x" })], new Map(), 1, Date.now());
+    expect(noAbsent.metrics.fabricationRate).toBeNull();
+    expect(noAbsent.metrics.nullAgreement).toBeNull();
+
+    const noPresent = computeValidateResult([doc({ a: null }, {})], new Map(), 1, Date.now());
+    expect(noPresent.metrics.presenceRecall).toBeNull();
+    expect(noPresent.metrics.valueAccuracy).toBeNull();
+  });
+});
+
+describe("computeValidateResult — scorer_version stamp (oss-525)", () => {
+  it("stamps the scorer that produced the numbers", () => {
+    const out = computeValidateResult(
+      [
+        {
+          entryId: "d1",
+          filename: "f.pdf",
+          groundTruth: { a: "x" },
+          extracted: { a: "x" },
+          confidenceScores: {},
+        } as Result,
+      ],
+      new Map(),
+      1,
+      Date.now(),
+    );
+    expect(out.scorerVersion).toBe(SCORER_VERSION);
+  });
+
+  it("refuses a comparison across scorer versions", () => {
+    expect(() => assertComparableScorerVersion("0.0.1", "baseline run")).toThrow(/not comparable/);
+    expect(() => assertComparableScorerVersion(SCORER_VERSION)).not.toThrow();
+  });
+
+  it("flags — rather than throws on — a stored run scored by another version", () => {
+    // What the GET run endpoint attaches: reading an old run is legitimate,
+    // comparing its number to a fresh one is what isn't.
+    expect(scorerVersionMismatch(SCORER_VERSION)).toBeNull();
+    expect(scorerVersionMismatch("0.0.1", "validate run abc")).toContain("validate run abc");
   });
 });
