@@ -13,7 +13,7 @@
  * checkboxes.
  */
 
-export type ModelCapability = "chat" | "vision" | "ocr";
+export type ModelCapability = "chat" | "vision" | "ocr" | "select";
 
 const KNOWN_VISION_PREFIXES = [
   "gpt-4o",

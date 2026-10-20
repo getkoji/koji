@@ -113,7 +113,8 @@ export function validateCreatePayload(body: {
   switch (provider) {
     case "openai":
     case "anthropic":
-      // base_url is optional (both providers have defaults), but the key is
+    case "typesafe":
+      // base_url is optional (all three have defaults), but the key is
       // not: a hosted provider without one stores a credential that lists
       // fine and fails at call time with an upstream 401. Rejecting here is
       // what keeps "configured" and "usable" the same thing.
@@ -130,6 +131,10 @@ export function validateCreatePayload(body: {
       return null;
     case "ollama":
       if (!body.base_url) return "base_url is required for ollama (e.g. http://localhost:11434)";
+      return null;
+    case "laya":
+      // A local ONNX model: no endpoint, no key. The credential exists only to
+      // carry the `select` capability tag that routes to it.
       return null;
     case "bedrock":
       if (!body.aws_region) return "aws_region is required for bedrock (e.g. us-east-1)";
@@ -384,7 +389,7 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
     return c.json({ error: "model is required — specify a model ID (e.g. gpt-4o-mini, claude-sonnet-4-20250514)" }, 400);
   }
 
-  const VALID_CAPS = new Set(["chat", "vision", "ocr"]);
+  const VALID_CAPS = new Set(["chat", "vision", "ocr", "select"]);
   const firstModelCaps = Array.isArray(body.capabilities) && body.capabilities.length > 0
     ? Array.from(new Set(body.capabilities.map((c) => String(c).toLowerCase())))
     : ["chat"];
@@ -398,7 +403,17 @@ modelProviders.post("/", requires("endpoint:write"), async (c) => {
   }
 
   // Reject bare provider names used as model IDs — must be a specific model.
-  const bareProviders = ["openai", "anthropic", "azure-openai", "bedrock", "ollama", "custom"];
+  const bareProviders = [
+    "openai",
+    "anthropic",
+    "azure-openai",
+    "bedrock",
+    "ollama",
+    "custom",
+    "typesafe",
+  ];
+  // `laya` is deliberately absent: it is a single local model with no model-id
+  // namespace of its own, so "laya" *is* the right thing to type there.
   if (bareProviders.includes(body.model.trim().toLowerCase())) {
     return c.json({ error: "model must be a specific model ID (e.g. gpt-4o-mini), not a provider name" }, 400);
   }

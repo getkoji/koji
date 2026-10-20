@@ -207,6 +207,28 @@ export function wrapProviderWithHealthTracking(
           }
         }
       : undefined,
+    // Must be forwarded, not dropped: `select` checks for this method to
+    // decide between the model's own output distribution and a self-reported
+    // number. A wrapper that omitted it would silently demote every
+    // tenant-configured endpoint to the uncalibrated path — working output,
+    // quietly worse confidence, no error anywhere.
+    labelProbabilities: provider.labelProbabilities
+      ? async (prompt: string, labels: readonly string[]) => {
+          try {
+            const out = await provider.labelProbabilities!(prompt, labels);
+            transitionAndEmit(db, endpointId, "success").catch((e) => {
+              console.warn(`[endpoint-health] success record failed for ${endpointId}:`, e);
+            });
+            return out;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            transitionAndEmit(db, endpointId, "failure", msg).catch((e) => {
+              console.warn(`[endpoint-health] failure record failed for ${endpointId}:`, e);
+            });
+            throw err;
+          }
+        }
+      : undefined,
   };
 }
 

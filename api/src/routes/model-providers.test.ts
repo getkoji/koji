@@ -207,6 +207,17 @@ describe("validateCreatePayload", () => {
     ).toMatch(/api_key/);
   });
 
+  it("typesafe requires an api_key, like any other hosted provider", () => {
+    expect(validateCreatePayload({ provider: "typesafe" })).toMatch(/api_key/);
+    expect(validateCreatePayload({ provider: "typesafe", api_key: "ts-live" })).toBeNull();
+  });
+
+  it("laya needs neither a key nor a base_url — it is a local model", () => {
+    // The credential exists only to carry the `select` capability tag that
+    // routes selection to the in-process model.
+    expect(validateCreatePayload({ provider: "laya" })).toBeNull();
+  });
+
   it("ollama requires base_url", () => {
     expect(validateCreatePayload({ provider: "ollama" })).toMatch(/base_url/);
     expect(validateCreatePayload({ provider: "ollama", base_url: "http://localhost:11434" })).toBeNull();
