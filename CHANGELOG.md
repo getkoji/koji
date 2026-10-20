@@ -2,6 +2,74 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.116.0 — 2026-10-19
+
+**One accuracy number is gone. Four are reported instead.** A single number
+folded four different things into one average, and one of them was "correctly
+absent" — a field ground truth says has no value, which the extraction also
+left empty. Counting that as a pass gave an extraction of **nothing at all** a
+non-zero floor: on the reference corpus run (1,100 documents, 7,121 fields),
+1,365 of the 5,978 "passed" fields were correctly-absent ones, so an extractor
+that returned `{}` for every document scored 19.2%.
+
+Worse, the four things move in opposite directions. Tighten a prompt until the
+model declines more often and "accuracy" can rise while the extraction gets
+less useful, with nothing in the number to say so.
+
+So four are reported, over two disjoint populations of fields:
+
+| metric | population | question |
+|---|---|---|
+| **presence recall** | ground truth HAS a value | did we produce a value at all? |
+| **value accuracy** | …of those, the ones we produced | is it right? (partial credit) |
+| **fabrication rate** | ground truth has NO value | how often did we invent one? |
+| **null agreement** | …the same population | how often did we correctly decline? |
+
+A document that extracts nothing now scores **0 presence recall**. Null
+agreement is reported separately and is never folded into any other number —
+folding it in is what produced the floor.
+
+What that reveals on the same corpus run whose headline was 83.95%: presence
+recall 88.1%, value accuracy 92.2%, fabrication rate 5.4%, null agreement
+94.6%. And per category, things one number could not show — `medical_records`
+finds a value for only 47.4% of the fields that have one, while
+`legal_filings`, at 97.1% presence recall, invents a value for half the fields
+ground truth leaves empty.
+
+A metric whose population is empty reports `null` (`n/a`), not 0 or 1. A run
+with no empty-ground-truth fields has no fabrication rate, and reporting 0
+would read as "it never fabricates" — a claim the run did not test.
+
+Where you see them:
+
+- **`koji score`** prints the four, labels each failing field `[missing]` or
+  `[fabricated]` so the three different fixes behind one ✗ are distinguishable,
+  and in `--json` carries per-field `bucket` / `expected_present` /
+  `got_present` so an external harness can recompute the metrics over its own
+  slices. There is deliberately no single `score` key any more.
+- **`koji bench`** and **`koji test`** artifacts carry a `metrics` block at
+  every level — run, category, document. The legacy `accuracy` field is kept
+  for continuity and is **deprecated**: it still has the floor.
+- **`koji validate`** reports them per run and per field (`metrics` in
+  `--json`). Its `overall` figure is unchanged and keeps working — it never
+  counted a correctly-absent field as a pass, so it had no floor — but it still
+  cannot say whether a move came from finding fewer values or getting more of
+  them wrong, and it reports nothing about fabrication, because it skips every
+  field ground truth leaves empty. That gap is now measured.
+
+**Every run artifact records which scorer produced it.** A score is only
+meaningful relative to that code: the difference between two runs scored by
+different versions includes whatever the scorer changed, and the two parts
+cannot be separated afterwards. So `scorer_version` is stamped on every result
+and artifact, and a comparison across versions is refused
+(`assertComparableScorerVersion`, `require_comparable_scorer`) or loudly
+flagged — `koji validate` prints a warning when the server hands back a stored
+run that a different scorer version produced. Comparability is string equality,
+not semver-aware: a patch-level date-parsing fix moves numbers, which is exactly
+the case the guard exists to catch.
+
+`@koji/score` goes to 0.2.0 for the output change.
+
 ## 0.115.0 — 2026-10-19
 
 **Schemas can now declare how a field's values are compared.** Whether

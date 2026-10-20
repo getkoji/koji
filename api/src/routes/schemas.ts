@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { eq, sql, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema, withRLS } from "@koji/db";
+import { scorerVersionMismatch } from "@koji/score";
 import type { Env } from "../env";
 import { requires, getTenantId, getPrincipal, getProjectId, requireProjectId, getRlsScope } from "../auth/middleware";
 import { requireQuantityGate } from "../billing/middleware";
@@ -1865,12 +1866,21 @@ schemas.get("/:slug/validate/runs/:runId", requires("job:run"), async (c) => {
   );
 
   const failed = run.status === "failed";
+  // A stored run carries the numbers the scorer produced WHEN IT RAN. Serving
+  // it next to a fresh run is a cross-version comparison the moment the scorer
+  // has changed since, so say so rather than letting the delta be read as
+  // extraction movement (oss-525). A warning, not a refusal: reading an old
+  // run is legitimate, comparing it is what isn't.
+  const storedScorer = (run.resultJson as { scorerVersion?: string } | null)?.scorerVersion;
+  const scorerWarning =
+    run.status === "completed" ? scorerVersionMismatch(storedScorer, `validate run ${run.id}`) : null;
   return c.json({
     runId: run.id,
     status: run.status,
     docsTotal: run.docsTotal,
     docsProcessed: progress?.count ?? 0,
     result: run.status === "completed" ? run.resultJson : null,
+    ...(scorerWarning ? { scorerVersionWarning: scorerWarning } : {}),
     error: failed ? (run.errorMessage ?? "Validate run failed") : null,
     ...(failed
       ? { parseFailures: (run.resultJson as { parseFailures?: unknown } | null)?.parseFailures ?? [] }

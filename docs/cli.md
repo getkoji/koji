@@ -197,7 +197,7 @@ koji test --schema schemas/invoice.yaml --json             # machine-readable ou
 
 `koji test` looks for fixture files alongside your schema. Place markdown documents in `<schema>.fixtures/` and corresponding `<name>.expected.json` files for ground truth. Field-level comparison: numbers and dates are matched semantically, strings case- and punctuation-insensitively (a formatting-only difference like `CHARLOTTE, NC` vs `CHARLOTTE NC` or `704-376-9896` vs `704.376.9896` is a match; a content difference still fails), arrays order-insensitively. Exit code is 0 on full pass, 1 on any regression.
 
-**Adversarial fixtures (`expected: null`)**: a field in the expected JSON that's explicitly set to `null` (or an empty string / empty list / empty dict) asserts that the model should **not** extract that field — either because the value isn't in the document or because the document is a trap meant to measure hallucination resistance. Both empty → pass ("correctly absent"); expected empty but actual populated → fail ("hallucinated"); expected populated but actual empty → fail ("missing"). Use this to build a trap corpus of documents where the right answer is "I don't know" and grade models on how often they correctly decline.
+**Adversarial fixtures (`expected: null`)**: a field in the expected JSON that's explicitly set to `null` (or an empty string / empty list / empty dict) asserts that the model should **not** extract that field — either because the value isn't in the document or because the document is a trap meant to measure hallucination resistance. Both empty → pass ("correctly absent"); expected empty but actual populated → fail ("hallucinated"); expected populated but actual empty → fail ("missing"). Use this to build a trap corpus of documents where the right answer is "I don't know" and grade models on how often they correctly decline — the **fabrication rate** and **null agreement** in the [four metrics](#the-four-metrics) are exactly that grade, and are reported separately from accuracy so a trap corpus cannot inflate it.
 
 ---
 
@@ -222,7 +222,32 @@ koji bench --corpus ./corpus --model openai/gpt-4o --output bench.json
 | `--output`, `-o` | Write JSON results to a file (always JSON, regardless of `--json`). |
 | `--config` | Path to `koji.yaml` (default: `./koji.yaml`). Long form only — bench uses `-c` for `--corpus`. |
 
-The corpus format is the convention used by [getkoji/corpus](https://github.com/getkoji/corpus). Per-category, per-document, and aggregate accuracy are reported. Exit code is 0 on full pass, 1 on any regression or error.
+The corpus format is the convention used by [getkoji/corpus](https://github.com/getkoji/corpus). Results are reported per-category, per-document, and in aggregate, as the [four metrics](#the-four-metrics). Exit code is 0 on full pass, 1 on any regression or error.
+
+The JSON artifact (`--json` / `--output`) carries `scorer` and `scorer_version` plus a `metrics` block at every level — run, category and document — alongside the legacy `accuracy` field. **`accuracy` is deprecated**: it is `passed_fields / total_fields`, and a correctly-absent field counts as passed, so a document that extracts nothing scores whatever fraction of its fields are legitimately empty. Read `metrics`.
+
+---
+
+### The four metrics
+
+Koji does not report one accuracy number. One number folded four different things into one average, and one of them was "correctly absent" — a field ground truth says has no value, which the extraction also left empty. Counting that as a pass gives an extraction of **nothing at all** a non-zero floor, and tightening a prompt until the model declines more often can make the number go *up* while the extraction gets less useful.
+
+So four are reported, over two disjoint populations of fields:
+
+| Metric | Population | Question |
+|--------|-----------|----------|
+| **presence recall** | fields ground truth has a value for | did we produce a value at all? |
+| **value accuracy** | …of those, the ones we produced a value for | is the value right? (partial credit for arrays and objects) |
+| **fabrication rate** | fields ground truth leaves empty | how often did we invent a value? |
+| **null agreement** | …the same population | how often did we correctly decline? |
+
+A document that extracts nothing scores **0 presence recall**. Null agreement is reported separately and is never folded into any other number — folding it in is what produced the floor.
+
+Each metric is `null` (shown as `n/a`) when its population is empty, rather than 0 or 1. A run with no empty-ground-truth fields has no fabrication rate; reporting 0 would read as "it never fabricates", which is a claim the run did not test.
+
+A field is counted as having "no value" when it is `null`, a whitespace-only string, an empty array, or an object carrying nothing but `__`-prefixed provenance keys. `0` and `false` are values.
+
+**`scorer_version` and comparability.** Every result and every run artifact records the scorer that produced it. A score is only meaningful relative to that code: the difference between two runs scored by different versions includes whatever the scorer changed, and the two parts cannot be separated afterwards. Koji therefore refuses — or loudly flags — a comparison across versions. `koji validate` prints a warning when the server returns a stored run scored by a different version than the one running now.
 
 ---
 
@@ -249,7 +274,22 @@ Every key present in either file is compared. By default scalars match tolerantl
 
 A field can declare its own equivalence rule with `match:` in the schema — `exact`, `contains`, `numeric` with a tolerance, `date` or `enum`. Pass `--schema` for those to apply. See [Scoring equivalence](schema-guide.md#scoring-equivalence-match) in the schema guide.
 
-Results carry `scorer_version`, so a run artifact can record which scorer produced it. Numbers from different scorer versions are not comparable.
+Output reports the [four metrics](#the-four-metrics), not one accuracy number:
+
+```
+3/7 fields matched exactly
+  presence recall     0.0%   (0/4 with a ground-truth value)
+  value accuracy      n/a   (credit over the 0 we produced)
+  fabrication rate    0.0%   (0/3 ground truth leaves empty)
+  null agreement    100.0%   (3/3 correctly declined)
+scorer @koji/score 0.2.0
+```
+
+A failing field is labelled with *how* it failed — `[missing]` (ground truth has a value, we produced none: a routing or recall problem), `[fabricated]` (ground truth is empty, we invented one: a faithfulness problem), or no label (we produced a value and it was wrong: a prompt or model problem). Three different fixes that one ✗ used to hide.
+
+`--json` adds per-field `bucket`, `expected_present` and `got_present` next to the diff, so an external harness can recompute the four metrics over its own slices — by category, by field type — without reimplementing the classification. There is deliberately **no** single `score` key in the JSON; `metrics` replaces it.
+
+Results carry `scorer` and `scorer_version`, so a run artifact can record which scorer produced it. Numbers from different scorer versions are not comparable.
 
 Exit code is 0 when every field matches, 1 on any mismatch or on a usage error.
 
@@ -370,6 +410,17 @@ koji validate insurance_policy --json                # raw result for an agent t
 | `--profile`, `-p` | CLI profile to use. |
 
 The `<schema>` argument is either a slug (a local `schemas/<slug>.yaml` is found automatically) or a path to a YAML file. The slug is taken from the file's `name:` field. Promote a candidate to live with [`koji schema promote`](#koji-schema).
+
+**The four metrics.** Alongside the `overall` accuracy figure, validate reports
+[the four metrics](#the-four-metrics) — presence recall, value accuracy,
+fabrication rate and null agreement — per run and per field (`metrics` in
+`--json`, as ratios in `[0,1]`). `overall` is the mean credit over the fields
+ground truth has a value for, which is the same thing as presence recall ×
+value accuracy; it cannot tell you *which* of the two moved, and it reports
+nothing at all about fabrication, because it skips every field ground truth
+leaves empty. The result also carries `scorerVersion`; reading a stored run
+that a different scorer version produced prints a warning, because the delta
+against a fresh run would include whatever the scorer changed.
 
 **Comparing across the two modes.** `--no-push` scores the released version;
 passing a file scores that file. The header line says which (`released · live`

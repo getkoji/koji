@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .metrics import MetricCounts, counts_from_field_results, metrics_from_counts, scorer_stamp
+
 
 def _levenshtein(a: str, b: str) -> int:
     """Compute the Levenshtein edit distance between two strings."""
@@ -111,14 +113,31 @@ class TestSuiteResult:
     def all_passed(self) -> bool:
         return self.total_failed == 0 and all(f.error is None for f in self.fixture_results)
 
+    @property
+    def metric_counts(self) -> MetricCounts:
+        """Presence / fabrication counts across every fixture (oss-523)."""
+        total = MetricCounts()
+        for fr in self.fixture_results:
+            total.merge(counts_from_field_results(fr.field_results))
+        return total
+
     def to_dict(self) -> dict:
-        """Machine-readable JSON output."""
+        """Machine-readable JSON output.
+
+        `passed` counts a correctly-absent field as a pass, so `passed /
+        fields_checked` has an all-null floor — a schema whose fixtures are
+        mostly "this field must NOT be extracted" scores well for extracting
+        nothing. `metrics` splits that into the four numbers that don't
+        (oss-523); `scorer_version` says which scorer produced them (oss-525).
+        """
         return {
             "schema": self.schema_name,
+            **scorer_stamp(),
             "fixtures": self.total_fixtures,
             "fields_checked": self.total_fields,
             "passed": self.total_passed,
             "regressions": self.total_failed,
+            "metrics": metrics_from_counts(self.metric_counts),
             "results": [
                 {
                     "fixture": fr.fixture_name,

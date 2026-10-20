@@ -201,13 +201,47 @@ def score(
         ok = field.get("match")
         mark = "✓" if ok else "✗"
         color = typer.colors.GREEN if ok else typer.colors.RED
-        detail = "" if ok else f"  expected={expected_values.get(name)!r} got={actual_values.get(name)!r}"
+        # Say WHICH kind of wrong. "missing" is a routing/recall problem,
+        # "fabricated" is a faithfulness problem, and a wrong value is a
+        # prompt/model problem — three different fixes behind one ✗.
+        bucket = field.get("bucket")
+        label = {"missed": " [missing]", "fabricated": " [fabricated]"}.get(bucket, "")
+        detail = "" if ok else f"{label}  expected={expected_values.get(name)!r} got={actual_values.get(name)!r}"
         typer.secho(f"{mark} {name}{detail}", fg=color)
 
     total = result.get("total", 0)
     matched = result.get("matched", 0)
-    pct = (matched / total * 100) if total else 100.0
-    typer.echo(f"\n{matched}/{total} fields matched ({pct:.1f}%)")
+    typer.echo(f"\n{matched}/{total} fields matched exactly")
+    # Four metrics, never one. A single number folded "correctly absent" in,
+    # which gave an extraction of nothing a non-zero floor — see cli/metrics.py.
+    for line in format_metrics(result.get("metrics") or {}):
+        typer.echo(line)
     typer.echo(f"scorer {result.get('scorer')} {result.get('scorer_version')}")
     if matched != total:
         raise typer.Exit(1)
+
+
+def format_metrics(metrics: dict[str, Any]) -> list[str]:
+    """Render the scorer's four metrics as human-readable lines.
+
+    `None` is rendered "n/a", not 0%: it means the run had no fields in that
+    population, so the metric was never measured. Printing 0% would be a claim
+    the scoring did not make.
+    """
+    counts = metrics.get("counts") or {}
+    present = counts.get("present", 0)
+    found = counts.get("found", 0)
+    absent = counts.get("absent", 0)
+    fabricated = counts.get("fabricated", 0)
+    agreed = counts.get("agreed", 0)
+
+    def pct(key: str) -> str:
+        v = metrics.get(key)
+        return "  n/a" if v is None else f"{v * 100:5.1f}%"
+
+    return [
+        f"  presence recall   {pct('presence_recall')}   ({found}/{present} with a ground-truth value)",
+        f"  value accuracy    {pct('value_accuracy')}   (credit over the {found} we produced)",
+        f"  fabrication rate  {pct('fabrication_rate')}   ({fabricated}/{absent} ground truth leaves empty)",
+        f"  null agreement    {pct('null_agreement')}   ({agreed}/{absent} correctly declined)",
+    ]
