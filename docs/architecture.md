@@ -102,7 +102,28 @@ When a tenant configures a **structured** parse provider (one that preserves row
 | **Table-heavy** (dec pages, schedules, grids) | the structured provider | flattening a grid to markdown scrambles which value belongs to which column |
 | **Text-heavy** (letters, covenants, prose) | the markdown/Docling path | markdown is the right representation; no table-extraction premium |
 
-Table- vs text-heaviness is a **geometric** signal (the fraction of lines that read as multi-column grids in the PDF's text-item layout), not a per-document-type rule — the engine never inspects field names or document categories. The structured path has the same safety net as pdfjs: if it errors, the request falls through to source-type routing (digital → pdfjs, otherwise → Docling). This routing is **inert unless a structured provider is configured** — the content-shape classifier isn't even invoked otherwise, so the default path pays nothing.
+Table- vs text-heaviness is a **geometric** signal (the fraction of lines that read as multi-column grids in the PDF's text-item layout), not a per-document-type rule — the engine never inspects field names or document categories. The structured path has the same safety net as pdfjs: if it errors, the request falls through to source-type routing (digital → pdfjs, otherwise → Docling). This routing is **inert unless a structured provider is available** — the content-shape classifier isn't even invoked otherwise, so the default path pays nothing.
+
+Note that a table-heavy **digital** PDF routes to the structured provider too, *ahead of* the digital → pdfjs rule. That is deliberate: the digital path's markdown flatten is exactly what loses the grid, so "this PDF has a text layer" is not a reason to skip cell geometry.
+
+Two kinds of provider can fill the structured slot:
+
+| Provider | Credentials | Output |
+|---|---|---|
+| **Positional** (`KOJI_PARSE_STRUCTURED=positional`) | none — in-process pdfjs | cells inferred from x-coordinate clustering |
+| **Google Document AI** / **AWS Textract** (a tenant parse endpoint) | BYO GCP / AWS | cells read from the vendor's own table model |
+
+A tenant-configured structured endpoint takes precedence over the positional default for that tenant's documents.
+
+#### The parse spine (cell geometry)
+
+Whichever structured provider runs, its output converges on one shape: the **parse spine**, an ordered list of addressable units (`api/src/parse/chunk.ts`). A unit from a table carries
+
+- `role: "table_cell"`,
+- `table: { tableId, row, col }` — `tableId` is parse-scoped (`p<page>-t<index>`), `row`/`col` are 1-based, and
+- `bbox` — the cell's own box in the one canonical convention (normalized `[0,1]`, origin top-left, 1-based page).
+
+Markdown then becomes a *projection* of the spine: a run of cells sharing a `tableId` is reassembled into a markdown grid, so what the model reads is rebuilt from the cells rather than from a reading-order flatten. The spine rides along on the parse response, survives the parse cache, and is merged with page offsets when a large PDF is parsed in shards — so cell geometry is available for the whole document, not just its first chunk.
 
 #### Docling (heavy provider)
 

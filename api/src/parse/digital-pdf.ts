@@ -18,6 +18,7 @@ import type {
 } from "./provider";
 import {
   spatialToMarkdownWithOffsets,
+  type ItemOffset,
   type ParsedPage,
   type TextItem,
 } from "./spatial-to-markdown";
@@ -45,111 +46,157 @@ interface PdfjsTextStyle {
   vertical?: boolean;
 }
 
+/**
+ * The positional structure of one digital PDF: per-page geometry plus the
+ * per-word `text_map` built from the same text items.
+ *
+ * Returned by {@link extractPositionalPages} so every consumer of pdfjs
+ * geometry reads it from one implementation. `DigitalPdfProvider` projects it
+ * to markdown + row-granular chunks; `PositionalStructuredProvider`
+ * (`parse/positional-structured.ts`) projects the same pages to cell-granular
+ * chunks. One pdfjs walk, one coordinate convention, two views.
+ */
+export interface PositionalExtraction {
+  pages: ParsedPage[];
+  text_map: TextMapSegment[];
+}
+
+/**
+ * Walk a digital PDF with pdfjs and return its positional structure.
+ *
+ * Throws when the input isn't a PDF — anything else should have been routed
+ * elsewhere by `SmartParseProvider`. Being explicit means a stray DOCX surfaces
+ * a clear error rather than pdfjs's "InvalidPDFException".
+ *
+ * `text_map` boxes follow the canonical normalized `[0,1]` top-left convention
+ * (see `parse/chunk.ts`); `pages` keeps absolute, top-down page units because
+ * that is what the line/column reconstruction works in.
+ */
+export async function extractPositionalPages(input: {
+  filename: string;
+  mimeType: string;
+  fileBuffer: Buffer;
+}): Promise<PositionalExtraction> {
+  if (!isPdf(input.filename, input.mimeType)) {
+    throw new Error(
+      `digital-PDF parse only handles PDFs; got ${input.mimeType || "(no mime)"} for ${input.filename}`,
+    );
+  }
+
+  const pdfjs = await loadPdfjs();
+  const doc = await pdfjs.getDocument({
+    data: new Uint8Array(input.fileBuffer),
+    // Suppress noisy console.warn from pdfjs about missing standard fonts.
+    // We don't render anything visually; font widths come from embedded
+    // CIDFontDict or the substitute pdfjs picks internally.
+    verbosity: 0,
+  }).promise;
+
+  const pages: ParsedPage[] = [];
+  const text_map: TextMapSegment[] = [];
+
+  try {
+    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
+      try {
+        const viewport = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        const styles = (content.styles ?? {}) as Record<string, PdfjsTextStyle>;
+
+        const textItems: TextItem[] = [];
+        for (const raw of content.items as PdfjsTextItem[]) {
+          const item = toTextItem(raw, viewport.height, styles);
+          if (item) textItems.push(item);
+        }
+
+        pages.push({
+          pageNum,
+          width: viewport.width,
+          height: viewport.height,
+          // `text` is used by spatialToMarkdown only as a fallback for pages
+          // with zero textItems (e.g. cover images). Concatenating the
+          // emitted strings is good enough for that fallback.
+          text: textItems.map((t) => t.text).join(" "),
+          textItems,
+        });
+
+        for (const item of textItems) {
+          // `item.y` is the glyph baseline in top-down space (see toTextItem),
+          // which is where the text sits, NOT the top of its box. Glyphs
+          // extend UPWARD from the baseline, so the box top is one glyph
+          // height above it. Emitting `item.y` here as the box top drops the
+          // highlight a full line below the text. Subtract the height so the
+          // box covers the glyphs. (`item.y` itself stays the baseline for
+          // buildLines' line-grouping anchor — do not shift it there.)
+          const boxTop = Math.max(0, item.y - item.height);
+          text_map.push({
+            text: item.text,
+            page: pageNum,
+            x: viewport.width > 0 ? item.x / viewport.width : 0,
+            y: viewport.height > 0 ? boxTop / viewport.height : 0,
+            w: viewport.width > 0 ? item.width / viewport.width : 0,
+            h: viewport.height > 0 ? item.height / viewport.height : 0,
+          });
+        }
+      } finally {
+        page.cleanup();
+      }
+    }
+  } finally {
+    await doc.destroy();
+  }
+
+  return { pages, text_map };
+}
+
+/**
+ * Stamp `md_offset`/`md_length` onto a `text_map` from the markdown offsets of
+ * the source text items (L3 deterministic provenance). `text_map` must have
+ * been built by walking `pages` in order (one entry per text item), which is
+ * what {@link extractPositionalPages} guarantees — a matching re-walk lines
+ * each entry up with its source item's offset. Items that never surfaced in the
+ * markdown keep offsets unset and fall back to fuzzy matching. Bbox values are
+ * left untouched. Mutates `text_map` in place.
+ */
+export function stampMarkdownOffsets(
+  pages: readonly ParsedPage[],
+  text_map: TextMapSegment[],
+  offsets: readonly ItemOffset[],
+): void {
+  const offsetByItem = new Map<TextItem, { offset: number; length: number }>();
+  for (const o of offsets) offsetByItem.set(o.item, { offset: o.offset, length: o.length });
+
+  let segIdx = 0;
+  for (const page of pages) {
+    for (const item of page.textItems) {
+      const off = offsetByItem.get(item);
+      if (off && text_map[segIdx]) {
+        text_map[segIdx]!.md_offset = off.offset;
+        text_map[segIdx]!.md_length = off.length;
+      }
+      segIdx++;
+    }
+  }
+}
+
 export class DigitalPdfProvider implements ParseProvider {
   async parse(input: {
     filename: string;
     mimeType: string;
     fileBuffer: Buffer;
   }): Promise<ParseResponse> {
-    // PDF-only — anything else should have been routed elsewhere by the
-    // SmartParseProvider. Be explicit so a stray DOCX surfaces a clear error
-    // rather than pdfjs's "InvalidPDFException".
-    if (!isPdf(input.filename, input.mimeType)) {
-      throw new Error(
-        `DigitalPdfProvider only handles PDFs; got ${input.mimeType || "(no mime)"} for ${input.filename}`,
-      );
-    }
-
-    const pdfjs = await loadPdfjs();
-    const doc = await pdfjs.getDocument({
-      data: new Uint8Array(input.fileBuffer),
-      // Suppress noisy console.warn from pdfjs about missing standard fonts.
-      // We don't render anything visually; font widths come from embedded
-      // CIDFontDict or the substitute pdfjs picks internally.
-      verbosity: 0,
-    }).promise;
-
-    const pages: ParsedPage[] = [];
-    const text_map: TextMapSegment[] = [];
-
-    try {
-      for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-        const page = await doc.getPage(pageNum);
-        try {
-          const viewport = page.getViewport({ scale: 1 });
-          const content = await page.getTextContent();
-          const styles = (content.styles ?? {}) as Record<string, PdfjsTextStyle>;
-
-          const textItems: TextItem[] = [];
-          for (const raw of content.items as PdfjsTextItem[]) {
-            const item = toTextItem(raw, viewport.height, styles);
-            if (item) textItems.push(item);
-          }
-
-          pages.push({
-            pageNum,
-            width: viewport.width,
-            height: viewport.height,
-            // `text` is used by spatialToMarkdown only as a fallback for pages
-            // with zero textItems (e.g. cover images). Concatenating the
-            // emitted strings is good enough for that fallback.
-            text: textItems.map((t) => t.text).join(" "),
-            textItems,
-          });
-
-          for (const item of textItems) {
-            // `item.y` is the glyph baseline in top-down space (see toTextItem),
-            // which is where the text sits, NOT the top of its box. Glyphs
-            // extend UPWARD from the baseline, so the box top is one glyph
-            // height above it. Emitting `item.y` here as the box top drops the
-            // highlight a full line below the text. Subtract the height so the
-            // box covers the glyphs. (`item.y` itself stays the baseline for
-            // buildLines' line-grouping anchor — do not shift it there.)
-            const boxTop = Math.max(0, item.y - item.height);
-            text_map.push({
-              text: item.text,
-              page: pageNum,
-              x: viewport.width > 0 ? item.x / viewport.width : 0,
-              y: viewport.height > 0 ? boxTop / viewport.height : 0,
-              w: viewport.width > 0 ? item.width / viewport.width : 0,
-              h: viewport.height > 0 ? item.height / viewport.height : 0,
-            });
-          }
-        } finally {
-          page.cleanup();
-        }
-      }
-    } finally {
-      await doc.destroy();
-    }
+    const { pages, text_map } = await extractPositionalPages(input);
 
     // Second consumer of the same positional structure: preserve pdfjs geometry
     // into provenance-carrying chunks (PB-6, digital-positional path). Additive
-    // — the markdown above is unchanged; tables are reconstructed via
+    // — the markdown below is unchanged; tables are reconstructed via
     // x-clustering so columns associate correctly with no cloud OCR.
     const chunks = new PositionalChunkCanonicalizer().toChunks(pages);
 
     // Build markdown AND the per-item markdown offsets in one pass, then stamp
-    // md_offset/md_length onto text_map (L3 deterministic provenance). text_map
-    // was pushed by iterating `pages` in order (one entry per text item), so a
-    // matching re-walk lines each entry up with its source item's offset. Items
-    // that never surfaced in the markdown (e.g. dropped) keep offsets unset and
-    // fall back to fuzzy matching. Bbox values above are left untouched.
+    // md_offset/md_length onto text_map (L3 deterministic provenance).
     const { markdown, offsets } = spatialToMarkdownWithOffsets(pages);
-    const offsetByItem = new Map<TextItem, { offset: number; length: number }>();
-    for (const o of offsets) offsetByItem.set(o.item, { offset: o.offset, length: o.length });
-
-    let segIdx = 0;
-    for (const page of pages) {
-      for (const item of page.textItems) {
-        const off = offsetByItem.get(item);
-        if (off) {
-          text_map[segIdx]!.md_offset = off.offset;
-          text_map[segIdx]!.md_length = off.length;
-        }
-        segIdx++;
-      }
-    }
+    stampMarkdownOffsets(pages, text_map, offsets);
 
     return {
       markdown,

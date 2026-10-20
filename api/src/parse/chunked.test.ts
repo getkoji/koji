@@ -32,6 +32,7 @@ function makeParseResponse(overrides: Partial<ParseResponse> = {}): ParseRespons
     ocr_skipped: overrides.ocr_skipped ?? false,
     engine: overrides.engine ?? "pdfjs",
     text_map: overrides.text_map,
+    chunks: overrides.chunks,
   };
 }
 
@@ -197,6 +198,55 @@ describe("ChunkedParseProvider", () => {
   });
 
   // 6. OCR skip merge
+  // 5c. Parse spine merge (oss-536) — the merge used to drop `chunks` entirely.
+  it("merges the parse spine with page offsets instead of dropping it", async () => {
+    __pageCount = 100;
+    const cell = (page: number, row: number, col: number) => ({
+      id: `p${page}-u${(row - 1) * 2 + (col - 1)}`,
+      page,
+      text: `r${row}c${col}`,
+      bbox: { x: 0.1 * col, y: 0.1 * row, w: 0.05, h: 0.02 },
+      role: "table_cell" as const,
+      table: { tableId: `p${page}-t0`, row, col },
+    });
+    const inner = makeMockProvider({
+      parseResponses: [
+        makeParseResponse({ chunks: [cell(1, 1, 1), cell(1, 1, 2), cell(2, 1, 1)] }),
+        makeParseResponse({ chunks: [cell(1, 1, 1), cell(1, 1, 2)] }),
+      ],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+
+    const cells = result.chunks ?? [];
+    expect(cells).toHaveLength(5);
+    // Chunk 1 pages unchanged, chunk 2 pages offset by 50.
+    expect(cells.map((c) => c.page)).toEqual([1, 1, 2, 51, 51]);
+    // Geometry and cell coordinates survive untouched.
+    expect(cells[0]!.bbox).toEqual({ x: 0.1, y: 0.1, w: 0.05, h: 0.02 });
+    expect(cells[0]!.role).toBe("table_cell");
+    expect(cells.map((c) => c.table!.col)).toEqual([1, 2, 1, 1, 2]);
+    // Table ids are re-keyed onto the MERGED page, so the second chunk's
+    // shard-local `p1-t0` no longer collides with the first chunk's.
+    expect(cells.map((c) => c.table!.tableId)).toEqual([
+      "p1-t0", "p1-t0", "p2-t0", "p51-t0", "p51-t0",
+    ]);
+    // Ids are re-stamped per merged page and so are unique document-wide.
+    const ids = cells.map((c) => c.id);
+    expect(ids).toEqual(["p1-u0", "p1-u1", "p2-u0", "p51-u0", "p51-u1"]);
+  });
+
+  it("leaves chunks undefined when no chunk carried a spine", async () => {
+    __pageCount = 100;
+    const inner = makeMockProvider({
+      parseResponses: [makeParseResponse(), makeParseResponse()],
+    });
+    const chunked = new ChunkedParseProvider(inner, { chunkPages: 50, threshold: 80 });
+    const result = await chunked.parse({ filename: "big.pdf", mimeType: "application/pdf", fileBuffer: PDF_BUFFER });
+    expect(result.chunks).toBeUndefined();
+  });
+
   it("sets ocr_skipped true only when ALL chunks skip OCR", async () => {
     __pageCount = 100;
     const inner = makeMockProvider({

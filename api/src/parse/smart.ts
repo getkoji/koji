@@ -6,18 +6,23 @@
  * - Scanned PDFs, images, and non-PDF formats (DOCX, HTML, …) → heavy
  *   provider (Docling via Docker sidecar or Modal)
  *
- * Doc-type routing (PB-10, opt-in): when a tenant has configured a *structured*
- * parse provider (one that preserves row/column structure — Google Doc AI,
- * Textract, positional), table-heavy documents are steered to it instead of the
- * markdown/docling path, because flattening a dec page / schedule / grid to
+ * Doc-type routing (PB-10, opt-in): when a *structured* parse provider is
+ * available (one that preserves row/column structure — Google Doc AI, Textract,
+ * or the in-process positional path), table-heavy documents are steered to it
+ * instead of the markdown/docling path, because flattening a schedule / grid to
  * markdown scrambles column association. Text-heavy documents keep the
  * markdown/docling path. The table-heavy vs text-heavy decision is a geometric
  * signal (`content-shape.ts`), not a domain classifier.
  *
- * Dormant by default: with no structured provider configured (every tenant
- * today), `structured` is null and routing is byte-for-byte the previous
- * behaviour — the content-shape classifier is never even invoked, so the hot
- * path pays nothing.
+ * Note that a table-heavy **digital** PDF routes here too, ahead of the
+ * source-type rule below — which is the point: the digital path's markdown
+ * flatten is exactly what loses the grid, so "it has a text layer" is not a
+ * reason to skip cell geometry.
+ *
+ * Off unless enabled: `structured` is null for a deployment that sets neither
+ * `ParseConfig.structured` nor a structured BYO endpoint, and routing is then
+ * byte-for-byte the previous behaviour — the content-shape classifier is never
+ * even invoked, so the hot path pays nothing.
  *
  * Two safety nets so a bad lite-provider parse can't silently poison
  * extraction:

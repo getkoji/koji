@@ -14,6 +14,10 @@ import type { ParseChunk } from "./chunk";
  * the actual engine instead of guessing.
  *
  * - `pdfjs`: in-process pdfjs-dist, used for digital PDFs (text-embedded)
+ * - `positional`: in-process pdfjs-dist via the cell-granular structured path
+ *   (`parse/positional-structured.ts`), used for table-heavy digital PDFs when
+ *   the structured slot is enabled. Same engine as `pdfjs`, different view —
+ *   named separately so the trace says which view produced the output.
  * - `docling`: heavy provider (Docker sidecar or Modal-hosted), used for
  *   scanned PDFs, images, and non-PDF formats (DOCX, HTML, …)
  * - BYO-parse drivers report their own provider slug so the trace names the
@@ -22,6 +26,7 @@ import type { ParseChunk } from "./chunk";
  */
 export type ParseEngine =
   | "pdfjs"
+  | "positional"
   | "docling"
   | "mistral-ocr"
   | "azure-document-intel"

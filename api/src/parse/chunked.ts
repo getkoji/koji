@@ -20,6 +20,7 @@ import type {
   ParseResponse,
   TextMapSegment,
 } from "./provider";
+import { assignUnitIds, type ParseChunk, type ParseUnitDraft } from "./chunk";
 import { slicePdfPages, mapWithConcurrency, probePdf } from "./pdf-slice";
 import { normalizePdfViaService } from "./pdf-normalize";
 import { PAGE_SEPARATOR } from "./pages";
@@ -261,12 +262,60 @@ export class ChunkedParseProvider implements ParseProvider {
       }
     }
 
+    // Parse spine: the same three fixups the text_map merge applies — page
+    // offset, markdown-offset shift, and (here) a re-stamp of the parse-scoped
+    // ids and table ids, which restart inside each shard.
+    //
+    // Before oss-536 this block did not exist and `chunks` was simply left off
+    // the merged response, so ALL chunk geometry was silently deleted for any
+    // document past the chunk threshold — per-cell `bbox` and
+    // `{ tableId, row, col }` vanished on exactly the long documents they
+    // matter most on, with the markdown still arriving so nothing looked wrong.
+    let parseChunks: ParseChunk[] | undefined;
+    if (chunks.some((c) => c.response.chunks?.length)) {
+      const drafts: ParseUnitDraft[] = [];
+      // Table ids are parse-scoped (`p<page>-t<index>`) and restart per shard,
+      // so two shards can hand us the same id for different tables. Re-key them
+      // per merged page, first-seen order, keeping the documented format.
+      const tableIds = new Map<string, string>();
+      const tablesPerPage = new Map<number, number>();
+      let mdCursor = 0;
+      chunks.forEach((chunk, shardIdx) => {
+        const mdBase = mdCursor;
+        // Same cursor arithmetic as the text_map merge above: advance over the
+        // *emitted* piece (which may be page-break padding for a text-free
+        // chunk), not the chunk's raw markdown.
+        const offset = chunk.startPage - 1;
+        for (const unit of chunk.response.chunks ?? []) {
+          const page = unit.page + offset;
+          const { id: _id, ...rest } = unit;
+          const draft: ParseUnitDraft = { ...rest, page };
+          if (unit.md_offset != null) draft.md_offset = unit.md_offset + mdBase;
+          if (unit.table) {
+            const key = `${shardIdx}:${unit.table.tableId}`;
+            let tableId = tableIds.get(key);
+            if (!tableId) {
+              const idx = tablesPerPage.get(page) ?? 0;
+              tablesPerPage.set(page, idx + 1);
+              tableId = `p${page}-t${idx}`;
+              tableIds.set(key, tableId);
+            }
+            draft.table = { ...unit.table, tableId };
+          }
+          drafts.push(draft);
+        }
+        mdCursor += pieces[shardIdx]!.length + PAGE_SEPARATOR.length;
+      });
+      parseChunks = assignUnitIds(drafts);
+    }
+
     return {
       markdown,
       pages: totalPages,
       ocr_skipped,
       engine,
       text_map,
+      ...(parseChunks ? { chunks: parseChunks } : {}),
     };
   }
 }

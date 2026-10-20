@@ -144,9 +144,11 @@ export function readParseProviderPin(configJson: unknown): string | null {
  * Build the ParseProvider to use for one document, given the tenant's resolved
  * parse provider (or null when none is configured / no driver exists).
  *
- * Dormant-until-configured: when `resolved` is null — every tenant today, since
- * the driver registry is empty — this returns the **exact same** default
- * provider instance, so behaviour is byte-for-byte identical to pre-BYO-parse.
+ * Dormant-until-configured: when `resolved` is null — any tenant with no parse
+ * endpoint configured — this returns the **exact same** default provider
+ * instance, so behaviour is byte-for-byte identical to pre-BYO-parse. (That
+ * instance may itself carry a deployment-level structured slot from
+ * `ParseConfig.structured`; this function only decides the *tenant* override.)
  * It also returns the default when `parseConfig` is absent (no way to rebuild
  * the SmartParse/Chunked wrapper around a tenant provider).
  *

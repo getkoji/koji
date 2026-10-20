@@ -109,7 +109,10 @@ export async function resolveParse(
     opts.defaultProvider,
     resolved,
   );
-  return { provider, fingerprint: parseCacheFingerprint(resolved) };
+  return {
+    provider,
+    fingerprint: parseCacheFingerprint(resolved, opts.parseConfig?.structured),
+  };
 }
 
 /** A stored document, as the seam needs to locate + parse it. */

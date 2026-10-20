@@ -22,7 +22,7 @@ import { LocalAuthAdapter } from "./auth/local";
 import { S3Storage } from "./storage/s3";
 import { PostgresQueue } from "./queue/postgres";
 import { startWorker } from "./queue/worker";
-import { createParseProvider } from "./parse/factory";
+import { createParseProvider, readStructuredBackend } from "./parse/factory";
 import { SmtpEmailSender } from "./email/smtp";
 import { markDocFailed } from "./ingestion/process";
 import { createNotification } from "./notifications/emit";
@@ -58,6 +58,9 @@ const parseConfig = {
   modalUrl: process.env.KOJI_PARSE_MODAL_URL,
   modalTokenId: process.env.MODAL_TOKEN_ID,
   modalTokenSecret: process.env.MODAL_TOKEN_SECRET,
+  // Off unless explicitly enabled; see `parse/factory.ts#StructuredParseBackend`
+  // and `docs/configuration.md`.
+  structured: readStructuredBackend(process.env.KOJI_PARSE_STRUCTURED),
 };
 const parseProvider = await createParseProvider(parseConfig);
 const emailSender = new SmtpEmailSender({

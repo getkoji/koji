@@ -158,6 +158,9 @@ def generate_compose(config: KojiConfig, project_dir: str, dev: bool | None = No
                 "KOJI_S3_FORCE_PATH_STYLE": "true",
                 "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
                 "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
+                # Structured parse for table-heavy documents; off unless set.
+                # See docs/configuration.md#koji_parse_structured.
+                "KOJI_PARSE_STRUCTURED": "${KOJI_PARSE_STRUCTURED:-off}",
             },
             "depends_on": {
                 "koji-db": {"condition": "service_healthy"},

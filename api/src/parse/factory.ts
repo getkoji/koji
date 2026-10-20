@@ -10,6 +10,10 @@
  * everything else (scanned PDFs, images, DOCX/HTML/PPTX) to the heavy
  * backend. Large PDFs are then chunked via `ChunkedParseProvider`.
  *
+ * `config.structured` fills `SmartParseProvider`'s third slot, which is what
+ * makes doc-type routing (table-heavy → cell geometry) reachable without a
+ * cloud vendor; see {@link StructuredParseBackend}.
+ *
  * The backend-derived provider is ALSO handed to `SmartParseProvider` as its
  * platform-capability fallback, so a tenant's BYO parse provider replaces text
  * extraction without taking page rendering, page analysis, PDF slicing, or
@@ -27,9 +31,34 @@ import { DockerParseProvider } from "./docker";
 import { ModalParseProvider } from "./modal";
 import { ChunkedParseProvider } from "./chunked";
 import { DigitalPdfProvider } from "./digital-pdf";
+import { PositionalStructuredProvider } from "./positional-structured";
 import { SmartParseProvider } from "./smart";
 
 export type ParseBackend = "docker" | "modal";
+
+/**
+ * Which provider fills `SmartParseProvider`'s **structured** slot when the
+ * tenant has not configured a structured BYO endpoint.
+ *
+ *  - `"off"` (default) — no structured provider. Doc-type routing is disabled
+ *    and the content-shape classifier never runs: byte-for-byte the pre-oss-536
+ *    behaviour.
+ *  - `"positional"` — the in-process, credential-free cell-granular path
+ *    (`PositionalStructuredProvider`). Table-heavy digital PDFs are parsed into
+ *    `table_cell` units with per-cell geometry instead of flattened markdown.
+ *
+ * This is a deployment-level capability switch (like the parse backend itself),
+ * not a per-tenant credential — which is why it lives here and not in
+ * `parse_endpoints`. A tenant-resolved structured endpoint still wins over it.
+ */
+export type StructuredParseBackend = "off" | "positional";
+
+/** Parse the `KOJI_PARSE_STRUCTURED` value, defaulting to `"off"` for anything
+ *  unrecognized (including undefined) so a typo can never silently change
+ *  routing. Exported for tests and for the entrypoints that read env/bindings. */
+export function readStructuredBackend(raw: string | undefined | null): StructuredParseBackend {
+  return raw?.trim().toLowerCase() === "positional" ? "positional" : "off";
+}
 
 export interface ParseConfig {
   backend: ParseBackend;
@@ -44,6 +73,12 @@ export interface ParseConfig {
   modalTokenSecret?: string;
   /** Modal request timeout in ms. Defaults to 10 min (L4 cold start + full OCR). */
   modalTimeoutMs?: number;
+  /**
+   * Which provider fills the structured slot when no tenant structured endpoint
+   * is configured. Defaults to `"off"` — doc-type routing stays disabled.
+   * See {@link StructuredParseBackend}.
+   */
+  structured?: StructuredParseBackend;
 }
 
 /** Optional per-call overrides for {@link createParseProvider}. */
@@ -110,10 +145,17 @@ export async function createParseProvider(
   // slicing / coordinate extraction are platform utilities no BYO driver
   // implements — without the fallback they silently vanish for every tenant
   // with a parse endpoint configured (oss-489).
+  // The structured slot: a tenant-resolved structured endpoint wins; otherwise
+  // the deployment-level `structured` backend fills it (`"off"` → null, which
+  // keeps doc-type routing — and the content-shape classifier — switched off).
+  const structured: ParseProvider | null =
+    opts?.tenantStructured ??
+    (config.structured === "positional" ? new PositionalStructuredProvider() : null);
+
   let provider: ParseProvider = new SmartParseProvider(
     new DigitalPdfProvider(),
     opts?.tenantHeavy ?? heavy,
-    opts?.tenantStructured ?? null,
+    structured,
     heavy,
   );
 

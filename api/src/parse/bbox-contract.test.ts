@@ -5,7 +5,10 @@ import {
   type BBox,
   type ParseChunk,
 } from "./chunk";
-import { PositionalChunkCanonicalizer } from "./positional-chunks";
+import {
+  PositionalCellCanonicalizer,
+  PositionalChunkCanonicalizer,
+} from "./positional-chunks";
 import type { ParsedPage, TextItem } from "./spatial-to-markdown";
 import { GoogleDocAiCanonicalizer } from "./providers/google-docai";
 import { SAMPLE_DOCUMENT } from "./providers/google-docai.fixture";
@@ -109,6 +112,52 @@ describe("PositionalChunkCanonicalizer (pdfjs digital path) emits canonical bbox
 
   it("keeps a top-of-page line near y=0 (top-left origin)", () => {
     expect(chunks[0]!.bbox!.y).toBeLessThan(0.1);
+  });
+});
+
+describe("PositionalCellCanonicalizer (structured digital path) emits canonical bboxes", () => {
+  // A 3-column, 4-row grid in the same absolute top-down page units. Cells must
+  // obey the one coordinate convention, and each cell's box must be strictly
+  // inside its row's span (the point of cell-level geometry).
+  const cols = [100, 400, 700];
+  const rowItems: TextItem[] = [];
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 3; c++) {
+      rowItems.push({
+        text: `r${r}c${c}`,
+        x: cols[c]!,
+        y: 100 + r * 60,
+        width: 120,
+        height: 40,
+        fontName: "Helvetica",
+        fontSize: 12,
+      });
+    }
+  }
+  const page: ParsedPage = {
+    pageNum: 1,
+    width: 1000,
+    height: 2000,
+    text: rowItems.map((i) => i.text).join(" "),
+    textItems: rowItems,
+  };
+  const chunks = new PositionalCellCanonicalizer().toChunks([page]);
+
+  it("normalizes every cell box into [0,1] top-left", () => {
+    expectAllChunksNormalized(chunks, "positional-cell");
+  });
+
+  it("gives each cell its own box at its own column x", () => {
+    const cells = chunks.filter((c) => c.role === "table_cell");
+    expect(cells).toHaveLength(12);
+    const first = cells.find((c) => c.text === "r0c0")!;
+    // x=100/1000, box top=(100-40)/2000=0.03, w=120/1000, h=40/2000
+    expect(first.bbox!.x).toBeCloseTo(0.1, 9);
+    expect(first.bbox!.y).toBeCloseTo(0.03, 9);
+    expect(first.bbox!.w).toBeCloseTo(0.12, 9);
+    expect(first.bbox!.h).toBeCloseTo(0.02, 9);
+    // Third column sits at x=700/1000, not at the row's left edge.
+    expect(cells.find((c) => c.text === "r0c2")!.bbox!.x).toBeCloseTo(0.7, 9);
   });
 });
 
