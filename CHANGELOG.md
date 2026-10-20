@@ -2,6 +2,60 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.119.0 — 2026-10-19
+
+**`select`, `adjudicate` and `review` are now pluggable capabilities, and the
+OSS default for each runs on nothing but your own key.** This is the
+architectural commitment made mechanical: everything available in commercial
+Koji is available in OSS, so any component needing an LLM, a local model or a
+hosted service sits behind an interface that ships a BYO-credential
+implementation.
+
+`select(state, options, instructions) → { choice, probabilities, confidence }`
+picks a field's value out of a candidate set instead of generating it. Three
+properties come from that *shape*, not from which implementation answers:
+
+- **Fabrication is impossible** — the answer is always a candidate you
+  supplied, or the explicit "none of these".
+- **Provenance is free** — the chosen candidate comes back with its offset,
+  page and bounding box intact. No post-hoc string matching.
+- **Confidence is intrinsic** — the distribution over candidates *is* the
+  field's confidence.
+
+Three interchangeable implementations: **LLM-choice** over your own chat key
+(the default, zero configuration), **laya** (a local open-source decision model
+run in-process through ONNX — optional install), and **Jev** (TypeSafe's hosted
+System-1 model). They differ in calibration quality, latency and unit cost, not
+in capability.
+
+**Your own key now gets calibrated confidence too.** Where an endpoint reports
+token logprobs (OpenAI, Azure OpenAI), selection takes its probabilities from
+the model's own output distribution over the option labels rather than asking
+the model how sure it is — self-reported confidence is conservatively
+calibrated noise. `SelectResult.calibrated` tells you which you are holding.
+
+`adjudicate(expected, got, field) → { equivalent, confidence }` decides whether
+two values mean the same thing for a field — whether `Delaware` counts as
+`State of Delaware`. It is **off by default and offline only**: never in the
+extraction request path, where it would put a second inference in front of
+every field and make a hosted dependency load-bearing for an OSS install. Arm
+it with `KOJI_ADJUDICATE=1` in a CI or corpus job.
+
+`review(items) → verdicts` is the low-confidence queue. The default parks items
+for a person; the agent tier first-passes them, and only decides items that
+carry a candidate set — so an agent correction is also a span that exists in
+the document.
+
+**A parity suite enforces all of this.** The same inputs run through every
+implementation asserting *invariants, not accuracy*: no value outside the
+candidate set however hard the model is pushed, provenance round-trips,
+confidence in [0,1]. They pass or fail identically for every provider.
+
+Also in this release: a model configured for one capability can no longer
+shadow a chat model when extraction asks for one — chat rows are now preferred
+in provider resolution. `select` joins `chat`/`vision`/`ocr` in the model
+catalog, and `typesafe` and `laya` join the credential providers.
+
 ## 0.118.0 — 2026-10-19
 
 **Table-heavy documents can be parsed into cells instead of flattened

@@ -370,6 +370,70 @@ Values that aren't a positive number are ignored — the provider default applie
 
 ---
 
+## Selection providers
+
+The `select` capability picks a field's value out of a candidate set rather
+than generating it. **It needs no configuration**: with nothing set up, Koji
+uses *LLM-choice* over whichever chat model your project already has, which
+gives zero fabrication, free provenance and intrinsic per-field confidence on
+nothing but your own key. Everything below is about choosing a *different*
+implementation, never about enabling the capability.
+
+| Implementation | What it is | What it needs |
+|---|---|---|
+| `llm-choice` | Constrains your chat model to pick one option. **The default.** | Nothing beyond the model you already configured |
+| `laya` | A local open-source decision model, run in-process via ONNX | `pnpm --filter @koji/api add @receptron/laya`, plus the model bundle |
+| `jev` | TypeSafe's hosted System-1 model | A `typesafe` credential |
+
+All three satisfy the same contract — the same invariants are asserted against
+each of them in CI. They differ in calibration quality, latency and unit cost,
+not in capability.
+
+### Picking one per project
+
+Add a model with the `select` capability under **Settings → Model Catalog**.
+The credential's provider decides which implementation runs:
+
+- an ordinary `openai` / `anthropic` / `ollama` credential tagged `select`
+  → LLM-choice over that model
+- a `typesafe` credential → the hosted service (API key required)
+- a `laya` credential (model `laya`) → the local model; no key and no endpoint,
+  since the credential exists only to carry the tag
+
+A project-scoped selector overrides a workspace-shared one, the same as every
+other credential. With no `select`-capability model configured, the default
+applies.
+
+A self-hosted operator who wants one implementation everywhere can skip the
+credential entirely and set `KOJI_SELECT_PROVIDER` instead — a project's own
+configured selector still wins over it.
+
+### Calibrated confidence from your own key
+
+Where your endpoint can report token logprobs (OpenAI and Azure OpenAI do),
+LLM-choice takes the probabilities from the model's **own output
+distribution** over the option labels instead of asking it how sure it is — a
+model's self-reported confidence is conservatively calibrated noise. This
+applies automatically for option sets of 20 or fewer; past that, and on
+endpoints with no logprob support, selection falls back to parsing a text
+answer and the result is marked `calibrated: false`. Both paths satisfy the
+same invariants; only the confidence number's provenance differs.
+
+### Adjudication (offline only)
+
+`adjudicate` decides whether two values mean the same thing for a field, to
+settle scorer disagreements and feed the corpus queue. It is **off by default**
+and runs **offline only** — never in the extraction request path. Turn it on
+in a CI job or a corpus script:
+
+```bash
+export KOJI_ADJUDICATE=1                 # arm it for this process
+export KOJI_ADJUDICATE_PROVIDER=llm      # none (default) | llm | laya | jev
+```
+
+Attempting to adjudicate in a process that has not armed it raises an error
+rather than quietly making a model call.
+
 ## `output`
 
 Controls where processed results are written.
@@ -480,6 +544,11 @@ These environment variables affect Koji at runtime:
 | `KOJI_SCHEMAS_DIR` | Directory where schema YAML files are stored. | `./schemas/` |
 | `OPENAI_API_KEY` | OpenAI API key. Must be set before `koji start` to pass through to containers. | -- |
 | `KOJI_PARSE_STRUCTURED` | Structured parse provider for table-heavy documents: `positional` or `off`. See below. | `off` |
+| `KOJI_SELECT_PROVIDER` | Operator-level default selection implementation: `llm-choice`, `laya` or `jev`. A project's configured selector wins over this. | `llm-choice` |
+| `KOJI_ADJUDICATE` | Set to `1` to arm adjudication for this process. Offline / CI only — the API server never sets it. | unset |
+| `KOJI_ADJUDICATE_PROVIDER` | Which judge to use once armed: `none`, `llm`, `laya` or `jev`. | `none` |
+| `TYPESAFE_API_KEY` | TypeSafe credential, for local development and CI. Production resolves the project's encrypted credential instead. | -- |
+| `KOJI_LAYA_MODEL_DIR` | Directory holding an already-downloaded laya ONNX bundle. Without it, the bundle downloads to `$LAYA_CACHE` on first load. | -- |
 
 ### `KOJI_PARSE_STRUCTURED`
 

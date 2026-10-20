@@ -23,7 +23,14 @@ import { decrypt } from "../crypto/envelope";
  * requires the picker UIs to opt in (chat is the safe default).
  */
 
-const CAPABILITIES = new Set(["chat", "vision", "ocr"]);
+/**
+ * Capability values accepted at write time. `select` joins the set for the
+ * candidate-selection path: a model tagged `select` is the one the `select`
+ * capability resolves to, and its credential's provider names which
+ * implementation runs (an ordinary chat key -> LLM-choice, `typesafe` -> the
+ * hosted service, `laya` -> the local model).
+ */
+const CAPABILITIES = new Set(["chat", "vision", "ocr", "select"]);
 
 export const credentials = new Hono<Env>();
 
@@ -150,8 +157,8 @@ credentials.get("/", requires("endpoint:read"), async (c) => {
  *
  * Body: {
  *   model: string,
- *   capabilities?: ("chat"|"vision"|"ocr")[],   // one row per capability
- *   capability?: "chat"|"vision"|"ocr",         // legacy single-value form
+ *   capabilities?: ("chat"|"vision"|"ocr"|"select")[],  // one row per capability
+ *   capability?: "chat"|"vision"|"ocr"|"select",        // legacy single-value form
  *   label?: string
  * }
  *

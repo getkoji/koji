@@ -28,7 +28,7 @@ import { usePageTitle } from "@/lib/use-page-title";
 interface TenantModel {
   id: string;
   model: string;
-  capability: "chat" | "vision" | "ocr";
+  capability: "chat" | "vision" | "ocr" | "select";
   displayName: string | null;
   status: string;
   createdAt: string;
@@ -70,6 +70,8 @@ const PROVIDER_TYPES = [
   { value: "azure-openai", label: "Azure OpenAI", defaultUrl: "" },
   { value: "bedrock", label: "AWS Bedrock", defaultUrl: "" },
   { value: "ollama", label: "Ollama", defaultUrl: "http://localhost:11434" },
+  { value: "typesafe", label: "TypeSafe (Jev)", defaultUrl: "https://api.typesafe.ai/v1" },
+  { value: "laya", label: "laya (local)", defaultUrl: "" },
   { value: "custom", label: "Custom", defaultUrl: "" },
 ];
 
@@ -193,6 +195,11 @@ const CAPABILITIES: Array<{ value: TenantModel["capability"]; label: string; hin
   { value: "chat", label: "Chat", hint: "Text-in, text-out. Default for extraction." },
   { value: "vision", label: "Vision", hint: "Accepts page images. Used for bad-scan escalation." },
   { value: "ocr", label: "OCR", hint: "Dedicated OCR engine for scanned PDFs." },
+  {
+    value: "select",
+    label: "Select",
+    hint: "Picks a value from a candidate set. Used by candidate-selection extraction.",
+  },
 ];
 
 function providerConfigSummary(c: Credential): string | null {
@@ -1139,7 +1146,7 @@ function AddModelDialog({
               <div className="space-y-1.5">
                 <label className="text-[12.5px] font-medium text-ink">Capabilities *</label>
                 <div className="flex items-center gap-3">
-                  {(["chat", "vision", "ocr"] as ModelCapability[]).map((cap) => (
+                  {(["chat", "vision", "ocr", "select"] as ModelCapability[]).map((cap) => (
                     <label
                       key={cap}
                       className="flex items-center gap-1.5 text-[12px] cursor-pointer"

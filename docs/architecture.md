@@ -443,6 +443,64 @@ Use any LLM. The provider system supports:
 
 Model selection is per-command (`--model openai/gpt-4o-mini`) or per-pipeline-step in `koji.yaml`.
 
+### Pluggable capabilities: `select`, `adjudicate`, `review`
+
+Everything available in commercial Koji is available in OSS. Commercial sells
+hosting, scale, support and the corpus service — never exclusive capability.
+
+Operationally that means any component needing an LLM, a local decision model
+or a hosted service is a **pluggable provider behind an interface**, and every
+interface ships an implementation that runs on nothing but BYO credentials or
+local inference:
+
+| Capability | OSS default | Also available |
+|---|---|---|
+| `select` | LLM-choice over your own key | laya (local ONNX), Jev (hosted) |
+| `adjudicate` | off | BYO LLM, laya, Jev |
+| `review` | human queue | agent over your own model |
+| `parse` | BYO (Docling, pypdfium, …) | hosted + BYO |
+
+**`select(state, options, instructions) → { choice, probabilities, confidence }`**
+picks one value out of an enumerated candidate set. Three properties fall out
+of that *shape*, not out of which implementation answers:
+
+- **Fabrication is impossible.** The returned value is always one of the
+  candidates you supplied, or the explicit "none of these" answer. Nothing
+  else, ever.
+- **Provenance is free.** The candidate carries its own offset, page and
+  bounding box; the chosen candidate comes back with them intact. No post-hoc
+  string matching, no faithfulness gate.
+- **Confidence is intrinsic.** The probability distribution over candidates
+  *is* the field's confidence.
+
+An install running LLM-choice over its own OpenAI (or Ollama, or Azure) key
+gets all three. What a local decision model or a hosted System-1 service add
+on top is **calibration quality, latency and unit cost** — not capability.
+`SelectResult.calibrated` says which of those you are holding: `true` when the
+probabilities are the model's own output distribution, `false` when they were
+synthesized from a self-reported number.
+
+**`adjudicate(expected, got, field) → { equivalent, confidence }`** settles
+whether a scorer disagreement is a real miss or a string-form variant
+(`Delaware` against `State of Delaware`). It is **offline / CI only** and never
+sits in the request path: a judge there would put a second inference in front
+of every field, make a hosted dependency load-bearing for an OSS install, and
+let a model rewrite a result with no trace. A call-time guard enforces it, and
+a test asserts no file under the request-path directories references it at all.
+
+**`review(items) → verdicts`** is the low-confidence queue. The default parks
+items for a person. The agent tier first-passes the queue before a person sees
+it — and it only decides items that carry a candidate set, so an agent
+correction is also a span that exists in the document. An agent that can only
+choose cannot invent a correction.
+
+**The parity suite is the enforcement.** `api/src/select/parity.test.ts` runs
+the same inputs through every implementation and asserts the invariants above
+— no value outside the candidate set, provenance round-trips, confidence in
+[0,1] — never accuracy. They pass or fail identically for every provider,
+which is what makes "the same capability in both editions" a property of the
+build rather than a promise.
+
 ### Schema hints
 
 The schema hint system lets you encode domain knowledge without touching pipeline code:

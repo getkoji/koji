@@ -5,7 +5,7 @@
  * `../extract` without reaching into individual files.
  */
 
-export { createProvider } from "./providers";
+export { createProvider, MAX_LOGPROB_LABELS } from "./providers";
 export type { ModelProvider } from "./providers";
 export { extractFields } from "./pipeline";
 export type { ExtractionResult } from "./pipeline";

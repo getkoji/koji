@@ -103,6 +103,13 @@ export async function pickActiveTenantModel(
         ),
       )
       .orderBy(
+        // Chat rows first. This picker serves the text-generation path, and a
+        // model tagged for another capability — vision, ocr, select — must not
+        // shadow a chat model just because it was configured earlier. Chat
+        // rows are not *filtered* to, only preferred, so a tenant whose only
+        // model is non-chat keeps today's behaviour instead of falling off a
+        // cliff into the env-var path.
+        sql`${schema.tenantModels.capability} <> 'chat'`,
         // Project-scoped first (false < true), then oldest. `preferModel`
         // filtering below runs over this same order, so a project-scoped
         // override of a specific model also wins.

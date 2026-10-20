@@ -256,4 +256,63 @@ describe("wrapProviderWithHealthTracking", () => {
     const out = await wrapped.generate("hi");
     expect(out).toBe("ok");
   });
+
+  it("forwards labelProbabilities, so a tracked endpoint keeps the calibrated select path", async () => {
+    // Dropping this method would not error anywhere — `select` would simply
+    // stop finding it and demote every tenant-configured endpoint to the
+    // uncalibrated path. Working output, quietly worse confidence.
+    const wrapped = wrapProviderWithHealthTracking(
+      {
+        contextTokens: DEFAULT_CONTEXT_TOKENS,
+        generate: async () => "ok",
+        labelProbabilities: async (_p: string, labels: readonly string[]) => ({
+          [labels[0]!]: 1,
+        }),
+      },
+      okDb(),
+      ENDPOINT,
+    );
+    expect(typeof wrapped.labelProbabilities).toBe("function");
+    expect(await wrapped.labelProbabilities!("pick", ["A", "B"])).toEqual({ A: 1 });
+  });
+
+  it("leaves labelProbabilities undefined when the wrapped provider has none", () => {
+    const wrapped = wrapProviderWithHealthTracking(
+      { contextTokens: DEFAULT_CONTEXT_TOKENS, generate: async () => "ok" },
+      okDb(),
+      ENDPOINT,
+    );
+    expect(wrapped.labelProbabilities).toBeUndefined();
+  });
+
+  it("records a labelProbabilities failure and rethrows it", async () => {
+    const wrapped = wrapProviderWithHealthTracking(
+      {
+        contextTokens: DEFAULT_CONTEXT_TOKENS,
+        generate: async () => "ok",
+        labelProbabilities: async () => {
+          throw new Error("logprobs unsupported");
+        },
+      },
+      okDb(),
+      ENDPOINT,
+    );
+    await expect(wrapped.labelProbabilities!("p", ["A"])).rejects.toThrow("logprobs unsupported");
+  });
 });
+
+/** A db stub whose health reads/writes resolve rather than throwing. */
+function okDb(): any {
+  const chain: any = {
+    select: () => chain,
+    from: () => chain,
+    innerJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve([]),
+    update: () => chain,
+    set: () => chain,
+    insert: () => chain,
+    values: () => Promise.resolve([]),
+  };
+  return chain;
+}

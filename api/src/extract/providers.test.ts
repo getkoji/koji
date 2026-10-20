@@ -12,6 +12,9 @@ import {
   isSystemicProviderError,
   isContextLengthError,
   isTransportError,
+  labelProbabilitiesFromLogprobs,
+  labelProbabilityPayload,
+  MAX_LOGPROB_LABELS,
 } from "./providers";
 import { DEFAULT_CONTEXT_TOKENS, completionReserve } from "./context-budget";
 
@@ -659,5 +662,166 @@ describe("transport retry (oss-472)", () => {
     expect(isTransportError(new ProviderHttpError(500, "server error"))).toBe(false);
     expect(isTransportError(new Error("boom"))).toBe(false);
     expect(isTransportError(null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// labelProbabilities — the `select` capability's calibrated path
+// ---------------------------------------------------------------------------
+
+/** One entry of an OpenAI `top_logprobs` array. */
+const lp = (token: string, p: number) => ({ token, logprob: Math.log(p) });
+
+function logprobBody(entries: Array<{ token: string; logprob: number }>) {
+  return { choices: [{ logprobs: { content: [{ top_logprobs: entries }] } }] };
+}
+
+describe("labelProbabilityPayload", () => {
+  it("asks for one token with logprobs, and no JSON mode", () => {
+    const payload = labelProbabilityPayload("gpt-4o-mini", "pick one", ["A", "B"]);
+    expect(payload).toMatchObject({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      max_tokens: 1,
+      logprobs: true,
+      top_logprobs: 2,
+    });
+    // JSON mode would spend the single token on an opening brace.
+    expect(payload.response_format).toBeUndefined();
+  });
+
+  it("caps top_logprobs at the provider's ceiling", () => {
+    const labels = Array.from({ length: 40 }, (_, i) => String(i));
+    expect(labelProbabilityPayload("m", "p", labels).top_logprobs).toBe(MAX_LOGPROB_LABELS);
+  });
+
+  it("asks for at least one logprob even with no labels", () => {
+    expect(labelProbabilityPayload("m", "p", []).top_logprobs).toBe(1);
+  });
+});
+
+describe("labelProbabilitiesFromLogprobs", () => {
+  it("renormalizes over the labels the model put mass on", () => {
+    const out = labelProbabilitiesFromLogprobs(
+      logprobBody([lp("A", 0.6), lp("B", 0.2)]),
+      ["A", "B", "C"],
+    );
+    expect(out.A).toBeCloseTo(0.75, 6);
+    expect(out.B).toBeCloseTo(0.25, 6);
+    expect(out.C).toBeUndefined();
+  });
+
+  it("matches tokens despite leading whitespace and case", () => {
+    const out = labelProbabilitiesFromLogprobs(logprobBody([lp(" a", 1)]), ["A"]);
+    expect(out.A).toBeCloseTo(1, 6);
+  });
+
+  it("discards mass on tokens that are not labels", () => {
+    const out = labelProbabilitiesFromLogprobs(
+      logprobBody([lp("A", 0.3), lp("Sure", 0.7)]),
+      ["A", "B"],
+    );
+    expect(out).toEqual({ A: 1 });
+  });
+
+  it("sums mass when two tokens normalize to the same label", () => {
+    const out = labelProbabilitiesFromLogprobs(
+      logprobBody([lp("A", 0.4), lp(" A", 0.4), lp("B", 0.2)]),
+      ["A", "B"],
+    );
+    expect(out.A).toBeCloseTo(0.8, 6);
+    expect(out.B).toBeCloseTo(0.2, 6);
+  });
+
+  it("returns {} when the endpoint reported no logprobs, so the caller can fall back", () => {
+    expect(labelProbabilitiesFromLogprobs({ choices: [{}] }, ["A"])).toEqual({});
+    expect(labelProbabilitiesFromLogprobs({ choices: [{ logprobs: null }] }, ["A"])).toEqual({});
+    expect(labelProbabilitiesFromLogprobs({}, ["A"])).toEqual({});
+    expect(labelProbabilitiesFromLogprobs(logprobBody([]), ["A"])).toEqual({});
+  });
+
+  it("returns {} when no label got any mass", () => {
+    expect(labelProbabilitiesFromLogprobs(logprobBody([lp("Z", 1)]), ["A"])).toEqual({});
+  });
+
+  it("ignores malformed entries", () => {
+    const out = labelProbabilitiesFromLogprobs(
+      {
+        choices: [
+          {
+            logprobs: {
+              content: [
+                {
+                  top_logprobs: [
+                    { token: "A", logprob: Number.NaN },
+                    { token: undefined, logprob: -1 },
+                    { token: "B", logprob: Math.log(0.5) },
+                  ] as Array<{ token?: string; logprob?: number }>,
+                },
+              ],
+            },
+          },
+        ],
+      },
+      ["A", "B"],
+    );
+    expect(out).toEqual({ B: 1 });
+  });
+});
+
+describe("OpenAIProvider.labelProbabilities", () => {
+  let original: typeof globalThis.fetch;
+  beforeEach(() => {
+    original = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+
+  it("posts a logprob request and returns the distribution", async () => {
+    const fakeFetch = mockFetchOk(logprobBody([lp("B", 0.7), lp("A", 0.3)]));
+    globalThis.fetch = fakeFetch;
+    const out = await new OpenAIProvider("gpt-4o-mini", "sk", "https://api.example.com/v1")
+      .labelProbabilities("pick one", ["A", "B"]);
+    expect(out.B).toBeCloseTo(0.7, 6);
+    const body = JSON.parse(String(fakeFetch.mock.calls[0]![1].body));
+    expect(body.logprobs).toBe(true);
+    expect(body.max_tokens).toBe(1);
+  });
+
+  it("surfaces a systemic HTTP error rather than returning an empty distribution", async () => {
+    globalThis.fetch = mockFetchErr(401, "bad key");
+    await expect(
+      new OpenAIProvider("gpt-4o-mini", "sk", "https://api.example.com/v1").labelProbabilities(
+        "p",
+        ["A"],
+      ),
+    ).rejects.toBeInstanceOf(ProviderHttpError);
+  });
+});
+
+describe("AzureOpenAIProvider.labelProbabilities", () => {
+  let original: typeof globalThis.fetch;
+  beforeEach(() => {
+    original = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+
+  it("routes through the deployment URL with the api-key header", async () => {
+    const fakeFetch = mockFetchOk(logprobBody([lp("A", 1)]));
+    globalThis.fetch = fakeFetch;
+    const out = await new AzureOpenAIProvider(
+      "gpt-4o",
+      "azure-key",
+      "https://r.openai.azure.com",
+      "dep",
+      "2024-02-15-preview",
+    ).labelProbabilities("pick one", ["A"]);
+    expect(out.A).toBeCloseTo(1, 6);
+    const [url, init] = fakeFetch.mock.calls[0]!;
+    expect(url).toContain("/openai/deployments/dep/chat/completions");
+    expect((init.headers as Record<string, string>)["api-key"]).toBe("azure-key");
   });
 });

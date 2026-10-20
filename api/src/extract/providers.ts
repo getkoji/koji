@@ -44,7 +44,36 @@ export interface ModelProvider {
     onToken: (delta: string) => void,
     jsonMode?: boolean,
   ): Promise<string>;
+  /**
+   * The `select` capability's calibrated path: given a prompt whose answer is
+   * one label from a closed set, return the model's probability for each
+   * label.
+   *
+   * This exists because a model's *self-reported* confidence is conservatively
+   * calibrated noise, while its output distribution over a one-token answer is
+   * the real thing. Where an endpoint can report token logprobs, selection
+   * confidence comes from the model's own distribution rather than from asking
+   * it how sure it is — which is what closes most of the calibration gap
+   * between a BYO-key selector and a dedicated decision model.
+   *
+   * Contract: returned keys are a subset of `labels`; values are
+   * probabilities renormalized over the labels the model put mass on. An empty
+   * result means "no distribution available" — callers fall back to parsing a
+   * plain `generate` answer, they do not fail.
+   *
+   * Optional: providers with no logprob support omit it, and
+   * `LlmChoiceSelectProvider` degrades to the text path.
+   */
+  labelProbabilities?(prompt: string, labels: readonly string[]): Promise<Record<string, number>>;
 }
+
+/**
+ * The largest label set a logprob call can resolve. OpenAI caps
+ * `top_logprobs` at 20, so past that the returned distribution covers only
+ * part of the label space and renormalizing over it would overstate the
+ * selector's certainty. Beyond this count, selection takes the text path.
+ */
+export const MAX_LOGPROB_LABELS = 20;
 
 /**
  * An HTTP error from a model provider, carrying the status code so callers can
@@ -362,6 +391,79 @@ export class OllamaProvider implements ModelProvider {
 /** OpenAI-style chat/completions response body. */
 type ChatCompletion = { choices: Array<{ message: { content: string } }> };
 
+/** The same body with `logprobs: true` requested. */
+type LogprobChatCompletion = {
+  choices?: Array<{
+    logprobs?: {
+      content?: Array<{ top_logprobs?: Array<{ token?: string; logprob?: number }> }> | null;
+    } | null;
+  }>;
+};
+
+/**
+ * Request body for a one-label answer with its distribution. `max_tokens: 1`
+ * because only the first token carries the label, and no `response_format`
+ * because JSON mode would spend that token on `{`.
+ */
+export function labelProbabilityPayload(
+  model: string,
+  prompt: string,
+  labels: readonly string[],
+): Record<string, unknown> {
+  return {
+    model,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0,
+    max_tokens: 1,
+    logprobs: true,
+    top_logprobs: Math.min(MAX_LOGPROB_LABELS, Math.max(labels.length, 1)),
+  };
+}
+
+/**
+ * Turn the first token's `top_logprobs` into a probability per label.
+ *
+ * Tokens are matched to labels case-insensitively after trimming, because
+ * tokenizers emit leading spaces (`" A"`) and models vary on case. Mass on
+ * tokens that are not labels is discarded and the remainder renormalized:
+ * the question only has these answers, so the useful quantity is the relative
+ * probability among them.
+ *
+ * Returns `{}` when the endpoint reported no logprobs — an OpenAI-compatible
+ * server that ignores the parameter, rather than an error. Callers fall back
+ * to the text path.
+ *
+ * Exported for unit tests.
+ */
+export function labelProbabilitiesFromLogprobs(
+  body: LogprobChatCompletion,
+  labels: readonly string[],
+): Record<string, number> {
+  const top = body.choices?.[0]?.logprobs?.content?.[0]?.top_logprobs;
+  if (!Array.isArray(top) || top.length === 0) return {};
+
+  const byNormalized = new Map<string, string>();
+  for (const label of labels) byNormalized.set(label.trim().toLowerCase(), label);
+
+  const mass: Record<string, number> = {};
+  let total = 0;
+  for (const entry of top) {
+    if (typeof entry?.token !== "string" || typeof entry.logprob !== "number") continue;
+    if (!Number.isFinite(entry.logprob)) continue;
+    const label = byNormalized.get(entry.token.trim().toLowerCase());
+    if (label === undefined) continue;
+    const p = Math.exp(entry.logprob);
+    if (!Number.isFinite(p) || p <= 0) continue;
+    mass[label] = (mass[label] ?? 0) + p;
+    total += p;
+  }
+  if (total <= 0) return {};
+
+  const out: Record<string, number> = {};
+  for (const [label, p] of Object.entries(mass)) out[label] = p / total;
+  return out;
+}
+
 export class OpenAIProvider implements ModelProvider {
   private apiKey: string;
   private baseUrl: string;
@@ -405,6 +507,23 @@ export class OpenAIProvider implements ModelProvider {
       },
     );
     return body.choices[0]!.message.content;
+  }
+
+  async labelProbabilities(
+    prompt: string,
+    labels: readonly string[],
+  ): Promise<Record<string, number>> {
+    const body = await providerRequestJson<LogprobChatCompletion>(
+      "OpenAI logprobs",
+      `${this.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(labelProbabilityPayload(this.model, prompt, labels)),
+        signal: AbortSignal.timeout(300_000),
+      },
+    );
+    return labelProbabilitiesFromLogprobs(body, labels);
   }
 
   async generateStream(prompt: string, onToken: (delta: string) => void, jsonMode = false): Promise<string> {
@@ -495,14 +614,35 @@ export class AzureOpenAIProvider implements ModelProvider {
 
     const body = await providerRequestJson<ChatCompletion>("Azure OpenAI", this.url(), {
       method: "POST",
-      headers: {
-        "api-key": this.apiKey,
-        "Content-Type": "application/json",
-      },
+      headers: this.headers(),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(300_000),
     });
     return body.choices[0]!.message.content;
+  }
+
+  private headers(): Record<string, string> {
+    return {
+      "api-key": this.apiKey,
+      "Content-Type": "application/json",
+    };
+  }
+
+  async labelProbabilities(
+    prompt: string,
+    labels: readonly string[],
+  ): Promise<Record<string, number>> {
+    const body = await providerRequestJson<LogprobChatCompletion>(
+      "Azure OpenAI logprobs",
+      this.url(),
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(labelProbabilityPayload(this.model, prompt, labels)),
+        signal: AbortSignal.timeout(300_000),
+      },
+    );
+    return labelProbabilitiesFromLogprobs(body, labels);
   }
 }
 

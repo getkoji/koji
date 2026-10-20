@@ -205,9 +205,15 @@ export const providerCredentials = pgTable(
 
 /**
  * Tenant models — "this credential is allowed to use this model." A credential
- * has many. `capability` (chat | vision | ocr) drives downstream routing: the
- * bad-scan escalation picks a vision/ocr-capable model, and the OCR path can
- * hand a dedicated OCR engine the whole document instead of page images.
+ * has many. `capability` (chat | vision | ocr | select) drives downstream
+ * routing: the bad-scan escalation picks a vision/ocr-capable model, the OCR
+ * path can hand a dedicated OCR engine the whole document instead of page
+ * images, and `select` names the model the candidate-selection path resolves
+ * to (its credential's provider decides which implementation runs).
+ *
+ * The column is a plain varchar, so a new value needs no migration — but it
+ * does need the write-time validators in `routes/credentials.ts` and
+ * `routes/model-providers.ts` to accept it, and the picker UIs to offer it.
  *
  * On backfill, each old `model_endpoints` row becomes one credential + one
  * tenant_model that REUSES the old endpoint id — so every existing reference
