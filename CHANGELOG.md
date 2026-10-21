@@ -2,6 +2,51 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.122.0 — 2026-10-21
+
+**Array accuracy in the TypeScript bench was overstated by 22.6 points.**
+
+`api/src/extract/bench-ts.ts` carried its own comparator, and it scored an
+array field as correct whenever extraction returned *any non-empty array*,
+whatever it contained — so line items, coverages and schedules were
+effectively unscored. Its scalar path was no better: the "fuzzy" branch
+compared character **multisets** rather than edit distance, so any anagram
+matched at the default 0.85 threshold, including `12/31/2026` against
+`13/21/2026` — a different date.
+
+Re-scoring the same 7,121-field extraction set with both comparators:
+
+| | old bench comparator | `@koji/score` |
+|---|---|---|
+| all fields | 84.4% | 84.5% |
+| **array fields only** | **80.8%** | **58.2%** |
+
+The headline number barely moves. The array number falls 22.6 points, and that
+is the honest one. If you have been reading TS bench output to judge how well
+Koji extracts line items, it was telling you roughly 81% for work that scores
+58%. `bench-ts.ts` now delegates to `@koji/score` like every other caller, with
+per-field specs from the schema so arrays match elements by their declared
+`element_key`. A guard test fails the build if a comparator reappears there.
+
+**Numeric equivalence no longer reads a prefix.** The shared guard admitted any
+string of digits and punctuation and let `parseFloat` read the front of it, so
+a truncation compared equal to the value it came from:
+
+```
+"45"   vs "45-5108603"    (a bare number against a TIN)     → matched
+"704"  vs "704-376-9896"  (against a phone number)          → matched
+"2026" vs "2026-05-01"    (against a full date)             → matched
+```
+
+A quantity must now be a complete numeric literal. Measured across the same
+7,121 fields, this changes exactly **one** verdict — a malformed ground-truth
+date (`2017-28-12` vs `2017-12-28`) that was passing only because both sides
+read as the quantity 2017. Genuine quantities, currency, thousands separators
+and formatting-only punctuation differences are unaffected.
+
+`@koji/score` goes to 0.4.0, so `scorer_version` marks results either side of
+the change as not comparable.
+
 ## 0.121.0 — 2026-10-20
 
 **Feature: classifier classes can require a signal — `require_keywords` /
