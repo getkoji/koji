@@ -17,7 +17,7 @@
  */
 
 /** This scorer's version. Bump it for ANY change in scoring semantics. */
-export const SCORER_VERSION = "0.3.0";
+export const SCORER_VERSION = "0.4.0";
 
 /** The package name, so an artifact records which scorer, not just which version. */
 export const SCORER_NAME = "@koji/score";

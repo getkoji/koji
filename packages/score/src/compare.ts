@@ -283,10 +283,28 @@ function punct(s: string): string {
   return s.replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** Parse a quantity, tolerating currency symbols and thousands separators. */
+/**
+ * Parse a quantity, tolerating currency symbols and separators.
+ *
+ * The whole string must be ONE number. The previous guard admitted any string
+ * of digits and punctuation and then let `parseFloat` read a prefix, so a
+ * truncation compared equal to the value it was truncated from:
+ *
+ *     "45"   vs "45-5108603"    (a bare number against a TIN)
+ *     "704"  vs "704-376-9896"  (against a phone number)
+ *     "2026" vs "2026-05-01"    (against a date)
+ *
+ * All three scored as matches. Requiring the remainder to be a complete
+ * numeric literal rejects every one, and rejects a date or a dotted phone
+ * number outright rather than reading a prefix of it as a quantity.
+ */
 function toQuantity(s: string): number | null {
-  if (!/^[$,\d.\s-]+$/.test(s)) return null;
-  const n = parseFloat(s.replace(/[$,]/g, ""));
+  // Currency symbols, thousands separators and the spaces used as separators
+  // in some locales are noise; anything else must be digits, one optional
+  // decimal point, and an optional leading sign.
+  const bare = s.replace(/[$,\s]/g, "");
+  if (!/^-?\d+(\.\d+)?$/.test(bare)) return null;
+  const n = parseFloat(bare);
   return Number.isNaN(n) ? null : n;
 }
 

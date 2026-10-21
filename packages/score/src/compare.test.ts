@@ -607,3 +607,41 @@ describe("the policy is opt-in", () => {
     expect(compareValues("State of Delaware", "Delaware", { match: "contains" }).match).toBe(true);
   });
 });
+
+// ── Numeric equivalence must not read a prefix (oss-554/556/559) ──────
+//
+// The guard used to admit any string of digits and punctuation and let
+// parseFloat read a prefix, so a truncation compared equal to the value it was
+// truncated from. Every case here scored as a MATCH before.
+describe("compareValues — numeric guard", () => {
+  const collisions: Array<[string, string, string]> = [
+    ["45", "45-5108603", "bare number vs TIN"],
+    ["704", "704-376-9896", "bare number vs phone"],
+    ["2026", "2026-05-01", "year vs full date"],
+    ["12", "12-31-2026", "number vs date"],
+    ["1250", "1250-9999", "amount vs hyphenated id"],
+    ["2017-28-12", "2017-12-28", "invalid date vs real date, both read as 2017"],
+  ];
+  it.each(collisions)("keeps %s and %s distinct (%s)", (expected, got) => {
+    expect(compareValues(expected, got).match).toBe(false);
+  });
+
+  it("still matches genuine quantities", () => {
+    expect(compareValues(1250, "$1,250.00").match).toBe(true);
+    expect(compareValues("1250.00", "1250").match).toBe(true);
+    expect(compareValues("1 250", "1250").match).toBe(true); // space as separator
+    expect(compareValues(-5, "-5").match).toBe(true);
+    expect(compareValues(1250, 1250.005).match).toBe(true); // within 0.01
+    expect(compareValues(1250, 1251).match).toBe(false);
+  });
+
+  it("still matches formatting-only differences by punctuation, not by quantity", () => {
+    // These must survive: they pass on the punctuation rule, which is intact.
+    expect(compareValues("704-376-9896", "704.376.9896").match).toBe(true);
+    expect(compareValues("CHARLOTTE, NC", "CHARLOTTE NC").match).toBe(true);
+  });
+
+  it("does not read a quantity out of a dotted identifier", () => {
+    expect(compareValues("704.376.9896", "704").match).toBe(false);
+  });
+});

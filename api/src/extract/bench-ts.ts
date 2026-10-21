@@ -19,6 +19,8 @@
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { parse as parseYaml } from "yaml";
+
+import { compareValues } from "@koji/score";
 import { intelligentExtract } from "./intelligent-pipeline";
 import { OpenAIProvider } from "./providers";
 
@@ -49,74 +51,41 @@ interface BenchReport {
   results: DocResult[];
 }
 
-function fuzzyMatch(expected: unknown, actual: unknown, threshold = 0.85): boolean {
-  if (expected === actual) return true;
-  if (expected == null && actual == null) return true;
-  if (expected == null || actual == null) return false;
-
-  const e = String(expected).trim().toLowerCase();
-  const a = String(actual).trim().toLowerCase();
-
-  if (e === a) return true;
-
-  // Number comparison with tolerance
-  const eNum = parseFloat(String(expected).replace(/[$,]/g, ""));
-  const aNum = parseFloat(String(actual).replace(/[$,]/g, ""));
-  if (!isNaN(eNum) && !isNaN(aNum)) {
-    return Math.abs(eNum - aNum) < 0.01;
-  }
-
-  // Date comparison — normalize to YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(e) && /^\d{4}-\d{2}-\d{2}$/.test(a)) {
-    return e === a;
-  }
-
-  // Fuzzy string match
-  if (threshold > 0) {
-    const shorter = Math.min(e.length, a.length);
-    const longer = Math.max(e.length, a.length);
-    if (longer === 0) return true;
-    // Simple character overlap ratio
-    let matches = 0;
-    const aChars = [...a];
-    for (const ch of e) {
-      const idx = aChars.indexOf(ch);
-      if (idx >= 0) {
-        matches++;
-        aChars.splice(idx, 1);
-      }
-    }
-    return (matches / longer) >= threshold;
-  }
-
-  return false;
-}
-
+/**
+ * Score one document's extraction against ground truth.
+ *
+ * Delegates to `@koji/score` — the same comparator `koji validate`, `koji
+ * score`, `koji test` and the benches use — so a number produced here means
+ * what a number produced anywhere else means.
+ *
+ * It previously carried its own comparator, and that comparator was wrong in
+ * two ways that both inflated the result:
+ *
+ *   - its "fuzzy" branch compared character MULTISETS, not edit distance, so
+ *     any anagram scored as a match at the default 0.85 threshold:
+ *     "12/31/2026" == "13/21/2026" (a different date), "listen" == "silent".
+ *   - an array field counted as correct whenever extraction returned ANY
+ *     non-empty array, whatever it contained. Line items and coverages — the
+ *     hardest fields in the corpus — were effectively unscored.
+ *
+ * Per-field specs come from the schema, so arrays match elements by their
+ * declared `element_key`, `informational` sub-fields are excluded, and a
+ * declared `match:` policy applies.
+ */
 function compareResults(
   expected: Record<string, unknown>,
   actual: Record<string, unknown>,
-  fuzzyThreshold: number,
+  schemaDef: Record<string, unknown> | null,
 ): FieldResult[] {
+  const specs = (schemaDef?.fields ?? {}) as Record<string, Record<string, unknown>>;
   const results: FieldResult[] = [];
   for (const [field, expectedValue] of Object.entries(expected)) {
     const actualValue = actual[field] ?? null;
-
-    // Skip arrays for now — compare scalars
-    if (Array.isArray(expectedValue)) {
-      results.push({
-        field,
-        expected: expectedValue,
-        actual: actualValue,
-        match: Array.isArray(actualValue) && actualValue.length > 0,
-      });
-      continue;
-    }
-
     results.push({
       field,
       expected: expectedValue,
       actual: actualValue,
-      match: fuzzyMatch(expectedValue, actualValue, fuzzyThreshold),
+      match: compareValues(expectedValue, actualValue, specs[field]).match,
     });
   }
   return results;
@@ -179,7 +148,15 @@ async function main() {
     }
     const schemaPath = join(schemasDir, schemaFiles[0]!);
     const schemaDef = parseYaml(readFileSync(schemaPath, "utf-8"));
-    const fuzzyThreshold = parseFloat(schemaDef?.compare?.fuzzy_threshold ?? "0.85");
+    // `compare.fuzzy_threshold` predates the unified scorer, which has no
+    // global threshold — equivalence is declared per field with `match:`.
+    // Say so rather than ignoring a setting the schema author wrote.
+    if (schemaDef?.compare?.fuzzy_threshold !== undefined) {
+      console.warn(
+        `  note: ${schemaFiles[0]!} declares compare.fuzzy_threshold; it is ignored. ` +
+          `Declare per-field equivalence with \`match:\` instead (docs/schema-guide.md).`,
+      );
+    }
 
     // Find documents with expected outputs
     const docs = readdirSync(docsDir)
@@ -204,7 +181,7 @@ async function main() {
       try {
         const result = await intelligentExtract(markdown, schemaDef, provider, model);
         const elapsed = Date.now() - start;
-        const fields = compareResults(expected, result.extracted, fuzzyThreshold);
+        const fields = compareResults(expected, result.extracted, schemaDef);
 
         const correct = fields.filter((f) => f.match).length;
         catFields += fields.length;
