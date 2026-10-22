@@ -640,3 +640,70 @@ forms:
     expect(bad.ok).toBe(false);
   });
 });
+
+describe("grid block validation (Track D, oss-537..540)", () => {
+  const field = (grid: string) => `
+name: t
+fields:
+  parts:
+    type: array
+${grid}
+    items:
+      type: object
+      properties:
+        code: { type: string }
+        amount: { type: number }
+`;
+
+  it("accepts the boolean shorthand and a full block", () => {
+    expect(compileSchema(field("    grid: true")).ok).toBe(true);
+    expect(compileSchema(field("    grid: false")).ok).toBe(true);
+    expect(
+      compileSchema(
+        field(
+          [
+            "    grid:",
+            "      mode: union",
+            "      min_columns: 3",
+            "      min_mapped: 2",
+            "      row_key: code",
+            "      select: false",
+            "      budget: 8",
+            "      columns:",
+            "        amount: [total, line total]",
+          ].join("\n"),
+        ),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("rejects a misspelled grid property rather than silently ignoring it", () => {
+    const r = compileSchema(field("    grid:\n      min_colums: 3"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors[0]!.message).toContain("unknown grid property");
+  });
+
+  it("rejects a bad mode, a non-numeric gate, and a non-boolean select", () => {
+    expect(compileSchema(field("    grid:\n      mode: replace")).ok).toBe(false);
+    expect(compileSchema(field("    grid:\n      min_columns: many")).ok).toBe(false);
+    expect(compileSchema(field("    grid:\n      select: maybe")).ok).toBe(false);
+  });
+
+  it("rejects a row_key or a columns entry that is not a property of the items", () => {
+    expect(compileSchema(field("    grid:\n      row_key: nope")).ok).toBe(false);
+    expect(compileSchema(field("    grid:\n      columns:\n        nope: [x]")).ok).toBe(false);
+    expect(compileSchema(field("    grid:\n      columns:\n        amount: notalist")).ok).toBe(false);
+  });
+
+  it("rejects grid on a non-array field", () => {
+    const r = compileSchema(`
+name: t
+fields:
+  a:
+    type: string
+    grid: true
+`);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors[0]!.message).toContain("only valid on an array field");
+  });
+});
