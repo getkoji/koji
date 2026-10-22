@@ -125,6 +125,8 @@ Whichever structured provider runs, its output converges on one shape: the **par
 
 Markdown then becomes a *projection* of the spine: a run of cells sharing a `tableId` is reassembled into a markdown grid, so what the model reads is rebuilt from the cells rather than from a reading-order flatten. The spine rides along on the parse response, survives the parse cache, and is merged with page offsets when a large PDF is parsed in shards — so cell geometry is available for the whole document, not just its first chunk.
 
+The spine is also the extraction surface for [grid reads](#phase-35-grid-read-opt-in-deterministic): an array field that declares `grid:` addresses its values by `(tableId, row, col)` and takes each one's `bbox` as provenance, instead of reconstructing rows from the markdown projection.
+
 #### Docling (heavy provider)
 
 [Docling](https://github.com/DS4SD/docling) provides OCR, table detection, and layout analysis:
@@ -274,6 +276,29 @@ For example, if `policy_number`, `effective_date`, and `insured_name` all route 
 Each group's prompt contains only the relevant document chunks and field specifications. Groups run concurrently (up to 5 in parallel by default). Schemas without any `depends_on` declarations always produce a single wave, so grouping maximizes across every field as before.
 
 Every prompt is checked against the model's **context window budget** before it's sent (128k tokens assumed, minus the 16k completion reserve). When a group's chunks are too large for one call — big packets, heading-poor scans, wide tables — the chunk set is packed into consecutive window-sized subsets and one call runs per subset. Scalar fields take the first value found in document order; array fields union their rows across subsets (deduplicated by content, per-row provenance preserved). The same guard applies to gap-fill and row-enumeration passes, so no document is too large to extract.
+
+### Phase 3.5: Grid read (opt-in, deterministic)
+
+Phases 2 and 3 flatten a table's chunks to markdown and ask a model to rebuild rows from it, which is why granular array data — per-row amounts, limits, schedules, line items — is the pipeline's weakest field class. Row↔column identity is already gone by the time the prompt is written.
+
+An array field whose schema declares a [`grid:`](schema-guide.md#table-grids-grid) block takes a different route for its rows. After the grouped extraction returns, the engine:
+
+1. **builds the grid** — a dense `rows[r][c]` of cells. Its preferred source is the parse spine's `table_cell` units, so each cell arrives with its own `bbox`; when the spine has no cells (a markdown-native parse) it reads the markdown pipe table instead, keeping exact character spans. (`api/src/extract/grid.ts`)
+2. **names the columns** by matching header text against the array's sub-field names and any schema-declared aliases, putting only the headers that don't match to the `select` capability as an enumerated choice. (`grid-identity.ts`)
+3. **names the rows** the same way, against the row-key sub-field's declared `mappings`/`options`. A row that matches no entry — a total line, a heading — is dropped rather than guessed at.
+4. **reads each cell** at the resulting (row, col). No model runs at this step, so no value can be fabricated, and its provenance is the cell's own box, known at read time rather than matched back afterwards. (`grid-tables.ts`)
+
+Column *counts* are not treated as meaningful: the positional path infers columns by x-coordinate clustering and over-splits, so a six-column schedule routinely reports fourteen with phantom blanks between the real ones. What holds — and what cell addressing needs — is that a value and its header share an index. Everything here is written against that invariant.
+
+A cell is claimed only if the grid can produce a value in the sub-field's **declared type**: the schema's own `normalize:` transforms run first, then `validateField` — the same coercion an extracted value gets — has to accept the result. A `09/06/2025` in a `date` column is not a date the schema can represent, and the extraction resolved it with locale context the grid does not have, so the sub-field is left unread rather than overwritten with the raw cell.
+
+The grid is authoritative only for the sub-fields it named *and could represent*. With a row key, its rows join the extraction's by key. With no row key, they join by position — but only when the two readings agree on a mapped column for **every** row, because equal row counts are not evidence of the same rows in the same order, and a majority rule leaves unverified pairings to be overwritten. With neither join available, the grid's rows stand alone only if it named every sub-field; otherwise the field is left to extraction. Every one of those decisions is reported in `normalization.warnings`.
+
+This stage is **opt-in per field** and changes nothing for a schema that does not declare it. That is deliberate rather than cautious: a great deal already indexes into an array field's rows — `source_texts`, `provenance.items[]`, `element_key` collapse, `skip_row_when`, the `forms:` overlay — and switching the producer of those rows on by default would change all of it for documents nobody re-measured.
+
+Two things it deliberately does **not** do yet. It runs after the wave loop, so a field with a `depends_on` edge into a grid-backed array sees the rows extraction produced, not the rows the grid read. And it does not recompute `confidence_scores` — a grid-read value keeps the confidence the pipeline assigned it, even though a deterministic read is worth more than a model's.
+
+Nothing in the stage is document-type aware. The row vocabulary, the column names and every alias come from the schema.
 
 ### Phase 4: Validate
 

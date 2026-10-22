@@ -29,6 +29,8 @@ const VALID_FIELD_PROPS = new Set([
   "format", "default", "hints", "options", "signals", "resolve",
   "verbatim", "mappings", "properties", "enum",
   "vocab_by", "vocab_default", "keep_raw",
+  // Table-grid extraction on an array field (Track D, oss-537..540).
+  "grid",
 ]);
 
 const VALID_NORMALIZE = new Set([
@@ -225,6 +227,74 @@ export function compileSchema(yamlSource: string): CompileResult | CompileError 
   // own field names are the sibling scope, so a vocab_by inside an array item
   // must reference another property of the same item.
   validateVocabTree(fields, errors, "");
+
+  // Per-field `grid:` — table-grid extraction (Track D, oss-537..540). A
+  // misspelled key here would silently leave the field on the LLM path with no
+  // signal at all, which is the worst possible failure mode for an opt-in, so
+  // the shape is checked at compile time rather than at extraction time.
+  for (const [name, spec] of Object.entries(fields)) {
+    const raw = (spec as Record<string, unknown>)?.grid;
+    if (raw === undefined) continue;
+    const label = `Field '${name}'`;
+    if ((spec as Record<string, unknown>).type !== "array") {
+      errors.push({ field: name, message: `${label}: 'grid' is only valid on an array field` });
+      continue;
+    }
+    if (typeof raw === "boolean") continue;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push({ field: name, message: `${label}: 'grid' must be true, false, or a mapping` });
+      continue;
+    }
+    const g = raw as Record<string, unknown>;
+    const GRID_KEYS = ["mode", "min_columns", "min_mapped", "row_key", "columns", "exclude", "select", "budget"];
+    for (const key of Object.keys(g)) {
+      if (!GRID_KEYS.includes(key)) {
+        errors.push({ field: name, message: `${label}: unknown grid property '${key}' — expected one of ${GRID_KEYS.join(", ")}` });
+      }
+    }
+    if (g.mode !== undefined && !["seed_rows", "union", "off"].includes(g.mode as string)) {
+      errors.push({ field: name, message: `${label}: grid.mode must be 'seed_rows', 'union' or 'off'` });
+    }
+    for (const numKey of ["min_columns", "min_mapped", "budget"]) {
+      if (g[numKey] !== undefined && typeof g[numKey] !== "number") {
+        errors.push({ field: name, message: `${label}: grid.${numKey} must be a number` });
+      }
+    }
+    if (g.select !== undefined && typeof g.select !== "boolean") {
+      errors.push({ field: name, message: `${label}: grid.select must be a boolean` });
+    }
+    const props = ((spec as Record<string, unknown>).items as Record<string, unknown> | undefined)?.properties as
+      | Record<string, unknown>
+      | undefined;
+    if (typeof g.row_key === "string" && props && !(g.row_key in props)) {
+      errors.push({ field: name, message: `${label}: grid.row_key '${g.row_key}' is not a property of the array's items` });
+    }
+    if (g.exclude !== undefined) {
+      if (!Array.isArray(g.exclude) || g.exclude.some((n) => typeof n !== "string")) {
+        errors.push({ field: name, message: `${label}: grid.exclude must be a list of sub-field names` });
+      } else if (props) {
+        for (const sub of g.exclude as string[]) {
+          if (!(sub in props)) {
+            errors.push({ field: name, message: `${label}: grid.exclude references '${sub}', which is not a property of the array's items` });
+          }
+        }
+      }
+    }
+    if (g.columns !== undefined) {
+      if (typeof g.columns !== "object" || Array.isArray(g.columns)) {
+        errors.push({ field: name, message: `${label}: grid.columns must be a mapping of sub-field to header aliases` });
+      } else {
+        for (const [sub, aliases] of Object.entries(g.columns as Record<string, unknown>)) {
+          if (props && !(sub in props)) {
+            errors.push({ field: name, message: `${label}: grid.columns references '${sub}', which is not a property of the array's items` });
+          }
+          if (!Array.isArray(aliases) || aliases.some((a) => typeof a !== "string")) {
+            errors.push({ field: name, message: `${label}: grid.columns.${sub} must be a list of strings` });
+          }
+        }
+      }
+    }
+  }
 
   // Top-level `forms:` — deterministic form-table grammars (oss-367).
   if (doc.forms !== undefined) {

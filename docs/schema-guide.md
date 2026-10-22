@@ -1296,6 +1296,8 @@ coverages:
 
 The extraction model identifies rows in tables, bulleted lists, or repeated structures and returns them as an array of objects.
 
+When the data really is a **table**, add [`grid: true`](#table-grids-grid) and the rows are read from the table's cells by address instead — no model, no fabrication, and each value's provenance is the cell it came from.
+
 ### Field types and rules apply inside items
 
 An item property is a full field spec, not just a type label. Everything you can declare on a top-level field works identically on a field nested inside an array item (or a nested object):
@@ -1452,6 +1454,204 @@ shape (field exists and is an array, `row.pattern` compiles) at push time.
 Form grammars are deterministic: they either parse a document or they don't,
 so iterating on one against a validation corpus gives attributable, noise-free
 failures — well suited to automated authoring loops.
+
+## Table grids (`grid:`)
+
+`forms:` reads a table with a regex grammar you write. That works — a grammar
+hits the table it was written for almost every time — but it does not
+**transfer**: a grammar is written against one issuer's spacing, wording and
+column order, and the next issuer's version of the same table needs a new one.
+
+`grid:` reads the same kind of table from its **shape** instead. Put it on an
+array field and the engine stops asking a model to rebuild rows from flattened
+markdown, and instead:
+
+1. **finds the grid** — rows, columns and cells, from the parse's own table
+   cells when the document was parsed with a structured provider, or from a
+   markdown pipe table otherwise;
+2. **names each column** by matching the header against the array's sub-field
+   names (and any aliases you declare);
+3. **names each row** by matching its label against the row-key sub-field's
+   declared vocabulary (`mappings` / `options`), if it has one;
+4. **reads each cell** at the resulting (row, column) address — no model, no
+   generation, so no fabrication, and the value's provenance is the cell's own
+   bounding box.
+
+Nothing about the document family is written down. What transfers is your
+schema: the sub-field names and the row vocabulary you already declared.
+
+```yaml
+fields:
+  coverages:
+    type: array
+    grid: true                      # the whole opt-in
+    hints:
+      element_key: coverage         # names the row-key sub-field
+    items:
+      type: object
+      properties:
+        coverage:
+          type: mapping
+          mappings:                 # <- the row vocabulary; this is what transfers
+            general_liability: ["Commercial General Liability", "CGL", "Gen Liability"]
+            auto: ["Business Auto", "Automobile Liability"]
+        premium: { type: number }
+        limit: { type: number }
+        insurer: { type: string }   # printed as a letter code, resolved elsewhere
+```
+
+### The full block
+
+```yaml
+    grid:
+      mode: union          # union (default, with a row key) | seed_rows | off
+      min_columns: 2       # a grid with fewer physical columns is ignored
+      min_mapped: 2        # at least this many sub-fields must map to columns
+      row_key: coverage    # defaults to hints.element_key
+      select: true         # allow the Choice fallback (default true)
+      budget: 24           # ceiling on Choice calls for this field
+      columns:             # extra header spellings, when yours differ from the document's
+        unit_price: ["rate", "price per unit"]
+        amount: ["line total", "extended"]
+      exclude: [insurer]   # sub-fields the grid must never claim (see below)
+```
+
+`grid: true` is shorthand for an all-defaults block; `grid: false` (or
+`mode: off`) disables it without deleting the configuration. Every key is
+validated at push time, so a misspelled one is a compile error rather than a
+silently inert field.
+
+### Names first, model second
+
+Column and row naming is literal first: a header matches a sub-field when their
+normalized forms are equal or one contains the other as a whole word, so
+`Unit Price ($)` finds `unit_price` for free. Only the headers and row labels
+that *don't* match are put to the `select` capability — one enumerated choice,
+with abstention allowed — and only up to `budget`. A conventional layout
+therefore costs **zero** model calls; an unfamiliar one costs a handful of
+single-token choices rather than a table reconstruction.
+
+If your documents word a column in a way no sub-field name resembles, declaring
+it under `columns:` is free, exact and reproducible — prefer that to paying for
+a choice on every document. The selector is also shown the array field's own
+`description`, so prose you have already written there ("Rate is the unit price,
+Amount is the line total") does real work.
+
+### When the cell is not the answer (`exclude`)
+
+A deterministic read beats a model only where the value really is printed in the
+cell. Where your schema asks for something **derived** — a short reference code
+the document resolves against a list elsewhere on the page, a raw form you want
+normalized, a value assembled from two places — reading the cell is confidently
+wrong, and confidently wrong is worse than a model's guess.
+
+List those sub-fields under `exclude:` and the grid will never claim them: no
+column maps to them, the extraction's value stands, and every other sub-field
+is still read by address.
+
+```yaml
+    grid:
+      exclude: [insurer]   # the column prints "A"; the schema wants the name "A" refers to
+```
+
+Measured, on a corpus whose schema says to resolve a one-letter code against a
+list printed elsewhere: without `exclude`, the grid replaced the resolved name
+with the letter on every row. This is the one failure mode worth knowing about
+before you turn a grid on — scan the array's sub-fields and ask, for each, "is
+the answer printed in that cell?"
+
+### What happens to the rows extraction already produced
+
+**The grid is authoritative only for the sub-fields it named.** A column it
+could not name is not a claim that the column is empty, so the extraction's
+value for it is kept. Three cases:
+
+| situation | what happens |
+|---|---|
+| the field has a row key with a vocabulary | joined by key: grid values win, and (under `union`) extracted rows the grid didn't capture are kept |
+| no row key, same number of rows, **and** a mapped column agrees on **every** row | joined by position: grid values win, the extraction fills the sub-fields no column mapped to |
+| no row key, no key or positional join available, and some sub-field went unnamed | **the field is left to extraction** and the run report says why |
+
+Equal row counts alone don't license a positional join. An array whose schema
+asks for a *reconciled* list — one entry per element, collated from wherever
+each part appeared — has no reason to come back in the order one table prints,
+so Koji requires the two readings to **agree on a column for every row** before
+pairing them row by row. Unanimity, not a majority: under a majority rule the
+remaining rows are pairings nobody verified, and those are exactly the rows the
+join would then overwrite with a different row's values. No agreement, no join —
+and the field is left to extraction.
+
+A row whose label matches no vocabulary entry — a total line, a section
+heading — is dropped rather than guessed at. A row that reads as entirely empty
+is skipped.
+
+### The grid only claims what your declared type accepts
+
+A cell is read, put through that sub-field's declared `normalize:` transforms,
+and then validated against its declared type — the same coercion an extracted
+value gets. **If the result isn't valid for the type, the grid doesn't claim the
+sub-field**, and the extraction's value stands.
+
+This matters more than it sounds. A `09/06/2025` in a column mapped to a `date`
+sub-field is not a date the schema can represent, and the extraction resolved it
+with locale context (`locale: infer_from`) that a cell read does not have.
+Overwriting a correct `2025-09-06` with the raw cell is confidently wrong —
+measured on the corpus, it was the single largest cause of grid extraction
+scoring *below* plain extraction.
+
+Declare `normalize:` on the sub-field and the grid can read the column after
+all:
+
+```yaml
+        starts:
+          type: date
+          normalize: iso8601      # now the grid reads 09/06/2025 as 2025-09-06
+```
+
+Locale *inference* scans the whole extraction and happens later, so the grid
+uses only `locale.fallback` if your schema declares one. A date column in a
+format the fallback cannot resolve is left to extraction, which is the right
+answer rather than a guess.
+
+### Provenance
+
+A value read from a grid carries the cell's own box (`resolution: "chunk"`) when
+the parse supplied geometry, and the cell's exact character span
+(`resolution: "offset"`) otherwise. Either way it is known at read time, so the
+post-hoc provenance match and the faithfulness gate have nothing left to do for
+that field.
+
+Geometry needs a structured parse. Set `KOJI_PARSE_STRUCTURED=positional` to get
+per-cell boxes from any digital PDF with no credentials and no cloud call; see
+`docs/architecture.md`. Without it the grid still works from the markdown pipe
+table, with character spans instead of boxes.
+
+### Current limits
+
+- The grid read runs **after** the extraction waves, so a field whose
+  `depends_on` points at a grid-backed array sees the rows extraction produced,
+  not the rows the grid read.
+- `confidence_scores` are not recomputed for a grid-read value — it keeps the
+  confidence the pipeline assigned, even though a deterministic cell read is
+  worth more than a model's answer.
+- Sub-fields that are themselves arrays or objects are read as whatever the cell
+  contains and coerced by type; a nested array inside a cell is not parsed.
+
+### `grid:` and `forms:` together
+
+Grid extraction runs inside the pipeline; `forms:` runs after it. A field that
+declares both ends up with the grammar's rows, because a hand-authored grammar
+is the more specific statement. Declare one or the other.
+
+### When it does nothing
+
+If the document has no table, if fewer than `min_columns` columns are present,
+if fewer than `min_mapped` sub-fields map, or if every row reads empty, the
+field falls back to ordinary extraction unchanged. Like `forms:`, a grid can
+narrow a document family's behaviour but never lose data on documents it does
+not fit. Every decision it made — which grids it accepted, which columns it
+named, how the rows were joined, how many Choice calls it spent — is reported in
+`normalization.warnings`.
 
 ## Enum matching
 
