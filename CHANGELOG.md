@@ -2,6 +2,144 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.123.0 — 2026-10-22
+
+**A table-backed array field can now be read by cell address instead of
+reconstructed by a model.** Declare `grid:` on an array field and Koji finds the
+table, names its columns from your sub-field names, names its rows from your
+row-key vocabulary, and then *looks each value up* at the resulting (row,
+column). No model runs at the read, so no value can be fabricated, and each
+one's provenance is the cell's own bounding box — known when the value is read
+rather than matched back to the document afterwards.
+
+The problem this addresses is structural, not model quality. The router scores
+chunks, flattens their text to markdown, and asks a model to rebuild a nested
+object from it; row<->column identity is already gone by the time the prompt is
+written. `oss-536` shipped the geometry to avoid that — `PositionalStructuredProvider`
+emits one unit per table cell with `{tableId, row, col}` and a per-cell box from
+any digital PDF, credential-free — but nothing consumed those coordinates except
+post-hoc provenance. This release makes them the extraction surface.
+
+```yaml
+fields:
+  coverages:
+    type: array
+    grid: true                 # the whole opt-in
+    hints:
+      element_key: coverage
+    items:
+      type: object
+      properties:
+        coverage:
+          type: mapping
+          mappings:            # the row vocabulary — this is what transfers
+            general_liability: ["Commercial General Liability", "CGL"]
+            auto: ["Business Auto", "Automobile Liability"]
+        premium: { type: number }
+        limit: { type: number }
+```
+
+**Why not just write a `forms:` grammar.** `forms:` works — a hand-authored
+regex hits the table it was written for almost every time — but it does not
+transfer: it is written against one issuer's spacing and column order, and the
+next issuer's version of the same table needs a new grammar. `grid:` reads the
+table from its *shape* and takes the names from your schema, so the same
+declaration reads a layout it has never seen. Where a header or a row label does
+not match literally, the `select` capability (`oss-526`, LLM-choice over your own
+key by default) answers it as one enumerated choice with abstention allowed — so
+a conventional layout costs **zero** model calls and an unfamiliar one costs a
+handful of single-token choices rather than a table reconstruction.
+
+**It is opt-in per field, and that is load-bearing.** A great deal already
+indexes into an array field's rows — `source_texts`, `provenance.items[]`,
+`element_key` collapse, `skip_row_when`, the `forms:` overlay. Switching the
+producer of those rows on by default would change all of it for documents nobody
+re-measured. A schema that does not declare `grid:` executes no new code at all.
+
+**The grid is authoritative only for the sub-fields it named.** A column it
+could not name is not a claim that the column is empty, so the extraction's
+value for it stands. With a row key the two row sets join by key; with no row
+key they join by position, but *only* when they agree on a mapped column for at
+least half the rows — equal row counts alone are not evidence of the same rows in
+the same order, and an array whose schema asks for a reconciled list has no
+reason to arrive in one table's print order. With neither join available the
+grid's rows stand alone only if it named every sub-field. Every one of those
+decisions is reported in `normalization.warnings`.
+
+`exclude:` names sub-fields the grid must never claim, for the case where **the
+cell is not the answer**: a column printing a short reference the schema asks you
+to resolve elsewhere on the page, or a raw form you want normalized. A
+deterministic read beats a model only where the value really is printed in the
+cell; where it is not, reading the cell is confidently wrong.
+
+**What the corpus says: no improvement, and no regression.** Measured paired on
+50 documents with `@koji/score` — the pipeline runs once per document and the
+same result is scored with the stage off and on, so the LLM half is byte-identical
+between arms and the only variance is the stage itself. `grid` is deterministic
+matching only; `grid+s` additionally lets the selector resolve headers and row
+labels that did not match literally. `grid: true` was applied blanket to every
+array field, which is *not* how it would be used.
+
+| category | n | base | grid | grid+s |
+|---|---|---|---|---|
+| invoices (`items`) | 25 | 72.0% | **72.0%** | **72.0%** |
+| certificates (`policies`) | 25 | 24.0% | 20.0% | 16.0% |
+| all array fields | 50 | 48.0% | 46.0% | 44.0% |
+
+On invoice line items the stage is *exactly* neutral — same binary accuracy,
+same partial score (87.2%), with a grid accepted on 30 of 50 documents. On
+certificates it costs 4–8 points, and the cause is a schema that is the opposite
+of a one-table read: `policies` is explicitly a **reconciled** field ("collate
+all information per unique policy_number", "dereference the letter code against
+the insurer list"), so the coverage grid's `INSR LTR` column prints `A` where the
+schema wants the name `A` refers to. Declaring `exclude: [carrier_name]` removes
+that and the stage is exactly neutral there too (28.0% / 28.0% / 28.0%, n=25).
+
+**No corpus evidence that it helps, and that is a statement about the corpus.**
+The validation corpus contains **zero PDFs** — every document is markdown — so
+there is no cell geometry anywhere in it, and the half of this track that the
+geometry exists for is unexercised. What the corpus can show is that the stage
+does not cost accuracy, and getting there found two real defects worth naming:
+
+- The read wrote **raw cell text past the declared type**: `09/06/2025` into a
+  `date` sub-field whose correct value is `2025-09-06`, overwriting a value the
+  extraction had resolved with locale context a cell read does not have. The
+  grid now runs the sub-field's declared `normalize:` transforms and then
+  requires `validateField` to accept the result; a cell it cannot represent is
+  left unread. This was the single largest cause of the stage scoring below
+  plain extraction.
+- The positional join paired rows on a **majority** agreement. The rows that did
+  *not* agree were pairings nobody verified, and they were exactly the rows the
+  join then overwrote with another row's values. It now requires a mapped column
+  to agree on **every** row.
+
+On a real digital PDF, where the geometry exists, the capability does what it
+says. A four-column schedule with a hole in one row — the shape that breaks a
+reading-order flatten, because the surviving value slides left into the missing
+column — reads correctly through the shipped `extractFields` entry point, zero
+model calls spent on identity, every value carrying `resolution: "chunk"` and its
+own box:
+
+```
+row=4 col=1 bbox=(0.0817, 0.1869, 0.0517, 0.0126) item="Charlie"
+row=4 col=3 bbox=(0.2941, 0.1869, 0.0263, 0.0126) code="C-3"
+row=4 col=5 bbox=none                             count=null
+row=4 col=6 bbox=(0.7190, 0.1869, 0.0182, 0.0126) amount=90
+```
+
+
+**Also fixed: cell provenance boxes were inflated across the next column.**
+pdfjs interleaves synthetic whitespace runs between text runs, and in a wide
+grid those are as wide as the gap they span. `reconstructTable` was including
+them in each cell's box union, so a one-glyph `3` in a 612pt-wide page carried a
+130pt box reaching most of the way into the next column — a highlight pointing at
+empty paper, on the one path whose whole value is that its geometry is exact. The
+cell's *text* already dropped them; now the box agrees with the text. Measured on
+the same PDF, that cell's box went from 0.2124 of the page width to 0.0091.
+
+New docs: [Table grids](docs/schema-guide.md#table-grids-grid) in the schema
+guide, and Phase 3.5 in [the architecture overview](docs/architecture.md).
+
 ## 0.122.0 — 2026-10-21
 
 **Array accuracy in the TypeScript bench was overstated by 22.6 points.**

@@ -6,7 +6,7 @@
  * recorded as warnings and the value is passed through unchanged.
  */
 
-import { arrayItemProperties, objectProperties } from "./schema-tree";
+import { arrayItemProperties, objectProperties, type FieldSpec } from "./schema-tree";
 
 // ---------------------------------------------------------------------------
 // Report
@@ -560,6 +560,31 @@ function applyTransforms(
     }
   }
   return value;
+}
+
+/**
+ * Apply one field's declared `normalize:` transforms to a single value.
+ *
+ * The same transform table {@link normalizeExtracted} uses, exposed for callers
+ * that produce a value outside the extraction result and must put it through
+ * the schema's declared normalization before anyone validates it — the grid
+ * read (`extract/grid-tables.ts`) is the first. Without this, a deterministic
+ * reader would hand a raw cell to a `date` field and be rejected by the very
+ * schema that declared how to normalize it.
+ *
+ * `locale` is the resolved locale map (`{ date_format, currency }`), when the
+ * caller has one; locale *inference* is a whole-document operation and belongs
+ * to `normalizeExtracted`, so a caller with only the schema's declared fallback
+ * passes that.
+ */
+export function applyDeclaredTransforms(
+  value: unknown,
+  spec: FieldSpec | null | undefined,
+  locale?: Record<string, string>,
+): unknown {
+  const transforms = asTransformList(spec?.normalize);
+  if (transforms.length === 0) return value;
+  return applyTransforms(value, transforms, "", makeReport(), locale);
 }
 
 /**
