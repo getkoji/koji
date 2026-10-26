@@ -2,6 +2,17 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.122.1 — 2026-10-26
+
+**Node.js pinned to 22.23.4 for the October 2026 Node.js security release.**
+
+The API and dashboard images were built `FROM node:22-alpine`, a floating tag,
+so whether an image carried the fix depended on when it was last built. Both
+now pin `node:22.23.4-alpine`, and CI pins `node-version: 22.23.4`. 22.23.4
+fixes CVE-2026-111497 (Brotli decoder out-of-bounds write, reachable through
+`fetch()` response decompression) and the TLS hostname-validation bypasses
+CVE-2026-105483 and CVE-2026-106069. If you self-host, rebuild your images.
+
 ## 0.122.0 — 2026-10-21
 
 **Array accuracy in the TypeScript bench was overstated by 22.6 points.**
