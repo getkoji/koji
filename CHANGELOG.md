@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Newest first.
 
+## 0.122.2 — 2026-11-03
+
+**Fix: CI's end-to-end job pinned to Ubuntu 24.04.** GitHub rolled the
+`ubuntu-latest` label to Ubuntu 26.04, and Playwright's pinned version has no
+chromium build for it, so `Install Playwright browsers` exited 1 before a
+single test ran — on every pull request in the repository, not just the one
+that surfaced it.
+
+Nothing in the product changed. This is the same failure shape as the Node pin
+in 0.122.1: an external label moving underneath us, silently, with no release
+of ours involved. Unpin when Playwright supports 26.04, as its own change
+rather than a browser-stack move riding along inside an unrelated PR.
+
 ## 0.122.1 — 2026-10-26
 
 **Node.js pinned to 22.23.4 for the October 2026 Node.js security release.**
