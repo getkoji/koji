@@ -61,6 +61,15 @@ export interface ExtractionResult {
   routing_plan?: Record<string, unknown>;
   /** Extraction group summary (intelligent pipeline). */
   groups?: Array<{ fields: string[]; chunkCount: number }>;
+  /**
+   * One line per array field whose rows were read from a table grid rather than
+   * reconstructed from flattened markdown (Track D). Present only when a schema
+   * field declares a `grid:` block AND a grid was accepted; see
+   * `extract/grid-tables.ts`. Also merged into `normalization.warnings` by
+   * `extractFields`, so an operator sees it in the same place as every other
+   * post-extraction report.
+   */
+  grid_report?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1018,11 @@ export async function extractFields(
       ...captionNulled.map(
         (f) => `${f}: dropped a caption/label value (reject_caption) — value routed to review`,
       ),
+      // Grid extraction ran inside the pipeline (it produces rows, so it has to
+      // run before anything that post-processes them). Its report surfaces here
+      // alongside the `forms:` report so both deterministic row producers are
+      // visible in one place.
+      ...(result.grid_report ?? []),
       ...formReports,
       ...collapsedRows.map(
         ({ field, collapsed }) => `${field}: collapsed ${collapsed} duplicate row(s) by element_key`,

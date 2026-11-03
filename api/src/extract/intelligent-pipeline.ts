@@ -38,6 +38,7 @@ import {
 } from "./fit";
 import type { ModelProvider } from "./providers";
 import type { ExtractionResult } from "./pipeline";
+import { applyGridTables, schemaHasGrid } from "./grid-tables";
 import type { TextMap } from "./provenance";
 import { resolveProvenance } from "./provenance";
 import type { ParseChunk } from "../parse/chunk";
@@ -407,7 +408,50 @@ async function extractOneSection(
 
 // ── Main entry point ────────────────────────────────────────────────
 
+/**
+ * The intelligent pipeline, plus the grid stage (Track D) for any array field
+ * whose schema declares a `grid:` block.
+ *
+ * Grid extraction is a *producer* of rows, not a post-processing fixup, so it
+ * belongs inside the pipeline rather than beside the `forms:` overlay in
+ * `extractFields`: every caller of `intelligentExtract` — the benches included
+ * — must see the same rows the API ships, or a measurement of this stage would
+ * be measuring a path nobody runs.
+ *
+ * It wraps the pipeline instead of living inside it so the classifier and
+ * classifier-off paths, which return from different places, get it identically.
+ * Fields that declare no `grid:` block take no new code at all: `schemaHasGrid`
+ * short-circuits before a grid is built or a selector constructed.
+ */
 export async function intelligentExtract(
+  markdown: string,
+  schemaDef: Record<string, unknown>,
+  provider: ModelProvider,
+  model: string,
+  textMap?: TextMap,
+  parseChunks?: readonly ParseChunk[],
+): Promise<ExtractionResult> {
+  const result = await runIntelligentPipeline(markdown, schemaDef, provider, model, textMap, parseChunks);
+
+  if (!result.fit?.extraction_skipped && schemaHasGrid(schemaDef)) {
+    const sourceTexts = result.source_texts ?? {};
+    const provenance = result.provenance ?? {};
+    const { report } = await applyGridTables(markdown, schemaDef, result.extracted, sourceTexts, provenance, {
+      ...(parseChunks ? { chunks: parseChunks } : {}),
+      model: provider,
+    });
+    if (report.length > 0) {
+      if (Object.keys(sourceTexts).length > 0) result.source_texts = sourceTexts;
+      if (Object.keys(provenance).length > 0) result.provenance = provenance;
+      result.grid_report = report;
+      for (const line of report) console.log(`[koji-extract] grid: ${line}`);
+    }
+  }
+
+  return result;
+}
+
+async function runIntelligentPipeline(
   markdown: string,
   schemaDef: Record<string, unknown>,
   provider: ModelProvider,

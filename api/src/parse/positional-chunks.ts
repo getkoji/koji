@@ -144,9 +144,21 @@ export function reconstructTable(
     // One box per column slot: the union of the boxes of the items that landed
     // in that slot. An empty slot has no geometry, so it stays undefined rather
     // than borrowing the row's box.
+    //
+    // Whitespace-only runs are excluded from the union. pdfjs interleaves
+    // synthetic space items between real text runs to communicate inter-run
+    // spacing, and in a wide grid those are as wide as the gap they span (a
+    // 5.6pt "3" followed by a 103pt " "). They carry no glyphs, so including
+    // them inflated a cell's provenance box across most of the next column —
+    // a highlight pointing at empty paper, on the one path whose whole value
+    // is that its geometry is exact. The cell's TEXT already drops them via
+    // `trim()`; this makes the box agree with the text.
     const cellBoxes = buckets.map((items) =>
       unionBBox(
-        items.map((i) => itemBox(i, page)).filter((b): b is BBox => b !== undefined),
+        items
+          .filter((i) => i.text.trim().length > 0)
+          .map((i) => itemBox(i, page))
+          .filter((b): b is BBox => b !== undefined),
       ),
     );
     rows.push({ cells, cellBoxes, bbox: lineBBox(line, page) });
